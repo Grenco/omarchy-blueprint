@@ -2,6 +2,7 @@ package packages
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,6 +29,10 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
 	out, err := p.Runner.Run(ctx, "pacman", arg)
 	if err != nil {
+		var runErr *command.RunError
+		if errors.As(err, &runErr) && runErr.ExitCode == 1 && strings.TrimSpace(out) == "" {
+			return []string{}, nil
+		}
 		return nil, err
 	}
 	return lines(out), nil
