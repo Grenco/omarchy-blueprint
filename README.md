@@ -2,12 +2,16 @@
 
 Use your system normally. Omarchy Blueprint remembers how to rebuild it.
 
-This repository currently contains the first packages-only vertical slice of
-the broader design in [ROADMAP.md](ROADMAP.md). It captures explicitly
+This repository currently contains package reconstruction plus the first theme
+vertical slice from [ROADMAP.md](ROADMAP.md). It captures explicitly
 installed native and foreign packages, separates known machine-specific
 hardware packages, shows semantic drift, creates a safe restore plan, installs
 only missing portable packages through Omarchy, and verifies the result. It
 never removes additional packages.
+
+Built-in theme state can also be captured, compared, restored through Omarchy,
+and verified. Git-installed and local/custom theme content is intentionally
+rejected until Blueprint can preserve that content faithfully.
 
 ## Requirements
 
@@ -53,6 +57,7 @@ packages/official.txt
 packages/aur.txt
 packages/machine-specific.txt
 packages/excluded.txt
+themes/themes.toml
 ```
 
 Machine-specific entries retain provenance, for example
@@ -83,8 +88,19 @@ Restore journals are written to
 ## Current boundaries
 
 This milestone does not yet distinguish packages added by the user from other
-explicit packages. It also intentionally postpones the TUI, themes, plugins,
-shell configuration, directories, Git automation, migrations, and AI.
+explicit packages. Theme support currently covers the active built-in theme;
+Git-installed themes, local themes, and built-in theme overrides are detected
+but not captured. The TUI, plugins, shell configuration, directories, Git
+automation, migrations, and AI remain postponed.
+
+Capture and inspect built-in theme state explicitly with:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile capture themes
+omarchy-blueprint --profile ~/omarchy-profile status themes
+omarchy-blueprint --profile ~/omarchy-profile restore themes --dry-run
+omarchy-blueprint --profile ~/omarchy-profile restore themes
+```
 
 ## Exit codes
 
