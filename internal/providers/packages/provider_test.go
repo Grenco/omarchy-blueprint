@@ -35,6 +35,30 @@ func TestDiffIsSemanticAndStable(t *testing.T) {
 	}
 }
 
+func TestPackageNameSatisfiesProfileAcrossRepositorySources(t *testing.T) {
+	tests := []struct {
+		name    string
+		saved   profile.Packages
+		current profile.Packages
+	}{
+		{"AUR package moved to official repository", profile.Packages{AUR: []string{"example"}}, profile.Packages{Official: []string{"example"}}},
+		{"official package installed as foreign", profile.Packages{Official: []string{"example"}}, profile.Packages{AUR: []string{"example"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if changes := Diff(tt.saved, tt.current); len(changes) != 0 {
+				t.Fatalf("changes = %#v", changes)
+			}
+			if plan := Plan(tt.saved, tt.current, 1, "4.0.0", "4.1.0"); len(plan.Operations) != 0 {
+				t.Fatalf("operations = %#v", plan.Operations)
+			}
+			if verification := Verify(tt.saved, tt.current); !verification.OK || len(verification.Missing) != 0 {
+				t.Fatalf("verification = %#v", verification)
+			}
+		})
+	}
+}
+
 func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"another-bin", "tool-bin"}}
 	current := profile.Packages{Official: []string{"git", "extra"}}
