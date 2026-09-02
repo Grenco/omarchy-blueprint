@@ -56,12 +56,12 @@ func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 }
 
 func TestMachineSpecificPackagesAreSkippedEvenFromLegacyProfileLists(t *testing.T) {
-	saved := profile.Packages{Official: []string{"git", "nvidia-open", "amd-ucode"}, AUR: []string{"nvidia-580xx-dkms"}}
+	saved := profile.Packages{Official: []string{"git", "nvidia-open", "amd-ucode", "fprintd"}, AUR: []string{"nvidia-580xx-dkms", "libfprint-goodix-521d"}}
 	plan := Plan(saved, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
 	if len(plan.Operations) != 0 {
 		t.Fatalf("operations = %#v", plan.Operations)
 	}
-	want := []string{"aur:nvidia-580xx-dkms", "official:amd-ucode", "official:nvidia-open"}
+	want := []string{"aur:libfprint-goodix-521d", "aur:nvidia-580xx-dkms", "official:amd-ucode", "official:fprintd", "official:nvidia-open"}
 	var got []string
 	for _, skipped := range plan.Skipped {
 		got = append(got, skipped.Resource)
@@ -72,8 +72,8 @@ func TestMachineSpecificPackagesAreSkippedEvenFromLegacyProfileLists(t *testing.
 }
 
 func TestClassifyKeepsHardwareOutOfPortableDiff(t *testing.T) {
-	saved := profile.Packages{Official: []string{"git", "nvidia-open"}}
-	current := profile.Packages{Official: []string{"git", "nvidia-settings"}, AUR: []string{"nvidia-580xx-dkms"}}
+	saved := profile.Packages{Official: []string{"git", "nvidia-open", "fprintd"}, AUR: []string{"libfprint-goodix-521d"}}
+	current := profile.Packages{Official: []string{"git", "nvidia-settings", "libfprint"}, AUR: []string{"nvidia-580xx-dkms"}}
 	if changes := Diff(saved, current); len(changes) != 0 {
 		t.Fatalf("changes = %#v", changes)
 	}

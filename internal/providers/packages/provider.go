@@ -136,7 +136,7 @@ func classify(packages profile.Packages) profile.Packages {
 }
 
 func machineSpecific(name string) bool {
-	if name == "amd-ucode" || name == "intel-ucode" {
+	if name == "amd-ucode" || name == "intel-ucode" || name == "fprintd" || name == "libfprint" || strings.HasPrefix(name, "libfprint-") {
 		return true
 	}
 	for _, prefix := range []string{"nvidia", "lib32-nvidia", "opencl-nvidia", "lib32-opencl-nvidia"} {
