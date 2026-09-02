@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ type machineRunner struct {
 	dependencies map[string]bool
 	failInstall  string
 	theme        string
+	plugins      map[string]bool
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -45,6 +47,20 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return keys(all), nil
 	case "omarchy theme current":
 		return r.theme + "\n", nil
+	case "omarchy plugin list --json":
+		var catalog []map[string]any
+		for id, enabled := range r.plugins {
+			catalog = append(catalog, map[string]any{"id": id, "enabled": enabled, "firstParty": true, "canDisable": true})
+		}
+		data, _ := json.Marshal(catalog)
+		return string(data), nil
+	}
+	if len(args) == 3 && name == "omarchy" && args[0] == "plugin" && (args[1] == "enable" || args[1] == "disable") {
+		if r.plugins == nil {
+			r.plugins = map[string]bool{}
+		}
+		r.plugins[args[2]] = args[1] == "enable"
+		return "", nil
 	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "set" {
 		r.theme = args[2]
@@ -96,7 +112,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package and theme state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, and plugin state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
@@ -152,6 +168,26 @@ func TestLocalThemeCaptureAndRestore(t *testing.T) {
 	}
 	if runner.theme != "my-custom" {
 		t.Fatalf("active theme=%q", runner.theme)
+	}
+}
+
+func TestPluginEnablementCaptureAndRestore(t *testing.T) {
+	dir, state := t.TempDir(), t.TempDir()
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, plugins: map[string]bool{"omarchy.clock": true, "omarchy.media": false}}
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: time.Now, StateHome: func() (string, error) { return state, nil }}
+	if code := Execute(context.Background(), []string{"init", dir}, deps); code != 0 {
+		t.Fatalf("init=%d", code)
+	}
+	if code := Execute(context.Background(), []string{"--profile", dir, "capture", "plugins"}, deps); code != 0 {
+		t.Fatalf("capture=%d", code)
+	}
+	runner.plugins["omarchy.clock"] = false
+	runner.plugins["omarchy.media"] = true
+	if code := Execute(context.Background(), []string{"--profile", dir, "restore", "plugins", "--yes"}, deps); code != 0 {
+		t.Fatalf("restore=%d err=%s", code, deps.Err)
+	}
+	if !runner.plugins["omarchy.clock"] || runner.plugins["omarchy.media"] {
+		t.Fatalf("plugins=%#v", runner.plugins)
 	}
 }
 

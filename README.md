@@ -13,6 +13,9 @@ Theme state can also be captured, compared, restored, and verified. Built-ins
 are referenced by name, clean Git themes retain their URL and revision, and
 local themes or built-in overlays are copied into the profile.
 
+First-party Omarchy plugin enablement is captured semantically and restored
+through `omarchy plugin enable` and `omarchy plugin disable`.
+
 ## Requirements
 
 - Omarchy 4 or newer
@@ -66,6 +69,7 @@ packages/machine-specific.txt
 packages/excluded.txt
 themes/themes.toml
 themes/local/<theme>/
+plugins/plugins.toml
 ```
 
 Machine-specific entries retain provenance, for example
