@@ -165,6 +165,9 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
+		if len(args) == 0 && d.Manifest.Capture.Themes {
+			return statusAll(cmd.Context(), deps, opt, d, diff)
+		}
 		if selectedCategory(args) == "themes" {
 			return statusThemes(cmd.Context(), deps, opt, d, diff)
 		}
@@ -199,6 +202,9 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
+		}
+		if len(args) == 0 && d.Manifest.Capture.Themes {
+			return restoreAll(cmd.Context(), deps, opt, d, dryRun, yes)
 		}
 		if selectedCategory(args) == "themes" {
 			return restoreThemes(cmd.Context(), deps, opt, d, dryRun, yes)
@@ -384,6 +390,9 @@ func captureThemes(ctx context.Context, deps Dependencies, opt *options, d profi
 	if err != nil {
 		return err
 	}
+	if err := themesprovider.ValidateCapture(current); err != nil {
+		return err
+	}
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
@@ -429,6 +438,145 @@ func statusThemes(ctx context.Context, deps Dependencies, opt *options, d profil
 	return nil
 }
 
+func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return err
+	}
+	packages, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(ctx)
+	if err != nil {
+		return err
+	}
+	changes := packagesprovider.Diff(d.Packages, packages)
+	if d.Manifest.Capture.Themes {
+		provider, err := themeProvider(deps)
+		if err != nil {
+			return err
+		}
+		current, err := provider.Detect(ctx)
+		if err != nil {
+			return err
+		}
+		changes = append(changes, themesprovider.Diff(d.Themes, current)...)
+	}
+	title := "Profile matches this machine"
+	if diff {
+		title = "Profile differences"
+	} else if len(changes) > 0 {
+		title = fmt.Sprintf("%d profile difference(s)", len(changes))
+	}
+	commandName := "status"
+	if diff {
+		commandName = "diff"
+	}
+	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
+		return err
+	}
+	if len(changes) > 0 {
+		return driftError{}
+	}
+	return nil
+}
+
+func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return err
+	}
+	info, err := omarchy.Detect(ctx, deps.Runner)
+	if err != nil {
+		return err
+	}
+	packageProvider := packagesprovider.Provider{Runner: deps.Runner}
+	currentPackages, err := packageProvider.Detect(ctx)
+	if err != nil {
+		return err
+	}
+	plan := packagesprovider.Plan(d.Packages, currentPackages, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	var currentThemes profile.Themes
+	var themes themesprovider.Provider
+	if d.Manifest.Capture.Themes {
+		themes, err = themeProvider(deps)
+		if err != nil {
+			return err
+		}
+		currentThemes, err = themes.Detect(ctx)
+		if err != nil {
+			return err
+		}
+		themePlan := themesprovider.Plan(d.Themes, currentThemes, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+		plan.Operations = append(plan.Operations, themePlan.Operations...)
+		plan.Skipped = append(plan.Skipped, themePlan.Skipped...)
+	}
+	if dryRun {
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
+	}
+	if len(plan.Operations) == 0 {
+		verification := packagesprovider.Verify(d.Packages, currentPackages)
+		if d.Manifest.Capture.Themes {
+			themeVerification := themesprovider.Verify(d.Themes, currentThemes)
+			verification.Missing = append(verification.Missing, themeVerification.Missing...)
+			verification.OK = verification.OK && themeVerification.OK
+		}
+		if !verification.OK {
+			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
+		}
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+"All captured state is already restored. No changes applied.\n")
+	}
+	if !yes {
+		if opt.json {
+			return errors.New("restore with --json requires --yes or --dry-run")
+		}
+		fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
+		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
+		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
+			return errors.New("restore cancelled")
+		}
+	}
+	stateHome, err := deps.StateHome()
+	if err != nil {
+		return err
+	}
+	journal, err := restore.NewJournal(stateHome, deps.Now())
+	if err != nil {
+		return fmt.Errorf("create restore journal: %w", err)
+	}
+	defer journal.Close()
+	var progress restore.ProgressFunc
+	if !opt.json {
+		progress = func(event restore.Progress) { renderProgress(deps.Out, event) }
+	}
+	execution, err := restore.Execute(ctx, deps.Runner, plan, journal, deps.Now, 5*time.Second, progress)
+	if err != nil {
+		return err
+	}
+	currentPackages, err = packageProvider.Detect(ctx)
+	if err != nil {
+		return fmt.Errorf("verify package restore: %w", err)
+	}
+	verification := packagesprovider.Verify(d.Packages, currentPackages)
+	if d.Manifest.Capture.Themes {
+		currentThemes, err = themes.Detect(ctx)
+		if err != nil {
+			return fmt.Errorf("verify theme restore: %w", err)
+		}
+		themeVerification := themesprovider.Verify(d.Themes, currentThemes)
+		verification.Missing = append(verification.Missing, themeVerification.Missing...)
+		verification.OK = verification.OK && themeVerification.OK
+	}
+	_ = journal.Write(restore.Event{Time: deps.Now().UTC(), Type: "VERIFY_COMPLETED", Message: fmt.Sprintf("ok=%t", verification.OK)})
+	if len(execution.Failed) > 0 {
+		if opt.json {
+			_ = emit(deps.Out, true, "restore", false, map[string]any{"plan": plan, "execution": execution, "verification": verification, "journal": journal.Path}, "")
+		} else {
+			renderRestoreFailures(deps.Out, execution, verification, journal.Path)
+		}
+		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
+	}
+	if !verification.OK {
+		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
+	}
+	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+}
+
 func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
 	if !d.Manifest.Capture.Themes {
 		return errors.New("theme state has not been captured; run capture themes first")
@@ -450,7 +598,11 @@ func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profi
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
 	}
 	if len(plan.Operations) == 0 {
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan}, renderPlan(plan, false)+"Theme already active. No changes applied.\n")
+		verification := themesprovider.Verify(d.Themes, current)
+		if !verification.OK {
+			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
+		}
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+"Theme already active. No changes applied.\n")
 	}
 	if !yes {
 		if opt.json {
@@ -537,6 +689,19 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "themes" {
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "Activating %s...\n", event.Operation.Resource)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ Activated %s (%s)\n", event.Operation.Resource, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still activating %s (%s elapsed)...\n", event.Operation.Resource, event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed activating %s after %s\n", event.Operation.Resource, event.Elapsed)
+		}
+		return
+	}
 	kind := strings.SplitN(event.Operation.Resource, ":", 2)[0]
 	count := len(event.Operation.Items)
 	label := fmt.Sprintf("%d %s package", count, kind)

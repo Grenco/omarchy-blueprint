@@ -82,7 +82,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, theme: "Osaka Jade"}
+	runner := &machineRunner{official: map[string]bool{"zoxide": true}, aur: map[string]bool{}, theme: "Osaka Jade"}
 	deps := Dependencies{
 		Runner: runner, In: strings.NewReader(""), Now: time.Now,
 		StateHome: func() (string, error) { return stateDir, nil },
@@ -96,21 +96,28 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
+	if code, out, errout := run("--profile", profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("package capture code=%d out=%s err=%s", code, out, errout)
+	}
 	if code, out, errout := run("--profile", profileDir, "capture", "themes"); code != 0 || !strings.Contains(out, "Captured theme state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
-	if code, out, _ := run("--profile", profileDir, "status", "themes"); code != 2 || !strings.Contains(out, "osaka-jade → nord") {
+	delete(runner.official, "zoxide")
+	if code, out, _ := run("--profile", profileDir, "status"); code != 2 || !strings.Contains(out, "osaka-jade (builtin) → nord (builtin)") || !strings.Contains(out, "official package zoxide") {
 		t.Fatalf("status code=%d out=%s", code, out)
 	}
-	if code, out, errout := run("--profile", profileDir, "restore", "themes", "--dry-run"); code != 0 || !strings.Contains(out, "activate theme:osaka-jade") {
+	if code, out, errout := run("--profile", profileDir, "restore", "--dry-run"); code != 0 || !strings.Contains(out, "activate theme:osaka-jade") || !strings.Contains(out, "official:zoxide") {
 		t.Fatalf("dry-run code=%d out=%s err=%s", code, out, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "restore", "themes", "--yes"); code != 0 || !strings.Contains(out, "Restore verified") {
+	if code, out, errout := run("--profile", profileDir, "restore", "--yes"); code != 0 || !strings.Contains(out, "Restore verified") {
 		t.Fatalf("restore code=%d out=%s err=%s", code, out, errout)
 	}
 	if runner.theme != "osaka-jade" {
 		t.Fatalf("active theme = %q", runner.theme)
+	}
+	if !runner.official["zoxide"] {
+		t.Fatal("package was not restored by aggregate restore")
 	}
 }
 

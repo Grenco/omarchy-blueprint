@@ -31,7 +31,7 @@ func TestDetectBuiltinTheme(t *testing.T) {
 	}
 }
 
-func TestDetectRejectsUserOverride(t *testing.T) {
+func TestDetectReportsUserOverrideButCaptureRejectsIt(t *testing.T) {
 	builtin, user := t.TempDir(), t.TempDir()
 	for _, root := range []string{builtin, user} {
 		if err := os.Mkdir(filepath.Join(root, "osaka-jade"), 0o755); err != nil {
@@ -39,8 +39,15 @@ func TestDetectRejectsUserOverride(t *testing.T) {
 		}
 	}
 	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "Osaka Jade\n", nil }), BuiltinDir: builtin, UserDir: user}
-	if _, err := p.Detect(context.Background()); err == nil {
-		t.Fatal("expected user theme error")
+	got, err := p.Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "user" {
+		t.Fatalf("source = %q", got.Source)
+	}
+	if err := ValidateCapture(got); err == nil {
+		t.Fatal("expected capture validation error")
 	}
 }
 
@@ -53,6 +60,21 @@ func TestDiffPlanAndVerify(t *testing.T) {
 	plan := Plan(saved, current, 1, "4.0", "4.0")
 	if got := plan.Operations[0].Command; !reflect.DeepEqual(got, []string{"omarchy", "theme", "set", "osaka-jade"}) {
 		t.Fatalf("command = %#v", got)
+	}
+	if Verify(saved, current).OK {
+		t.Fatal("verification unexpectedly passed")
+	}
+}
+
+func TestUserOverrideOfSavedBuiltinIsDriftButNotRemoved(t *testing.T) {
+	saved := profile.Themes{Current: "osaka-jade", Source: "builtin"}
+	current := profile.Themes{Current: "osaka-jade", Source: "user"}
+	if got := Diff(saved, current); len(got) != 1 {
+		t.Fatalf("changes = %#v", got)
+	}
+	plan := Plan(saved, current, 1, "4.0", "4.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 {
+		t.Fatalf("plan = %#v", plan)
 	}
 	if Verify(saved, current).OK {
 		t.Fatal("verification unexpectedly passed")
