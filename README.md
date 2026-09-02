@@ -111,4 +111,6 @@ shell configuration, directories, Git automation, migrations, and AI.
   used only when an installation is actually required.
 - Packages already present as dependencies also satisfy the profile. Capture
   still records only explicitly installed packages, avoiding dependency noise.
+- Additional explicit packages remain visible as status drift, but restore
+  reports them as intentionally left installed because removal is disabled.
 - Package installs are journaled and are not automatically rolled back.

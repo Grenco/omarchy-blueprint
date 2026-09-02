@@ -73,6 +73,26 @@ func TestInstalledDependencySatisfiesExplicitProfileIntent(t *testing.T) {
 	}
 }
 
+func TestPlanExplainsAdditionalPackagesWithoutRemovingThem(t *testing.T) {
+	saved := profile.Packages{Official: []string{"git"}}
+	current := profile.Packages{Official: []string{"git", "linux-headers", "mkinitcpio", "sudo"}, Installed: []string{"git", "linux-headers", "mkinitcpio", "sudo"}}
+	plan := Plan(saved, current, 1, "4.0.0", "4.0.0")
+	if len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	want := []string{"official:linux-headers", "official:mkinitcpio", "official:sudo"}
+	var got []string
+	for _, skipped := range plan.Skipped {
+		if skipped.Reason != "additional package left installed; removal disabled" {
+			t.Fatalf("reason = %q", skipped.Reason)
+		}
+		got = append(got, skipped.Resource)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("skipped = %#v", got)
+	}
+}
+
 func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"another-bin", "tool-bin"}}
 	current := profile.Packages{Official: []string{"git", "extra"}}

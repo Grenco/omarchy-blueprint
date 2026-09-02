@@ -193,6 +193,34 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	}
 }
 
+func TestRestoreExplainsNonActionableAdditionalPackages(t *testing.T) {
+	dir := t.TempDir()
+	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{}}
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if code := run("--profile", dir, "capture"); code != 0 {
+		t.Fatalf("capture: %s", errout.String())
+	}
+	runner.official["sudo"] = true
+	if code := run("--profile", dir, "restore", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d err=%s", code, errout.String())
+	}
+	if !strings.Contains(out.String(), "skip official:sudo (additional package left installed; removal disabled)") || !strings.Contains(out.String(), "All desired packages are installed. No changes applied.") {
+		t.Fatalf("output = %s", out.String())
+	}
+	if code := run("--profile", dir, "status"); code != 2 {
+		t.Fatalf("status code=%d out=%s", code, out.String())
+	}
+}
+
 func TestRestoreContinuesAfterAURFailureAndSummarizesIt(t *testing.T) {
 	profileDir, stateDir := t.TempDir(), t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)

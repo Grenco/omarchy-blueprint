@@ -89,6 +89,17 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 	for _, name := range saved.Excluded {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "excluded by profile"})
 	}
+	savedNames := packageNames(saved)
+	for _, name := range current.Official {
+		if !savedNames[name] {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "official:" + name, Reason: "additional package left installed; removal disabled"})
+		}
+	}
+	for _, name := range current.AUR {
+		if !savedNames[name] {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "aur:" + name, Reason: "additional package left installed; removal disabled"})
+		}
+	}
 	return plan
 }
 
