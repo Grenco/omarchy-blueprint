@@ -79,6 +79,60 @@ func TestClassifyKeepsHardwareOutOfPortableDiff(t *testing.T) {
 	}
 }
 
+func TestExcludeAndIncludeGenericPackageReference(t *testing.T) {
+	original := profile.Packages{Official: []string{"git"}, AUR: []string{"dislocker-git"}}
+	excluded, changed, err := Exclude(original, []string{"package:dislocker-git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(changed, []string{"aur:dislocker-git"}) || len(excluded.AUR) != 0 || !reflect.DeepEqual(excluded.Excluded, changed) {
+		t.Fatalf("excluded=%#v changed=%#v", excluded, changed)
+	}
+	if changes := Diff(excluded, original); len(changes) != 0 {
+		t.Fatalf("excluded package caused drift: %#v", changes)
+	}
+	plan := Plan(excluded, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "excluded by profile" {
+		t.Fatalf("plan = %#v", plan)
+	}
+	included, changed, err := Include(excluded, []string{"package:dislocker-git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(changed, []string{"aur:dislocker-git"}) || !reflect.DeepEqual(included.AUR, []string{"dislocker-git"}) || len(included.Excluded) != 0 {
+		t.Fatalf("included=%#v changed=%#v", included, changed)
+	}
+}
+
+func TestExcludeRejectsUnknownAndAmbiguousReferencesAtomically(t *testing.T) {
+	original := profile.Packages{Official: []string{"same"}, AUR: []string{"same"}}
+	for _, ref := range []string{"package:missing", "package:same", "bad:same", "aur:has space"} {
+		got, _, err := Exclude(original, []string{"official:same", ref})
+		if err == nil {
+			t.Fatalf("expected %q to fail", ref)
+		}
+		if !reflect.DeepEqual(got, original) {
+			t.Fatalf("%q partially mutated profile: %#v", ref, got)
+		}
+	}
+}
+
+func TestValidateExclusionsRejectsInvalidAndOverlappingEntries(t *testing.T) {
+	tests := []profile.Packages{
+		{Excluded: []string{"package:git"}},
+		{Excluded: []string{"aur:has space"}},
+		{Official: []string{"git"}, Excluded: []string{"official:git"}},
+	}
+	for _, packages := range tests {
+		if err := ValidateExclusions(packages); err == nil {
+			t.Fatalf("expected %#v to fail", packages)
+		}
+	}
+	if err := ValidateExclusions(profile.Packages{Excluded: []string{"official:git", "aur:dislocker-git"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLinesNormalizesCommandOutput(t *testing.T) {
 	got := lines(" zoxide\ngit\ngit\n\n")
 	if !reflect.DeepEqual(got, []string{"git", "zoxide"}) {

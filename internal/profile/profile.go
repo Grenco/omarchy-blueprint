@@ -40,6 +40,7 @@ type Packages struct {
 	Official        []string `json:"official"`
 	AUR             []string `json:"aur"`
 	MachineSpecific []string `json:"machine_specific,omitempty"`
+	Excluded        []string `json:"excluded,omitempty"`
 }
 
 type Data struct {
@@ -75,6 +76,10 @@ func Load(dir string) (Data, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
+	d.Packages.Excluded, err = readList(filepath.Join(dir, "packages", "excluded.txt"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return d, err
+	}
 	return d, nil
 }
 
@@ -83,6 +88,7 @@ func Save(dir string, d Data) error {
 	d.Packages.Official = normalize(d.Packages.Official)
 	d.Packages.AUR = normalize(d.Packages.AUR)
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
+	d.Packages.Excluded = normalize(d.Packages.Excluded)
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
@@ -98,6 +104,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "packages", "official.txt"), []byte(joinList(d.Packages.Official))},
 		{filepath.Join(dir, "packages", "aur.txt"), []byte(joinList(d.Packages.AUR))},
 		{filepath.Join(dir, "packages", "machine-specific.txt"), []byte(joinList(d.Packages.MachineSpecific))},
+		{filepath.Join(dir, "packages", "excluded.txt"), []byte(joinList(d.Packages.Excluded))},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {

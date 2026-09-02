@@ -78,7 +78,7 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
-	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt))
+	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false))
 	return root
 }
 
@@ -121,6 +121,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
+		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+			return err
+		}
 		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
 		if err != nil {
 			return err
@@ -130,6 +133,7 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err != nil {
 			return err
 		}
+		current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
 		changes := packagesprovider.Diff(d.Packages, current)
 		d.Packages = current
 		d.Manifest.Capture.Packages = true
@@ -152,6 +156,9 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
+		}
+		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+			return err
 		}
 		current, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(cmd.Context())
 		if err != nil {
@@ -181,6 +188,9 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
+		}
+		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+			return err
 		}
 		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
 		if err != nil {
@@ -258,6 +268,9 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err := profile.Validate(d); err != nil {
 			return err
 		}
+		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+			return err
+		}
 		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
 		if err != nil {
 			return err
@@ -266,7 +279,47 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 			return err
 		}
 		checks := []string{"profile valid", "schema supported", "Omarchy compatible", "package discovery available"}
-		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info}, "✓ "+strings.Join(checks, "\n✓ ")+"\n")
+		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
+		if len(d.Packages.Excluded) > 0 {
+			human += fmt.Sprintf("ℹ %d excluded package(s): %s\n", len(d.Packages.Excluded), strings.Join(d.Packages.Excluded, ", "))
+		}
+		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "excluded": d.Packages.Excluded}, human)
+	}}
+}
+
+func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.Command {
+	verb := "include"
+	short := "Include previously excluded packages"
+	if exclude {
+		verb, short = "exclude", "Exclude packages from capture, drift, and restore"
+	}
+	return &cobra.Command{Use: verb + " <package-reference>...", Args: cobra.MinimumNArgs(1), Short: short, RunE: func(_ *cobra.Command, refs []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+			return err
+		}
+		var changed []string
+		if exclude {
+			d.Packages, changed, err = packagesprovider.Exclude(d.Packages, refs)
+		} else {
+			d.Packages, changed, err = packagesprovider.Include(d.Packages, refs)
+		}
+		if err != nil {
+			return err
+		}
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
+		action := "Included"
+		if exclude {
+			action = "Excluded"
+		}
+		human := fmt.Sprintf("%s %d package(s).\n", action, len(changed))
+		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed, "excluded": d.Packages.Excluded}, human)
 	}}
 }
 
