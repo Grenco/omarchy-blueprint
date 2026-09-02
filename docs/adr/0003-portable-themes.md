@@ -7,6 +7,9 @@ content; a user directory sharing a built-in slug is recorded as an overlay.
 Git metadata is not copied, credentials are removed from HTTP remote URLs, and
 internal symlinks or special files are rejected.
 
+The category-less `capture` command refreshes packages and themes together.
+Explicit `capture packages` and `capture themes` filters remain available.
+
 Local content is stored under `themes/local/<id>`. Capture replaces that
 managed snapshot atomically so removed themes do not linger in the blueprint.
 

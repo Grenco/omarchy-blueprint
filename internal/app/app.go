@@ -126,6 +126,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
+		if len(args) == 0 {
+			return captureAll(cmd.Context(), deps, opt, d)
+		}
 		if selectedCategory(args) == "themes" {
 			return captureThemes(cmd.Context(), deps, opt, d)
 		}
@@ -401,6 +404,39 @@ func captureThemes(ctx context.Context, deps Dependencies, opt *options, d profi
 		return fmt.Errorf("save profile: %w", err)
 	}
 	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "themes": current}, renderChanges("Captured theme state", changes))
+}
+
+func captureAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return err
+	}
+	info, err := omarchy.Detect(ctx, deps.Runner)
+	if err != nil {
+		return err
+	}
+	packages, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(ctx)
+	if err != nil {
+		return err
+	}
+	packages = packagesprovider.ApplyExclusions(packages, d.Packages.Excluded)
+	themeProvider, err := themeProvider(deps, opt)
+	if err != nil {
+		return err
+	}
+	themes, err := themeProvider.Capture(ctx)
+	if err != nil {
+		return err
+	}
+	changes := packagesprovider.Diff(d.Packages, packages)
+	changes = append(changes, themesprovider.Diff(d.Themes, themes)...)
+	d.Packages, d.Themes = packages, themes
+	d.Manifest.Capture.Packages, d.Manifest.Capture.Themes = true, true
+	d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+	d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
+	if err := profile.Save(opt.profileDir, d); err != nil {
+		return fmt.Errorf("save profile: %w", err)
+	}
+	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "packages": packages, "themes": themes}, renderChanges("Captured package and theme state", changes))
 }
 
 func statusThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {

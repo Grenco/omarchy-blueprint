@@ -96,10 +96,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture", "packages"); code != 0 {
-		t.Fatalf("package capture code=%d out=%s err=%s", code, out, errout)
-	}
-	if code, out, errout := run("--profile", profileDir, "capture", "themes"); code != 0 || !strings.Contains(out, "Captured theme state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package and theme state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
@@ -182,7 +179,7 @@ func TestPackageVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir, "--name", "main"); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 {
+	if code, out, errout := run("--profile", profileDir, "capture", "packages"); code != 0 {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 
@@ -227,7 +224,7 @@ func TestJSONRestoreRequiresExplicitMode(t *testing.T) {
 		t.Fatalf("init code %d", code)
 	}
 	runner.official["zoxide"] = true
-	if code := Execute(context.Background(), []string{"--profile", dir, "capture"}, deps); code != 0 {
+	if code := Execute(context.Background(), []string{"--profile", dir, "capture", "packages"}, deps); code != 0 {
 		t.Fatalf("capture code %d", code)
 	}
 	delete(runner.official, "zoxide")
@@ -249,13 +246,13 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	if code := run("init", dir); code != 0 {
 		t.Fatalf("init: %s", errout.String())
 	}
-	if code := run("--profile", dir, "capture"); code != 0 {
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("capture: %s", errout.String())
 	}
 	if code := run("--profile", dir, "exclude", "package:dislocker-git"); code != 0 {
 		t.Fatalf("exclude: %s", errout.String())
 	}
-	if code := run("--profile", dir, "capture"); code != 0 {
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("recapture: %s", errout.String())
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
@@ -296,7 +293,7 @@ func TestRestoreExplainsNonActionableAdditionalPackages(t *testing.T) {
 	if code := run("init", dir); code != 0 {
 		t.Fatalf("init: %s", errout.String())
 	}
-	if code := run("--profile", dir, "capture"); code != 0 {
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("capture: %s", errout.String())
 	}
 	runner.official["sudo"] = true
@@ -319,7 +316,7 @@ func TestRestoreContinuesAfterAURFailureAndSummarizesIt(t *testing.T) {
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code %d", code)
 	}
-	if code := Execute(context.Background(), []string{"--profile", profileDir, "capture"}, deps); code != 0 {
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "capture", "packages"}, deps); code != 0 {
 		t.Fatalf("capture code %d", code)
 	}
 	runner.aur = map[string]bool{}
