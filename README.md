@@ -83,4 +83,6 @@ shell configuration, directories, Git automation, migrations, and AI.
   and skipped during portable restore.
 - Missing native packages and missing AUR packages are each installed in a
   single transaction.
+- Interactive restores print an immediate operation message and an elapsed-time
+  heartbeat every five seconds while package tools are running.
 - Package installs are journaled and are not automatically rolled back.

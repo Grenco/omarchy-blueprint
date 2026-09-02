@@ -217,7 +217,11 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 			return fmt.Errorf("create restore journal: %w", err)
 		}
 		defer journal.Close()
-		if err := restore.Execute(cmd.Context(), deps.Runner, plan, journal, deps.Now); err != nil {
+		var progress restore.ProgressFunc
+		if !opt.json {
+			progress = func(event restore.Progress) { renderProgress(deps.Out, event) }
+		}
+		if err := restore.Execute(cmd.Context(), deps.Runner, plan, journal, deps.Now, 5*time.Second, progress); err != nil {
 			return err
 		}
 		current, err = provider.Detect(cmd.Context())
@@ -309,4 +313,23 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)
 	}
 	return b.String()
+}
+
+func renderProgress(w io.Writer, event restore.Progress) {
+	kind := strings.TrimPrefix(event.Operation.ID, "packages.install.")
+	count := len(event.Operation.Items)
+	label := fmt.Sprintf("%d %s package", count, kind)
+	if count != 1 {
+		label += "s"
+	}
+	switch event.Type {
+	case restore.ProgressStarted:
+		fmt.Fprintf(w, "Installing %s...\n", label)
+	case restore.ProgressHeartbeat:
+		fmt.Fprintf(w, "  Still installing %s (%s elapsed)...\n", label, event.Elapsed)
+	case restore.ProgressCompleted:
+		fmt.Fprintf(w, "✓ Installed %s (%s)\n", label, event.Elapsed)
+	case restore.ProgressFailed:
+		fmt.Fprintf(w, "✗ Failed installing %s after %s\n", label, event.Elapsed)
+	}
 }

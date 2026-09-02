@@ -24,6 +24,7 @@ type Operation struct {
 	Provider   string   `json:"provider"`
 	Action     string   `json:"action"`
 	Resource   string   `json:"resource"`
+	Items      []string `json:"items,omitempty"`
 	Command    []string `json:"command"`
 	Risk       Risk     `json:"risk"`
 	Reversible bool     `json:"reversible"`
