@@ -301,7 +301,7 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		}
 		checks := []string{"profile valid", "schema supported", "Omarchy compatible", "package discovery available"}
 		if d.Manifest.Capture.Themes {
-			provider, err := themeProvider(deps)
+			provider, err := themeProvider(deps, opt)
 			if err != nil {
 				return err
 			}
@@ -376,21 +376,18 @@ func defaultThemeDirs() (string, string, error) {
 	return "/usr/share/omarchy/themes", filepath.Join(home, ".config", "omarchy", "themes"), nil
 }
 
-func themeProvider(deps Dependencies) (themesprovider.Provider, error) {
+func themeProvider(deps Dependencies, opt *options) (themesprovider.Provider, error) {
 	builtin, user, err := deps.ThemeDirs()
-	return themesprovider.Provider{Runner: deps.Runner, BuiltinDir: builtin, UserDir: user}, err
+	return themesprovider.Provider{Runner: deps.Runner, BuiltinDir: builtin, UserDir: user, ProfileDir: opt.profileDir}, err
 }
 
 func captureThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
-	p, err := themeProvider(deps)
+	p, err := themeProvider(deps, opt)
 	if err != nil {
 		return err
 	}
-	current, err := p.Detect(ctx)
+	current, err := p.Capture(ctx)
 	if err != nil {
-		return err
-	}
-	if err := themesprovider.ValidateCapture(current); err != nil {
 		return err
 	}
 	info, err := omarchy.Detect(ctx, deps.Runner)
@@ -410,7 +407,7 @@ func statusThemes(ctx context.Context, deps Dependencies, opt *options, d profil
 	if !d.Manifest.Capture.Themes {
 		return errors.New("theme state has not been captured; run capture themes first")
 	}
-	p, err := themeProvider(deps)
+	p, err := themeProvider(deps, opt)
 	if err != nil {
 		return err
 	}
@@ -448,7 +445,7 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	}
 	changes := packagesprovider.Diff(d.Packages, packages)
 	if d.Manifest.Capture.Themes {
-		provider, err := themeProvider(deps)
+		provider, err := themeProvider(deps, opt)
 		if err != nil {
 			return err
 		}
@@ -494,7 +491,7 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 	var currentThemes profile.Themes
 	var themes themesprovider.Provider
 	if d.Manifest.Capture.Themes {
-		themes, err = themeProvider(deps)
+		themes, err = themeProvider(deps, opt)
 		if err != nil {
 			return err
 		}
@@ -502,7 +499,7 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 		if err != nil {
 			return err
 		}
-		themePlan := themesprovider.Plan(d.Themes, currentThemes, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+		themePlan := themes.Plan(d.Themes, currentThemes, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 		plan.Operations = append(plan.Operations, themePlan.Operations...)
 		plan.Skipped = append(plan.Skipped, themePlan.Skipped...)
 	}
@@ -581,7 +578,7 @@ func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profi
 	if !d.Manifest.Capture.Themes {
 		return errors.New("theme state has not been captured; run capture themes first")
 	}
-	p, err := themeProvider(deps)
+	p, err := themeProvider(deps, opt)
 	if err != nil {
 		return err
 	}
@@ -593,7 +590,7 @@ func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profi
 	if err != nil {
 		return err
 	}
-	plan := themesprovider.Plan(d.Themes, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	plan := p.Plan(d.Themes, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
 	}
@@ -690,15 +687,26 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 
 func renderProgress(w io.Writer, event restore.Progress) {
 	if event.Operation.Provider == "themes" {
+		verb, past := "Processing", "Processed"
+		switch event.Operation.Action {
+		case "install":
+			verb, past = "Installing", "Installed"
+		case "pin":
+			verb, past = "Pinning", "Pinned"
+		case "copy":
+			verb, past = "Restoring", "Restored"
+		case "activate":
+			verb, past = "Activating", "Activated"
+		}
 		switch event.Type {
 		case restore.ProgressStarted:
-			fmt.Fprintf(w, "Activating %s...\n", event.Operation.Resource)
+			fmt.Fprintf(w, "%s %s...\n", verb, event.Operation.Resource)
 		case restore.ProgressCompleted:
-			fmt.Fprintf(w, "✓ Activated %s (%s)\n", event.Operation.Resource, event.Elapsed)
+			fmt.Fprintf(w, "✓ %s %s (%s)\n", past, event.Operation.Resource, event.Elapsed)
 		case restore.ProgressHeartbeat:
-			fmt.Fprintf(w, "  Still activating %s (%s elapsed)...\n", event.Operation.Resource, event.Elapsed)
+			fmt.Fprintf(w, "  Still %s %s (%s elapsed)...\n", strings.ToLower(verb), event.Operation.Resource, event.Elapsed)
 		case restore.ProgressFailed:
-			fmt.Fprintf(w, "✗ Failed activating %s after %s\n", event.Operation.Resource, event.Elapsed)
+			fmt.Fprintf(w, "✗ Failed %s %s after %s\n", strings.ToLower(verb), event.Operation.Resource, event.Elapsed)
 		}
 		return
 	}

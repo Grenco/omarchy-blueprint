@@ -3,6 +3,7 @@ package restore
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,5 +59,35 @@ func TestExecuteReportsAndJournalsProgress(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "OPERATION_PROGRESS") {
 		t.Fatalf("journal missing progress: %s", b)
+	}
+}
+
+func TestExecuteCopiesThemeOnlyWhenDestinationIsMissing(t *testing.T) {
+	source, destination := t.TempDir(), filepath.Join(t.TempDir(), "custom")
+	if err := os.WriteFile(filepath.Join(source, "colors.toml"), []byte("accent = '#fff'\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	j, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "themes.copy.custom", Provider: "themes", Action: "copy", Copy: &model.Copy{Source: source, Destination: destination}}}}
+	result, err := Execute(context.Background(), delayedRunner{}, plan, j, time.Now, time.Second, nil)
+	if err != nil || len(result.Completed) != 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, "colors.toml")); err != nil || string(got) != "accent = '#fff'\n" {
+		t.Fatalf("file=%q err=%v", got, err)
+	}
+
+	j2, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j2.Close()
+	result, err = Execute(context.Background(), delayedRunner{}, plan, j2, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 1 {
+		t.Fatalf("existing destination result=%#v err=%v", result, err)
 	}
 }

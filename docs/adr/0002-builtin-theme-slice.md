@@ -1,5 +1,8 @@
 # ADR 0002: built-in theme vertical slice
 
+This initial restriction is superseded by ADR 0003 while its profile format
+remains backward compatible.
+
 The first theme milestone records the active built-in Omarchy theme in
 `themes/themes.toml`. Detection and activation use the public
 `omarchy theme current` and `omarchy theme set` commands. Restore changes only

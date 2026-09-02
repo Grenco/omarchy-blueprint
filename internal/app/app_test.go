@@ -104,7 +104,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	}
 	runner.theme = "Nord"
 	delete(runner.official, "zoxide")
-	if code, out, _ := run("--profile", profileDir, "status"); code != 2 || !strings.Contains(out, "osaka-jade (builtin) → nord (builtin)") || !strings.Contains(out, "official package zoxide") {
+	if code, out, _ := run("--profile", profileDir, "status"); code != 2 || !strings.Contains(out, "osaka-jade → nord") || !strings.Contains(out, "official package zoxide") {
 		t.Fatalf("status code=%d out=%s", code, out)
 	}
 	if code, out, errout := run("--profile", profileDir, "restore", "--dry-run"); code != 0 || !strings.Contains(out, "activate theme:osaka-jade") || !strings.Contains(out, "official:zoxide") {
@@ -118,6 +118,43 @@ func TestThemeVerticalSlice(t *testing.T) {
 	}
 	if !runner.official["zoxide"] {
 		t.Fatal("package was not restored by aggregate restore")
+	}
+}
+
+func TestLocalThemeCaptureAndRestore(t *testing.T) {
+	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(user, "my-custom")
+	if err := os.Mkdir(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(custom, "colors.toml"), []byte("accent = '#123456'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, theme: "my-custom"}
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: time.Now,
+		StateHome: func() (string, error) { return stateDir, nil }, ThemeDirs: func() (string, string, error) { return builtin, user, nil }}
+	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
+		t.Fatalf("init code=%d", code)
+	}
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "capture", "themes"}, deps); code != 0 {
+		t.Fatalf("capture code=%d", code)
+	}
+	if err := os.RemoveAll(custom); err != nil {
+		t.Fatal(err)
+	}
+	runner.theme = "nord"
+	deps.Out, deps.Err = &bytes.Buffer{}, &bytes.Buffer{}
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "restore", "themes", "--yes"}, deps); code != 0 {
+		t.Fatalf("restore code=%d out=%s err=%s", code, deps.Out, deps.Err)
+	}
+	if got, err := os.ReadFile(filepath.Join(custom, "colors.toml")); err != nil || string(got) != "accent = '#123456'\n" {
+		t.Fatalf("restored file=%q err=%v", got, err)
+	}
+	if runner.theme != "my-custom" {
+		t.Fatalf("active theme=%q", runner.theme)
 	}
 }
 

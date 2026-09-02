@@ -46,8 +46,18 @@ type Packages struct {
 }
 
 type Themes struct {
-	Current string `json:"current" toml:"current"`
-	Source  string `json:"source" toml:"source"`
+	Current string  `json:"current" toml:"current"`
+	Source  string  `json:"source,omitempty" toml:"source,omitempty"`
+	Items   []Theme `json:"themes" toml:"theme"`
+}
+
+type Theme struct {
+	ID       string `json:"id" toml:"id"`
+	Type     string `json:"type" toml:"type"`
+	URL      string `json:"url,omitempty" toml:"url,omitempty"`
+	Revision string `json:"revision,omitempty" toml:"revision,omitempty"`
+	Hash     string `json:"hash,omitempty" toml:"hash,omitempty"`
+	Enabled  bool   `json:"enabled" toml:"enabled"`
 }
 
 type Data struct {

@@ -9,9 +9,9 @@ hardware packages, shows semantic drift, creates a safe restore plan, installs
 only missing portable packages through Omarchy, and verifies the result. It
 never removes additional packages.
 
-Built-in theme state can also be captured, compared, restored through Omarchy,
-and verified. Git-installed and local/custom theme content is intentionally
-rejected until Blueprint can preserve that content faithfully.
+Theme state can also be captured, compared, restored, and verified. Built-ins
+are referenced by name, clean Git themes retain their URL and revision, and
+local themes or built-in overlays are copied into the profile.
 
 ## Requirements
 
@@ -62,6 +62,7 @@ packages/aur.txt
 packages/machine-specific.txt
 packages/excluded.txt
 themes/themes.toml
+themes/local/<theme>/
 ```
 
 Machine-specific entries retain provenance, for example
@@ -92,12 +93,13 @@ Restore journals are written to
 ## Current boundaries
 
 This milestone does not yet distinguish packages added by the user from other
-explicit packages. Theme support currently covers the active built-in theme;
-Git-installed themes, local themes, and built-in theme overrides are detected
-but not captured. The TUI, plugins, shell configuration, directories, Git
-automation, migrations, and AI remain postponed.
+explicit packages. Theme restore installs only missing themes. An existing
+theme with different provenance or content is reported as a conflict and is
+never overwritten automatically. Internal symlinks and special files are
+rejected during local-theme capture. The TUI, plugins, shell configuration,
+directories, Git automation, migrations, and AI remain postponed.
 
-Capture and inspect built-in theme state explicitly with:
+Capture and inspect theme state explicitly with:
 
 ```sh
 omarchy-blueprint --profile ~/omarchy-profile capture themes
@@ -117,6 +119,8 @@ omarchy-blueprint --profile ~/omarchy-profile restore themes
 - Restore previews are non-mutating.
 - Apply requires confirmation or `--yes`.
 - Commands are executed without a shell.
+- Local theme snapshots exclude Git internals and reject internal symlinks.
+- Theme restore never overwrites an existing user theme directory.
 - Additional packages are never removed.
 - Known GPU-driver, CPU-microcode, and fingerprint-stack packages are recorded
   as machine-specific and skipped during portable restore.
