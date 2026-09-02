@@ -23,7 +23,11 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 	if err != nil {
 		return profile.Packages{}, fmt.Errorf("detect explicitly installed foreign packages: %w", err)
 	}
-	return classify(profile.Packages{Official: official, AUR: aur}), nil
+	installed, err := p.query(ctx, "-Qq")
+	if err != nil {
+		return profile.Packages{}, fmt.Errorf("detect installed packages: %w", err)
+	}
+	return classify(profile.Packages{Official: official, AUR: aur, Installed: installed}), nil
 }
 
 func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
@@ -126,6 +130,9 @@ func packageNames(packages profile.Packages) map[string]bool {
 	for _, name := range packages.AUR {
 		names[name] = true
 	}
+	for _, name := range packages.Installed {
+		names[name] = true
+	}
 	return names
 }
 
@@ -153,6 +160,13 @@ func classify(packages profile.Packages) profile.Packages {
 	packages.Official = filter("official", packages.Official)
 	packages.AUR = filter("aur", packages.AUR)
 	packages.MachineSpecific = lines(strings.Join(machine, "\n"))
+	var installed []string
+	for _, name := range packages.Installed {
+		if !machineSpecific(name) {
+			installed = append(installed, name)
+		}
+	}
+	packages.Installed = lines(strings.Join(installed, "\n"))
 	return packages
 }
 
@@ -181,6 +195,7 @@ func ApplyExclusions(packages profile.Packages, excluded []string) profile.Packa
 		case "aur":
 			packages.AUR = remove(packages.AUR, name)
 		}
+		packages.Installed = remove(packages.Installed, name)
 	}
 	return packages
 }
@@ -285,6 +300,7 @@ func clone(packages profile.Packages) profile.Packages {
 	packages.AUR = append([]string{}, packages.AUR...)
 	packages.MachineSpecific = append([]string{}, packages.MachineSpecific...)
 	packages.Excluded = append([]string{}, packages.Excluded...)
+	packages.Installed = append([]string{}, packages.Installed...)
 	return packages
 }
 

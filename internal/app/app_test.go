@@ -13,9 +13,10 @@ import (
 )
 
 type machineRunner struct {
-	official    map[string]bool
-	aur         map[string]bool
-	failInstall string
+	official     map[string]bool
+	aur          map[string]bool
+	dependencies map[string]bool
+	failInstall  string
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -29,6 +30,18 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return keys(r.official), nil
 	case "pacman -Qqem":
 		return keys(r.aur), nil
+	case "pacman -Qq":
+		all := map[string]bool{}
+		for pkg := range r.official {
+			all[pkg] = true
+		}
+		for pkg := range r.aur {
+			all[pkg] = true
+		}
+		for pkg := range r.dependencies {
+			all[pkg] = true
+		}
+		return keys(all), nil
 	}
 	if len(args) >= 3 && name == "omarchy" && args[0] == "pkg" && args[1] == "add" {
 		for _, pkg := range args[2:] {

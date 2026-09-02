@@ -59,6 +59,20 @@ func TestPackageNameSatisfiesProfileAcrossRepositorySources(t *testing.T) {
 	}
 }
 
+func TestInstalledDependencySatisfiesExplicitProfileIntent(t *testing.T) {
+	saved := profile.Packages{Official: []string{"neovim", "ninja", "unzip"}}
+	current := profile.Packages{Installed: []string{"neovim", "ninja", "unzip"}}
+	if changes := Diff(saved, current); len(changes) != 0 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	if plan := Plan(saved, current, 1, "4.0.0", "4.0.0"); len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	if verification := Verify(saved, current); !verification.OK {
+		t.Fatalf("verification = %#v", verification)
+	}
+}
+
 func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"another-bin", "tool-bin"}}
 	current := profile.Packages{Official: []string{"git", "extra"}}

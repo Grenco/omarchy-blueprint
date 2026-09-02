@@ -109,4 +109,6 @@ shell configuration, directories, Git automation, migrations, and AI.
 - Installed package names satisfy the profile regardless of whether a machine
   currently classifies them as official or foreign/AUR; captured provenance is
   used only when an installation is actually required.
+- Packages already present as dependencies also satisfy the profile. Capture
+  still records only explicitly installed packages, avoiding dependency noise.
 - Package installs are journaled and are not automatically rolled back.
