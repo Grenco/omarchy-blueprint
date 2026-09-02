@@ -1,6 +1,6 @@
-# Omarchy State
+# Omarchy Blueprint
 
-Use your system normally. Omarchy State remembers how to rebuild it.
+Use your system normally. Omarchy Blueprint remembers how to rebuild it.
 
 This repository currently contains the first packages-only vertical slice of
 the broader design in [ROADMAP.md](ROADMAP.md). It captures all explicitly
@@ -19,7 +19,7 @@ result. It never removes additional packages.
 ```sh
 go test ./...
 go vet ./...
-go build ./cmd/omarchy-state
+go build ./cmd/omarchy-blueprint
 ```
 
 ## First workflow
@@ -28,20 +28,20 @@ Create and capture a profile:
 
 ```sh
 mkdir -p ~/omarchy-profile
-omarchy-state init ~/omarchy-profile --name main
-omarchy-state --profile ~/omarchy-profile capture
+omarchy-blueprint init ~/omarchy-profile --name main
+omarchy-blueprint --profile ~/omarchy-profile capture
 ```
 
 After cloning that profile on another Omarchy machine:
 
 ```sh
-omarchy-state check
-omarchy-state status
-omarchy-state restore --dry-run
-omarchy-state restore
+omarchy-blueprint check
+omarchy-blueprint status
+omarchy-blueprint restore --dry-run
+omarchy-blueprint restore
 ```
 
-The non-interactive form is `omarchy-state restore --yes`. Combine `--json`
+The non-interactive form is `omarchy-blueprint restore --yes`. Combine `--json`
 with `--dry-run` or `--yes`; JSON restores never wait for a prompt.
 
 Package profiles are human-readable:
@@ -53,8 +53,8 @@ packages/aur.txt
 ```
 
 Restore journals are written to
-`$XDG_STATE_HOME/omarchy-state/restores/`, falling back to
-`~/.local/state/omarchy-state/restores/`.
+`$XDG_STATE_HOME/omarchy-blueprint/restores/`, falling back to
+`~/.local/state/omarchy-blueprint/restores/`.
 
 ## Current boundaries
 

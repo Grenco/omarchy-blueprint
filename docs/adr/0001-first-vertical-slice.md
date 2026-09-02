@@ -1,6 +1,6 @@
 # ADR 0001: first vertical slice
 
-Omarchy State begins with a complete packages-only reconstruction loop rather
+Omarchy Blueprint begins with a complete packages-only reconstruction loop rather
 than broad capture coverage. The first schema records all explicitly installed
 native and foreign packages. Restore only installs missing packages; it never
 removes extras.
