@@ -65,8 +65,13 @@ type Plugins struct {
 	Items []Plugin `json:"plugins" toml:"plugin"`
 }
 type Plugin struct {
-	ID      string `json:"id" toml:"id"`
-	Enabled bool   `json:"enabled" toml:"enabled"`
+	ID         string `json:"id" toml:"id"`
+	Source     string `json:"source,omitempty" toml:"source,omitempty"`
+	URL        string `json:"url,omitempty" toml:"url,omitempty"`
+	Revision   string `json:"revision,omitempty" toml:"revision,omitempty"`
+	Hash       string `json:"hash,omitempty" toml:"hash,omitempty"`
+	ClonedFrom string `json:"cloned_from,omitempty" toml:"cloned_from,omitempty"`
+	Enabled    bool   `json:"enabled" toml:"enabled"`
 }
 
 type Data struct {

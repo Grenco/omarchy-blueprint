@@ -1,5 +1,8 @@
 # ADR 0004: first-party plugin enablement
 
+The third-party restriction is superseded by ADR 0005; first-party state keeps
+the same representation and behavior.
+
 The first plugin slice records enabled/disabled state for disable-capable
 first-party plugins reported by `omarchy plugin list --json`. Restore uses the
 native `omarchy plugin enable` and `omarchy plugin disable` commands.

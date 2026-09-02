@@ -18,6 +18,7 @@ type Change struct {
 type Risk string
 
 const RiskLow Risk = "low"
+const RiskHigh Risk = "high"
 
 type Operation struct {
 	ID         string   `json:"id"`
@@ -27,6 +28,7 @@ type Operation struct {
 	Items      []string `json:"items,omitempty"`
 	Command    []string `json:"command"`
 	Copy       *Copy    `json:"copy,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
 	Risk       Risk     `json:"risk"`
 	Reversible bool     `json:"reversible"`
 }

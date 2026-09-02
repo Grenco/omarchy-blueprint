@@ -2,8 +2,10 @@ package restore
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,36 @@ type delayedRunner struct{ delay time.Duration }
 func (r delayedRunner) Run(context.Context, string, ...string) (string, error) {
 	time.Sleep(r.delay)
 	return "", nil
+}
+
+type failingRunner struct{ calls []string }
+
+func (r *failingRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	r.calls = append(r.calls, name)
+	if name == "validate" {
+		return "", fmt.Errorf("invalid")
+	}
+	return "", nil
+}
+
+func TestExecuteBlocksDependentOperationsButContinuesIndependentOnes(t *testing.T) {
+	j, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	runner := &failingRunner{}
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "validate", Command: []string{"validate"}}, {ID: "copy", Command: []string{"copy"}, DependsOn: []string{"validate"}}, {ID: "independent", Command: []string{"other"}}}}
+	result, err := Execute(context.Background(), runner, plan, j, time.Now, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failed) != 2 || len(result.Completed) != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+	if !reflect.DeepEqual(runner.calls, []string{"validate", "other"}) {
+		t.Fatalf("calls=%#v", runner.calls)
+	}
 }
 
 func TestExecuteReportsAndJournalsProgress(t *testing.T) {
