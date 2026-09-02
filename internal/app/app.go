@@ -217,7 +217,12 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 			return fmt.Errorf("create restore journal: %w", err)
 		}
 		defer journal.Close()
-		if err := restore.Execute(cmd.Context(), deps.Runner, plan, journal, deps.Now); err != nil {
+		var progress restore.ProgressFunc
+		if !opt.json {
+			progress = func(event restore.Progress) { renderProgress(deps.Out, event) }
+		}
+		execution, err := restore.Execute(cmd.Context(), deps.Runner, plan, journal, deps.Now, 5*time.Second, progress)
+		if err != nil {
 			return err
 		}
 		current, err = provider.Detect(cmd.Context())
@@ -226,6 +231,14 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 		}
 		verification := packagesprovider.Verify(d.Packages, current)
 		_ = journal.Write(restore.Event{Time: deps.Now().UTC(), Type: "VERIFY_COMPLETED", Message: fmt.Sprintf("ok=%t", verification.OK)})
+		if len(execution.Failed) > 0 {
+			if opt.json {
+				_ = emit(deps.Out, true, "restore", false, map[string]any{"plan": plan, "execution": execution, "verification": verification, "journal": journal.Path}, "")
+			} else {
+				renderRestoreFailures(deps.Out, execution, verification, journal.Path)
+			}
+			return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
+		}
 		if !verification.OK {
 			return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
 		}
@@ -298,12 +311,45 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintln(&b, "Restore plan")
 	}
 	fmt.Fprintf(&b, "Omarchy: %s → %s\n", plan.OmarchyFrom, plan.OmarchyTo)
-	if len(plan.Operations) == 0 {
+	if len(plan.Operations) == 0 && len(plan.Skipped) == 0 {
 		fmt.Fprintln(&b, "No operations required.")
 		return b.String()
 	}
 	for _, op := range plan.Operations {
 		fmt.Fprintf(&b, "+ install %s (risk: %s, automatic rollback: no)\n", op.Resource, op.Risk)
 	}
+	for _, skipped := range plan.Skipped {
+		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)
+	}
 	return b.String()
+}
+
+func renderProgress(w io.Writer, event restore.Progress) {
+	kind := strings.SplitN(event.Operation.Resource, ":", 2)[0]
+	count := len(event.Operation.Items)
+	label := fmt.Sprintf("%d %s package", count, kind)
+	if count != 1 {
+		label += "s"
+	}
+	switch event.Type {
+	case restore.ProgressStarted:
+		fmt.Fprintf(w, "Installing %s...\n", label)
+	case restore.ProgressHeartbeat:
+		fmt.Fprintf(w, "  Still installing %s (%s elapsed)...\n", label, event.Elapsed)
+	case restore.ProgressCompleted:
+		fmt.Fprintf(w, "✓ Installed %s (%s)\n", label, event.Elapsed)
+	case restore.ProgressFailed:
+		fmt.Fprintf(w, "✗ Failed installing %s after %s\n", label, event.Elapsed)
+	}
+}
+
+func renderRestoreFailures(w io.Writer, execution restore.Result, verification model.VerificationResult, journal string) {
+	fmt.Fprintf(w, "\nRestore completed with %d successful and %d failed operation(s).\n", len(execution.Completed), len(execution.Failed))
+	for _, failure := range execution.Failed {
+		fmt.Fprintf(w, "✗ %s: %s\n", failure.Operation.Resource, failure.Error)
+	}
+	if len(verification.Missing) > 0 {
+		fmt.Fprintf(w, "Still missing: %s\n", strings.Join(verification.Missing, ", "))
+	}
+	fmt.Fprintf(w, "Journal: %s\n", journal)
 }

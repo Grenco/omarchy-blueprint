@@ -24,6 +24,7 @@ type Operation struct {
 	Provider   string   `json:"provider"`
 	Action     string   `json:"action"`
 	Resource   string   `json:"resource"`
+	Items      []string `json:"items,omitempty"`
 	Command    []string `json:"command"`
 	Risk       Risk     `json:"risk"`
 	Reversible bool     `json:"reversible"`
@@ -34,6 +35,13 @@ type RestorePlan struct {
 	OmarchyFrom    string      `json:"omarchy_from"`
 	OmarchyTo      string      `json:"omarchy_to"`
 	Operations     []Operation `json:"operations"`
+	Skipped        []Skipped   `json:"skipped,omitempty"`
+}
+
+type Skipped struct {
+	Provider string `json:"provider"`
+	Resource string `json:"resource"`
+	Reason   string `json:"reason"`
 }
 
 type VerificationResult struct {

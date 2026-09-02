@@ -3,10 +3,11 @@
 Use your system normally. Omarchy Blueprint remembers how to rebuild it.
 
 This repository currently contains the first packages-only vertical slice of
-the broader design in [ROADMAP.md](ROADMAP.md). It captures all explicitly
-installed native and foreign packages, shows semantic drift, creates a safe
-restore plan, installs only missing packages through Omarchy, and verifies the
-result. It never removes additional packages.
+the broader design in [ROADMAP.md](ROADMAP.md). It captures explicitly
+installed native and foreign packages, separates known machine-specific
+hardware packages, shows semantic drift, creates a safe restore plan, installs
+only missing portable packages through Omarchy, and verifies the result. It
+never removes additional packages.
 
 ## Requirements
 
@@ -50,7 +51,11 @@ Package profiles are human-readable:
 profile.toml
 packages/official.txt
 packages/aur.txt
+packages/machine-specific.txt
 ```
+
+Machine-specific entries retain provenance, for example
+`official:nvidia-open` or `aur:nvidia-580xx-dkms`.
 
 Restore journals are written to
 `$XDG_STATE_HOME/omarchy-blueprint/restores/`, falling back to
@@ -74,4 +79,12 @@ shell configuration, directories, Git automation, migrations, and AI.
 - Apply requires confirmation or `--yes`.
 - Commands are executed without a shell.
 - Additional packages are never removed.
+- Known GPU-driver, CPU-microcode, and fingerprint-stack packages are recorded
+  as machine-specific and skipped during portable restore.
+- Missing native packages and missing AUR packages are each installed in a
+  single transaction.
+- Interactive restores print an immediate operation message and an elapsed-time
+  heartbeat every five seconds while package tools are running.
+- AUR packages restore as separate operations. Failures are journaled, later
+  packages continue, and the final summary lists successes and failures.
 - Package installs are journaled and are not automatically rolled back.

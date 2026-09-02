@@ -1,13 +1,25 @@
 package packages
 
 import (
+	"context"
+	"errors"
 	"os"
 	"reflect"
 	"testing"
 
+	"github.com/graeme/omarchy-blueprint/internal/command"
 	"github.com/graeme/omarchy-blueprint/internal/model"
 	"github.com/graeme/omarchy-blueprint/internal/profile"
 )
+
+type queryRunner struct {
+	output string
+	err    error
+}
+
+func (r queryRunner) Run(context.Context, string, ...string) (string, error) {
+	return r.output, r.err
+}
 
 func TestDiffIsSemanticAndStable(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "old"}, AUR: []string{"aur-old"}}
@@ -24,19 +36,46 @@ func TestDiffIsSemanticAndStable(t *testing.T) {
 }
 
 func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
-	saved := profile.Packages{Official: []string{"git", "zoxide"}, AUR: []string{"tool-bin"}}
+	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"another-bin", "tool-bin"}}
 	current := profile.Packages{Official: []string{"git", "extra"}}
 	plan := Plan(saved, current, 1, "4.0.0", "4.1.0")
-	if len(plan.Operations) != 2 {
+	if len(plan.Operations) != 3 {
 		t.Fatalf("operations = %#v", plan.Operations)
 	}
-	if plan.Operations[0].Resource != "official:zoxide" || plan.Operations[1].Resource != "aur:tool-bin" {
+	if plan.Operations[0].Resource != "official:ripgrep,zoxide" || plan.Operations[1].Resource != "aur:another-bin" || plan.Operations[2].Resource != "aur:tool-bin" {
 		t.Fatalf("wrong order: %#v", plan.Operations)
+	}
+	if !reflect.DeepEqual(plan.Operations[0].Command, []string{"omarchy", "pkg", "add", "ripgrep", "zoxide"}) {
+		t.Fatalf("native command = %#v", plan.Operations[0].Command)
 	}
 	for _, op := range plan.Operations {
 		if op.Action != "install" || op.Risk != model.RiskLow || op.Reversible {
 			t.Fatalf("unsafe operation: %#v", op)
 		}
+	}
+}
+
+func TestMachineSpecificPackagesAreSkippedEvenFromLegacyProfileLists(t *testing.T) {
+	saved := profile.Packages{Official: []string{"git", "nvidia-open", "amd-ucode", "fprintd"}, AUR: []string{"nvidia-580xx-dkms", "libfprint-goodix-521d"}}
+	plan := Plan(saved, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
+	if len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	want := []string{"aur:libfprint-goodix-521d", "aur:nvidia-580xx-dkms", "official:amd-ucode", "official:fprintd", "official:nvidia-open"}
+	var got []string
+	for _, skipped := range plan.Skipped {
+		got = append(got, skipped.Resource)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("skipped = %#v", got)
+	}
+}
+
+func TestClassifyKeepsHardwareOutOfPortableDiff(t *testing.T) {
+	saved := profile.Packages{Official: []string{"git", "nvidia-open", "fprintd"}, AUR: []string{"libfprint-goodix-521d"}}
+	current := profile.Packages{Official: []string{"git", "nvidia-settings", "libfprint"}, AUR: []string{"nvidia-580xx-dkms"}}
+	if changes := Diff(saved, current); len(changes) != 0 {
+		t.Fatalf("changes = %#v", changes)
 	}
 }
 
@@ -62,6 +101,30 @@ func TestPacmanOutputFixtures(t *testing.T) {
 		}
 		if got := lines(string(b)); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: got %#v", tt.path, got)
+		}
+	}
+}
+
+func TestQueryAcceptsPacmanEmptyResultExitCode(t *testing.T) {
+	runErr := &command.RunError{Name: "pacman", Args: []string{"-Qqem"}, ExitCode: 1, Err: errors.New("exit status 1")}
+	got, err := (Provider{Runner: queryRunner{err: runErr}}).query(context.Background(), "-Qqem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestQueryPreservesRealPacmanFailures(t *testing.T) {
+	tests := []queryRunner{
+		{err: &command.RunError{Name: "pacman", ExitCode: 2, Err: errors.New("exit status 2")}},
+		{output: "database unavailable", err: &command.RunError{Name: "pacman", ExitCode: 1, Output: "database unavailable", Err: errors.New("exit status 1")}},
+		{err: errors.New("command not found")},
+	}
+	for _, runner := range tests {
+		if _, err := (Provider{Runner: runner}).query(context.Background(), "-Qqem"); err == nil {
+			t.Fatalf("expected failure for %#v", runner)
 		}
 	}
 }

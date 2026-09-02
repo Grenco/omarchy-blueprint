@@ -2,6 +2,7 @@ package packages
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,18 +23,23 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 	if err != nil {
 		return profile.Packages{}, fmt.Errorf("detect explicitly installed foreign packages: %w", err)
 	}
-	return profile.Packages{Official: official, AUR: aur}, nil
+	return classify(profile.Packages{Official: official, AUR: aur}), nil
 }
 
 func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
 	out, err := p.Runner.Run(ctx, "pacman", arg)
 	if err != nil {
+		var runErr *command.RunError
+		if errors.As(err, &runErr) && runErr.ExitCode == 1 && strings.TrimSpace(out) == "" {
+			return []string{}, nil
+		}
 		return nil, err
 	}
 	return lines(out), nil
 }
 
 func Diff(saved, current profile.Packages) []model.Change {
+	saved, current = classify(saved), classify(current)
 	var out []model.Change
 	out = append(out, diffKind("official", saved.Official, current.Official)...)
 	out = append(out, diffKind("aur", saved.AUR, current.AUR)...)
@@ -47,22 +53,36 @@ func Diff(saved, current profile.Packages) []model.Change {
 }
 
 func Plan(saved, current profile.Packages, schema int, from, to string) model.RestorePlan {
+	saved, current = classify(saved), classify(current)
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	currentOfficial, currentAUR := set(current.Official), set(current.AUR)
+	var missingOfficial, missingAUR []string
 	for _, name := range saved.Official {
 		if !currentOfficial[name] {
-			plan.Operations = append(plan.Operations, operation("official", name, []string{"omarchy", "pkg", "add", name}))
+			missingOfficial = append(missingOfficial, name)
 		}
 	}
 	for _, name := range saved.AUR {
 		if !currentAUR[name] {
-			plan.Operations = append(plan.Operations, operation("aur", name, []string{"omarchy", "pkg", "aur", "add", name}))
+			missingAUR = append(missingAUR, name)
 		}
+	}
+	if len(missingOfficial) > 0 {
+		plan.Operations = append(plan.Operations, operation("official", missingOfficial, append([]string{"omarchy", "pkg", "add"}, missingOfficial...)))
+	}
+	if len(missingAUR) > 0 {
+		for _, name := range missingAUR {
+			plan.Operations = append(plan.Operations, operation("aur", []string{name}, []string{"omarchy", "pkg", "aur", "add", name}))
+		}
+	}
+	for _, name := range saved.MachineSpecific {
+		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "machine-specific hardware package"})
 	}
 	return plan
 }
 
 func Verify(saved, current profile.Packages) model.VerificationResult {
+	saved, current = classify(saved), classify(current)
 	var missing []string
 	co, ca := set(current.Official), set(current.AUR)
 	for _, name := range saved.Official {
@@ -94,8 +114,43 @@ func diffKind(kind string, saved, current []string) []model.Change {
 	return out
 }
 
-func operation(kind, name string, argv []string) model.Operation {
-	return model.Operation{ID: "packages.install." + kind + "." + name, Provider: "packages", Action: "install", Resource: kind + ":" + name, Command: argv, Risk: model.RiskLow, Reversible: false}
+func operation(kind string, names, argv []string) model.Operation {
+	id := "packages.install." + kind
+	if kind == "aur" && len(names) == 1 {
+		id += "." + names[0]
+	}
+	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false}
+}
+
+func classify(packages profile.Packages) profile.Packages {
+	machine := append([]string{}, packages.MachineSpecific...)
+	filter := func(kind string, items []string) []string {
+		portable := make([]string, 0, len(items))
+		for _, name := range items {
+			if machineSpecific(name) {
+				machine = append(machine, kind+":"+name)
+			} else {
+				portable = append(portable, name)
+			}
+		}
+		return portable
+	}
+	packages.Official = filter("official", packages.Official)
+	packages.AUR = filter("aur", packages.AUR)
+	packages.MachineSpecific = lines(strings.Join(machine, "\n"))
+	return packages
+}
+
+func machineSpecific(name string) bool {
+	if name == "amd-ucode" || name == "intel-ucode" || name == "fprintd" || name == "libfprint" || strings.HasPrefix(name, "libfprint-") {
+		return true
+	}
+	for _, prefix := range []string{"nvidia", "lib32-nvidia", "opencl-nvidia", "lib32-opencl-nvidia"} {
+		if name == prefix || strings.HasPrefix(name, prefix+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 func set(items []string) map[string]bool {
