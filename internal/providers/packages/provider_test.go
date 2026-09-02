@@ -1,13 +1,25 @@
 package packages
 
 import (
+	"context"
+	"errors"
 	"os"
 	"reflect"
 	"testing"
 
+	"github.com/graeme/omarchy-blueprint/internal/command"
 	"github.com/graeme/omarchy-blueprint/internal/model"
 	"github.com/graeme/omarchy-blueprint/internal/profile"
 )
+
+type queryRunner struct {
+	output string
+	err    error
+}
+
+func (r queryRunner) Run(context.Context, string, ...string) (string, error) {
+	return r.output, r.err
+}
 
 func TestDiffIsSemanticAndStable(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "old"}, AUR: []string{"aur-old"}}
@@ -62,6 +74,30 @@ func TestPacmanOutputFixtures(t *testing.T) {
 		}
 		if got := lines(string(b)); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%s: got %#v", tt.path, got)
+		}
+	}
+}
+
+func TestQueryAcceptsPacmanEmptyResultExitCode(t *testing.T) {
+	runErr := &command.RunError{Name: "pacman", Args: []string{"-Qqem"}, ExitCode: 1, Err: errors.New("exit status 1")}
+	got, err := (Provider{Runner: queryRunner{err: runErr}}).query(context.Background(), "-Qqem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestQueryPreservesRealPacmanFailures(t *testing.T) {
+	tests := []queryRunner{
+		{err: &command.RunError{Name: "pacman", ExitCode: 2, Err: errors.New("exit status 2")}},
+		{output: "database unavailable", err: &command.RunError{Name: "pacman", ExitCode: 1, Output: "database unavailable", Err: errors.New("exit status 1")}},
+		{err: errors.New("command not found")},
+	}
+	for _, runner := range tests {
+		if _, err := (Provider{Runner: runner}).query(context.Background(), "-Qqem"); err == nil {
+			t.Fatalf("expected failure for %#v", runner)
 		}
 	}
 }
