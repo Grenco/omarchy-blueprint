@@ -28,7 +28,7 @@ func TestExecuteReportsAndJournalsProgress(t *testing.T) {
 		Items: []string{"git", "zoxide"}, Command: []string{"omarchy", "pkg", "add", "git", "zoxide"},
 	}}}
 	var events []ProgressType
-	err = Execute(context.Background(), delayedRunner{delay: 15 * time.Millisecond}, plan, journal, time.Now, 2*time.Millisecond, func(event Progress) {
+	result, err := Execute(context.Background(), delayedRunner{delay: 15 * time.Millisecond}, plan, journal, time.Now, 2*time.Millisecond, func(event Progress) {
 		events = append(events, event.Type)
 	})
 	if err != nil {
@@ -45,6 +45,9 @@ func TestExecuteReportsAndJournalsProgress(t *testing.T) {
 	}
 	if !foundHeartbeat {
 		t.Fatalf("no heartbeat in %#v", events)
+	}
+	if len(result.Completed) != 1 || len(result.Failed) != 0 {
+		t.Fatalf("result = %#v", result)
 	}
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)

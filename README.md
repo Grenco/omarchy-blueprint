@@ -85,4 +85,6 @@ shell configuration, directories, Git automation, migrations, and AI.
   single transaction.
 - Interactive restores print an immediate operation message and an elapsed-time
   heartbeat every five seconds while package tools are running.
+- AUR packages restore as separate operations. Failures are journaled, later
+  packages continue, and the final summary lists successes and failures.
 - Package installs are journaled and are not automatically rolled back.

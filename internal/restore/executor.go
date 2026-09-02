@@ -3,6 +3,7 @@ package restore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/graeme/omarchy-blueprint/internal/command"
@@ -26,14 +27,25 @@ type Progress struct {
 
 type ProgressFunc func(Progress)
 
-func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time, heartbeat time.Duration, progress ProgressFunc) error {
+type Failure struct {
+	Operation model.Operation `json:"operation"`
+	Error     string          `json:"error"`
+}
+
+type Result struct {
+	Completed []model.Operation `json:"completed"`
+	Failed    []Failure         `json:"failed"`
+}
+
+func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time, heartbeat time.Duration, progress ProgressFunc) (Result, error) {
+	var execution Result
 	if err := journal.Write(Event{Time: now().UTC(), Type: "PLAN_CREATED", Message: fmt.Sprintf("%d operations", len(plan.Operations))}); err != nil {
-		return err
+		return execution, err
 	}
 	for _, op := range plan.Operations {
 		started := time.Now()
 		if err := journal.Write(Event{Time: now().UTC(), Type: "OPERATION_STARTED", Operation: op.ID}); err != nil {
-			return err
+			return execution, err
 		}
 		notify(progress, Progress{Type: ProgressStarted, Operation: op})
 		result := make(chan error, 1)
@@ -61,18 +73,32 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		if err != nil {
 			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_FAILED", Operation: op.ID, Message: err.Error()})
 			notify(progress, Progress{Type: ProgressFailed, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
-			return fmt.Errorf("operation %s failed: %w", op.ID, err)
+			if ctx.Err() != nil {
+				return execution, ctx.Err()
+			}
+			execution.Failed = append(execution.Failed, Failure{Operation: op, Error: summarizeError(err)})
+			continue
 		}
 		if err := journal.Write(Event{Time: now().UTC(), Type: "OPERATION_COMPLETED", Operation: op.ID}); err != nil {
-			return err
+			return execution, err
 		}
+		execution.Completed = append(execution.Completed, op)
 		notify(progress, Progress{Type: ProgressCompleted, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
 	}
-	return nil
+	return execution, nil
 }
 
 func notify(progress ProgressFunc, event Progress) {
 	if progress != nil {
 		progress(event)
 	}
+}
+
+func summarizeError(err error) string {
+	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+	message := strings.TrimSpace(lines[len(lines)-1])
+	if len(message) > 300 {
+		message = message[:297] + "..."
+	}
+	return message
 }

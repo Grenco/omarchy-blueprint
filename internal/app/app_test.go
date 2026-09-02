@@ -133,10 +133,10 @@ func TestJSONRestoreRequiresExplicitMode(t *testing.T) {
 	}
 }
 
-func TestRestoreStopsOnFailureAndJournalsIt(t *testing.T) {
+func TestRestoreContinuesAfterAURFailureAndSummarizesIt(t *testing.T) {
 	profileDir, stateDir := t.TempDir(), t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
-	runner := &machineRunner{official: map[string]bool{"base": true, "broken": true, "later": true}, aur: map[string]bool{}}
+	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"broken": true, "later": true}}
 	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, StateHome: func() (string, error) { return stateDir, nil }}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code %d", code)
@@ -144,13 +144,16 @@ func TestRestoreStopsOnFailureAndJournalsIt(t *testing.T) {
 	if code := Execute(context.Background(), []string{"--profile", profileDir, "capture"}, deps); code != 0 {
 		t.Fatalf("capture code %d", code)
 	}
-	runner.official = map[string]bool{"base": true}
+	runner.aur = map[string]bool{}
 	runner.failInstall = "broken"
 	if code := Execute(context.Background(), []string{"--profile", profileDir, "restore", "--yes"}, deps); code != 1 {
 		t.Fatalf("restore code %d", code)
 	}
-	if runner.official["later"] {
-		t.Fatal("later package installed after failure")
+	if !runner.aur["later"] {
+		t.Fatal("later AUR package was not installed after earlier failure")
+	}
+	if !strings.Contains(deps.Out.(*bytes.Buffer).String(), "1 successful and 1 failed") {
+		t.Fatalf("missing summary: %s", deps.Out.(*bytes.Buffer))
 	}
 	entries, err := os.ReadDir(filepath.Join(stateDir, "omarchy-blueprint", "restores"))
 	if err != nil {
