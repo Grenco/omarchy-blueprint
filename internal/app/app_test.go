@@ -45,6 +45,8 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return keys(all), nil
 	case "omarchy theme current":
 		return r.theme + "\n", nil
+	case "omarchy plugin list --json":
+		return "[]\n", nil
 	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "set" {
 		r.theme = args[2]
@@ -96,7 +98,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package and theme state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, and plugin state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
