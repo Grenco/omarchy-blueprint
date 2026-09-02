@@ -34,6 +34,7 @@ type OmarchyMeta struct {
 
 type CaptureMeta struct {
 	Packages bool `toml:"packages"`
+	Themes   bool `toml:"themes"`
 }
 
 type Packages struct {
@@ -44,9 +45,15 @@ type Packages struct {
 	Installed       []string `json:"-" toml:"-"`
 }
 
+type Themes struct {
+	Current string `json:"current" toml:"current"`
+	Source  string `json:"source" toml:"source"`
+}
+
 type Data struct {
 	Manifest Manifest `json:"manifest"`
 	Packages Packages `json:"packages"`
+	Themes   Themes   `json:"themes"`
 }
 
 func New(name string, now time.Time) Data {
@@ -81,6 +88,14 @@ func Load(dir string) (Data, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
+	themes, err := os.ReadFile(filepath.Join(dir, "themes", "themes.toml"))
+	if err == nil {
+		if err := toml.Unmarshal(themes, &d.Themes); err != nil {
+			return d, fmt.Errorf("parse themes/themes.toml: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return d, err
+	}
 	return d, nil
 }
 
@@ -93,7 +108,14 @@ func Save(dir string, d Data) error {
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "themes"), 0o755); err != nil {
+		return err
+	}
 	b, err := toml.Marshal(d.Manifest)
+	if err != nil {
+		return err
+	}
+	themes, err := toml.Marshal(d.Themes)
 	if err != nil {
 		return err
 	}
@@ -106,6 +128,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "packages", "aur.txt"), []byte(joinList(d.Packages.AUR))},
 		{filepath.Join(dir, "packages", "machine-specific.txt"), []byte(joinList(d.Packages.MachineSpecific))},
 		{filepath.Join(dir, "packages", "excluded.txt"), []byte(joinList(d.Packages.Excluded))},
+		{filepath.Join(dir, "themes", "themes.toml"), themes},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {

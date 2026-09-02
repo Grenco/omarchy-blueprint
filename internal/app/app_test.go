@@ -17,6 +17,7 @@ type machineRunner struct {
 	aur          map[string]bool
 	dependencies map[string]bool
 	failInstall  string
+	theme        string
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -42,6 +43,12 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 			all[pkg] = true
 		}
 		return keys(all), nil
+	case "omarchy theme current":
+		return r.theme + "\n", nil
+	}
+	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "set" {
+		r.theme = args[2]
+		return "", nil
 	}
 	if len(args) >= 3 && name == "omarchy" && args[0] == "pkg" && args[1] == "add" {
 		for _, pkg := range args[2:] {
@@ -66,6 +73,45 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return "", nil
 	}
 	return "", fmt.Errorf("unexpected command: %s", key)
+}
+
+func TestThemeVerticalSlice(t *testing.T) {
+	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	for _, theme := range []string{"osaka-jade", "nord"} {
+		if err := os.Mkdir(filepath.Join(builtin, theme), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, theme: "Osaka Jade"}
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Now: time.Now,
+		StateHome: func() (string, error) { return stateDir, nil },
+		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+	}
+	run := func(args ...string) (int, string, string) {
+		var out, stderr bytes.Buffer
+		deps.Out, deps.Err = &out, &stderr
+		return Execute(context.Background(), args, deps), out.String(), stderr.String()
+	}
+	if code, _, errout := run("init", profileDir); code != 0 {
+		t.Fatalf("init code=%d err=%s", code, errout)
+	}
+	if code, out, errout := run("--profile", profileDir, "capture", "themes"); code != 0 || !strings.Contains(out, "Captured theme state") {
+		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
+	}
+	runner.theme = "Nord"
+	if code, out, _ := run("--profile", profileDir, "status", "themes"); code != 2 || !strings.Contains(out, "osaka-jade → nord") {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+	if code, out, errout := run("--profile", profileDir, "restore", "themes", "--dry-run"); code != 0 || !strings.Contains(out, "activate theme:osaka-jade") {
+		t.Fatalf("dry-run code=%d out=%s err=%s", code, out, errout)
+	}
+	if code, out, errout := run("--profile", profileDir, "restore", "themes", "--yes"); code != 0 || !strings.Contains(out, "Restore verified") {
+		t.Fatalf("restore code=%d out=%s err=%s", code, out, errout)
+	}
+	if runner.theme != "osaka-jade" {
+		t.Fatalf("active theme = %q", runner.theme)
+	}
 }
 
 func keys(items map[string]bool) string {

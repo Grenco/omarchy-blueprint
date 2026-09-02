@@ -19,6 +19,7 @@ import (
 	"github.com/graeme/omarchy-blueprint/internal/omarchy"
 	"github.com/graeme/omarchy-blueprint/internal/profile"
 	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
+	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
 	"github.com/graeme/omarchy-blueprint/internal/restore"
 )
 
@@ -29,6 +30,7 @@ type Dependencies struct {
 	Err       io.Writer
 	Now       func() time.Time
 	StateHome func() (string, error)
+	ThemeDirs func() (builtin, user string, err error)
 }
 
 type options struct {
@@ -58,6 +60,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.StateHome == nil {
 		deps.StateHome = restore.StateHome
+	}
+	if deps.ThemeDirs == nil {
+		deps.ThemeDirs = defaultThemeDirs
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -116,10 +121,13 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
-	return &cobra.Command{Use: "capture [packages]", Args: onlyPackages, Short: "Capture package state", RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "capture [packages|themes]", Args: supportedCategory, Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
+		}
+		if selectedCategory(args) == "themes" {
+			return captureThemes(cmd.Context(), deps, opt, d)
 		}
 		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 			return err
@@ -148,14 +156,17 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
-	use, short := "status [packages]", "Show package drift"
+	use, short := "status [packages|themes]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages]", "Show semantic package differences"
+		use, short = "diff [packages|themes]", "Show semantic differences"
 	}
-	return &cobra.Command{Use: use, Args: onlyPackages, Short: short, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: use, Args: supportedCategory, Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
+		}
+		if selectedCategory(args) == "themes" {
+			return statusThemes(cmd.Context(), deps, opt, d, diff)
 		}
 		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 			return err
@@ -184,10 +195,13 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes bool
-	cmd := &cobra.Command{Use: "restore [packages]", Args: onlyPackages, Short: "Plan or restore package state", RunE: func(cmd *cobra.Command, _ []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes]", Args: supportedCategory, Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
+		}
+		if selectedCategory(args) == "themes" {
+			return restoreThemes(cmd.Context(), deps, opt, d, dryRun, yes)
 		}
 		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 			return err
@@ -280,6 +294,16 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 			return err
 		}
 		checks := []string{"profile valid", "schema supported", "Omarchy compatible", "package discovery available"}
+		if d.Manifest.Capture.Themes {
+			provider, err := themeProvider(deps)
+			if err != nil {
+				return err
+			}
+			if _, err := provider.Detect(cmd.Context()); err != nil {
+				return err
+			}
+			checks = append(checks, "theme discovery available")
+		}
 		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
 		if len(d.Packages.Excluded) > 0 {
 			human += fmt.Sprintf("ℹ %d excluded package(s): %s\n", len(d.Packages.Excluded), strings.Join(d.Packages.Excluded, ", "))
@@ -324,11 +348,145 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 	}}
 }
 
-func onlyPackages(_ *cobra.Command, args []string) error {
-	if len(args) > 1 || (len(args) == 1 && args[0] != "packages") {
-		return errors.New("this milestone supports only the packages category")
+func supportedCategory(_ *cobra.Command, args []string) error {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "packages" && args[0] != "themes") {
+		return errors.New("category must be packages or themes")
 	}
 	return nil
+}
+
+func selectedCategory(args []string) string {
+	if len(args) == 1 {
+		return args[0]
+	}
+	return "packages"
+}
+
+func defaultThemeDirs() (string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	return "/usr/share/omarchy/themes", filepath.Join(home, ".config", "omarchy", "themes"), nil
+}
+
+func themeProvider(deps Dependencies) (themesprovider.Provider, error) {
+	builtin, user, err := deps.ThemeDirs()
+	return themesprovider.Provider{Runner: deps.Runner, BuiltinDir: builtin, UserDir: user}, err
+}
+
+func captureThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
+	p, err := themeProvider(deps)
+	if err != nil {
+		return err
+	}
+	current, err := p.Detect(ctx)
+	if err != nil {
+		return err
+	}
+	info, err := omarchy.Detect(ctx, deps.Runner)
+	if err != nil {
+		return err
+	}
+	changes := themesprovider.Diff(d.Themes, current)
+	d.Themes, d.Manifest.Capture.Themes, d.Manifest.Profile.UpdatedAt = current, true, deps.Now().UTC()
+	d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
+	if err := profile.Save(opt.profileDir, d); err != nil {
+		return fmt.Errorf("save profile: %w", err)
+	}
+	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "themes": current}, renderChanges("Captured theme state", changes))
+}
+
+func statusThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {
+	if !d.Manifest.Capture.Themes {
+		return errors.New("theme state has not been captured; run capture themes first")
+	}
+	p, err := themeProvider(deps)
+	if err != nil {
+		return err
+	}
+	current, err := p.Detect(ctx)
+	if err != nil {
+		return err
+	}
+	changes := themesprovider.Diff(d.Themes, current)
+	title := "Profile theme matches this machine"
+	if diff {
+		title = "Theme differences"
+	} else if len(changes) > 0 {
+		title = fmt.Sprintf("%d theme difference(s)", len(changes))
+	}
+	commandName := "status"
+	if diff {
+		commandName = "diff"
+	}
+	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
+		return err
+	}
+	if len(changes) > 0 {
+		return driftError{}
+	}
+	return nil
+}
+
+func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
+	if !d.Manifest.Capture.Themes {
+		return errors.New("theme state has not been captured; run capture themes first")
+	}
+	p, err := themeProvider(deps)
+	if err != nil {
+		return err
+	}
+	current, err := p.Detect(ctx)
+	if err != nil {
+		return err
+	}
+	info, err := omarchy.Detect(ctx, deps.Runner)
+	if err != nil {
+		return err
+	}
+	plan := themesprovider.Plan(d.Themes, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	if dryRun {
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
+	}
+	if len(plan.Operations) == 0 {
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan}, renderPlan(plan, false)+"Theme already active. No changes applied.\n")
+	}
+	if !yes {
+		if opt.json {
+			return errors.New("restore with --json requires --yes or --dry-run")
+		}
+		fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
+		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
+		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
+			return errors.New("restore cancelled")
+		}
+	}
+	stateHome, err := deps.StateHome()
+	if err != nil {
+		return err
+	}
+	journal, err := restore.NewJournal(stateHome, deps.Now())
+	if err != nil {
+		return fmt.Errorf("create restore journal: %w", err)
+	}
+	defer journal.Close()
+	execution, err := restore.Execute(ctx, deps.Runner, plan, journal, deps.Now, 5*time.Second, nil)
+	if err != nil {
+		return err
+	}
+	if len(execution.Failed) > 0 {
+		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
+	}
+	current, err = p.Detect(ctx)
+	if err != nil {
+		return fmt.Errorf("verify restore: %w", err)
+	}
+	verification := themesprovider.Verify(d.Themes, current)
+	if !verification.OK {
+		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
+	}
+	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
 }
 
 func profileError(dir string, err error) error { return fmt.Errorf("load profile at %s: %w", dir, err) }
@@ -370,7 +528,7 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		return b.String()
 	}
 	for _, op := range plan.Operations {
-		fmt.Fprintf(&b, "+ install %s (risk: %s, automatic rollback: no)\n", op.Resource, op.Risk)
+		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
 	}
 	for _, skipped := range plan.Skipped {
 		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)
