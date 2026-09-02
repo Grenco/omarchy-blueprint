@@ -3,6 +3,9 @@ package restore
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -50,7 +53,14 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		notify(progress, Progress{Type: ProgressStarted, Operation: op})
 		result := make(chan error, 1)
 		go func() {
-			_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
+			var err error
+			if op.Copy != nil {
+				err = copyTreeExclusive(op.Copy.Source, op.Copy.Destination)
+			} else if len(op.Command) == 0 {
+				err = fmt.Errorf("operation %s has no command or copy action", op.ID)
+			} else {
+				_, err = runner.Run(ctx, op.Command[0], op.Command[1:]...)
+			}
 			result <- err
 		}()
 		ticker := time.NewTicker(heartbeat)
@@ -86,6 +96,72 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		notify(progress, Progress{Type: ProgressCompleted, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
 	}
 	return execution, nil
+}
+
+func copyTreeExclusive(source, destination string) error {
+	if _, err := os.Lstat(destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	parent := filepath.Dir(destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.MkdirTemp(parent, ".omarchy-blueprint-theme-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(temp)
+	if err := copyTreeContents(source, temp); err != nil {
+		return err
+	}
+	return os.Rename(temp, destination)
+}
+
+func copyTreeContents(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil || relative == "." {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("theme snapshot contains unsupported symlink: %s", relative)
+		}
+		target := filepath.Join(destination, relative)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("theme snapshot contains unsupported file: %s", relative)
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+		if err != nil {
+			in.Close()
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		inErr := in.Close()
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if inErr != nil {
+			return inErr
+		}
+		return closeErr
+	})
 }
 
 func notify(progress ProgressFunc, event Progress) {

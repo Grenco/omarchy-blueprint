@@ -26,8 +26,14 @@ type Operation struct {
 	Resource   string   `json:"resource"`
 	Items      []string `json:"items,omitempty"`
 	Command    []string `json:"command"`
+	Copy       *Copy    `json:"copy,omitempty"`
 	Risk       Risk     `json:"risk"`
 	Reversible bool     `json:"reversible"`
+}
+
+type Copy struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
 }
 
 type RestorePlan struct {

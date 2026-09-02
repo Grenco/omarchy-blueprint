@@ -14,6 +14,7 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	d := New("main", now)
 	d.Manifest.Capture.Packages = true
 	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
+	d.Themes = Themes{Current: "custom", Items: []Theme{{ID: "custom", Type: "local", Hash: "abc", Enabled: true}, {ID: "remote", Type: "git", URL: "https://example.test/theme.git", Revision: "def"}}}
 	if err := Save(dir, d); err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +37,9 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Packages.Excluded, []string{"aur:dislocker-git"}) {
 		t.Fatalf("excluded = %#v", got.Packages.Excluded)
+	}
+	if !reflect.DeepEqual(got.Themes, d.Themes) {
+		t.Fatalf("themes = %#v", got.Themes)
 	}
 }
 
