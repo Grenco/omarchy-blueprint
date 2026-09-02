@@ -113,7 +113,7 @@ func diffKind(kind string, saved, current []string) []model.Change {
 }
 
 func operation(kind string, names, argv []string) model.Operation {
-	return model.Operation{ID: "packages.install." + kind, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Command: argv, Risk: model.RiskLow, Reversible: false}
+	return model.Operation{ID: "packages.install." + kind, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false}
 }
 
 func classify(packages profile.Packages) profile.Packages {

@@ -93,6 +93,8 @@ func TestPackageVerticalSlice(t *testing.T) {
 	}
 	if code, out, errout := run("--profile", profileDir, "restore", "--yes"); code != 0 || !strings.Contains(out, "Restore verified") {
 		t.Fatalf("restore code=%d out=%s err=%s", code, out, errout)
+	} else if !strings.Contains(out, "Installing 1 official package...") || !strings.Contains(out, "✓ Installed 1 aur package") {
+		t.Fatalf("restore progress missing from output: %s", out)
 	}
 	if code, out, errout := run("--profile", profileDir, "status"); code != 0 || !strings.Contains(out, "No changes") {
 		t.Fatalf("final status code=%d out=%s err=%s", code, out, errout)
