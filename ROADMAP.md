@@ -819,11 +819,11 @@ optionally remove extras
 verify result
 ```
 
-Known hardware-bound packages such as GPU drivers and CPU microcode should be
-recorded as machine-specific and excluded from portable restore unless a later
-machine overlay explicitly opts into them. Missing official packages and
-missing AUR packages should each be installed as a batch to avoid repeatedly
-invoking the package manager.
+Known hardware-bound packages such as GPU drivers, CPU microcode, and
+fingerprint stacks should be recorded as machine-specific and excluded from
+portable restore unless a later machine overlay explicitly opts into them.
+Missing official packages and missing AUR packages should each be installed as
+a batch to avoid repeatedly invoking the package manager.
 
 Removing additional packages should be off by default.
 

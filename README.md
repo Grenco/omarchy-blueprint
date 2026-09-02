@@ -79,8 +79,8 @@ shell configuration, directories, Git automation, migrations, and AI.
 - Apply requires confirmation or `--yes`.
 - Commands are executed without a shell.
 - Additional packages are never removed.
-- Known GPU-driver and CPU-microcode packages are recorded as machine-specific
-  and skipped during portable restore.
+- Known GPU-driver, CPU-microcode, and fingerprint-stack packages are recorded
+  as machine-specific and skipped during portable restore.
 - Missing native packages and missing AUR packages are each installed in a
   single transaction.
 - Interactive restores print an immediate operation message and an elapsed-time
