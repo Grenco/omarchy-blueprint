@@ -36,13 +36,13 @@ func TestDiffIsSemanticAndStable(t *testing.T) {
 }
 
 func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
-	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"tool-bin"}}
+	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"another-bin", "tool-bin"}}
 	current := profile.Packages{Official: []string{"git", "extra"}}
 	plan := Plan(saved, current, 1, "4.0.0", "4.1.0")
-	if len(plan.Operations) != 2 {
+	if len(plan.Operations) != 3 {
 		t.Fatalf("operations = %#v", plan.Operations)
 	}
-	if plan.Operations[0].Resource != "official:ripgrep,zoxide" || plan.Operations[1].Resource != "aur:tool-bin" {
+	if plan.Operations[0].Resource != "official:ripgrep,zoxide" || plan.Operations[1].Resource != "aur:another-bin" || plan.Operations[2].Resource != "aur:tool-bin" {
 		t.Fatalf("wrong order: %#v", plan.Operations)
 	}
 	if !reflect.DeepEqual(plan.Operations[0].Command, []string{"omarchy", "pkg", "add", "ripgrep", "zoxide"}) {

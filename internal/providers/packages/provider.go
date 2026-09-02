@@ -71,7 +71,9 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 		plan.Operations = append(plan.Operations, operation("official", missingOfficial, append([]string{"omarchy", "pkg", "add"}, missingOfficial...)))
 	}
 	if len(missingAUR) > 0 {
-		plan.Operations = append(plan.Operations, operation("aur", missingAUR, append([]string{"omarchy", "pkg", "aur", "add"}, missingAUR...)))
+		for _, name := range missingAUR {
+			plan.Operations = append(plan.Operations, operation("aur", []string{name}, []string{"omarchy", "pkg", "aur", "add", name}))
+		}
 	}
 	for _, name := range saved.MachineSpecific {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "machine-specific hardware package"})
@@ -113,7 +115,11 @@ func diffKind(kind string, saved, current []string) []model.Change {
 }
 
 func operation(kind string, names, argv []string) model.Operation {
-	return model.Operation{ID: "packages.install." + kind, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false}
+	id := "packages.install." + kind
+	if kind == "aur" && len(names) == 1 {
+		id += "." + names[0]
+	}
+	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false}
 }
 
 func classify(packages profile.Packages) profile.Packages {
