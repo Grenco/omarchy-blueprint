@@ -13,9 +13,10 @@ import (
 )
 
 type machineRunner struct {
-	official    map[string]bool
-	aur         map[string]bool
-	failInstall string
+	official     map[string]bool
+	aur          map[string]bool
+	dependencies map[string]bool
+	failInstall  string
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -29,6 +30,18 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return keys(r.official), nil
 	case "pacman -Qqem":
 		return keys(r.aur), nil
+	case "pacman -Qq":
+		all := map[string]bool{}
+		for pkg := range r.official {
+			all[pkg] = true
+		}
+		for pkg := range r.aur {
+			all[pkg] = true
+		}
+		for pkg := range r.dependencies {
+			all[pkg] = true
+		}
+		return keys(all), nil
 	}
 	if len(args) >= 3 && name == "omarchy" && args[0] == "pkg" && args[1] == "add" {
 		for _, pkg := range args[2:] {
@@ -177,6 +190,34 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	}
 	if string(b) != "dislocker-git\n" {
 		t.Fatalf("aur file = %q", b)
+	}
+}
+
+func TestRestoreExplainsNonActionableAdditionalPackages(t *testing.T) {
+	dir := t.TempDir()
+	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{}}
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if code := run("--profile", dir, "capture"); code != 0 {
+		t.Fatalf("capture: %s", errout.String())
+	}
+	runner.official["sudo"] = true
+	if code := run("--profile", dir, "restore", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d err=%s", code, errout.String())
+	}
+	if !strings.Contains(out.String(), "skip official:sudo (additional package left installed; removal disabled)") || !strings.Contains(out.String(), "All desired packages are installed. No changes applied.") {
+		t.Fatalf("output = %s", out.String())
+	}
+	if code := run("--profile", dir, "status"); code != 2 {
+		t.Fatalf("status code=%d out=%s", code, out.String())
 	}
 }
 

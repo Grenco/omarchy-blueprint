@@ -106,4 +106,11 @@ shell configuration, directories, Git automation, migrations, and AI.
   heartbeat every five seconds while package tools are running.
 - AUR packages restore as separate operations. Failures are journaled, later
   packages continue, and the final summary lists successes and failures.
+- Installed package names satisfy the profile regardless of whether a machine
+  currently classifies them as official or foreign/AUR; captured provenance is
+  used only when an installation is actually required.
+- Packages already present as dependencies also satisfy the profile. Capture
+  still records only explicitly installed packages, avoiding dependency noise.
+- Additional explicit packages remain visible as status drift, but restore
+  reports them as intentionally left installed because removal is disabled.
 - Package installs are journaled and are not automatically rolled back.

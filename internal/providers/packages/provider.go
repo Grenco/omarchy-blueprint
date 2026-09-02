@@ -23,7 +23,11 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 	if err != nil {
 		return profile.Packages{}, fmt.Errorf("detect explicitly installed foreign packages: %w", err)
 	}
-	return classify(profile.Packages{Official: official, AUR: aur}), nil
+	installed, err := p.query(ctx, "-Qq")
+	if err != nil {
+		return profile.Packages{}, fmt.Errorf("detect installed packages: %w", err)
+	}
+	return classify(profile.Packages{Official: official, AUR: aur, Installed: installed}), nil
 }
 
 func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
@@ -41,9 +45,11 @@ func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
 func Diff(saved, current profile.Packages) []model.Change {
 	saved, current = classify(saved), classify(current)
 	current = ApplyExclusions(current, saved.Excluded)
+	savedNames := packageNames(saved)
+	currentNames := packageNames(current)
 	var out []model.Change
-	out = append(out, diffKind("official", saved.Official, current.Official)...)
-	out = append(out, diffKind("aur", saved.AUR, current.AUR)...)
+	out = append(out, diffKind("official", saved.Official, current.Official, savedNames, currentNames)...)
+	out = append(out, diffKind("aur", saved.AUR, current.AUR, savedNames, currentNames)...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Kind == out[j].Kind {
 			return out[i].Name < out[j].Name
@@ -57,15 +63,15 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 	saved, current = classify(saved), classify(current)
 	current = ApplyExclusions(current, saved.Excluded)
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
-	currentOfficial, currentAUR := set(current.Official), set(current.AUR)
+	currentNames := packageNames(current)
 	var missingOfficial, missingAUR []string
 	for _, name := range saved.Official {
-		if !currentOfficial[name] {
+		if !currentNames[name] {
 			missingOfficial = append(missingOfficial, name)
 		}
 	}
 	for _, name := range saved.AUR {
-		if !currentAUR[name] {
+		if !currentNames[name] {
 			missingAUR = append(missingAUR, name)
 		}
 	}
@@ -83,6 +89,17 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 	for _, name := range saved.Excluded {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "excluded by profile"})
 	}
+	savedNames := packageNames(saved)
+	for _, name := range current.Official {
+		if !savedNames[name] {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "official:" + name, Reason: "additional package left installed; removal disabled"})
+		}
+	}
+	for _, name := range current.AUR {
+		if !savedNames[name] {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "aur:" + name, Reason: "additional package left installed; removal disabled"})
+		}
+	}
 	return plan
 }
 
@@ -90,34 +107,44 @@ func Verify(saved, current profile.Packages) model.VerificationResult {
 	saved, current = classify(saved), classify(current)
 	current = ApplyExclusions(current, saved.Excluded)
 	var missing []string
-	co, ca := set(current.Official), set(current.AUR)
+	currentNames := packageNames(current)
 	for _, name := range saved.Official {
-		if !co[name] {
+		if !currentNames[name] {
 			missing = append(missing, "official:"+name)
 		}
 	}
 	for _, name := range saved.AUR {
-		if !ca[name] {
+		if !currentNames[name] {
 			missing = append(missing, "aur:"+name)
 		}
 	}
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
 }
 
-func diffKind(kind string, saved, current []string) []model.Change {
-	s, c := set(saved), set(current)
+func diffKind(kind string, saved, current []string, savedNames, currentNames map[string]bool) []model.Change {
 	var out []model.Change
 	for _, name := range current {
-		if !s[name] {
+		if !savedNames[name] {
 			out = append(out, model.Change{Type: model.ChangeAdd, Provider: "packages", Kind: kind, Name: name, Summary: "+ " + kind + " package " + name})
 		}
 	}
 	for _, name := range saved {
-		if !c[name] {
+		if !currentNames[name] {
 			out = append(out, model.Change{Type: model.ChangeRemove, Provider: "packages", Kind: kind, Name: name, Summary: "- " + kind + " package " + name})
 		}
 	}
 	return out
+}
+
+func packageNames(packages profile.Packages) map[string]bool {
+	names := set(packages.Official)
+	for _, name := range packages.AUR {
+		names[name] = true
+	}
+	for _, name := range packages.Installed {
+		names[name] = true
+	}
+	return names
 }
 
 func operation(kind string, names, argv []string) model.Operation {
@@ -144,6 +171,13 @@ func classify(packages profile.Packages) profile.Packages {
 	packages.Official = filter("official", packages.Official)
 	packages.AUR = filter("aur", packages.AUR)
 	packages.MachineSpecific = lines(strings.Join(machine, "\n"))
+	var installed []string
+	for _, name := range packages.Installed {
+		if !machineSpecific(name) {
+			installed = append(installed, name)
+		}
+	}
+	packages.Installed = lines(strings.Join(installed, "\n"))
 	return packages
 }
 
@@ -172,6 +206,7 @@ func ApplyExclusions(packages profile.Packages, excluded []string) profile.Packa
 		case "aur":
 			packages.AUR = remove(packages.AUR, name)
 		}
+		packages.Installed = remove(packages.Installed, name)
 	}
 	return packages
 }
@@ -276,6 +311,7 @@ func clone(packages profile.Packages) profile.Packages {
 	packages.AUR = append([]string{}, packages.AUR...)
 	packages.MachineSpecific = append([]string{}, packages.MachineSpecific...)
 	packages.Excluded = append([]string{}, packages.Excluded...)
+	packages.Installed = append([]string{}, packages.Installed...)
 	return packages
 }
 

@@ -206,7 +206,8 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 			return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
 		}
 		if len(plan.Operations) == 0 {
-			return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": model.VerificationResult{OK: true}}, "Nothing to restore; package state is satisfied.\n")
+			human := renderPlan(plan, false) + "All desired packages are installed. No changes applied.\n"
+			return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": model.VerificationResult{OK: true}}, human)
 		}
 		if !yes {
 			if opt.json {

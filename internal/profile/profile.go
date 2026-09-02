@@ -41,6 +41,7 @@ type Packages struct {
 	AUR             []string `json:"aur"`
 	MachineSpecific []string `json:"machine_specific,omitempty"`
 	Excluded        []string `json:"excluded,omitempty"`
+	Installed       []string `json:"-" toml:"-"`
 }
 
 type Data struct {

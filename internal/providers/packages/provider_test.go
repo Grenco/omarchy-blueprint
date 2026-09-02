@@ -35,6 +35,64 @@ func TestDiffIsSemanticAndStable(t *testing.T) {
 	}
 }
 
+func TestPackageNameSatisfiesProfileAcrossRepositorySources(t *testing.T) {
+	tests := []struct {
+		name    string
+		saved   profile.Packages
+		current profile.Packages
+	}{
+		{"AUR package moved to official repository", profile.Packages{AUR: []string{"example"}}, profile.Packages{Official: []string{"example"}}},
+		{"official package installed as foreign", profile.Packages{Official: []string{"example"}}, profile.Packages{AUR: []string{"example"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if changes := Diff(tt.saved, tt.current); len(changes) != 0 {
+				t.Fatalf("changes = %#v", changes)
+			}
+			if plan := Plan(tt.saved, tt.current, 1, "4.0.0", "4.1.0"); len(plan.Operations) != 0 {
+				t.Fatalf("operations = %#v", plan.Operations)
+			}
+			if verification := Verify(tt.saved, tt.current); !verification.OK || len(verification.Missing) != 0 {
+				t.Fatalf("verification = %#v", verification)
+			}
+		})
+	}
+}
+
+func TestInstalledDependencySatisfiesExplicitProfileIntent(t *testing.T) {
+	saved := profile.Packages{Official: []string{"neovim", "ninja", "unzip"}}
+	current := profile.Packages{Installed: []string{"neovim", "ninja", "unzip"}}
+	if changes := Diff(saved, current); len(changes) != 0 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	if plan := Plan(saved, current, 1, "4.0.0", "4.0.0"); len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	if verification := Verify(saved, current); !verification.OK {
+		t.Fatalf("verification = %#v", verification)
+	}
+}
+
+func TestPlanExplainsAdditionalPackagesWithoutRemovingThem(t *testing.T) {
+	saved := profile.Packages{Official: []string{"git"}}
+	current := profile.Packages{Official: []string{"git", "linux-headers", "mkinitcpio", "sudo"}, Installed: []string{"git", "linux-headers", "mkinitcpio", "sudo"}}
+	plan := Plan(saved, current, 1, "4.0.0", "4.0.0")
+	if len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	want := []string{"official:linux-headers", "official:mkinitcpio", "official:sudo"}
+	var got []string
+	for _, skipped := range plan.Skipped {
+		if skipped.Reason != "additional package left installed; removal disabled" {
+			t.Fatalf("reason = %q", skipped.Reason)
+		}
+		got = append(got, skipped.Resource)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("skipped = %#v", got)
+	}
+}
+
 func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "ripgrep", "zoxide"}, AUR: []string{"another-bin", "tool-bin"}}
 	current := profile.Packages{Official: []string{"git", "extra"}}
