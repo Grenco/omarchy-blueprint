@@ -133,6 +133,53 @@ func TestJSONRestoreRequiresExplicitMode(t *testing.T) {
 	}
 }
 
+func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
+	dir := t.TempDir()
+	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if code := run("--profile", dir, "capture"); code != 0 {
+		t.Fatalf("capture: %s", errout.String())
+	}
+	if code := run("--profile", dir, "exclude", "package:dislocker-git"); code != 0 {
+		t.Fatalf("exclude: %s", errout.String())
+	}
+	if code := run("--profile", dir, "capture"); code != 0 {
+		t.Fatalf("recapture: %s", errout.String())
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "aur:dislocker-git\n" {
+		t.Fatalf("excluded file = %q", b)
+	}
+	if code := run("--profile", dir, "status"); code != 0 {
+		t.Fatalf("status code=%d out=%s err=%s", code, out.String(), errout.String())
+	}
+	if code := run("--profile", dir, "restore", "--dry-run"); code != 0 || !strings.Contains(out.String(), "skip aur:dislocker-git (excluded by profile)") {
+		t.Fatalf("dry run code=%d out=%s err=%s", code, out.String(), errout.String())
+	}
+	if code := run("--profile", dir, "include", "aur:dislocker-git"); code != 0 {
+		t.Fatalf("include: %s", errout.String())
+	}
+	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "dislocker-git\n" {
+		t.Fatalf("aur file = %q", b)
+	}
+}
+
 func TestRestoreContinuesAfterAURFailureAndSummarizesIt(t *testing.T) {
 	profileDir, stateDir := t.TempDir(), t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)

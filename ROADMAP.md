@@ -796,6 +796,7 @@ Stored representation:
 packages/official.txt
 packages/aur.txt
 packages/machine-specific.txt
+packages/excluded.txt
 ```
 
 Example:

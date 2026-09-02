@@ -52,10 +52,29 @@ profile.toml
 packages/official.txt
 packages/aur.txt
 packages/machine-specific.txt
+packages/excluded.txt
 ```
 
 Machine-specific entries retain provenance, for example
 `official:nvidia-open` or `aur:nvidia-580xx-dkms`.
+
+## Package exclusions
+
+Exclude a package that should remain outside portable restore:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile exclude package:dislocker-git
+```
+
+`package:<name>` resolves against the captured profile. `official:<name>` and
+`aur:<name>` can be used explicitly. Exclusions persist across capture, do not
+produce drift, and are shown as skipped by `check` and restore dry-runs.
+
+Put an excluded package back into the managed set with:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile include aur:dislocker-git
+```
 
 Restore journals are written to
 `$XDG_STATE_HOME/omarchy-blueprint/restores/`, falling back to
