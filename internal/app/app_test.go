@@ -31,17 +31,25 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return keys(r.aur), nil
 	}
 	if len(args) >= 3 && name == "omarchy" && args[0] == "pkg" && args[1] == "add" {
-		if args[2] == r.failInstall {
-			return "boom", fmt.Errorf("install failed")
+		for _, pkg := range args[2:] {
+			if pkg == r.failInstall {
+				return "boom", fmt.Errorf("install failed")
+			}
 		}
-		r.official[args[2]] = true
+		for _, pkg := range args[2:] {
+			r.official[pkg] = true
+		}
 		return "", nil
 	}
 	if len(args) >= 4 && name == "omarchy" && args[0] == "pkg" && args[1] == "aur" && args[2] == "add" {
-		if args[3] == r.failInstall {
-			return "boom", fmt.Errorf("install failed")
+		for _, pkg := range args[3:] {
+			if pkg == r.failInstall {
+				return "boom", fmt.Errorf("install failed")
+			}
 		}
-		r.aur[args[3]] = true
+		for _, pkg := range args[3:] {
+			r.aur[pkg] = true
+		}
 		return "", nil
 	}
 	return "", fmt.Errorf("unexpected command: %s", key)

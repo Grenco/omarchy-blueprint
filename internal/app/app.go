@@ -298,12 +298,15 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintln(&b, "Restore plan")
 	}
 	fmt.Fprintf(&b, "Omarchy: %s → %s\n", plan.OmarchyFrom, plan.OmarchyTo)
-	if len(plan.Operations) == 0 {
+	if len(plan.Operations) == 0 && len(plan.Skipped) == 0 {
 		fmt.Fprintln(&b, "No operations required.")
 		return b.String()
 	}
 	for _, op := range plan.Operations {
 		fmt.Fprintf(&b, "+ install %s (risk: %s, automatic rollback: no)\n", op.Resource, op.Risk)
+	}
+	for _, skipped := range plan.Skipped {
+		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)
 	}
 	return b.String()
 }

@@ -13,7 +13,7 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	d := New("main", now)
 	d.Manifest.Capture.Packages = true
-	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}}
+	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}}
 	if err := Save(dir, d); err != nil {
 		t.Fatal(err)
 	}
@@ -30,6 +30,9 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	}
 	if string(b) != "git\nzoxide\n" {
 		t.Fatalf("unexpected file: %q", b)
+	}
+	if !reflect.DeepEqual(got.Packages.MachineSpecific, []string{"official:nvidia-open"}) {
+		t.Fatalf("machine-specific = %#v", got.Packages.MachineSpecific)
 	}
 }
 
