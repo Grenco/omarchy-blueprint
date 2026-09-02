@@ -46,6 +46,10 @@ omarchy-blueprint restore --dry-run
 omarchy-blueprint restore
 ```
 
+Category-less `status`, `diff`, and `restore` operate on every captured
+provider. Use `status packages`, `status themes`, `restore packages`, or
+`restore themes` when you want to target one category.
+
 The non-interactive form is `omarchy-blueprint restore --yes`. Combine `--json`
 with `--dry-run` or `--yes`; JSON restores never wait for a prompt.
 

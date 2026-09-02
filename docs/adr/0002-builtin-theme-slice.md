@@ -11,6 +11,8 @@ blueprint that cannot reproduce their content. A later slice will record Git
 provenance and safely copy local theme content before those sources are
 accepted.
 
-Category-less commands retain their existing package behavior for backward
-compatibility. Theme operations are selected explicitly with the `themes`
-argument until multi-provider planning and verification are introduced.
+Category-less `status`, `diff`, and `restore` aggregate packages and every
+additional provider captured by the profile. They use one restore plan, one
+approval, one journal, and combined verification. An explicit `packages` or
+`themes` argument filters the operation to that provider. Profiles without
+captured theme state retain their package-only behavior.
