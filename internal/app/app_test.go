@@ -90,14 +90,14 @@ func TestPackageVerticalSlice(t *testing.T) {
 		t.Fatalf("final status code=%d out=%s err=%s", code, out, errout)
 	}
 
-	entries, err := os.ReadDir(filepath.Join(stateDir, "omarchy-state", "restores"))
+	entries, err := os.ReadDir(filepath.Join(stateDir, "omarchy-blueprint", "restores"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("journals = %d", len(entries))
 	}
-	b, err := os.ReadFile(filepath.Join(stateDir, "omarchy-state", "restores", entries[0].Name()))
+	b, err := os.ReadFile(filepath.Join(stateDir, "omarchy-blueprint", "restores", entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,11 +142,11 @@ func TestRestoreStopsOnFailureAndJournalsIt(t *testing.T) {
 	if runner.official["later"] {
 		t.Fatal("later package installed after failure")
 	}
-	entries, err := os.ReadDir(filepath.Join(stateDir, "omarchy-state", "restores"))
+	entries, err := os.ReadDir(filepath.Join(stateDir, "omarchy-blueprint", "restores"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(stateDir, "omarchy-state", "restores", entries[0].Name()))
+	b, err := os.ReadFile(filepath.Join(stateDir, "omarchy-blueprint", "restores", entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}

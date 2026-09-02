@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/graeme/omarchy-state/internal/command"
-	"github.com/graeme/omarchy-state/internal/model"
-	"github.com/graeme/omarchy-state/internal/profile"
+	"github.com/graeme/omarchy-blueprint/internal/command"
+	"github.com/graeme/omarchy-blueprint/internal/model"
+	"github.com/graeme/omarchy-blueprint/internal/profile"
 )
 
 type Provider struct{ Runner command.Runner }

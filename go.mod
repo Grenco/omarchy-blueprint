@@ -1,4 +1,4 @@
-module github.com/graeme/omarchy-state
+module github.com/graeme/omarchy-blueprint
 
 go 1.25.0
 

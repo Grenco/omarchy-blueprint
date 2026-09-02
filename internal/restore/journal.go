@@ -21,7 +21,7 @@ type Journal struct {
 }
 
 func NewJournal(stateHome string, now time.Time) (*Journal, error) {
-	dir := filepath.Join(stateHome, "omarchy-state", "restores")
+	dir := filepath.Join(stateHome, "omarchy-blueprint", "restores")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}

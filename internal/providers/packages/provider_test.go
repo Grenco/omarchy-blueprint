@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/graeme/omarchy-state/internal/model"
-	"github.com/graeme/omarchy-state/internal/profile"
+	"github.com/graeme/omarchy-blueprint/internal/model"
+	"github.com/graeme/omarchy-blueprint/internal/profile"
 )
 
 func TestDiffIsSemanticAndStable(t *testing.T) {

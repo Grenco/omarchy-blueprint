@@ -112,7 +112,7 @@ func Validate(d Data) error {
 
 func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".omarchy-state-*.tmp")
+	f, err := os.CreateTemp(dir, ".omarchy-blueprint-*.tmp")
 	if err != nil {
 		return err
 	}

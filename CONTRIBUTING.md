@@ -6,7 +6,7 @@ include tests for behavior changes. Before opening a pull request, run:
 ```sh
 go test ./...
 go vet ./...
-go build ./cmd/omarchy-state
+go build ./cmd/omarchy-blueprint
 ```
 
 Do not exercise restore operations against a developer machine in automated

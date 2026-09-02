@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/graeme/omarchy-state/internal/command"
-	"github.com/graeme/omarchy-state/internal/model"
+	"github.com/graeme/omarchy-blueprint/internal/command"
+	"github.com/graeme/omarchy-blueprint/internal/model"
 )
 
 func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time) error {

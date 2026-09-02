@@ -14,12 +14,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/graeme/omarchy-state/internal/command"
-	"github.com/graeme/omarchy-state/internal/model"
-	"github.com/graeme/omarchy-state/internal/omarchy"
-	"github.com/graeme/omarchy-state/internal/profile"
-	packagesprovider "github.com/graeme/omarchy-state/internal/providers/packages"
-	"github.com/graeme/omarchy-state/internal/restore"
+	"github.com/graeme/omarchy-blueprint/internal/command"
+	"github.com/graeme/omarchy-blueprint/internal/model"
+	"github.com/graeme/omarchy-blueprint/internal/omarchy"
+	"github.com/graeme/omarchy-blueprint/internal/profile"
+	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
+	"github.com/graeme/omarchy-blueprint/internal/restore"
 )
 
 type Dependencies struct {
@@ -75,7 +75,7 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 
 func newRoot(deps Dependencies) *cobra.Command {
 	opt := &options{}
-	root := &cobra.Command{Use: "omarchy-state", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
+	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
 	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt))

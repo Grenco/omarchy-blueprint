@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/graeme/omarchy-state/internal/command"
+	"github.com/graeme/omarchy-blueprint/internal/command"
 )
 
 type Info struct {
