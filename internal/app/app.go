@@ -131,7 +131,7 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	return &cobra.Command{Use: "capture [packages|themes|plugins|config]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -149,9 +149,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	use, short := "status [packages|themes|plugins|config]", "Show profile drift"
+	use, short := "status [packages|themes|plugins|config|defaults]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages|themes|plugins|config]", "Show semantic differences"
+		use, short = "diff [packages|themes|plugins|config|defaults]", "Show semantic differences"
 	}
 	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -175,7 +175,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes bool
 	providers := stateProviders(deps, opt)
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -564,6 +564,23 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "defaults" {
+		kind := ""
+		if len(event.Operation.Items) > 0 {
+			kind = event.Operation.Items[0]
+		}
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "Setting default %s...\n", kind)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ Set default %s (%s)\n", kind, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still setting default %s (%s elapsed)...\n", kind, event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed setting default %s\n", kind)
+		}
+		return
+	}
 	if event.Operation.Provider == "config" {
 		switch event.Type {
 		case restore.ProgressStarted:

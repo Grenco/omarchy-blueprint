@@ -23,6 +23,7 @@ type machineRunner struct {
 	theme        string
 	plugins      map[string]bool
 	failReload   bool
+	defaults     map[string]string
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -61,6 +62,19 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		if r.failReload {
 			return "", fmt.Errorf("hyprctl reload failed")
 		}
+		return "", nil
+	}
+	if len(args) == 2 && name == "omarchy" && args[0] == "default" {
+		if value, ok := r.defaults[args[1]]; ok {
+			return value + "\n", nil
+		}
+		return "", nil
+	}
+	if len(args) == 3 && name == "omarchy" && args[0] == "default" {
+		if r.defaults == nil {
+			r.defaults = map[string]string{}
+		}
+		r.defaults[args[1]] = args[2]
 		return "", nil
 	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "plugin" && (args[1] == "enable" || args[1] == "disable") {
@@ -106,7 +120,7 @@ func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
 	for _, provider := range providers {
 		got = append(got, provider.ID())
 	}
-	if want := []string{"packages", "themes", "plugins", "config"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if want := []string{"packages", "themes", "plugins", "config", "defaults"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("provider order = %v, want %v", got, want)
 	}
 }
@@ -285,7 +299,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, and configuration state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, configuration, and defaults state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
@@ -847,5 +861,79 @@ func TestConfigDryRunWarnsAboutReplacementVersusCreation(t *testing.T) {
 	code, out = configRun(t, deps, profileDir, "restore", "config", "--dry-run")
 	if code != 0 || !strings.Contains(out, "Missing Hyprland configuration files will be created.") {
 		t.Fatalf("creation dry-run code=%d out=%q", code, out)
+	}
+}
+
+func TestDefaultsVerticalSlice(t *testing.T) {
+	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{
+		official: map[string]bool{"zoxide": true}, aur: map[string]bool{}, theme: "Nord",
+		defaults: map[string]string{"terminal": "foot", "browser": "chromium"},
+	}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		StateHome: func() (string, error) { return stateDir, nil },
+		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+		ConfigDirs: func() (string, string, error) {
+			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
+		},
+	}
+	run := func(args ...string) (int, string) {
+		out.Reset()
+		stderr.Reset()
+		code := Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps)
+		return code, out.String() + stderr.String()
+	}
+	if code, out := run("init", profileDir); code != 0 {
+		t.Fatalf("init code=%d err=%s", code, out)
+	}
+	// Capture: empty values are unmanaged; only terminal/browser recorded.
+	if code, out := run("capture", "defaults"); code != 0 || !strings.Contains(out, "Captured defaults state") {
+		t.Fatalf("capture code=%d out=%q", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Manifest.Capture.Defaults || d.Defaults.Terminal != "foot" || d.Defaults.Agent != "" {
+		t.Fatalf("defaults = %#v capture=%#v", d.Defaults, d.Manifest.Capture)
+	}
+	// No drift yet.
+	if code, out := run("status", "defaults"); code != 0 {
+		t.Fatalf("status code=%d out=%q", code, out)
+	}
+	// Machine drifts: terminal changed on the machine, agent newly selected.
+	runner.defaults["terminal"] = "ghostty"
+	runner.defaults["agent"] = "codex"
+	code, text := run("status", "defaults")
+	if code != 2 || !strings.Contains(text, "terminal: foot → ghostty") || !strings.Contains(text, "agent: codex") {
+		t.Fatalf("status code=%d out=%q", code, text)
+	}
+	// Dry-run plan: one native operation for terminal; agent is not managed.
+	code, text = run("restore", "defaults", "--dry-run")
+	if code != 0 || !strings.Contains(text, "set default:terminal") || strings.Contains(text, "default:agent") {
+		t.Fatalf("dry-run code=%d out=%q", code, text)
+	}
+	// Restore applies only the managed drift; the machine's terminal returns
+	// to the captured default and the unmanaged agent is untouched.
+	code, text = run("restore", "defaults", "--yes")
+	if code != 0 || !strings.Contains(text, "Restore verified") {
+		t.Fatalf("restore code=%d out=%q", code, text)
+	}
+	if runner.defaults["terminal"] != "foot" {
+		t.Fatalf("terminal default = %q, want restored captured value foot", runner.defaults["terminal"])
+	}
+	if runner.defaults["agent"] != "codex" {
+		t.Fatal("unmanaged agent must not be touched by restore")
+	}
+	// Terminal is clean again; the unmanaged agent remains visible as
+	// additive drift because restore never removes machine state.
+	code, text = run("status", "defaults")
+	if code != 2 || !strings.Contains(text, "agent: codex") || strings.Contains(text, "terminal") {
+		t.Fatalf("status after restore code=%d out=%q", code, text)
 	}
 }

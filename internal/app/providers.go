@@ -10,6 +10,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
+	defaultsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/defaults"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
@@ -45,6 +46,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		themesStateProvider{deps: deps, opt: opt},
 		pluginsStateProvider{deps: deps, opt: opt},
 		configStateProvider{deps: deps, opt: opt},
+		defaultsStateProvider{deps: deps, opt: opt},
 	}
 }
 
@@ -77,6 +79,8 @@ func captureRequiredError(id string) error {
 		return errors.New("plugin state has not been captured; run capture plugins first")
 	case "config":
 		return errors.New("config state has not been captured; run capture config first")
+	case "defaults":
+		return errors.New("defaults state has not been captured; run capture defaults first")
 	}
 	return fmt.Errorf("%s state has not been %s", id, verb)
 }
@@ -103,6 +107,8 @@ func providerStateLabel(ids []string) string {
 			labels = append(labels, "plugin")
 		case "config":
 			labels = append(labels, "configuration")
+		case "defaults":
+			labels = append(labels, "defaults")
 		default:
 			labels = append(labels, id)
 		}
@@ -130,6 +136,8 @@ func providerCheckLabel(id string) string {
 		return "plugin discovery available"
 	case "config":
 		return "config state valid"
+	case "defaults":
+		return "defaults discovery available"
 	default:
 		return id + " discovery available"
 	}
@@ -433,6 +441,69 @@ func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Config)
+}
+
+// defaultsStateProvider captures Omarchy's semantic default applications.
+type defaultsStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
+
+func (defaultsStateProvider) ID() string { return "defaults" }
+
+func (defaultsStateProvider) CategoryEnabled() bool { return true }
+
+func (defaultsStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Defaults }
+
+func (defaultsStateProvider) Empty(state any) bool {
+	if s, ok := state.(profile.Defaults); ok {
+		return (s == profile.Defaults{})
+	}
+	return false
+}
+
+func (p defaultsStateProvider) provider() defaultsprovider.Provider {
+	return defaultsprovider.Provider{Runner: p.deps.Runner, ProfileDir: p.opt.profileDir}
+}
+
+func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+	current, err := p.provider().Capture(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	changes := defaultsprovider.Diff(d.Defaults, current)
+	d.Defaults = current
+	d.Manifest.Capture.Defaults = true
+	return current, changes, nil
+}
+
+func (p defaultsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	current, err := p.provider().Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return defaultsprovider.Diff(d.Defaults, current), nil
+}
+
+func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+	current, err := p.provider().Detect(ctx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return p.provider().Plan(d.Defaults, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+}
+
+func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+	current, err := p.provider().Detect(ctx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return defaultsprovider.Verify(d.Defaults, current), nil
+}
+
+func (p defaultsStateProvider) Check(ctx context.Context, _ profile.Data) error {
+	_, err := p.provider().Detect(ctx)
+	return err
 }
 
 func captureProvider(ctx context.Context, provider stateProvider, d *profile.Data) (any, []model.Change, error) {

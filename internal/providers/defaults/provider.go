@@ -90,7 +90,7 @@ func Diff(saved, current profile.Defaults) []model.Change {
 		}
 		changes = append(changes, model.Change{
 			Type: model.ChangeModify, Provider: "defaults", Kind: "default", Name: kind,
-			Summary: "~ default " + kind + ": " + actual + " → " + desired,
+			Summary: "~ default " + kind + ": " + desired + " → " + actual,
 		})
 	}
 	return changes
