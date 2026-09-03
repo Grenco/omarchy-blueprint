@@ -360,7 +360,15 @@ func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Ch
 }
 
 func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
-	return model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}, nil
+	provider, err := p.provider()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
 }
 
 func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {

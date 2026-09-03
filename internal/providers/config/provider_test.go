@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/graeme/omarchy-blueprint/internal/content"
+	"github.com/graeme/omarchy-blueprint/internal/model"
 	"github.com/graeme/omarchy-blueprint/internal/profile"
 )
 
@@ -269,4 +270,158 @@ func assertFile(t *testing.T, path, body string) {
 
 func mkfifo(path string, mode os.FileMode) error {
 	return syscall.Mkfifo(path, uint32(mode))
+}
+
+func planProvider(user, base, profileDir string) Provider {
+	p := testProvider(user, base, profileDir)
+	p.Specs = []Spec{{ID: "hypr.bindings", Path: "hypr/bindings.lua"}}
+	return p
+}
+
+func detected(status FileStatus, hash, baselineHash string) State {
+	return State{Files: []DetectedFile{{
+		ID: "hypr.bindings", Path: "hypr/bindings.lua", Status: status, Hash: hash, BaselineHash: baselineHash,
+	}}}
+}
+
+func savedConfig(hash, baselineHash string) profile.Configs {
+	return profile.Configs{Files: []profile.ConfigFile{{
+		ID: "hypr.bindings", Path: "hypr/bindings.lua", Hash: hash, BaselineHash: baselineHash,
+	}}}
+}
+
+func TestPlanNoOpsWhenTargetMatchesDesired(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
+	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileCustomized, "customhash", "basehash"), 2, "1.0", "1.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPlanWritesMissingTargetWhenBaselineMatches(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
+	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileMissing, "", "basehash"), 2, "1.0", "1.0")
+	if len(plan.Operations) != 2 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	write := plan.Operations[0]
+	if !write.File.ExpectedMissing || write.File.ExpectedHash != "" || write.File.Backup {
+		t.Fatalf("missing-target write = %#v", write.File)
+	}
+	if write.Risk != model.RiskMedium || !write.Reversible || write.ID != "config.write.hypr.bindings" {
+		t.Fatalf("write op = %#v", write)
+	}
+	if plan.Operations[1].ID != "config.reload" || !reflect.DeepEqual(plan.Operations[1].DependsOn, []string{"config.write.hypr.bindings"}) {
+		t.Fatalf("reload op = %#v", plan.Operations[1])
+	}
+}
+
+func TestPlanReplacesDefaultTargetWhenBaselineUnchanged(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
+	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileDefault, "basehash", "basehash"), 2, "1.0", "1.0")
+	if len(plan.Operations) != 2 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+	write := plan.Operations[0].File
+	if write.ExpectedMissing || write.ExpectedHash != "basehash" || !write.Backup {
+		t.Fatalf("replace write = %#v", write)
+	}
+}
+
+func TestPlanSkipsWhenBaselineChanged(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	plan := p.Plan(savedConfig("customhash", "oldbase"), detected(FileMissing, "", "newbase"), 2, "1.0", "1.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; migration required" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPlanSkipsUserDrift(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	plan := p.Plan(savedConfig("savedhash", "basehash"), detected(FileCustomized, "userhash", "basehash"), 2, "1.0", "1.0")
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "existing user configuration differs; overwrite disabled" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPlanSkipsUnsupportedConfig(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	plan := p.Plan(savedConfig("savedhash", "basehash"), detected(FileUnsupported, "", ""), 2, "1.0", "1.0")
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "config is no longer shipped by this Omarchy version" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPlanSkipsMissingCapturedSource(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileMissing, "", "basehash"), 2, "1.0", "1.0")
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "captured config file is missing from the profile" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPlanOmitsReloadWithoutWrites(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	plan := p.Plan(savedConfig("savedhash", "basehash"), detected(FileCustomized, "savedhash", "basehash"), 2, "1.0", "1.0")
+	if len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v", plan.Operations)
+	}
+}
+
+func TestVerifyAsymmetricOnExtras(t *testing.T) {
+	_, user, _, _ := sandbox(t)
+	_ = user
+	result := Verify(savedConfig("savedhash", "basehash"), detected(FileCustomized, "savedhash", "basehash"))
+	if !result.OK {
+		t.Fatalf("result = %#v", result)
+	}
+	result = Verify(savedConfig("savedhash", "basehash"), detected(FileCustomized, "other", "basehash"))
+	if result.OK || !reflect.DeepEqual(result.Missing, []string{"config:hypr/bindings.lua"}) {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestDiffDetectsAddModifyRemove(t *testing.T) {
+	saved := profile.Configs{Files: []profile.ConfigFile{
+		{ID: "hypr.bindings", Path: "hypr/bindings.lua", Hash: "saved"},
+		{ID: "hypr.main", Path: "hypr/hyprland.lua", Hash: "saved"},
+	}}
+	current := State{Files: []DetectedFile{
+		{ID: "hypr.bindings", Path: "hypr/bindings.lua", Status: FileCustomized, Hash: "other"},
+		{ID: "hypr.looknfeel", Path: "hypr/looknfeel.lua", Status: FileCustomized, Hash: "new"},
+		{ID: "hypr.autostart", Path: "hypr/autostart.lua", Status: FileDefault},
+		{ID: "hypr.main", Path: "hypr/hyprland.lua", Status: FileMissing},
+	}}
+	changes := Diff(saved, current)
+	got := make([]string, 0, len(changes))
+	for _, c := range changes {
+		got = append(got, string(c.Type)+" "+c.Name)
+	}
+	want := []string{
+		"modify hypr.bindings",
+		"add hypr.looknfeel",
+		"remove hypr.main",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changes = %v want %v", got, want)
+	}
+}
+
+func TestDiffBaselineOnlyChangeIsNotDrift(t *testing.T) {
+	saved := profile.Configs{Files: []profile.ConfigFile{{ID: "hypr.bindings", Path: "hypr/bindings.lua", Hash: "saved"}}}
+	current := State{Files: []DetectedFile{{ID: "hypr.bindings", Path: "hypr/bindings.lua", Status: FileCustomized, Hash: "saved", BaselineHash: "newbase"}}}
+	if changes := Diff(saved, current); len(changes) != 0 {
+		t.Fatalf("changes = %#v", changes)
+	}
 }

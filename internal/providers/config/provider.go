@@ -303,3 +303,77 @@ func Verify(saved profile.Configs, current State) model.VerificationResult {
 func change(kind model.ChangeType, f DetectedFile, summary string) model.Change {
 	return model.Change{Type: kind, Provider: "config", Kind: "config", Name: f.ID, Summary: summary}
 }
+
+// Plan builds safe FileWrite operations using captured baselines as proof
+// that the target is not carrying unknown user work.
+func (p Provider) Plan(saved profile.Configs, current State, schema int, from, to string) model.RestorePlan {
+	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
+	detected := map[string]DetectedFile{}
+	for _, f := range current.Files {
+		detected[f.ID] = f
+	}
+	var writeIDs []string
+	for _, s := range saved.Files {
+		resource := "config:" + s.Path
+		d, ok := detected[s.ID]
+		if !ok {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "unsupported config file"})
+			continue
+		}
+		if d.Status == FileUnsupported {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "config is no longer shipped by this Omarchy version"})
+			continue
+		}
+		if d.BaselineHash != s.BaselineHash {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "Omarchy baseline changed; migration required"})
+			continue
+		}
+		if d.Status == FileCustomized {
+			if d.Hash == s.Hash {
+				continue
+			}
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "existing user configuration differs; overwrite disabled"})
+			continue
+		}
+		if p.ProfileDir == "" || p.UserRoot == "" {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "profile or user config root unavailable"})
+			continue
+		}
+		source := filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(s.Path))
+		if _, err := os.Lstat(source); err != nil {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "captured config file is missing from the profile"})
+			continue
+		}
+		write := model.FileWrite{
+			Source:       source,
+			Destination:  filepath.Join(p.UserRoot, filepath.FromSlash(s.Path)),
+			SourceHash:   s.Hash,
+			ExpectedHash: d.BaselineHash,
+			Backup:       true,
+		}
+		if d.Status == FileMissing {
+			write = rewriteMissing(write)
+		}
+		id := "config.write." + s.ID
+		writeIDs = append(writeIDs, id)
+		plan.Operations = append(plan.Operations, model.Operation{
+			ID: id, Provider: "config", Action: "write", Resource: resource,
+			File: &write, Risk: model.RiskMedium, Reversible: true,
+		})
+	}
+	if len(writeIDs) > 0 {
+		plan.Operations = append(plan.Operations, model.Operation{
+			ID: "config.reload", Provider: "config", Action: "reload",
+			Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"},
+			DependsOn: writeIDs, Risk: model.RiskLow, Reversible: false,
+		})
+	}
+	return plan
+}
+
+func rewriteMissing(w model.FileWrite) model.FileWrite {
+	w.ExpectedHash = ""
+	w.ExpectedMissing = true
+	w.Backup = false
+	return w
+}
