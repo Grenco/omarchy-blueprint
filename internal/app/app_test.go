@@ -116,6 +116,9 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
 		StateHome: func() (string, error) { return stateDir, nil },
 		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+		ConfigDirs: func() (string, string, error) {
+			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
+		},
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -144,6 +147,55 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 	}
 	if _, ok := envelope.Data["config"]; ok {
 		t.Fatalf("no-op config leaked into legacy JSON data: %#v", envelope.Data)
+	}
+}
+
+func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
+	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	baselineRoot := filepath.Join(builtin, "config")
+	userRoot := filepath.Join(user, ".config")
+	if err := os.MkdirAll(filepath.Join(baselineRoot, "hypr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(userRoot, "hypr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baselineRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{"zoxide": true}, aur: map[string]bool{}, theme: "Nord"}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		StateHome: func() (string, error) { return stateDir, nil },
+		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
+	}
+	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
+		t.Fatalf("init code=%d err=%s", code, stderr.String())
+	}
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "capture"}, deps); code != 0 {
+		t.Fatalf("capture code=%d err=%s", code, stderr.String())
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Manifest.Capture.Config {
+		t.Fatal("capture.config metadata not set")
+	}
+	if len(d.Config.Files) != 1 || d.Config.Files[0].Path != "hypr/bindings.lua" {
+		t.Fatalf("config files = %#v", d.Config.Files)
+	}
+	b, err := os.ReadFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"))
+	if err != nil || string(b) != "custom" {
+		t.Fatalf("captured file = %q err=%v", b, err)
 	}
 }
 

@@ -31,8 +31,9 @@ type Dependencies struct {
 	Err       io.Writer
 	Now       func() time.Time
 	StateHome func() (string, error)
-	ThemeDirs func() (builtin, user string, err error)
-	PluginDir func() (string, error)
+	ThemeDirs    func() (builtin, user string, err error)
+	PluginDir    func() (string, error)
+	ConfigDirs   func() (baseline, user string, err error)
 }
 
 type options struct {
@@ -68,6 +69,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.PluginDir == nil {
 		deps.PluginDir = defaultPluginDir
+	}
+	if deps.ConfigDirs == nil {
+		deps.ConfigDirs = defaultConfigDirs
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -412,6 +416,18 @@ func defaultPluginDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "omarchy", "plugins"), nil
+}
+
+func defaultConfigDirs() (string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	omarchyRoot := os.Getenv("OMARCHY_PATH")
+	if omarchyRoot == "" {
+		omarchyRoot = "/usr/share/omarchy"
+	}
+	return filepath.Join(omarchyRoot, "config"), filepath.Join(home, ".config"), nil
 }
 func pluginProvider(deps Dependencies, opt *options) (pluginsprovider.Provider, error) {
 	dir, err := deps.PluginDir()

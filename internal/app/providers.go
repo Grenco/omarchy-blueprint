@@ -7,6 +7,7 @@ import (
 	"github.com/graeme/omarchy-blueprint/internal/model"
 	"github.com/graeme/omarchy-blueprint/internal/omarchy"
 	"github.com/graeme/omarchy-blueprint/internal/profile"
+	configprovider "github.com/graeme/omarchy-blueprint/internal/providers/config"
 	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/graeme/omarchy-blueprint/internal/providers/plugins"
 	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
@@ -34,7 +35,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		packagesStateProvider{deps: deps},
 		themesStateProvider{deps: deps, opt: opt},
 		pluginsStateProvider{deps: deps, opt: opt},
-		configStateProvider{},
+		configStateProvider{deps: deps, opt: opt},
 	}
 }
 
@@ -311,30 +312,67 @@ func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	return err
 }
 
-// configStateProvider reserves the fourth stable slot until configuration
-// capture has a persisted profile representation.
-type configStateProvider struct{}
+// configStateProvider captures customized Hyprland configuration files.
+type configStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
 
 func (configStateProvider) ID() string { return "config" }
 
 func (configStateProvider) CategoryEnabled() bool { return false }
 
-func (configStateProvider) Captured(profile.Data) bool { return false }
+func (configStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Config }
 
-func (configStateProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
-	return nil, nil, nil
+func (p configStateProvider) provider() (configprovider.Provider, error) {
+	baseline, user, err := p.deps.ConfigDirs()
+	return configprovider.Provider{UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
 }
 
-func (configStateProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
-	return nil, nil
+func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := provider.Capture()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(current.Files) == 0 {
+		return nil, nil, nil
+	}
+	changes := configprovider.DiffConfigs(d.Config, current)
+	d.Config = current
+	d.Manifest.Capture.Config = true
+	return current, changes, nil
 }
 
-func (configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	return configprovider.Diff(d.Config, current), nil
+}
+
+func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
 	return model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}, nil
 }
 
-func (configStateProvider) Verify(context.Context, profile.Data) (model.VerificationResult, error) {
-	return model.VerificationResult{OK: true}, nil
+func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return configprovider.Verify(d.Config, current), nil
 }
 
 func (configStateProvider) Check(context.Context, profile.Data) error { return nil }

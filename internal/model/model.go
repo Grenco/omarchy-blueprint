@@ -4,6 +4,7 @@ type ChangeType string
 
 const (
 	ChangeAdd    ChangeType = "add"
+	ChangeModify ChangeType = "modify"
 	ChangeRemove ChangeType = "remove"
 )
 
