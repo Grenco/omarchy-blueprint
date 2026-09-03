@@ -201,6 +201,11 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	if err := temp.Close(); err != nil {
 		return err
 	}
+	// Recheck the target at the final mutation boundary. Preparing a backup and
+	// temporary file can take long enough for another process to change it.
+	if _, err := validateDestination(action); err != nil {
+		return err
+	}
 	if err := os.Rename(tempPath, action.Destination); err != nil {
 		return err
 	}

@@ -310,6 +310,29 @@ func TestExecuteFileWriteFailureBlocksDependentsButNotIndependentOperations(t *t
 	}
 }
 
+func TestExecuteRejectsOperationsWithMultipleActions(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "copy")
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	runner := &failingRunner{}
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		ID: "invalid", Command: []string{"other"}, Copy: &model.Copy{Source: t.TempDir(), Destination: destination},
+	}}}
+	result, err := Execute(context.Background(), runner, plan, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 1 || len(result.Completed) != 0 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("runner invoked for invalid operation: %#v", runner.calls)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("copy action ran for invalid operation: %v", err)
+	}
+}
+
 func hashFile(t *testing.T, path string) string {
 	t.Helper()
 	hash, err := content.HashRegularFile(path)

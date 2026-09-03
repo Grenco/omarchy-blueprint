@@ -79,6 +79,14 @@ func (j *Journal) CreateBackup(operation, source string) (string, error) {
 	if closeErr != nil {
 		return "", closeErr
 	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return "", err
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return "", err
+	}
 	return path, nil
 }
 
