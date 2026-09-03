@@ -286,6 +286,13 @@ type pluginsStateProvider struct {
 	opt  *options
 }
 
+// pluginSemantics delegates plugin enablement ownership to the Shell provider
+// once Shell state has been captured; legacy profiles keep the current
+// enable/disable behavior.
+func pluginSemantics(d profile.Data) pluginsprovider.Semantics {
+	return pluginsprovider.Semantics{ManageEnabled: !d.Manifest.Capture.Shell}
+}
+
 func (pluginsStateProvider) ID() string { return "plugins" }
 
 func (pluginsStateProvider) CategoryEnabled() bool { return true }
@@ -305,7 +312,7 @@ func (p pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any
 	if err != nil {
 		return nil, nil, err
 	}
-	changes := pluginsprovider.Diff(d.Plugins, current)
+	changes := pluginsprovider.Diff(d.Plugins, current, pluginSemantics(*d))
 	d.Plugins = current
 	d.Manifest.Capture.Plugins = true
 	return current, changes, nil
@@ -320,7 +327,7 @@ func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model
 	if err != nil {
 		return nil, err
 	}
-	return pluginsprovider.Diff(d.Plugins, current), nil
+	return pluginsprovider.Diff(d.Plugins, current, pluginSemantics(d)), nil
 }
 
 func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
@@ -332,7 +339,7 @@ func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info oma
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+	return provider.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d)), nil
 }
 
 func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
@@ -344,7 +351,7 @@ func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data) (model
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return pluginsprovider.Verify(d.Plugins, current), nil
+	return pluginsprovider.Verify(d.Plugins, current, pluginSemantics(d)), nil
 }
 
 func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {

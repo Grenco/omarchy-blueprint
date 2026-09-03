@@ -128,7 +128,14 @@ func (p Provider) detectUser(ctx context.Context, item catalogItem, path string)
 	return result, nil
 }
 
-func Diff(saved, current profile.Plugins) []model.Change {
+// Semantics expresses plugin-provider ownership. When Shell state is captured,
+// the Shell provider owns plugin enablement, so ManageEnabled is false and
+// the plugins provider ignores Enabled differences entirely.
+type Semantics struct {
+	ManageEnabled bool
+}
+
+func Diff(saved, current profile.Plugins, semantics Semantics) []model.Change {
 	have := pluginMap(current.Items)
 	var out []model.Change
 	for _, want := range saved.Items {
@@ -139,7 +146,7 @@ func Diff(saved, current profile.Plugins) []model.Change {
 		}
 		if !equivalent(want, got) {
 			out = append(out, change(want.ID, fmt.Sprintf("~ plugin %s differs (%s → %s)", want.ID, want.Source, got.Source)))
-		} else if got.Enabled != want.Enabled {
+		} else if semantics.ManageEnabled && got.Enabled != want.Enabled {
 			out = append(out, change(want.ID, fmt.Sprintf("~ plugin %s enabled: %t → %t", want.ID, got.Enabled, want.Enabled)))
 		}
 	}
@@ -152,7 +159,7 @@ func Diff(saved, current profile.Plugins) []model.Change {
 	return out
 }
 
-func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to string) model.RestorePlan {
+func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to string, semantics Semantics) model.RestorePlan {
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	have := pluginMap(current.Items)
 	wantMap := pluginMap(saved.Items)
@@ -198,14 +205,16 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 				continue
 			}
 		}
-		if want.Enabled && (!ok || !got.Enabled) {
-			enable := op("enable", want.ID, []string{"omarchy", "plugin", "enable", want.ID}, model.RiskHigh)
-			if lastDependency != "" {
-				enable.DependsOn = []string{lastDependency}
+		if semantics.ManageEnabled {
+			if want.Enabled && (!ok || !got.Enabled) {
+				enable := op("enable", want.ID, []string{"omarchy", "plugin", "enable", want.ID}, model.RiskHigh)
+				if lastDependency != "" {
+					enable.DependsOn = []string{lastDependency}
+				}
+				plan.Operations = append(plan.Operations, enable)
+			} else if ok && !want.Enabled && got.Enabled {
+				plan.Operations = append(plan.Operations, op("disable", want.ID, []string{"omarchy", "plugin", "disable", want.ID}, model.RiskLow))
 			}
-			plan.Operations = append(plan.Operations, enable)
-		} else if ok && !want.Enabled && got.Enabled {
-			plan.Operations = append(plan.Operations, op("disable", want.ID, []string{"omarchy", "plugin", "disable", want.ID}, model.RiskLow))
 		}
 	}
 	for _, got := range current.Items {
@@ -216,12 +225,16 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 	return plan
 }
 
-func Verify(saved, current profile.Plugins) model.VerificationResult {
+func Verify(saved, current profile.Plugins, semantics Semantics) model.VerificationResult {
 	have := pluginMap(current.Items)
 	var missing []string
 	for _, want := range saved.Items {
 		got, ok := have[want.ID]
-		if !ok || !equivalent(want, got) || got.Enabled != want.Enabled {
+		if !ok || !equivalent(want, got) {
+			missing = append(missing, "plugin:"+want.ID)
+			continue
+		}
+		if semantics.ManageEnabled && got.Enabled != want.Enabled {
 			missing = append(missing, "plugin:"+want.ID)
 		}
 	}
