@@ -104,7 +104,9 @@ func (packagesStateProvider) ID() string { return "packages" }
 
 func (packagesStateProvider) CategoryEnabled() bool { return true }
 
-func (packagesStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Packages }
+// Packages predate capture metadata and remain the aggregate default so
+// status, restore, and check retain their behavior for older/new profiles.
+func (packagesStateProvider) Captured(profile.Data) bool { return true }
 
 func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {

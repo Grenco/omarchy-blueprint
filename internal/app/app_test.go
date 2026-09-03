@@ -175,6 +175,34 @@ func TestExplicitThemeCaptureDoesNotDispatchPackages(t *testing.T) {
 	}
 }
 
+func TestAggregateCommandsHandlePackagesBeforePackageCapture(t *testing.T) {
+	profileDir := t.TempDir()
+	runner := &machineRunner{official: map[string]bool{"zoxide": true}, aur: map[string]bool{}}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now}
+	run := func(args ...string) (int, string, string) {
+		out.Reset()
+		stderr.Reset()
+		code := Execute(context.Background(), args, deps)
+		return code, out.String(), stderr.String()
+	}
+	if code, _, errout := run("init", profileDir); code != 0 {
+		t.Fatalf("init code=%d err=%s", code, errout)
+	}
+	if code, output, _ := run("--profile", profileDir, "status"); code != 2 || !strings.Contains(output, "official package zoxide") {
+		t.Fatalf("status code=%d output=%s", code, output)
+	}
+	if code, output, _ := run("--profile", profileDir, "diff"); code != 2 || !strings.Contains(output, "official package zoxide") {
+		t.Fatalf("diff code=%d output=%s", code, output)
+	}
+	if code, output, errout := run("--profile", profileDir, "restore", "--dry-run"); code != 0 || !strings.Contains(output, "official:zoxide") {
+		t.Fatalf("restore code=%d output=%s err=%s", code, output, errout)
+	}
+	if code, output, errout := run("--profile", profileDir, "check"); code != 0 || !strings.Contains(output, "package discovery available") {
+		t.Fatalf("check code=%d output=%s err=%s", code, output, errout)
+	}
+}
+
 func TestThemeVerticalSlice(t *testing.T) {
 	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	for _, theme := range []string{"osaka-jade", "nord"} {
