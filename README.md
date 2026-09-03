@@ -27,6 +27,17 @@ unknown user work is never overwritten. Existing files are backed up beside the
 restore journal before replacement and Hyprland is reloaded only after all
 writes succeed.
 
+Omarchy's semantic default applications — terminal, browser, editor, and
+agent — are captured as plain values in `defaults/defaults.toml`. Restore
+replays drifted values through `omarchy default <kind> --install <value>`, a
+non-interactive path, and Omarchy itself validates the values. Unset defaults
+carry no desired state, restore never unsets a machine-selected default, and
+values Omarchy does not manage (raw `.desktop` IDs) are captured with a
+portability warning but skipped by restore. The default agent is captured,
+diffed, and verified, but never set automatically: Omarchy's agent setter
+launches the selected agent, so restore reports it as skipped until a set-only
+path exists.
+
 ## Requirements
 
 - Omarchy 4 or newer
@@ -62,15 +73,15 @@ omarchy-blueprint restore
 
 Category-less `status`, `diff`, and `restore` operate on every captured
 provider. Use `status packages`, `status themes`, `restore packages`, or
-`restore themes` when you want to target one category. Configuration state
-supports the same explicit categories, for example
+`restore themes` when you want to target one category. Configuration and
+defaults state support the same explicit categories, for example
 `omarchy-blueprint status config` and
-`omarchy-blueprint restore config --dry-run`.
+`omarchy-blueprint restore defaults --dry-run`.
 
 Category-less `capture` captures every supported provider. Use
-`capture packages`, `capture themes`, or `capture config` for a targeted
-refresh. Only files that differ from the Omarchy baseline are captured; clean
-defaults stay out of the profile.
+`capture packages`, `capture themes`, `capture config`, or `capture defaults`
+for a targeted refresh. Only files that differ from the Omarchy baseline are
+captured; clean defaults stay out of the profile.
 
 The non-interactive form is `omarchy-blueprint restore --yes`. Combine `--json`
 with `--dry-run` or `--yes`; JSON restores never wait for a prompt.
@@ -90,6 +101,7 @@ plugins/local/<plugin-id>/
 config/config.toml
 config/files/hypr/<file>.lua
 config/baseline/hypr/<file>.lua
+defaults/defaults.toml
 ```
 
 Machine-specific entries retain provenance, for example
@@ -126,7 +138,8 @@ never overwritten automatically. Internal symlinks and special files are
 rejected during local-theme capture. Config restore never overwrites a target
 that differs from both the desired content and the current Omarchy baseline,
 and cross-version baseline changes are reported as migration-required rather
-than auto-merged. The TUI, shell configuration, monitors/input config,
+than auto-merged. Defaults restore is additive: it never unsets a
+machine-selected default. The TUI, shell configuration, monitors/input config,
 directories, Git automation, migrations, and AI remain postponed.
 
 Capture and inspect theme state explicitly with:
@@ -145,6 +158,15 @@ omarchy-blueprint --profile ~/omarchy-profile capture config
 omarchy-blueprint --profile ~/omarchy-profile status config
 omarchy-blueprint --profile ~/omarchy-profile restore config --dry-run
 omarchy-blueprint --profile ~/omarchy-profile restore config
+```
+
+And to defaults:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile capture defaults
+omarchy-blueprint --profile ~/omarchy-profile status defaults
+omarchy-blueprint --profile ~/omarchy-profile restore defaults --dry-run
+omarchy-blueprint --profile ~/omarchy-profile restore defaults
 ```
 
 ## Exit codes
@@ -183,3 +205,8 @@ omarchy-blueprint --profile ~/omarchy-profile restore config
   beside the restore journal. A target carrying user work or a changed Omarchy
   baseline is skipped, never overwritten.
 - Hyprland is reloaded only after every config write succeeds.
+- Defaults restore replays captured values through Omarchy's own
+  `omarchy default <kind> --install <value>` commands; Omarchy validates
+  values and Blueprint never maintains its own allowlist of valid choices.
+- The default agent is never set automatically: Omarchy's agent setter
+  launches the selected agent, so restore skips it with an explicit reason.

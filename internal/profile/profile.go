@@ -12,7 +12,16 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const Schema = 2
+// Schema is the profile schema version written by Save.
+const Schema = 3
+
+// The schema version that introduced each provider's profile state. Loader
+// thresholds must use these — not Schema — so older profiles keep loading
+// their state as new schema versions arrive.
+const (
+	configSchema   = 2
+	defaultsSchema = 3
+)
 
 type Manifest struct {
 	Schema  int         `toml:"schema"`
@@ -37,6 +46,7 @@ type CaptureMeta struct {
 	Themes   bool `toml:"themes"`
 	Plugins  bool `toml:"plugins"`
 	Config   bool `toml:"config"`
+	Defaults bool `toml:"defaults"`
 }
 
 type Packages struct {
@@ -77,6 +87,15 @@ type ConfigFile struct {
 	BaselineHash string `json:"baseline_hash" toml:"baseline_hash"`
 }
 
+// Defaults records the Omarchy-managed default applications. An empty value
+// means the user never picked one, so Blueprint holds no desired state for it.
+type Defaults struct {
+	Terminal string `json:"terminal,omitempty" toml:"terminal,omitempty"`
+	Browser  string `json:"browser,omitempty" toml:"browser,omitempty"`
+	Editor   string `json:"editor,omitempty" toml:"editor,omitempty"`
+	Agent    string `json:"agent,omitempty" toml:"agent,omitempty"`
+}
+
 type Plugin struct {
 	ID         string `json:"id" toml:"id"`
 	Source     string `json:"source,omitempty" toml:"source,omitempty"`
@@ -93,6 +112,7 @@ type Data struct {
 	Themes   Themes   `json:"themes"`
 	Plugins  Plugins  `json:"plugins"`
 	Config   Configs  `json:"config"`
+	Defaults Defaults `json:"defaults"`
 }
 
 func New(name string, now time.Time) Data {
@@ -109,10 +129,10 @@ func Load(dir string) (Data, error) {
 		return d, fmt.Errorf("parse profile.toml: %w", err)
 	}
 	loadedSchema := d.Manifest.Schema
-	if loadedSchema != 1 && loadedSchema != Schema {
+	if loadedSchema < 1 || loadedSchema > Schema {
 		return d, fmt.Errorf("unsupported profile schema %d (supported: %d)", d.Manifest.Schema, Schema)
 	}
-	if loadedSchema == 1 {
+	if loadedSchema < Schema {
 		d.Manifest.Schema = Schema
 	}
 	d.Packages.Official, err = readList(filepath.Join(dir, "packages", "official.txt"))
@@ -147,11 +167,24 @@ func Load(dir string) (Data, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
-	if loadedSchema == Schema {
+	if loadedSchema >= configSchema {
 		configs, err := os.ReadFile(filepath.Join(dir, "config", "config.toml"))
 		if err == nil {
 			if err := toml.Unmarshal(configs, &d.Config); err != nil {
 				return d, fmt.Errorf("parse config/config.toml: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
+	if loadedSchema >= defaultsSchema {
+		defaults, err := os.ReadFile(filepath.Join(dir, "defaults", "defaults.toml"))
+		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Defaults {
+			return d, errors.New("defaults state marked captured but defaults/defaults.toml is missing")
+		}
+		if err == nil {
+			if err := toml.Unmarshal(defaults, &d.Defaults); err != nil {
+				return d, fmt.Errorf("parse defaults/defaults.toml: %w", err)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return d, err
@@ -179,6 +212,9 @@ func Save(dir string, d Data) error {
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "defaults"), 0o755); err != nil {
+		return err
+	}
 	b, err := toml.Marshal(d.Manifest)
 	if err != nil {
 		return err
@@ -195,6 +231,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	defaults, err := toml.Marshal(d.Defaults)
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -207,6 +247,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "themes", "themes.toml"), themes},
 		{filepath.Join(dir, "plugins", "plugins.toml"), plugins},
 		{filepath.Join(dir, "config", "config.toml"), configs},
+		{filepath.Join(dir, "defaults", "defaults.toml"), defaults},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {

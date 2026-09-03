@@ -88,6 +88,50 @@
 - Clone the profile to a second Omarchy machine (same version) and confirm `capture`-time baseline hashes match, then restore missing targets and verify `status config` is clean.
 - On a second machine with a different Omarchy baseline, confirm restore skips with the migration-required message rather than overwriting.
 
+## Portable Omarchy defaults
+
+### Same-machine capture and status
+
+- With defaults selected (e.g. ghostty/firefox/zed/codex), run `capture defaults` and confirm `defaults/defaults.toml` records the values and `capture.defaults` is set.
+- Leave one default unselected (fresh Omarchy state) and confirm it is omitted from `defaults/defaults.toml` — unset means unmanaged.
+- After capture, `status defaults` and `diff defaults` report no drift.
+- Change the machine's terminal default and confirm `status defaults` exits 2 with `~ default terminal: <captured> → <machine>`.
+
+### Restore
+
+- Change the machine's browser default, run `restore defaults --dry-run`, and confirm exactly one `set default:browser` low-risk operation.
+- Approve with `--yes` and confirm `omarchy default browser <captured>` ran, verification passed, and the journal records the operation.
+- Confirm a machine-selected default that was never captured (e.g. a new agent) is untouched by restore and appears as additive drift (`restore will not remove it`).
+- Re-run `status defaults`; only unmanaged extras should remain.
+
+### Unset semantics
+
+- Capture with no agent selected (no agent field in defaults.toml), then select an agent on the machine.
+- Confirm `restore defaults --dry-run` produces no agent operation.
+- Confirm aggregate `capture`, `status`, `diff`, and `restore --dry-run` include defaults alongside the other providers.
+
+### Agent safety
+
+- Capture a profile with a default agent selected, then run `restore defaults --dry-run` on a machine where the agent default differs or is unset.
+- Confirm restore produces NO agent operation and instead shows:
+  `- skip default:agent (Omarchy's agent setter launches the selected agent; automatic set-only restore is not currently safe)`.
+- Confirm `status defaults`/`diff defaults` still report the agent drift, and `restore defaults --yes` succeeds (verification ignores the agent because restore cannot set it).
+
+### Non-portable values
+
+- Manually set the system browser to an application Omarchy does not manage (raw `.desktop` ID) before capture.
+- Confirm capture records the value with a `may not be portable` warning.
+- Confirm `restore defaults --dry-run` skips the kind with the portability reason instead of replaying a value Omarchy would reject.
+
+### Profile integrity
+
+- Mark `capture.defaults = true` in profile.toml but delete `defaults/defaults.toml`; confirm any command loading the profile fails with `defaults state marked captured but defaults/defaults.toml is missing`.
+
+### Cross-machine validation
+
+- Clone the profile to a second Omarchy machine and confirm the captured defaults are applied and `status defaults` is clean.
+- On a machine where a captured default value is not offered by this Omarchy version, confirm the operation fails with Omarchy's own message and the journal records the failure without touching other defaults.
+
 ## Aggregate cross-machine workflow
 
 - Clone the profile into an empty directory on the second machine.

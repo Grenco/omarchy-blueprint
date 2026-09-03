@@ -6,6 +6,7 @@ const (
 	ChangeAdd    ChangeType = "add"
 	ChangeModify ChangeType = "modify"
 	ChangeRemove ChangeType = "remove"
+	ChangeWarn   ChangeType = "warn"
 )
 
 type Change struct {
