@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/graeme/omarchy-blueprint/internal/profile"
 )
 
 type machineRunner struct {
@@ -89,6 +91,88 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return "", nil
 	}
 	return "", fmt.Errorf("unexpected command: %s", key)
+}
+
+func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
+	deps := Dependencies{Runner: &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}}
+	providers := stateProviders(deps, &options{profileDir: t.TempDir()})
+	got := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		got = append(got, provider.ID())
+	}
+	if want := []string{"packages", "themes", "plugins", "config"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("provider order = %v, want %v", got, want)
+	}
+}
+
+func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T) {
+	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{"zoxide": true}, aur: map[string]bool{}, theme: "Nord"}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		StateHome: func() (string, error) { return stateDir, nil },
+		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+	}
+	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
+		t.Fatalf("init code=%d err=%s", code, stderr.String())
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "--json", "capture"}, deps); code != 0 {
+		t.Fatalf("capture code=%d err=%s", code, stderr.String())
+	}
+	var envelope struct {
+		APIVersion int            `json:"api_version"`
+		Command    string         `json:"command"`
+		OK         bool           `json:"ok"`
+		Data       map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatalf("parse capture JSON: %v\n%s", err, out.String())
+	}
+	if envelope.APIVersion != 1 || envelope.Command != "capture" || !envelope.OK {
+		t.Fatalf("legacy envelope = %#v", envelope)
+	}
+	for _, key := range []string{"changes", "packages", "themes", "plugins"} {
+		if _, ok := envelope.Data[key]; !ok {
+			t.Fatalf("capture data missing legacy key %q: %#v", key, envelope.Data)
+		}
+	}
+	if _, ok := envelope.Data["config"]; ok {
+		t.Fatalf("no-op config leaked into legacy JSON data: %#v", envelope.Data)
+	}
+}
+
+func TestExplicitThemeCaptureDoesNotDispatchPackages(t *testing.T) {
+	profileDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: nil, aur: nil, theme: "Nord"}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+	}
+	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
+		t.Fatalf("init code=%d err=%s", code, stderr.String())
+	}
+	out.Reset()
+	stderr.Reset()
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "capture", "themes"}, deps); code != 0 {
+		t.Fatalf("capture themes code=%d err=%s", code, stderr.String())
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Manifest.Capture.Themes || d.Manifest.Capture.Packages || d.Manifest.Capture.Plugins {
+		t.Fatalf("capture metadata = %#v", d.Manifest.Capture)
+	}
 }
 
 func TestThemeVerticalSlice(t *testing.T) {

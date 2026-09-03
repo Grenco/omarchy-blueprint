@@ -1,0 +1,346 @@
+package app
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/graeme/omarchy-blueprint/internal/model"
+	"github.com/graeme/omarchy-blueprint/internal/omarchy"
+	"github.com/graeme/omarchy-blueprint/internal/profile"
+	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
+	pluginsprovider "github.com/graeme/omarchy-blueprint/internal/providers/plugins"
+	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
+)
+
+// stateProvider keeps CLI orchestration independent from each provider's
+// typed state and domain-specific operations.
+type stateProvider interface {
+	ID() string
+	Captured(profile.Data) bool
+	Capture(context.Context, *profile.Data) (any, []model.Change, error)
+	Diff(context.Context, profile.Data) ([]model.Change, error)
+	Plan(context.Context, profile.Data, omarchy.Info) (model.RestorePlan, error)
+	Verify(context.Context, profile.Data) (model.VerificationResult, error)
+	Check(context.Context, profile.Data) error
+}
+
+type categoryStateProvider interface {
+	stateProvider
+	CategoryEnabled() bool
+}
+
+func stateProviders(deps Dependencies, opt *options) []stateProvider {
+	return []stateProvider{
+		packagesStateProvider{deps: deps},
+		themesStateProvider{deps: deps, opt: opt},
+		pluginsStateProvider{deps: deps, opt: opt},
+		configStateProvider{},
+	}
+}
+
+func categoryProviderIDs(providers []stateProvider) []string {
+	ids := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		category, ok := provider.(categoryStateProvider)
+		if ok && category.CategoryEnabled() {
+			ids = append(ids, provider.ID())
+		}
+	}
+	return ids
+}
+
+func capturedProviders(providers []stateProvider, d profile.Data) []stateProvider {
+	selected := make([]stateProvider, 0, len(providers))
+	for _, provider := range providers {
+		if provider.Captured(d) {
+			selected = append(selected, provider)
+		}
+	}
+	return selected
+}
+
+func providerStateLabel(ids []string) string {
+	labels := make([]string, 0, len(ids))
+	for _, id := range ids {
+		switch id {
+		case "packages":
+			labels = append(labels, "package")
+		case "themes":
+			labels = append(labels, "theme")
+		case "plugins":
+			labels = append(labels, "plugin")
+		default:
+			labels = append(labels, id)
+		}
+	}
+	switch len(labels) {
+	case 0:
+		return ""
+	case 1:
+		return labels[0]
+	case 2:
+		return labels[0] + " and " + labels[1]
+	default:
+		return labels[0] + ", " + labels[1] + ", and " + labels[2]
+	}
+}
+
+func providerCheckLabel(id string) string {
+	switch id {
+	case "packages":
+		return "package discovery available"
+	case "themes":
+		return "theme discovery available"
+	case "plugins":
+		return "plugin discovery available"
+	default:
+		return id + " discovery available"
+	}
+}
+
+type packagesStateProvider struct{ deps Dependencies }
+
+func (packagesStateProvider) ID() string { return "packages" }
+
+func (packagesStateProvider) CategoryEnabled() bool { return true }
+
+func (packagesStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Packages }
+
+func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return nil, nil, err
+	}
+	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
+	changes := packagesprovider.Diff(d.Packages, current)
+	d.Packages = current
+	d.Manifest.Capture.Packages = true
+	return current, changes, nil
+}
+
+func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return nil, err
+	}
+	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return packagesprovider.Diff(d.Packages, current), nil
+}
+
+func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return packagesprovider.Plan(d.Packages, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+}
+
+func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return packagesprovider.Verify(d.Packages, current), nil
+}
+
+func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error {
+	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+		return err
+	}
+	_, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	return err
+}
+
+type themesStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
+
+func (themesStateProvider) ID() string { return "themes" }
+
+func (themesStateProvider) CategoryEnabled() bool { return true }
+
+func (themesStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Themes }
+
+func (p themesStateProvider) provider() (themesprovider.Provider, error) {
+	return themeProvider(p.deps, p.opt)
+}
+
+func (p themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := provider.Capture(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	changes := themesprovider.Diff(d.Themes, current)
+	d.Themes = current
+	d.Manifest.Capture.Themes = true
+	return current, changes, nil
+}
+
+func (p themesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return themesprovider.Diff(d.Themes, current), nil
+}
+
+func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(d.Themes, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+}
+
+func (p themesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return themesprovider.Verify(d.Themes, current), nil
+}
+
+func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
+	provider, err := p.provider()
+	if err != nil {
+		return err
+	}
+	_, err = provider.Detect(ctx)
+	return err
+}
+
+type pluginsStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
+
+func (pluginsStateProvider) ID() string { return "plugins" }
+
+func (pluginsStateProvider) CategoryEnabled() bool { return true }
+
+func (pluginsStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Plugins }
+
+func (p pluginsStateProvider) provider() (pluginsprovider.Provider, error) {
+	return pluginProvider(p.deps, p.opt)
+}
+
+func (p pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := provider.Capture(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	changes := pluginsprovider.Diff(d.Plugins, current)
+	d.Plugins = current
+	d.Manifest.Capture.Plugins = true
+	return current, changes, nil
+}
+
+func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pluginsprovider.Diff(d.Plugins, current), nil
+}
+
+func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+}
+
+func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return pluginsprovider.Verify(d.Plugins, current), nil
+}
+
+func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
+	provider, err := p.provider()
+	if err != nil {
+		return err
+	}
+	_, err = provider.Detect(ctx)
+	return err
+}
+
+// configStateProvider reserves the fourth stable slot until configuration
+// capture has a persisted profile representation.
+type configStateProvider struct{}
+
+func (configStateProvider) ID() string { return "config" }
+
+func (configStateProvider) CategoryEnabled() bool { return false }
+
+func (configStateProvider) Captured(profile.Data) bool { return false }
+
+func (configStateProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+	return nil, nil, nil
+}
+
+func (configStateProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return nil, nil
+}
+
+func (configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+	return model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}, nil
+}
+
+func (configStateProvider) Verify(context.Context, profile.Data) (model.VerificationResult, error) {
+	return model.VerificationResult{OK: true}, nil
+}
+
+func (configStateProvider) Check(context.Context, profile.Data) error { return nil }
+
+func captureProvider(ctx context.Context, provider stateProvider, d *profile.Data) (any, []model.Change, error) {
+	state, changes, err := provider.Capture(ctx, d)
+	if err != nil {
+		return nil, nil, fmt.Errorf("capture %s: %w", provider.ID(), err)
+	}
+	return state, changes, nil
+}

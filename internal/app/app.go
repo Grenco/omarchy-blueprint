@@ -126,7 +126,8 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
-	return &cobra.Command{Use: "capture [packages|themes|plugins]", Args: supportedCategory, Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	providers := stateProviders(deps, opt)
+	return &cobra.Command{Use: "capture [packages|themes|plugins]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -167,17 +168,18 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
+	providers := stateProviders(deps, opt)
 	use, short := "status [packages|themes|plugins]", "Show profile drift"
 	if diff {
 		use, short = "diff [packages|themes|plugins]", "Show semantic differences"
 	}
-	return &cobra.Command{Use: use, Args: supportedCategory, Short: short, RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		if len(args) == 0 && (d.Manifest.Capture.Themes || d.Manifest.Capture.Plugins) {
-			return statusAll(cmd.Context(), deps, opt, d, diff)
+		if len(args) == 0 {
+			return statusAll(cmd.Context(), deps, opt, d, providers, diff)
 		}
 		if selectedCategory(args) == "themes" {
 			return statusThemes(cmd.Context(), deps, opt, d, diff)
@@ -212,13 +214,14 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes bool
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins]", Args: supportedCategory, Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	providers := stateProviders(deps, opt)
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		if len(args) == 0 && (d.Manifest.Capture.Themes || d.Manifest.Capture.Plugins) {
-			return restoreAll(cmd.Context(), deps, opt, d, dryRun, yes)
+		if len(args) == 0 {
+			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes)
 		}
 		if selectedCategory(args) == "themes" {
 			return restoreThemes(cmd.Context(), deps, opt, d, dryRun, yes)
@@ -298,6 +301,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func checkCommand(deps Dependencies, opt *options) *cobra.Command {
+	providers := stateProviders(deps, opt)
 	return &cobra.Command{Use: "check", Args: cobra.NoArgs, Short: "Validate the profile and environment", RunE: func(cmd *cobra.Command, _ []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
@@ -306,36 +310,19 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err := profile.Validate(d); err != nil {
 			return err
 		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
-		}
 		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
 		if err != nil {
 			return err
 		}
-		if _, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(cmd.Context()); err != nil {
-			return err
-		}
-		checks := []string{"profile valid", "schema supported", "Omarchy compatible", "package discovery available"}
-		if d.Manifest.Capture.Themes {
-			provider, err := themeProvider(deps, opt)
-			if err != nil {
-				return err
+		checks := []string{"profile valid", "schema supported", "Omarchy compatible"}
+		for _, provider := range providers {
+			if !provider.Captured(d) {
+				continue
 			}
-			if _, err := provider.Detect(cmd.Context()); err != nil {
-				return err
+			if err := provider.Check(cmd.Context(), d); err != nil {
+				return fmt.Errorf("check %s: %w", provider.ID(), err)
 			}
-			checks = append(checks, "theme discovery available")
-		}
-		if d.Manifest.Capture.Plugins {
-			p, err := pluginProvider(deps, opt)
-			if err != nil {
-				return err
-			}
-			if _, err := p.Detect(cmd.Context()); err != nil {
-				return err
-			}
-			checks = append(checks, "plugin discovery available")
+			checks = append(checks, providerCheckLabel(provider.ID()))
 		}
 		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
 		if len(d.Packages.Excluded) > 0 {
@@ -381,11 +368,27 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 	}}
 }
 
-func supportedCategory(_ *cobra.Command, args []string) error {
-	if len(args) > 1 || (len(args) == 1 && args[0] != "packages" && args[0] != "themes" && args[0] != "plugins") {
-		return errors.New("category must be packages, themes, or plugins")
+func supportedCategory(providers []stateProvider) cobra.PositionalArgs {
+	allowedIDs := categoryProviderIDs(providers)
+	allowed := strings.Join(allowedIDs, ", ")
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) > 1 {
+			return fmt.Errorf("category must be %s", allowed)
+		}
+		if len(args) == 1 {
+			valid := false
+			for _, id := range allowedIDs {
+				if args[0] == id {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return fmt.Errorf("category must be %s", allowed)
+			}
+		}
+		return nil
 	}
-	return nil
 }
 
 func selectedCategory(args []string) string {
@@ -443,46 +446,38 @@ func captureThemes(ctx context.Context, deps Dependencies, opt *options, d profi
 }
 
 func captureAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return err
-	}
+	return captureProviders(ctx, deps, opt, d, stateProviders(deps, opt))
+}
+
+func captureProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider) error {
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
 	}
-	packages, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(ctx)
-	if err != nil {
-		return err
+	data := map[string]any{}
+	var changes []model.Change
+	var captured []string
+	for _, provider := range providers {
+		state, providerChanges, err := captureProvider(ctx, provider, &d)
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			continue
+		}
+		captured = append(captured, provider.ID())
+		data[provider.ID()] = state
+		changes = append(changes, providerChanges...)
 	}
-	packages = packagesprovider.ApplyExclusions(packages, d.Packages.Excluded)
-	themeProvider, err := themeProvider(deps, opt)
-	if err != nil {
-		return err
+	data["changes"] = changes
+	if len(captured) > 0 {
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
 	}
-	themes, err := themeProvider.Capture(ctx)
-	if err != nil {
-		return err
-	}
-	pluginStateProvider, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	plugins, err := pluginStateProvider.Capture(ctx)
-	if err != nil {
-		return err
-	}
-	changes := packagesprovider.Diff(d.Packages, packages)
-	changes = append(changes, themesprovider.Diff(d.Themes, themes)...)
-	changes = append(changes, pluginsprovider.Diff(d.Plugins, plugins)...)
-	d.Packages, d.Themes = packages, themes
-	d.Plugins = plugins
-	d.Manifest.Capture.Packages, d.Manifest.Capture.Themes, d.Manifest.Capture.Plugins = true, true, true
-	d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-	d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
-	if err := profile.Save(opt.profileDir, d); err != nil {
-		return fmt.Errorf("save profile: %w", err)
-	}
-	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "packages": packages, "themes": themes, "plugins": plugins}, renderChanges("Captured package, theme, and plugin state", changes))
+	return emit(deps.Out, opt.json, "capture", true, data, renderChanges("Captured "+providerStateLabel(captured)+" state", changes))
 }
 
 func capturePlugins(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
@@ -536,42 +531,29 @@ func statusThemes(ctx context.Context, deps Dependencies, opt *options, d profil
 	return nil
 }
 
-func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return err
-	}
-	packages, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(ctx)
-	if err != nil {
-		return err
-	}
-	changes := packagesprovider.Diff(d.Packages, packages)
-	if d.Manifest.Capture.Themes {
-		provider, err := themeProvider(deps, opt)
+func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
+	providers = capturedProviders(providers, d)
+	var changes []model.Change
+	for _, provider := range providers {
+		providerChanges, err := provider.Diff(ctx, d)
 		if err != nil {
-			return err
+			return fmt.Errorf("diff %s: %w", provider.ID(), err)
 		}
-		current, err := provider.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		changes = append(changes, themesprovider.Diff(d.Themes, current)...)
-	}
-	if d.Manifest.Capture.Plugins {
-		p, err := pluginProvider(deps, opt)
-		if err != nil {
-			return err
-		}
-		current, err := p.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		changes = append(changes, pluginsprovider.Diff(d.Plugins, current)...)
+		changes = append(changes, providerChanges...)
 	}
 	title := "Profile matches this machine"
 	if diff {
 		title = "Profile differences"
 	} else if len(changes) > 0 {
 		title = fmt.Sprintf("%d profile difference(s)", len(changes))
+	}
+	if len(providers) == 1 && providers[0].ID() == "packages" {
+		title = "Profile matches this machine"
+		if diff {
+			title = "Package differences"
+		} else if len(changes) > 0 {
+			title = fmt.Sprintf("%d package differences", len(changes))
+		}
 	}
 	commandName := "status"
 	if diff {
@@ -690,68 +672,40 @@ func restorePlugins(ctx context.Context, deps Dependencies, opt *options, d prof
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
 }
 
-func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return err
-	}
+func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
+	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes)
+}
+
+func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
 	}
-	packageProvider := packagesprovider.Provider{Runner: deps.Runner}
-	currentPackages, err := packageProvider.Detect(ctx)
-	if err != nil {
-		return err
-	}
-	plan := packagesprovider.Plan(d.Packages, currentPackages, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-	var currentThemes profile.Themes
-	var themes themesprovider.Provider
-	var currentPlugins profile.Plugins
-	plugins, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	if d.Manifest.Capture.Themes {
-		themes, err = themeProvider(deps, opt)
+	plan := model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
+	for _, provider := range providers {
+		providerPlan, err := provider.Plan(ctx, d, info)
 		if err != nil {
-			return err
+			return fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
-		currentThemes, err = themes.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		themePlan := themes.Plan(d.Themes, currentThemes, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-		plan.Operations = append(plan.Operations, themePlan.Operations...)
-		plan.Skipped = append(plan.Skipped, themePlan.Skipped...)
-	}
-	if d.Manifest.Capture.Plugins {
-		currentPlugins, err = plugins.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		pluginPlan := plugins.Plan(d.Plugins, currentPlugins, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-		plan.Operations = append(plan.Operations, pluginPlan.Operations...)
-		plan.Skipped = append(plan.Skipped, pluginPlan.Skipped...)
+		plan.Operations = append(plan.Operations, providerPlan.Operations...)
+		plan.Skipped = append(plan.Skipped, providerPlan.Skipped...)
 	}
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
 	}
 	if len(plan.Operations) == 0 {
-		verification := packagesprovider.Verify(d.Packages, currentPackages)
-		if d.Manifest.Capture.Themes {
-			themeVerification := themesprovider.Verify(d.Themes, currentThemes)
-			verification.Missing = append(verification.Missing, themeVerification.Missing...)
-			verification.OK = verification.OK && themeVerification.OK
-		}
-		if d.Manifest.Capture.Plugins {
-			pv := pluginsprovider.Verify(d.Plugins, currentPlugins)
-			verification.Missing = append(verification.Missing, pv.Missing...)
-			verification.OK = verification.OK && pv.OK
+		verification, err := verifyProviders(ctx, d, providers)
+		if err != nil {
+			return err
 		}
 		if !verification.OK {
 			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+"All captured state is already restored. No changes applied.\n")
+		message := "All captured state is already restored. No changes applied.\n"
+		if len(providers) == 1 && providers[0].ID() == "packages" {
+			message = "All desired packages are installed. No changes applied.\n"
+		}
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+message)
 	}
 	if !yes {
 		if opt.json {
@@ -780,28 +734,9 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 	if err != nil {
 		return err
 	}
-	currentPackages, err = packageProvider.Detect(ctx)
+	verification, err := verifyProviders(ctx, d, providers)
 	if err != nil {
-		return fmt.Errorf("verify package restore: %w", err)
-	}
-	verification := packagesprovider.Verify(d.Packages, currentPackages)
-	if d.Manifest.Capture.Themes {
-		currentThemes, err = themes.Detect(ctx)
-		if err != nil {
-			return fmt.Errorf("verify theme restore: %w", err)
-		}
-		themeVerification := themesprovider.Verify(d.Themes, currentThemes)
-		verification.Missing = append(verification.Missing, themeVerification.Missing...)
-		verification.OK = verification.OK && themeVerification.OK
-	}
-	if d.Manifest.Capture.Plugins {
-		currentPlugins, err = plugins.Detect(ctx)
-		if err != nil {
-			return fmt.Errorf("verify plugin restore: %w", err)
-		}
-		pv := pluginsprovider.Verify(d.Plugins, currentPlugins)
-		verification.Missing = append(verification.Missing, pv.Missing...)
-		verification.OK = verification.OK && pv.OK
+		return err
 	}
 	_ = journal.Write(restore.Event{Time: deps.Now().UTC(), Type: "VERIFY_COMPLETED", Message: fmt.Sprintf("ok=%t", verification.OK)})
 	if len(execution.Failed) > 0 {
@@ -816,6 +751,19 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
 	}
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+}
+
+func verifyProviders(ctx context.Context, d profile.Data, providers []stateProvider) (model.VerificationResult, error) {
+	result := model.VerificationResult{OK: true}
+	for _, provider := range providers {
+		verification, err := provider.Verify(ctx, d)
+		if err != nil {
+			return model.VerificationResult{}, fmt.Errorf("verify %s restore: %w", provider.ID(), err)
+		}
+		result.OK = result.OK && verification.OK
+		result.Missing = append(result.Missing, verification.Missing...)
+	}
+	return result, nil
 }
 
 func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
