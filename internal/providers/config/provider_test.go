@@ -7,9 +7,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/graeme/omarchy-blueprint/internal/content"
-	"github.com/graeme/omarchy-blueprint/internal/model"
-	"github.com/graeme/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/content"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 func testProvider(root, baseline, profileDir string) Provider {

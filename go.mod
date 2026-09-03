@@ -1,4 +1,4 @@
-module github.com/graeme/omarchy-blueprint
+module github.com/Grenco/omarchy-blueprint
 
 go 1.25.0
 

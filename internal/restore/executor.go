@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/graeme/omarchy-blueprint/internal/command"
-	"github.com/graeme/omarchy-blueprint/internal/content"
-	"github.com/graeme/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/content"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 )
 
 type ProgressType string

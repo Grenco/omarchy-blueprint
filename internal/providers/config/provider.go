@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/graeme/omarchy-blueprint/internal/content"
-	"github.com/graeme/omarchy-blueprint/internal/model"
-	"github.com/graeme/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/content"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 // FileStatus describes how a managed file currently sits on the machine.

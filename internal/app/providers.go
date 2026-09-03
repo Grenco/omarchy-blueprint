@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/graeme/omarchy-blueprint/internal/model"
-	"github.com/graeme/omarchy-blueprint/internal/omarchy"
-	"github.com/graeme/omarchy-blueprint/internal/profile"
-	configprovider "github.com/graeme/omarchy-blueprint/internal/providers/config"
-	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
-	pluginsprovider "github.com/graeme/omarchy-blueprint/internal/providers/plugins"
-	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
+	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
+	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 )
 
 // stateProvider keeps CLI orchestration independent from each provider's

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/graeme/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 type machineRunner struct {

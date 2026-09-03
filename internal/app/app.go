@@ -14,15 +14,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/graeme/omarchy-blueprint/internal/command"
-	"github.com/graeme/omarchy-blueprint/internal/model"
-	"github.com/graeme/omarchy-blueprint/internal/omarchy"
-	"github.com/graeme/omarchy-blueprint/internal/profile"
-	configprovider "github.com/graeme/omarchy-blueprint/internal/providers/config"
-	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
-	pluginsprovider "github.com/graeme/omarchy-blueprint/internal/providers/plugins"
-	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
-	"github.com/graeme/omarchy-blueprint/internal/restore"
+	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
+	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
+	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 type Dependencies struct {
