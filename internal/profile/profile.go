@@ -12,7 +12,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const Schema = 1
+const Schema = 2
 
 type Manifest struct {
 	Schema  int         `toml:"schema"`
@@ -36,6 +36,7 @@ type CaptureMeta struct {
 	Packages bool `toml:"packages"`
 	Themes   bool `toml:"themes"`
 	Plugins  bool `toml:"plugins"`
+	Config   bool `toml:"config"`
 }
 
 type Packages struct {
@@ -64,6 +65,18 @@ type Theme struct {
 type Plugins struct {
 	Items []Plugin `json:"plugins" toml:"plugin"`
 }
+
+type Configs struct {
+	Files []ConfigFile `json:"files" toml:"file"`
+}
+
+type ConfigFile struct {
+	ID           string `json:"id" toml:"id"`
+	Path         string `json:"path" toml:"path"`
+	Hash         string `json:"hash" toml:"hash"`
+	BaselineHash string `json:"baseline_hash" toml:"baseline_hash"`
+}
+
 type Plugin struct {
 	ID         string `json:"id" toml:"id"`
 	Source     string `json:"source,omitempty" toml:"source,omitempty"`
@@ -79,6 +92,7 @@ type Data struct {
 	Packages Packages `json:"packages"`
 	Themes   Themes   `json:"themes"`
 	Plugins  Plugins  `json:"plugins"`
+	Config   Configs  `json:"config"`
 }
 
 func New(name string, now time.Time) Data {
@@ -94,8 +108,12 @@ func Load(dir string) (Data, error) {
 	if err := toml.Unmarshal(b, &d.Manifest); err != nil {
 		return d, fmt.Errorf("parse profile.toml: %w", err)
 	}
-	if d.Manifest.Schema != Schema {
+	loadedSchema := d.Manifest.Schema
+	if loadedSchema != 1 && loadedSchema != Schema {
 		return d, fmt.Errorf("unsupported profile schema %d (supported: %d)", d.Manifest.Schema, Schema)
+	}
+	if loadedSchema == 1 {
+		d.Manifest.Schema = Schema
 	}
 	d.Packages.Official, err = readList(filepath.Join(dir, "packages", "official.txt"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -129,6 +147,16 @@ func Load(dir string) (Data, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
+	if loadedSchema == Schema {
+		configs, err := os.ReadFile(filepath.Join(dir, "config", "config.toml"))
+		if err == nil {
+			if err := toml.Unmarshal(configs, &d.Config); err != nil {
+				return d, fmt.Errorf("parse config/config.toml: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
 	return d, nil
 }
 
@@ -138,6 +166,7 @@ func Save(dir string, d Data) error {
 	d.Packages.AUR = normalize(d.Packages.AUR)
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
+	sortConfigFiles(d.Config.Files)
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
@@ -145,6 +174,9 @@ func Save(dir string, d Data) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "plugins"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		return err
 	}
 	b, err := toml.Marshal(d.Manifest)
@@ -159,6 +191,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	configs, err := toml.Marshal(d.Config)
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -170,6 +206,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "packages", "excluded.txt"), []byte(joinList(d.Packages.Excluded))},
 		{filepath.Join(dir, "themes", "themes.toml"), themes},
 		{filepath.Join(dir, "plugins", "plugins.toml"), plugins},
+		{filepath.Join(dir, "config", "config.toml"), configs},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {
@@ -235,6 +272,21 @@ func normalize(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func sortConfigFiles(files []ConfigFile) {
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].ID != files[j].ID {
+			return files[i].ID < files[j].ID
+		}
+		if files[i].Path != files[j].Path {
+			return files[i].Path < files[j].Path
+		}
+		if files[i].Hash != files[j].Hash {
+			return files[i].Hash < files[j].Hash
+		}
+		return files[i].BaselineHash < files[j].BaselineHash
+	})
 }
 
 func joinList(items []string) string {
