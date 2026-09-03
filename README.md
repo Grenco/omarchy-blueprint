@@ -23,8 +23,9 @@ Customized Hyprland configuration files (`hypr/hyprland.lua`,
 captured as content together with the Omarchy baseline they were captured
 against. Restore writes a file only when the target is missing or still matches
 that baseline; otherwise it is skipped as migration-required or user drift, so
-unknown user work is never overwritten. Every write is backed up beside the
-restore journal and Hyprland is reloaded only after all writes succeed.
+unknown user work is never overwritten. Existing files are backed up beside the
+restore journal before replacement and Hyprland is reloaded only after all
+writes succeed.
 
 ## Requirements
 

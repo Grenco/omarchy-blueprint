@@ -341,3 +341,55 @@ func hashFile(t *testing.T, path string) string {
 	}
 	return hash
 }
+
+func TestExecutePreCanceledContextRunsNoOperations(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "saved")
+	destination := filepath.Join(dir, "config.lua")
+	if err := os.WriteFile(source, []byte("saved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceHash := hashFile(t, source)
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		ID: "config.write.hypr.bindings", File: &model.FileWrite{Source: source, Destination: destination, SourceHash: sourceHash, ExpectedMissing: true},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = Execute(ctx, delayedRunner{}, plan, journal, time.Now, time.Second, nil)
+	if err != context.Canceled {
+		t.Fatalf("err = %v want context.Canceled", err)
+	}
+	if _, statErr := os.Lstat(destination); !os.IsNotExist(statErr) {
+		t.Fatalf("destination must not exist after pre-cancel, statErr=%v", statErr)
+	}
+}
+
+func TestExecuteWaitsForInFlightOperationBeforeReturning(t *testing.T) {
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		ID: "validate.slow", Command: []string{"slow"},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := time.Now()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	_, err = Execute(ctx, delayedRunner{delay: 200 * time.Millisecond}, plan, journal, time.Now, 10*time.Millisecond, nil)
+	elapsed := time.Since(started)
+	if err != context.Canceled {
+		t.Fatalf("err = %v want context.Canceled", err)
+	}
+	if elapsed < 190*time.Millisecond {
+		t.Fatalf("Execute returned in %v; it must wait for the in-flight operation to finish", elapsed)
+	}
+}

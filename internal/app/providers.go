@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
@@ -30,6 +32,13 @@ type categoryStateProvider interface {
 	CategoryEnabled() bool
 }
 
+// stateEmptyer lets a provider report an empty captured state so it can
+// remain in the captured-provider list for labeling while its output field is
+// omitted from the machine-readable JSON envelope。
+type stateEmptyer interface {
+	Empty(any) bool
+}
+
 func stateProviders(deps Dependencies, opt *options) []stateProvider {
 	return []stateProvider{
 		packagesStateProvider{deps: deps},
@@ -48,6 +57,28 @@ func categoryProviderIDs(providers []stateProvider) []string {
 		}
 	}
 	return ids
+}
+
+func categoryProvider(providers []stateProvider, id string) (stateProvider, bool) {
+	for _, provider := range providers {
+		if provider.ID() == id {
+			return provider, true
+		}
+	}
+	return nil, false
+}
+
+func captureRequiredError(id string) error {
+	verb := "captured"
+	switch id {
+	case "themes":
+		return errors.New("theme state has not been captured; run capture themes first")
+	case "plugins":
+		return errors.New("plugin state has not been captured; run capture plugins first")
+	case "config":
+		return errors.New("config state has not been captured; run capture config first")
+	}
+	return fmt.Errorf("%s state has not been %s", id, verb)
 }
 
 func capturedProviders(providers []stateProvider, d profile.Data) []stateProvider {
@@ -84,7 +115,8 @@ func providerStateLabel(ids []string) string {
 	case 2:
 		return labels[0] + " and " + labels[1]
 	default:
-		return labels[0] + ", " + labels[1] + ", and " + labels[2]
+		head := strings.Join(labels[:len(labels)-1], ", ")
+		return head + ", and " + labels[len(labels)-1]
 	}
 }
 
@@ -97,7 +129,7 @@ func providerCheckLabel(id string) string {
 	case "plugins":
 		return "plugin discovery available"
 	case "config":
-		return "config roots available"
+		return "config state valid"
 	default:
 		return id + " discovery available"
 	}
@@ -328,6 +360,13 @@ func (configStateProvider) CategoryEnabled() bool { return true }
 
 func (configStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Config }
 
+func (configStateProvider) Empty(state any) bool {
+	if s, ok := state.(profile.Configs); ok {
+		return len(s.Files) == 0
+	}
+	return false
+}
+
 func (p configStateProvider) provider() (configprovider.Provider, error) {
 	baseline, user, err := p.deps.ConfigDirs()
 	return configprovider.Provider{UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
@@ -341,9 +380,6 @@ func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, [
 	current, err := provider.Capture()
 	if err != nil {
 		return nil, nil, err
-	}
-	if len(current.Files) == 0 {
-		return nil, nil, nil
 	}
 	changes := configprovider.DiffConfigs(d.Config, current)
 	d.Config = current
@@ -372,7 +408,11 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+	plan, err := provider.Plan(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return plan, nil
 }
 
 func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
@@ -387,7 +427,13 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.Ve
 	return configprovider.Verify(d.Config, current), nil
 }
 
-func (configStateProvider) Check(context.Context, profile.Data) error { return nil }
+func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
+	provider, err := p.provider()
+	if err != nil {
+		return err
+	}
+	return provider.Check(d.Config)
+}
 
 func captureProvider(ctx context.Context, provider stateProvider, d *profile.Data) (any, []model.Change, error) {
 	state, changes, err := provider.Capture(ctx, d)

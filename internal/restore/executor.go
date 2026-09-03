@@ -48,6 +48,9 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		return execution, err
 	}
 	for _, op := range plan.Operations {
+		if err := ctx.Err(); err != nil {
+			return execution, err
+		}
 		blocked := ""
 		for _, dependency := range op.DependsOn {
 			if failed[dependency] {
@@ -73,6 +76,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		}()
 		ticker := time.NewTicker(heartbeat)
 		var err error
+		cancelled := false
 	wait:
 		for {
 			select {
@@ -83,11 +87,21 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 				_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_PROGRESS", Operation: op.ID, Message: fmt.Sprintf("elapsed=%s", elapsed)})
 				notify(progress, Progress{Type: ProgressHeartbeat, Operation: op, Elapsed: elapsed})
 			case <-ctx.Done():
-				err = ctx.Err()
-				break wait
+				// Never abandon an in-flight mutation: commands honor the
+				// context and abort quickly, while local file writes finish
+				// their small atomic mutation before the journal closes.
+				if !cancelled {
+					cancelled = true
+					ticker.Stop()
+					_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_CANCELLING", Operation: op.ID, Message: "waiting for in-flight operation"})
+				}
 			}
 		}
 		ticker.Stop()
+		if cancelled {
+			notify(progress, Progress{Type: ProgressFailed, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
+			return execution, ctx.Err()
+		}
 		if err != nil {
 			failed[op.ID] = true
 			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_FAILED", Operation: op.ID, Message: err.Error()})

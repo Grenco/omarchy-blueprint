@@ -290,11 +290,20 @@ func savedConfig(hash, baselineHash string) profile.Configs {
 	}}}
 }
 
+func mustPlan(t *testing.T, p Provider, saved profile.Configs, current State) model.RestorePlan {
+	t.Helper()
+	plan, err := p.Plan(saved, current, 2, "1.0", "1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
 func TestPlanNoOpsWhenTargetMatchesDesired(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
 	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
-	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileCustomized, "customhash", "basehash"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("customhash", "basehash"), detected(FileCustomized, "customhash", "basehash"))
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -304,7 +313,7 @@ func TestPlanWritesMissingTargetWhenBaselineMatches(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
 	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
-	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileMissing, "", "basehash"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("customhash", "basehash"), detected(FileMissing, "", "basehash"))
 	if len(plan.Operations) != 2 {
 		t.Fatalf("operations = %#v", plan.Operations)
 	}
@@ -324,7 +333,7 @@ func TestPlanReplacesDefaultTargetWhenBaselineUnchanged(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
 	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
-	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileDefault, "basehash", "basehash"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("customhash", "basehash"), detected(FileDefault, "basehash", "basehash"))
 	if len(plan.Operations) != 2 {
 		t.Fatalf("operations = %#v", plan.Operations)
 	}
@@ -337,7 +346,7 @@ func TestPlanReplacesDefaultTargetWhenBaselineUnchanged(t *testing.T) {
 func TestPlanSkipsWhenBaselineChanged(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
-	plan := p.Plan(savedConfig("customhash", "oldbase"), detected(FileMissing, "", "newbase"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("customhash", "oldbase"), detected(FileMissing, "", "newbase"))
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; migration required" {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -346,7 +355,7 @@ func TestPlanSkipsWhenBaselineChanged(t *testing.T) {
 func TestPlanSkipsUserDrift(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
-	plan := p.Plan(savedConfig("savedhash", "basehash"), detected(FileCustomized, "userhash", "basehash"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("savedhash", "basehash"), detected(FileCustomized, "userhash", "basehash"))
 	if len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "existing user configuration differs; overwrite disabled" {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -355,7 +364,7 @@ func TestPlanSkipsUserDrift(t *testing.T) {
 func TestPlanSkipsUnsupportedConfig(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
-	plan := p.Plan(savedConfig("savedhash", "basehash"), detected(FileUnsupported, "", ""), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("savedhash", "basehash"), detected(FileUnsupported, "", ""))
 	if len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "config is no longer shipped by this Omarchy version" {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -364,7 +373,7 @@ func TestPlanSkipsUnsupportedConfig(t *testing.T) {
 func TestPlanSkipsMissingCapturedSource(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
-	plan := p.Plan(savedConfig("customhash", "basehash"), detected(FileMissing, "", "basehash"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("customhash", "basehash"), detected(FileMissing, "", "basehash"))
 	if len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "captured config file is missing from the profile" {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -373,7 +382,7 @@ func TestPlanSkipsMissingCapturedSource(t *testing.T) {
 func TestPlanOmitsReloadWithoutWrites(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	p := planProvider(user, base, profileDir)
-	plan := p.Plan(savedConfig("savedhash", "basehash"), detected(FileCustomized, "savedhash", "basehash"), 2, "1.0", "1.0")
+	plan := mustPlan(t, p, savedConfig("savedhash", "basehash"), detected(FileCustomized, "savedhash", "basehash"))
 	if len(plan.Operations) != 0 {
 		t.Fatalf("operations = %#v", plan.Operations)
 	}
@@ -423,5 +432,85 @@ func TestDiffBaselineOnlyChangeIsNotDrift(t *testing.T) {
 	current := State{Files: []DetectedFile{{ID: "hypr.bindings", Path: "hypr/bindings.lua", Status: FileCustomized, Hash: "saved", BaselineHash: "newbase"}}}
 	if changes := Diff(saved, current); len(changes) != 0 {
 		t.Fatalf("changes = %#v", changes)
+	}
+}
+
+func TestValidateRejectsUnknownIDWrongPathTraversalAndDuplicates(t *testing.T) {
+	specs := []Spec{{ID: "hypr.bindings", Path: "hypr/bindings.lua"}}
+	file := profile.ConfigFile{ID: "hypr.bindings", Path: "hypr/bindings.lua", Hash: "h", BaselineHash: "b"}
+	if err := Validate([]profile.ConfigFile{file}, specs); err != nil {
+		t.Fatalf("valid entry rejected: %v", err)
+	}
+	unknown := file
+	unknown.ID = "nope"
+	if err := Validate([]profile.ConfigFile{unknown}, specs); err == nil {
+		t.Fatal("unknown ID must be rejected")
+	}
+	wrongPath := file
+	wrongPath.Path = "../../../somewhere"
+	if err := Validate([]profile.ConfigFile{wrongPath}, specs); err == nil {
+		t.Fatal("wrong path for known ID must be rejected")
+	}
+	if err := Validate([]profile.ConfigFile{file, file}, specs); err == nil {
+		t.Fatal("duplicate ID must be rejected")
+	}
+}
+
+func TestPlanRejectsUnknownConfigID(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	configs := profile.Configs{Files: []profile.ConfigFile{{
+		ID: "hypr.nope", Path: "hypr/bindings.lua", Hash: "h", BaselineHash: "b",
+	}}}
+	if _, err := p.Plan(configs, State{}, 2, "1.0", "1.0"); err == nil {
+		t.Fatal("unknown config ID must fail planning")
+	}
+}
+
+func TestPlanRejectsTraversalPath(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	configs := profile.Configs{Files: []profile.ConfigFile{{
+		ID: "hypr.bindings", Path: "../../../etc/evil", Hash: "h", BaselineHash: "b",
+	}}}
+	if _, err := p.Plan(configs, State{}, 2, "1.0", "1.0"); err == nil {
+		t.Fatal("path traversal must fail planning")
+	}
+}
+
+func TestPlanDesiredStateShortCircuitsBaselineDrift(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
+	// Target already has exactly the desired content even though the Omarchy
+	// baseline has drifted; no migration is required to reach the goal.
+	plan := mustPlan(t, p, savedConfig("savedhash", "oldbase"), detected(FileCustomized, "savedhash", "newbase"))
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestCheckValidatesSnapshotsAndMetadata(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	p := planProvider(user, base, profileDir)
+	writeFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "custom")
+	writeFile(t, filepath.Join(profileDir, "config/baseline/hypr/bindings.lua"), "base")
+	configs := profile.Configs{Files: []profile.ConfigFile{{
+		ID: "hypr.bindings", Path: "hypr/bindings.lua",
+		Hash:         hashOf(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua")),
+		BaselineHash: hashOf(t, filepath.Join(profileDir, "config/baseline/hypr/bindings.lua")),
+	}}}
+	if err := p.Check(configs); err != nil {
+		t.Fatalf("valid profile rejected: %v", err)
+	}
+	corrupt := configs
+	corrupt.Files[0].Hash = "deadbeef"
+	if err := p.Check(corrupt); err == nil {
+		t.Fatal("hash mismatch must fail check")
+	}
+	badPath := configs
+	badPath.Files[0].Path = "../../evil"
+	if err := p.Check(badPath); err == nil {
+		t.Fatal("path validation must fail check")
 	}
 }

@@ -133,7 +133,8 @@ func rejectSpecial(info os.FileInfo, path string) error {
 }
 
 // Capture copies customized files (plus their baselines) into the profile
-// using a staged directory swap so a failure cannot corrupt the profile.
+// via a staged directory swap per tree. The two swaps and the later profile
+// metadata write are separate boundaries, not a single transaction.
 func (p Provider) Capture() (profile.Configs, error) {
 	state, err := p.Detect()
 	if err != nil {
@@ -305,9 +306,78 @@ func change(kind model.ChangeType, f DetectedFile, summary string) model.Change 
 	return model.Change{Type: kind, Provider: "config", Kind: "config", Name: f.ID, Summary: summary}
 }
 
+// Validate rejects a profile config entry unless its ID and path match
+// exactly one known spec, with no duplicate IDs, so profile metadata can
+// never choose arbitrary filesystem destinations during restore.
+func Validate(files []profile.ConfigFile, specs []Spec) error {
+	specsByID := map[string]Spec{}
+	for _, spec := range specs {
+		if _, dup := specsByID[spec.ID]; dup {
+			return fmt.Errorf("duplicate config spec id %q", spec.ID)
+		}
+		specsByID[spec.ID] = spec
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		spec, ok := specsByID[f.ID]
+		if !ok {
+			return fmt.Errorf("config %q: unknown id", f.ID)
+		}
+		if f.Path != spec.Path {
+			return fmt.Errorf("config %q has unexpected path %q; expected %q", f.ID, f.Path, spec.Path)
+		}
+		if seen[f.ID] {
+			return fmt.Errorf("duplicate config id %q in profile", f.ID)
+		}
+		seen[f.ID] = true
+	}
+	return nil
+}
+
+// Check validates the profile's config state: known ID/path pairs, regular
+// non-symlink snapshots, and content hashes matching the recorded metadata.
+
+func (p Provider) Check(saved profile.Configs) error {
+	if err := Validate(saved.Files, p.specs()); err != nil {
+		return err
+	}
+	specsByID := map[string]Spec{}
+	for _, spec := range p.specs() {
+		specsByID[spec.ID] = spec
+	}
+	for _, s := range saved.Files {
+		spec := specsByID[s.ID]
+		if err := checkSnapshot(filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(spec.Path)), s.Hash); err != nil {
+			return fmt.Errorf("config %s desired snapshot: %w", s.ID, err)
+		}
+		if err := checkSnapshot(filepath.Join(p.ProfileDir, "config", "baseline", filepath.FromSlash(spec.Path)), s.BaselineHash); err != nil {
+			return fmt.Errorf("config %s baseline snapshot: %w", s.ID, err)
+		}
+	}
+	return nil
+}
+
+func checkSnapshot(path, wantHash string) error {
+	hash, err := content.HashRegularFile(path)
+	if err != nil {
+		return err
+	}
+	if hash != wantHash {
+		return fmt.Errorf("hash mismatch (%s != %s)", hash, wantHash)
+	}
+	return nil
+}
+
 // Plan builds safe FileWrite operations using captured baselines as proof
 // that the target is not carrying unknown user work.
-func (p Provider) Plan(saved profile.Configs, current State, schema int, from, to string) model.RestorePlan {
+func (p Provider) Plan(saved profile.Configs, current State, schema int, from, to string) (model.RestorePlan, error) {
+	if err := Validate(saved.Files, p.specs()); err != nil {
+		return model.RestorePlan{}, err
+	}
+	specsByID := map[string]Spec{}
+	for _, spec := range p.specs() {
+		specsByID[spec.ID] = spec
+	}
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	detected := map[string]DetectedFile{}
 	for _, f := range current.Files {
@@ -315,7 +385,8 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 	}
 	var writeIDs []string
 	for _, s := range saved.Files {
-		resource := "config:" + s.Path
+		spec := specsByID[s.ID]
+		resource := "config:" + spec.Path
 		d, ok := detected[s.ID]
 		if !ok {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "unsupported config file"})
@@ -323,6 +394,9 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 		}
 		if d.Status == FileUnsupported {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "config is no longer shipped by this Omarchy version"})
+			continue
+		}
+		if d.Status == FileCustomized && d.Hash == s.Hash {
 			continue
 		}
 		if d.BaselineHash != s.BaselineHash {
@@ -340,14 +414,14 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "profile or user config root unavailable"})
 			continue
 		}
-		source := filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(s.Path))
+		source := filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(spec.Path))
 		if _, err := os.Lstat(source); err != nil {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "captured config file is missing from the profile"})
 			continue
 		}
 		write := model.FileWrite{
 			Source:       source,
-			Destination:  filepath.Join(p.UserRoot, filepath.FromSlash(s.Path)),
+			Destination:  filepath.Join(p.UserRoot, filepath.FromSlash(spec.Path)),
 			SourceHash:   s.Hash,
 			ExpectedHash: d.BaselineHash,
 			Backup:       true,
@@ -369,7 +443,7 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 			DependsOn: writeIDs, Risk: model.RiskLow, Reversible: false,
 		})
 	}
-	return plan
+	return plan, nil
 }
 
 func rewriteMissing(w model.FileWrite) model.FileWrite {

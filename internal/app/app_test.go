@@ -273,6 +273,9 @@ func TestThemeVerticalSlice(t *testing.T) {
 		Runner: runner, In: strings.NewReader(""), Now: time.Now,
 		StateHome: func() (string, error) { return stateDir, nil },
 		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+		ConfigDirs: func() (string, string, error) {
+			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
+		},
 	}
 	run := func(args ...string) (int, string, string) {
 		var out, stderr bytes.Buffer
@@ -282,7 +285,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, and plugin state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, and configuration state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
@@ -741,5 +744,81 @@ func TestConfigIncludedInAggregateRestore(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(userRoot, "hypr", "bindings.lua"))
 	if err != nil || string(b) != "custom" {
 		t.Fatalf("restored file = %q err=%v", b, err)
+	}
+}
+
+func TestAggregateCaptureKeepsConfigFlagWhenResetToBaseline(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture"); code != 0 {
+		t.Fatalf("capture code=%d err=%s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture"); code != 0 {
+		t.Fatalf("reset capture code=%d err=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Manifest.Capture.Config {
+		t.Fatal("capture.config must remain true after reset to baseline")
+	}
+	if len(d.Config.Files) != 0 {
+		t.Fatalf("config metadata must be cleared, got %#v", d.Config.Files)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua")); !os.IsNotExist(err) {
+		t.Fatal("stale captured snapshot must be removed")
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "config", "baseline", "hypr", "bindings.lua")); !os.IsNotExist(err) {
+		t.Fatal("stale baseline snapshot must be removed")
+	}
+}
+
+func TestAggregateCaptureMarksConfigBeforeCustomization(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if code, out := configRun(t, deps, profileDir, "capture"); code != 0 {
+		t.Fatalf("capture code=%d err=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Manifest.Capture.Config {
+		t.Fatal("aggregate capture must mark config as captured even with no customizations")
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "status", "config")
+	if code != 2 || !strings.Contains(out, "customized") {
+		t.Fatalf("later customization must surface as drift, code=%d out=%q", code, out)
+	}
+}
+
+func TestCheckValidatesConfigSnapshotIntegrity(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d err=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
+		t.Fatalf("check with valid snapshot code=%d err=%s", code, out)
+	}
+	// Corrupt the captured snapshot: check must now fail.
+	if err := os.WriteFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "check"); code != 1 || !strings.Contains(out, "desired snapshot") {
+		t.Fatalf("check with tampered snapshot code=%d out=%q", code, out)
 	}
 }
