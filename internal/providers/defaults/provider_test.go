@@ -145,24 +145,21 @@ func TestPlanSkipsAlreadyCorrectDefaults(t *testing.T) {
 
 func TestPlanEmitsOneNativeOperationPerDriftedDefault(t *testing.T) {
 	p := testProvider(nil, "")
-	saved := profile.Defaults{Terminal: "ghostty", Browser: "firefox", Editor: "zed", Agent: "codex"}
+	saved := profile.Defaults{Terminal: "ghostty", Browser: "firefox", Editor: "zed"}
 	current := profile.Defaults{Terminal: "foot", Browser: "firefox", Editor: "nvim"}
 	plan := p.Plan(saved, current, 3, "1.0", "1.0")
-	if len(plan.Operations) != 3 {
-		t.Fatalf("operations = %#v, want terminal+editor+agent", plan.Operations)
+	if len(plan.Operations) != 2 {
+		t.Fatalf("operations = %#v, want terminal+editor", plan.Operations)
 	}
 	byKind := map[string]model.Operation{}
 	for _, op := range plan.Operations {
 		byKind[op.Items[0]] = op
 	}
-	if cmd := byKind["terminal"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "terminal", "ghostty"}) {
-		t.Fatalf("terminal command = %v", cmd)
+	if cmd := byKind["terminal"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "terminal", "--install", "ghostty"}) {
+		t.Fatalf("terminal command = %v, want non-interactive install path", cmd)
 	}
-	if cmd := byKind["editor"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "editor", "zed"}) {
-		t.Fatalf("editor command = %v", cmd)
-	}
-	if cmd := byKind["agent"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "agent", "codex"}) {
-		t.Fatalf("agent command = %v", cmd)
+	if cmd := byKind["editor"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "editor", "--install", "zed"}) {
+		t.Fatalf("editor command = %v, want non-interactive install path", cmd)
 	}
 	for _, op := range plan.Operations {
 		if op.Risk != model.RiskLow {
@@ -171,6 +168,51 @@ func TestPlanEmitsOneNativeOperationPerDriftedDefault(t *testing.T) {
 		if op.Provider != "defaults" {
 			t.Fatalf("provider = %s", op.Provider)
 		}
+	}
+}
+
+func TestPlanDoesNotAutomaticallyLaunchAgent(t *testing.T) {
+	// omarchy default agent <name> ultimately launches the selected agent,
+	// so an automatic restore must never invoke it; the default is skipped
+	// until a set-only path exists.
+	p := testProvider(nil, "")
+	saved := profile.Defaults{Agent: "codex"}
+	current := profile.Defaults{}
+	plan := p.Plan(saved, current, 3, "1.0", "1.0")
+	if len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v, agent setter must never be planned", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "default:agent" {
+		t.Fatalf("skipped = %#v, want explicit agent skip", plan.Skipped)
+	}
+	if !strings.Contains(plan.Skipped[0].Reason, "launches the selected agent") {
+		t.Fatalf("reason = %q", plan.Skipped[0].Reason)
+	}
+}
+
+func TestPlanSkipsNonPortableDesktopValues(t *testing.T) {
+	p := testProvider(nil, "")
+	saved := profile.Defaults{Browser: "vivaldi-stable.desktop"}
+	current := profile.Defaults{Browser: "chromium"}
+	plan := p.Plan(saved, current, 3, "1.0", "1.0")
+	if len(plan.Operations) != 0 {
+		t.Fatalf("operations = %#v, raw desktop IDs must not be replayed", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "may not be portable") {
+		t.Fatalf("skipped = %#v", plan.Skipped)
+	}
+}
+
+func TestWarnFlagsNonPortableDesktopValues(t *testing.T) {
+	warnings := Warn(profile.Defaults{Terminal: "foot", Browser: "vivaldi-stable.desktop"})
+	if len(warnings) != 1 || warnings[0].Name != "browser" {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if warnings[0].Type != model.ChangeWarn || !strings.Contains(warnings[0].Summary, "may not be portable") {
+		t.Fatalf("warning = %#v", warnings[0])
+	}
+	if warnings := Warn(profile.Defaults{Terminal: "foot", Browser: "firefox"}); len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, managed values must not warn", warnings)
 	}
 }
 
@@ -208,5 +250,15 @@ func TestVerifyUnmanagedKindNeverFails(t *testing.T) {
 	result := Verify(saved, current)
 	if !result.OK {
 		t.Fatalf("extra current default must not fail verification: %#v", result)
+	}
+}
+
+func TestVerifyIgnoresValuesRestoreCannotSet(t *testing.T) {
+	// Agent and non-portable values are skipped by Plan; verification must
+	// not demand them either, or every restore would fail permanently.
+	saved := profile.Defaults{Terminal: "foot", Agent: "codex", Browser: "vivaldi-stable.desktop"}
+	current := profile.Defaults{Terminal: "foot"}
+	if result := Verify(saved, current); !result.OK {
+		t.Fatalf("result = %#v, agent and non-portable values must not fail verification", result)
 	}
 }

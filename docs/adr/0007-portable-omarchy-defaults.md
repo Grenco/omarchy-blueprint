@@ -46,17 +46,35 @@ Diff compares the saved desired values against the live machine state:
 
 ## Restore
 
-Plan emits one `omarchy default <kind> <value>` operation per drifted managed
-default, classified low risk. An empty saved value produces no operation.
-Omarchy validates values and handles install-if-necessary (notably for the
-default agent through its mise integration); Blueprint detects and replays and
-never maintains its own allowlist of valid choices, because Omarchy's supported
-set evolves.
+Plan emits one `omarchy default <kind> --install <value>` operation per drifted
+managed default, classified low risk. The `--install` form performs a direct,
+non-interactive installation instead of Omarchy's floating presentation UI, so
+aggregate restore stays properly CLI-driven. An empty saved value produces no
+operation. Omarchy validates values and handles installation; Blueprint
+detects and replays and never maintains its own allowlist of valid choices,
+because Omarchy's supported set evolves.
 
-Restore is additive: the provider never unsets a default the user selected on
-the target machine. Verification is asymmetric like packages — every managed
-default must match its desired value, but an extra machine-selected default
-shows up as status drift without failing restore verification.
+Two kinds are deliberately excluded from automatic restore:
+
+- **agent** — Omarchy's agent setter ultimately launches the selected agent
+  (`exec omarchy-agent`), so an automatic restore must never invoke it. The
+  desired agent is still captured, diffed, and verified, but planning skips it
+  with `Omarchy's agent setter launches the selected agent; automatic set-only
+  restore is not currently safe`. If Omarchy later gains a set-only mode, this
+  skip can become an operation.
+
+- **raw `.desktop` values** — Omarchy's getters fall back to the raw desktop
+  ID for applications they do not manage (e.g. a manually configured Vivaldi),
+  while the setters reject those values. They are captured and shown with a
+  `may not be portable` warning, and restore skips them instead of replaying a
+  value Omarchy would refuse.
+
+Restore remains additive: the provider never unsets a default the user
+selected on the target machine. Verification is asymmetric like packages and
+enforces only what restore can actually set: agent and non-portable values are
+excluded from verification (they remain visible as status/diff drift), every
+other managed default must match its desired value, and an extra
+machine-selected default never fails restore verification.
 
 ## CLI
 

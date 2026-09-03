@@ -235,6 +235,48 @@ func TestValidateRejectsSchema1AfterMigration(t *testing.T) {
 	}
 }
 
+func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
+	// Loader thresholds must reference the schema version that introduced a
+	// provider's state, never the latest Schema constant, so future schema
+	// bumps do not silently drop existing provider state.
+	if configSchema != 2 || defaultsSchema != 3 {
+		t.Fatalf("introduction versions = config:%d defaults:%d", configSchema, defaultsSchema)
+	}
+	if defaultsSchema != Schema {
+		t.Fatalf("defaultsSchema %d must be updated together with Schema %d", defaultsSchema, Schema)
+	}
+}
+
+func TestLoadCapturedDefaultsRequiresDefaultsFile(t *testing.T) {
+	dir := t.TempDir()
+	profileTOML := `schema = 3
+
+[profile]
+name = "broken"
+created_at = 2026-09-03T12:00:00Z
+updated_at = 2026-09-03T12:00:00Z
+
+[capture]
+defaults = true
+`
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("capture.defaults = true with missing defaults/defaults.toml must fail to load")
+	} else if !strings.Contains(err.Error(), "defaults/defaults.toml is missing") {
+		t.Fatalf("err = %v", err)
+	}
+	// A profile that never captured defaults loads fine without the file.
+	ok := strings.Replace(profileTOML, "defaults = true", "defaults = false", 1)
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(ok), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err != nil {
+		t.Fatalf("uncaptured defaults must load without the file: %v", err)
+	}
+}
+
 func TestLoadRejectsUnsupportedSchema(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte("schema = 99\n"), 0o644); err != nil {

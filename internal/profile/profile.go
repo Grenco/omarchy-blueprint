@@ -12,7 +12,16 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// Schema is the profile schema version written by Save.
 const Schema = 3
+
+// The schema version that introduced each provider's profile state. Loader
+// thresholds must use these — not Schema — so older profiles keep loading
+// their state as new schema versions arrive.
+const (
+	configSchema   = 2
+	defaultsSchema = 3
+)
 
 type Manifest struct {
 	Schema  int         `toml:"schema"`
@@ -158,7 +167,7 @@ func Load(dir string) (Data, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
-	if loadedSchema >= 2 {
+	if loadedSchema >= configSchema {
 		configs, err := os.ReadFile(filepath.Join(dir, "config", "config.toml"))
 		if err == nil {
 			if err := toml.Unmarshal(configs, &d.Config); err != nil {
@@ -168,8 +177,11 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
-	if loadedSchema >= Schema {
+	if loadedSchema >= defaultsSchema {
 		defaults, err := os.ReadFile(filepath.Join(dir, "defaults", "defaults.toml"))
+		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Defaults {
+			return d, errors.New("defaults state marked captured but defaults/defaults.toml is missing")
+		}
 		if err == nil {
 			if err := toml.Unmarshal(defaults, &d.Defaults); err != nil {
 				return d, fmt.Errorf("parse defaults/defaults.toml: %w", err)

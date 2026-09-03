@@ -28,10 +28,15 @@ restore journal before replacement and Hyprland is reloaded only after all
 writes succeed.
 
 Omarchy's semantic default applications — terminal, browser, editor, and
-agent — are captured as plain values in `defaults/defaults.toml` and restored
-through `omarchy default <kind> <value>`. Unset defaults carry no desired
-state, restore never unsets a machine-selected default, and Omarchy itself
-validates values (including install-if-necessary for the default agent).
+agent — are captured as plain values in `defaults/defaults.toml`. Restore
+replays drifted values through `omarchy default <kind> --install <value>`, a
+non-interactive path, and Omarchy itself validates the values. Unset defaults
+carry no desired state, restore never unsets a machine-selected default, and
+values Omarchy does not manage (raw `.desktop` IDs) are captured with a
+portability warning but skipped by restore. The default agent is captured,
+diffed, and verified, but never set automatically: Omarchy's agent setter
+launches the selected agent, so restore reports it as skipped until a set-only
+path exists.
 
 ## Requirements
 
@@ -201,5 +206,7 @@ omarchy-blueprint --profile ~/omarchy-profile restore defaults
   baseline is skipped, never overwritten.
 - Hyprland is reloaded only after every config write succeeds.
 - Defaults restore replays captured values through Omarchy's own
-  `omarchy default <kind> <value>` commands; Omarchy validates values and
-  Blueprint never maintains its own allowlist of valid choices.
+  `omarchy default <kind> --install <value>` commands; Omarchy validates
+  values and Blueprint never maintains its own allowlist of valid choices.
+- The default agent is never set automatically: Omarchy's agent setter
+  launches the selected agent, so restore skips it with an explicit reason.

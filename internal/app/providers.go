@@ -472,6 +472,7 @@ func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data) (an
 		return nil, nil, err
 	}
 	changes := defaultsprovider.Diff(d.Defaults, current)
+	changes = append(changes, defaultsprovider.Warn(current)...)
 	d.Defaults = current
 	d.Manifest.Capture.Defaults = true
 	return current, changes, nil

@@ -70,6 +70,13 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		}
 		return "", nil
 	}
+	if len(args) == 4 && name == "omarchy" && args[0] == "default" && args[2] == "--install" {
+		if r.defaults == nil {
+			r.defaults = map[string]string{}
+		}
+		r.defaults[args[1]] = args[3]
+		return "", nil
+	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "default" {
 		if r.defaults == nil {
 			r.defaults = map[string]string{}

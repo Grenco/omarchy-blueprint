@@ -98,11 +98,33 @@ func Diff(saved, current profile.Defaults) []model.Change {
 
 // Plan emits one native Omarchy operation per drifted managed default. An
 // empty saved value has no desired state, so it never produces an operation.
+//
+// Two kinds are deliberately excluded from automatic restore:
+//
+//   - agent: Omarchy's agent setter ultimately launches the selected agent,
+//     so an automatic restore must never invoke it;
+//   - raw .desktop values: Omarchy's getters fall back to the desktop ID for
+//     unmanaged applications, which its setters reject; they are skipped as
+//     non-portable instead of being replayed.
 func (p Provider) Plan(saved, current profile.Defaults, schema int, from, to string) model.RestorePlan {
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	for _, kind := range kinds {
 		desired := valueOf(saved, kind)
 		if desired == "" || desired == valueOf(current, kind) {
+			continue
+		}
+		if kind == "agent" {
+			plan.Skipped = append(plan.Skipped, model.Skipped{
+				Provider: "defaults", Resource: "default:agent",
+				Reason: "Omarchy's agent setter launches the selected agent; automatic set-only restore is not currently safe",
+			})
+			continue
+		}
+		if !Portable(desired) {
+			plan.Skipped = append(plan.Skipped, model.Skipped{
+				Provider: "defaults", Resource: "default:" + kind,
+				Reason: fmt.Sprintf("%q is not an Omarchy-managed default and may not be portable", desired),
+			})
 			continue
 		}
 		plan.Operations = append(plan.Operations, model.Operation{
@@ -111,22 +133,52 @@ func (p Provider) Plan(saved, current profile.Defaults, schema int, from, to str
 			Action:   "set",
 			Resource: "default:" + kind,
 			Items:    []string{kind},
-			Command:  []string{"omarchy", "default", kind, desired},
+			Command:  []string{"omarchy", "default", kind, "--install", desired},
 			Risk:     model.RiskLow,
 		})
 	}
 	return plan
 }
 
-// Verify checks every managed default against the desired value. Unmanaged
+// Portable reports whether a captured default value can be replayed by
+// Omarchy's setters. Omarchy's getters fall back to the raw desktop ID for
+// applications they do not manage, and those values are never accepted by the
+// setters. Blueprint deliberately keeps no allowlist of Omarchy's choices.
+func Portable(value string) bool {
+	return value != "" && !strings.HasSuffix(value, ".desktop")
+}
+
+// Warn surfaces captured values that Omarchy returned as raw desktop IDs;
+// they are visible drift but restore will skip them as non-portable.
+func Warn(current profile.Defaults) []model.Change {
+	var warnings []model.Change
+	for _, kind := range kinds {
+		value := valueOf(current, kind)
+		if value != "" && !Portable(value) {
+			warnings = append(warnings, model.Change{
+				Type: model.ChangeWarn, Provider: "defaults", Kind: "default", Name: kind,
+				Summary: fmt.Sprintf("! default %s: %q is not an Omarchy-managed default and may not be portable", kind, value),
+			})
+		}
+	}
+	return warnings
+}
+
+// Verify checks every automatically-settable managed default against the
+// desired value. Agent and non-portable values are excluded: restore
+// deliberately cannot set them, so they must not fail verification. Unmanaged
 // kinds and extra machine defaults never fail verification.
 func Verify(saved, current profile.Defaults) model.VerificationResult {
 	var missing []string
 	for _, kind := range kinds {
 		desired := valueOf(saved, kind)
-		if desired != "" && desired != valueOf(current, kind) {
-			missing = append(missing, "default:"+kind)
+		if desired == "" || desired == valueOf(current, kind) {
+			continue
 		}
+		if kind == "agent" || !Portable(desired) {
+			continue
+		}
+		missing = append(missing, "default:"+kind)
 	}
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
 }

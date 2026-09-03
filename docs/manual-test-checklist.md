@@ -110,9 +110,22 @@
 - Confirm `restore defaults --dry-run` produces no agent operation.
 - Confirm aggregate `capture`, `status`, `diff`, and `restore --dry-run` include defaults alongside the other providers.
 
-### Agent reconstruction
+### Agent safety
 
-- On a machine without the captured agent installed, run `restore defaults --yes` and confirm `omarchy default agent <value>` installs it if necessary through Omarchy and sets it as default.
+- Capture a profile with a default agent selected, then run `restore defaults --dry-run` on a machine where the agent default differs or is unset.
+- Confirm restore produces NO agent operation and instead shows:
+  `- skip default:agent (Omarchy's agent setter launches the selected agent; automatic set-only restore is not currently safe)`.
+- Confirm `status defaults`/`diff defaults` still report the agent drift, and `restore defaults --yes` succeeds (verification ignores the agent because restore cannot set it).
+
+### Non-portable values
+
+- Manually set the system browser to an application Omarchy does not manage (raw `.desktop` ID) before capture.
+- Confirm capture records the value with a `may not be portable` warning.
+- Confirm `restore defaults --dry-run` skips the kind with the portability reason instead of replaying a value Omarchy would reject.
+
+### Profile integrity
+
+- Mark `capture.defaults = true` in profile.toml but delete `defaults/defaults.toml`; confirm any command loading the profile fails with `defaults state marked captured but defaults/defaults.toml is missing`.
 
 ### Cross-machine validation
 
