@@ -22,7 +22,7 @@
 - Confirm a first-party plugin missing in a different Omarchy version is skipped with a clear explanation.
 - Re-run `status plugins` after restore and confirm it is clean.
 
-## Third-party plugins (next slice)
+## Third-party plugins
 
 - Capture a clean Git-installed plugin and verify its public URL, exact revision, and enabled state.
 - Confirm credentials embedded in an HTTPS Git remote are never written to the profile.
@@ -36,6 +36,57 @@
 - Confirm an existing plugin with different content or provenance is reported and never overwritten.
 - Confirm additional target-machine plugins remain installed.
 - Confirm failures for one plugin do not prevent independent plugins from restoring.
+
+## Portable Hyprland configuration
+
+### Same-machine capture and status
+
+- With all four files at their Omarchy defaults, run `capture config` and confirm nothing is stored under `config/files/` and `config/config.toml` has no entries.
+- Customize one file and re-run `capture config`; confirm `config/files/<path>` matches and `config/config.toml` records desired and baseline hashes.
+- After capture, `status config` and `diff config` report no drift.
+- Change a captured file on the machine and confirm `status config` reports the modify with the file path.
+
+### Reset and restore
+
+- Reset a captured file to its Omarchy default and run `capture config`; confirm the stale snapshot under `config/files/` and its metadata entry are removed.
+- Delete a captured target file so it is missing, then run `restore config --dry-run` and confirm a medium-risk write plus a final `hyprctl reload`.
+- Approve the restore and confirm the target is rewritten, the reload runs, the restore journal is written, and a backup exists beside the journal.
+- Re-run `status config` and confirm it is clean.
+- Run `status config`, `restore config --yes` again and confirm "no changes".
+
+### Baseline drift
+
+- Edit the Omarchy baseline for a captured file on the target (simulate an Omarchy upgrade) so its hash no longer matches `config/config.toml`.
+- Run `restore config --dry-run` and confirm `Omarchy baseline changed; migration required` with no write.
+- Confirm nothing on the machine was modified.
+
+### User drift
+
+- Put content that matches neither the baseline nor the desired file in a captured target.
+- Run `status config` and confirm drift is reported.
+- Run `restore config --dry-run` and confirm `existing user configuration differs; overwrite disabled`.
+- Confirm restore with `--yes` still refuses to touch the drifted file.
+
+### Symlink and special-file rejection
+
+- Replace a baseline or user config file with a symlink and confirm `capture config`/`detect` rejects it without partial profile files.
+- Confirm a FIFO or other special file is likewise rejected.
+
+### Backup recovery
+
+- After a config restore, confirm the replaced file exists in the `<journal>.backup/` directory.
+- Manually restore the backup file and confirm the machine returns to its prior state.
+
+### Aggregate flows
+
+- With packages, themes, plugins, and config captured, run aggregate `status`, `diff`, and `restore --dry-run` and confirm config appears alongside the other providers.
+- Run aggregate `restore --yes` and confirm one approval, one journal, and one summary cover every provider.
+- Force a reload failure and confirm the failed op is reported and the summary lists failures while independent operations completed.
+
+### Cross-machine validation
+
+- Clone the profile to a second Omarchy machine (same version) and confirm `capture`-time baseline hashes match, then restore missing targets and verify `status config` is clean.
+- On a second machine with a different Omarchy baseline, confirm restore skips with the migration-required message rather than overwriting.
 
 ## Aggregate cross-machine workflow
 

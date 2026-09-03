@@ -14,25 +14,26 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/graeme/omarchy-blueprint/internal/command"
-	"github.com/graeme/omarchy-blueprint/internal/model"
-	"github.com/graeme/omarchy-blueprint/internal/omarchy"
-	"github.com/graeme/omarchy-blueprint/internal/profile"
-	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
-	pluginsprovider "github.com/graeme/omarchy-blueprint/internal/providers/plugins"
-	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
-	"github.com/graeme/omarchy-blueprint/internal/restore"
+	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
+	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 type Dependencies struct {
-	Runner    command.Runner
-	In        io.Reader
-	Out       io.Writer
-	Err       io.Writer
-	Now       func() time.Time
-	StateHome func() (string, error)
-	ThemeDirs func() (builtin, user string, err error)
-	PluginDir func() (string, error)
+	Runner     command.Runner
+	In         io.Reader
+	Out        io.Writer
+	Err        io.Writer
+	Now        func() time.Time
+	StateHome  func() (string, error)
+	ThemeDirs  func() (builtin, user string, err error)
+	PluginDir  func() (string, error)
+	ConfigDirs func() (baseline, user string, err error)
 }
 
 type options struct {
@@ -68,6 +69,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.PluginDir == nil {
 		deps.PluginDir = defaultPluginDir
+	}
+	if deps.ConfigDirs == nil {
+		deps.ConfigDirs = defaultConfigDirs
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -126,7 +130,8 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
-	return &cobra.Command{Use: "capture [packages|themes|plugins]", Args: supportedCategory, Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	providers := stateProviders(deps, opt)
+	return &cobra.Command{Use: "capture [packages|themes|plugins|config]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -134,163 +139,58 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 		if len(args) == 0 {
 			return captureAll(cmd.Context(), deps, opt, d)
 		}
-		if selectedCategory(args) == "themes" {
-			return captureThemes(cmd.Context(), deps, opt, d)
+		provider, ok := categoryProvider(providers, selectedCategory(args))
+		if !ok {
+			return fmt.Errorf("unknown category %s", selectedCategory(args))
 		}
-		if selectedCategory(args) == "plugins" {
-			return capturePlugins(cmd.Context(), deps, opt, d)
-		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
-		}
-		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
-		if err != nil {
-			return err
-		}
-		provider := packagesprovider.Provider{Runner: deps.Runner}
-		current, err := provider.Detect(cmd.Context())
-		if err != nil {
-			return err
-		}
-		current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
-		changes := packagesprovider.Diff(d.Packages, current)
-		d.Packages = current
-		d.Manifest.Capture.Packages = true
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		d.Manifest.Omarchy.CapturedVersion = info.Version
-		d.Manifest.Omarchy.Channel = info.Channel
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
-		}
-		return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "packages": current}, renderChanges("Captured package state", changes))
+		return captureProviders(cmd.Context(), deps, opt, d, []stateProvider{provider})
 	}}
 }
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
-	use, short := "status [packages|themes|plugins]", "Show profile drift"
+	providers := stateProviders(deps, opt)
+	use, short := "status [packages|themes|plugins|config]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages|themes|plugins]", "Show semantic differences"
+		use, short = "diff [packages|themes|plugins|config]", "Show semantic differences"
 	}
-	return &cobra.Command{Use: use, Args: supportedCategory, Short: short, RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		if len(args) == 0 && (d.Manifest.Capture.Themes || d.Manifest.Capture.Plugins) {
-			return statusAll(cmd.Context(), deps, opt, d, diff)
+		if len(args) == 0 {
+			return statusAll(cmd.Context(), deps, opt, d, providers, diff)
 		}
-		if selectedCategory(args) == "themes" {
-			return statusThemes(cmd.Context(), deps, opt, d, diff)
+		provider, ok := categoryProvider(providers, selectedCategory(args))
+		if !ok {
+			return fmt.Errorf("unknown category %s", selectedCategory(args))
 		}
-		if selectedCategory(args) == "plugins" {
-			return statusPlugins(cmd.Context(), deps, opt, d, diff)
+		if !provider.Captured(d) {
+			return captureRequiredError(provider.ID())
 		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
-		}
-		current, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(cmd.Context())
-		if err != nil {
-			return err
-		}
-		changes := packagesprovider.Diff(d.Packages, current)
-		title := "Profile matches this machine"
-		if diff {
-			title = "Package differences"
-		}
-		if len(changes) > 0 && !diff {
-			title = fmt.Sprintf("%d package differences", len(changes))
-		}
-		if err := emit(deps.Out, opt.json, strings.Fields(use)[0], true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
-			return err
-		}
-		if len(changes) > 0 {
-			return driftError{}
-		}
-		return nil
+		return statusAll(cmd.Context(), deps, opt, d, []stateProvider{provider}, diff)
 	}}
 }
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes bool
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins]", Args: supportedCategory, Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	providers := stateProviders(deps, opt)
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		if len(args) == 0 && (d.Manifest.Capture.Themes || d.Manifest.Capture.Plugins) {
-			return restoreAll(cmd.Context(), deps, opt, d, dryRun, yes)
+		if len(args) == 0 {
+			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes)
 		}
-		if selectedCategory(args) == "themes" {
-			return restoreThemes(cmd.Context(), deps, opt, d, dryRun, yes)
+		provider, ok := categoryProvider(providers, selectedCategory(args))
+		if !ok {
+			return fmt.Errorf("unknown category %s", selectedCategory(args))
 		}
-		if selectedCategory(args) == "plugins" {
-			return restorePlugins(cmd.Context(), deps, opt, d, dryRun, yes)
+		if !provider.Captured(d) {
+			return captureRequiredError(provider.ID())
 		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
-		}
-		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
-		if err != nil {
-			return err
-		}
-		provider := packagesprovider.Provider{Runner: deps.Runner}
-		current, err := provider.Detect(cmd.Context())
-		if err != nil {
-			return err
-		}
-		plan := packagesprovider.Plan(d.Packages, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-		if dryRun {
-			return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
-		}
-		if len(plan.Operations) == 0 {
-			human := renderPlan(plan, false) + "All desired packages are installed. No changes applied.\n"
-			return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": model.VerificationResult{OK: true}}, human)
-		}
-		if !yes {
-			if opt.json {
-				return errors.New("restore with --json requires --yes or --dry-run")
-			}
-			fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
-			answer, _ := bufio.NewReader(deps.In).ReadString('\n')
-			if strings.ToLower(strings.TrimSpace(answer)) != "y" && strings.ToLower(strings.TrimSpace(answer)) != "yes" {
-				return errors.New("restore cancelled")
-			}
-		}
-		stateHome, err := deps.StateHome()
-		if err != nil {
-			return err
-		}
-		journal, err := restore.NewJournal(stateHome, deps.Now())
-		if err != nil {
-			return fmt.Errorf("create restore journal: %w", err)
-		}
-		defer journal.Close()
-		var progress restore.ProgressFunc
-		if !opt.json {
-			progress = func(event restore.Progress) { renderProgress(deps.Out, event) }
-		}
-		execution, err := restore.Execute(cmd.Context(), deps.Runner, plan, journal, deps.Now, 5*time.Second, progress)
-		if err != nil {
-			return err
-		}
-		current, err = provider.Detect(cmd.Context())
-		if err != nil {
-			return fmt.Errorf("verify restore: %w", err)
-		}
-		verification := packagesprovider.Verify(d.Packages, current)
-		_ = journal.Write(restore.Event{Time: deps.Now().UTC(), Type: "VERIFY_COMPLETED", Message: fmt.Sprintf("ok=%t", verification.OK)})
-		if len(execution.Failed) > 0 {
-			if opt.json {
-				_ = emit(deps.Out, true, "restore", false, map[string]any{"plan": plan, "execution": execution, "verification": verification, "journal": journal.Path}, "")
-			} else {
-				renderRestoreFailures(deps.Out, execution, verification, journal.Path)
-			}
-			return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
-		}
-		if !verification.OK {
-			return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
-		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes)
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the restore plan without changing the machine")
 	cmd.Flags().BoolVar(&yes, "yes", false, "approve the restore non-interactively")
@@ -298,6 +198,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func checkCommand(deps Dependencies, opt *options) *cobra.Command {
+	providers := stateProviders(deps, opt)
 	return &cobra.Command{Use: "check", Args: cobra.NoArgs, Short: "Validate the profile and environment", RunE: func(cmd *cobra.Command, _ []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
@@ -306,36 +207,19 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err := profile.Validate(d); err != nil {
 			return err
 		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
-		}
 		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
 		if err != nil {
 			return err
 		}
-		if _, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(cmd.Context()); err != nil {
-			return err
-		}
-		checks := []string{"profile valid", "schema supported", "Omarchy compatible", "package discovery available"}
-		if d.Manifest.Capture.Themes {
-			provider, err := themeProvider(deps, opt)
-			if err != nil {
-				return err
+		checks := []string{"profile valid", "schema supported", "Omarchy compatible"}
+		for _, provider := range providers {
+			if !provider.Captured(d) {
+				continue
 			}
-			if _, err := provider.Detect(cmd.Context()); err != nil {
-				return err
+			if err := provider.Check(cmd.Context(), d); err != nil {
+				return fmt.Errorf("check %s: %w", provider.ID(), err)
 			}
-			checks = append(checks, "theme discovery available")
-		}
-		if d.Manifest.Capture.Plugins {
-			p, err := pluginProvider(deps, opt)
-			if err != nil {
-				return err
-			}
-			if _, err := p.Detect(cmd.Context()); err != nil {
-				return err
-			}
-			checks = append(checks, "plugin discovery available")
+			checks = append(checks, providerCheckLabel(provider.ID()))
 		}
 		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
 		if len(d.Packages.Excluded) > 0 {
@@ -381,11 +265,27 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 	}}
 }
 
-func supportedCategory(_ *cobra.Command, args []string) error {
-	if len(args) > 1 || (len(args) == 1 && args[0] != "packages" && args[0] != "themes" && args[0] != "plugins") {
-		return errors.New("category must be packages, themes, or plugins")
+func supportedCategory(providers []stateProvider) cobra.PositionalArgs {
+	allowedIDs := categoryProviderIDs(providers)
+	allowed := strings.Join(allowedIDs, ", ")
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) > 1 {
+			return fmt.Errorf("category must be %s", allowed)
+		}
+		if len(args) == 1 {
+			valid := false
+			for _, id := range allowedIDs {
+				if args[0] == id {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return fmt.Errorf("category must be %s", allowed)
+			}
+		}
+		return nil
 	}
-	return nil
 }
 
 func selectedCategory(args []string) string {
@@ -410,6 +310,18 @@ func defaultPluginDir() (string, error) {
 	}
 	return filepath.Join(home, ".config", "omarchy", "plugins"), nil
 }
+
+func defaultConfigDirs() (string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	omarchyRoot := os.Getenv("OMARCHY_PATH")
+	if omarchyRoot == "" {
+		omarchyRoot = "/usr/share/omarchy"
+	}
+	return filepath.Join(omarchyRoot, "config"), filepath.Join(home, ".config"), nil
+}
 func pluginProvider(deps Dependencies, opt *options) (pluginsprovider.Provider, error) {
 	dir, err := deps.PluginDir()
 	return pluginsprovider.Provider{Runner: deps.Runner, UserDir: dir, ProfileDir: opt.profileDir}, err
@@ -420,152 +332,52 @@ func themeProvider(deps Dependencies, opt *options) (themesprovider.Provider, er
 	return themesprovider.Provider{Runner: deps.Runner, BuiltinDir: builtin, UserDir: user, ProfileDir: opt.profileDir}, err
 }
 
-func captureThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
-	p, err := themeProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	current, err := p.Capture(ctx)
-	if err != nil {
-		return err
-	}
-	info, err := omarchy.Detect(ctx, deps.Runner)
-	if err != nil {
-		return err
-	}
-	changes := themesprovider.Diff(d.Themes, current)
-	d.Themes, d.Manifest.Capture.Themes, d.Manifest.Profile.UpdatedAt = current, true, deps.Now().UTC()
-	d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
-	if err := profile.Save(opt.profileDir, d); err != nil {
-		return fmt.Errorf("save profile: %w", err)
-	}
-	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "themes": current}, renderChanges("Captured theme state", changes))
-}
-
 func captureAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return err
-	}
+	return captureProviders(ctx, deps, opt, d, stateProviders(deps, opt))
+}
+
+func captureProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider) error {
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
 	}
-	packages, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(ctx)
-	if err != nil {
-		return err
+	data := map[string]any{}
+	var changes []model.Change
+	var captured []string
+	for _, provider := range providers {
+		state, providerChanges, err := captureProvider(ctx, provider, &d)
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			continue
+		}
+		captured = append(captured, provider.ID())
+		if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
+			data[provider.ID()] = state
+		}
+		changes = append(changes, providerChanges...)
 	}
-	packages = packagesprovider.ApplyExclusions(packages, d.Packages.Excluded)
-	themeProvider, err := themeProvider(deps, opt)
-	if err != nil {
-		return err
+	data["changes"] = changes
+	if len(captured) > 0 {
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
 	}
-	themes, err := themeProvider.Capture(ctx)
-	if err != nil {
-		return err
-	}
-	pluginStateProvider, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	plugins, err := pluginStateProvider.Capture(ctx)
-	if err != nil {
-		return err
-	}
-	changes := packagesprovider.Diff(d.Packages, packages)
-	changes = append(changes, themesprovider.Diff(d.Themes, themes)...)
-	changes = append(changes, pluginsprovider.Diff(d.Plugins, plugins)...)
-	d.Packages, d.Themes = packages, themes
-	d.Plugins = plugins
-	d.Manifest.Capture.Packages, d.Manifest.Capture.Themes, d.Manifest.Capture.Plugins = true, true, true
-	d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-	d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
-	if err := profile.Save(opt.profileDir, d); err != nil {
-		return fmt.Errorf("save profile: %w", err)
-	}
-	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "packages": packages, "themes": themes, "plugins": plugins}, renderChanges("Captured package, theme, and plugin state", changes))
+	return emit(deps.Out, opt.json, "capture", true, data, renderChanges("Captured "+providerStateLabel(captured)+" state", changes))
 }
 
-func capturePlugins(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
-	p, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	current, err := p.Capture(ctx)
-	if err != nil {
-		return err
-	}
-	changes := pluginsprovider.Diff(d.Plugins, current)
-	d.Plugins = current
-	d.Manifest.Capture.Plugins = true
-	d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-	if err := profile.Save(opt.profileDir, d); err != nil {
-		return fmt.Errorf("save profile: %w", err)
-	}
-	return emit(deps.Out, opt.json, "capture", true, map[string]any{"changes": changes, "plugins": current}, renderChanges("Captured plugin state", changes))
-}
-
-func statusThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {
-	if !d.Manifest.Capture.Themes {
-		return errors.New("theme state has not been captured; run capture themes first")
-	}
-	p, err := themeProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	current, err := p.Detect(ctx)
-	if err != nil {
-		return err
-	}
-	changes := themesprovider.Diff(d.Themes, current)
-	title := "Profile theme matches this machine"
-	if diff {
-		title = "Theme differences"
-	} else if len(changes) > 0 {
-		title = fmt.Sprintf("%d theme difference(s)", len(changes))
-	}
-	commandName := "status"
-	if diff {
-		commandName = "diff"
-	}
-	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
-		return err
-	}
-	if len(changes) > 0 {
-		return driftError{}
-	}
-	return nil
-}
-
-func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return err
-	}
-	packages, err := (packagesprovider.Provider{Runner: deps.Runner}).Detect(ctx)
-	if err != nil {
-		return err
-	}
-	changes := packagesprovider.Diff(d.Packages, packages)
-	if d.Manifest.Capture.Themes {
-		provider, err := themeProvider(deps, opt)
+func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
+	providers = capturedProviders(providers, d)
+	var changes []model.Change
+	for _, provider := range providers {
+		providerChanges, err := provider.Diff(ctx, d)
 		if err != nil {
-			return err
+			return fmt.Errorf("diff %s: %w", provider.ID(), err)
 		}
-		current, err := provider.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		changes = append(changes, themesprovider.Diff(d.Themes, current)...)
-	}
-	if d.Manifest.Capture.Plugins {
-		p, err := pluginProvider(deps, opt)
-		if err != nil {
-			return err
-		}
-		current, err := p.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		changes = append(changes, pluginsprovider.Diff(d.Plugins, current)...)
+		changes = append(changes, providerChanges...)
 	}
 	title := "Profile matches this machine"
 	if diff {
@@ -573,6 +385,14 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	} else if len(changes) > 0 {
 		title = fmt.Sprintf("%d profile difference(s)", len(changes))
 	}
+	if len(providers) == 1 && providers[0].ID() == "packages" {
+		title = "Profile matches this machine"
+		if diff {
+			title = "Package differences"
+		} else if len(changes) > 0 {
+			title = fmt.Sprintf("%d package differences", len(changes))
+		}
+	}
 	commandName := "status"
 	if diff {
 		commandName = "diff"
@@ -586,172 +406,40 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	return nil
 }
 
-func statusPlugins(ctx context.Context, deps Dependencies, opt *options, d profile.Data, diff bool) error {
-	if !d.Manifest.Capture.Plugins {
-		return errors.New("plugin state has not been captured; run capture plugins first")
-	}
-	p, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	current, err := p.Detect(ctx)
-	if err != nil {
-		return err
-	}
-	changes := pluginsprovider.Diff(d.Plugins, current)
-	title := "Profile plugins match this machine"
-	if diff {
-		title = "Plugin differences"
-	} else if len(changes) > 0 {
-		title = fmt.Sprintf("%d plugin difference(s)", len(changes))
-	}
-	name := "status"
-	if diff {
-		name = "diff"
-	}
-	if err := emit(deps.Out, opt.json, name, true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
-		return err
-	}
-	if len(changes) > 0 {
-		return driftError{}
-	}
-	return nil
+func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
+	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes)
 }
 
-func restorePlugins(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
-	if !d.Manifest.Capture.Plugins {
-		return errors.New("plugin state has not been captured; run capture plugins first")
-	}
-	p, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	current, err := p.Detect(ctx)
-	if err != nil {
-		return err
-	}
+func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
 	}
-	plan := p.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-	if dryRun {
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
-	}
-	verification := pluginsprovider.Verify(d.Plugins, current)
-	if len(plan.Operations) == 0 {
-		if !verification.OK {
-			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
-		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+"Plugin state already matches. No changes applied.\n")
-	}
-	if !yes {
-		if opt.json {
-			return errors.New("restore with --json requires --yes or --dry-run")
-		}
-		fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
-		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
-		value := strings.ToLower(strings.TrimSpace(answer))
-		if value != "y" && value != "yes" {
-			return errors.New("restore cancelled")
-		}
-	}
-	stateHome, err := deps.StateHome()
-	if err != nil {
-		return err
-	}
-	journal, err := restore.NewJournal(stateHome, deps.Now())
-	if err != nil {
-		return fmt.Errorf("create restore journal: %w", err)
-	}
-	defer journal.Close()
-	var progress restore.ProgressFunc
-	if !opt.json {
-		progress = func(event restore.Progress) { renderProgress(deps.Out, event) }
-	}
-	execution, err := restore.Execute(ctx, deps.Runner, plan, journal, deps.Now, 5*time.Second, progress)
-	if err != nil {
-		return err
-	}
-	current, err = p.Detect(ctx)
-	if err != nil {
-		return fmt.Errorf("verify plugin restore: %w", err)
-	}
-	verification = pluginsprovider.Verify(d.Plugins, current)
-	if len(execution.Failed) > 0 {
-		if !opt.json {
-			renderRestoreFailures(deps.Out, execution, verification, journal.Path)
-		}
-		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
-	}
-	if !verification.OK {
-		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
-	}
-	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
-}
-
-func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return err
-	}
-	info, err := omarchy.Detect(ctx, deps.Runner)
-	if err != nil {
-		return err
-	}
-	packageProvider := packagesprovider.Provider{Runner: deps.Runner}
-	currentPackages, err := packageProvider.Detect(ctx)
-	if err != nil {
-		return err
-	}
-	plan := packagesprovider.Plan(d.Packages, currentPackages, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-	var currentThemes profile.Themes
-	var themes themesprovider.Provider
-	var currentPlugins profile.Plugins
-	plugins, err := pluginProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	if d.Manifest.Capture.Themes {
-		themes, err = themeProvider(deps, opt)
+	plan := model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
+	for _, provider := range providers {
+		providerPlan, err := provider.Plan(ctx, d, info)
 		if err != nil {
-			return err
+			return fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
-		currentThemes, err = themes.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		themePlan := themes.Plan(d.Themes, currentThemes, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-		plan.Operations = append(plan.Operations, themePlan.Operations...)
-		plan.Skipped = append(plan.Skipped, themePlan.Skipped...)
-	}
-	if d.Manifest.Capture.Plugins {
-		currentPlugins, err = plugins.Detect(ctx)
-		if err != nil {
-			return err
-		}
-		pluginPlan := plugins.Plan(d.Plugins, currentPlugins, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-		plan.Operations = append(plan.Operations, pluginPlan.Operations...)
-		plan.Skipped = append(plan.Skipped, pluginPlan.Skipped...)
+		plan.Operations = append(plan.Operations, providerPlan.Operations...)
+		plan.Skipped = append(plan.Skipped, providerPlan.Skipped...)
 	}
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
 	}
 	if len(plan.Operations) == 0 {
-		verification := packagesprovider.Verify(d.Packages, currentPackages)
-		if d.Manifest.Capture.Themes {
-			themeVerification := themesprovider.Verify(d.Themes, currentThemes)
-			verification.Missing = append(verification.Missing, themeVerification.Missing...)
-			verification.OK = verification.OK && themeVerification.OK
-		}
-		if d.Manifest.Capture.Plugins {
-			pv := pluginsprovider.Verify(d.Plugins, currentPlugins)
-			verification.Missing = append(verification.Missing, pv.Missing...)
-			verification.OK = verification.OK && pv.OK
+		verification, err := verifyProviders(ctx, d, providers)
+		if err != nil {
+			return err
 		}
 		if !verification.OK {
 			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+"All captured state is already restored. No changes applied.\n")
+		message := "All captured state is already restored. No changes applied.\n"
+		if len(providers) == 1 && providers[0].ID() == "packages" {
+			message = "All desired packages are installed. No changes applied.\n"
+		}
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+message)
 	}
 	if !yes {
 		if opt.json {
@@ -780,28 +468,9 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 	if err != nil {
 		return err
 	}
-	currentPackages, err = packageProvider.Detect(ctx)
+	verification, err := verifyProviders(ctx, d, providers)
 	if err != nil {
-		return fmt.Errorf("verify package restore: %w", err)
-	}
-	verification := packagesprovider.Verify(d.Packages, currentPackages)
-	if d.Manifest.Capture.Themes {
-		currentThemes, err = themes.Detect(ctx)
-		if err != nil {
-			return fmt.Errorf("verify theme restore: %w", err)
-		}
-		themeVerification := themesprovider.Verify(d.Themes, currentThemes)
-		verification.Missing = append(verification.Missing, themeVerification.Missing...)
-		verification.OK = verification.OK && themeVerification.OK
-	}
-	if d.Manifest.Capture.Plugins {
-		currentPlugins, err = plugins.Detect(ctx)
-		if err != nil {
-			return fmt.Errorf("verify plugin restore: %w", err)
-		}
-		pv := pluginsprovider.Verify(d.Plugins, currentPlugins)
-		verification.Missing = append(verification.Missing, pv.Missing...)
-		verification.OK = verification.OK && pv.OK
+		return err
 	}
 	_ = journal.Write(restore.Event{Time: deps.Now().UTC(), Type: "VERIFY_COMPLETED", Message: fmt.Sprintf("ok=%t", verification.OK)})
 	if len(execution.Failed) > 0 {
@@ -818,68 +487,17 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
 }
 
-func restoreThemes(ctx context.Context, deps Dependencies, opt *options, d profile.Data, dryRun, yes bool) error {
-	if !d.Manifest.Capture.Themes {
-		return errors.New("theme state has not been captured; run capture themes first")
-	}
-	p, err := themeProvider(deps, opt)
-	if err != nil {
-		return err
-	}
-	current, err := p.Detect(ctx)
-	if err != nil {
-		return err
-	}
-	info, err := omarchy.Detect(ctx, deps.Runner)
-	if err != nil {
-		return err
-	}
-	plan := p.Plan(d.Themes, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-	if dryRun {
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
-	}
-	if len(plan.Operations) == 0 {
-		verification := themesprovider.Verify(d.Themes, current)
-		if !verification.OK {
-			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
+func verifyProviders(ctx context.Context, d profile.Data, providers []stateProvider) (model.VerificationResult, error) {
+	result := model.VerificationResult{OK: true}
+	for _, provider := range providers {
+		verification, err := provider.Verify(ctx, d)
+		if err != nil {
+			return model.VerificationResult{}, fmt.Errorf("verify %s restore: %w", provider.ID(), err)
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+"Theme already active. No changes applied.\n")
+		result.OK = result.OK && verification.OK
+		result.Missing = append(result.Missing, verification.Missing...)
 	}
-	if !yes {
-		if opt.json {
-			return errors.New("restore with --json requires --yes or --dry-run")
-		}
-		fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
-		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
-		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
-			return errors.New("restore cancelled")
-		}
-	}
-	stateHome, err := deps.StateHome()
-	if err != nil {
-		return err
-	}
-	journal, err := restore.NewJournal(stateHome, deps.Now())
-	if err != nil {
-		return fmt.Errorf("create restore journal: %w", err)
-	}
-	defer journal.Close()
-	execution, err := restore.Execute(ctx, deps.Runner, plan, journal, deps.Now, 5*time.Second, nil)
-	if err != nil {
-		return err
-	}
-	if len(execution.Failed) > 0 {
-		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
-	}
-	current, err = p.Detect(ctx)
-	if err != nil {
-		return fmt.Errorf("verify restore: %w", err)
-	}
-	verification := themesprovider.Verify(d.Themes, current)
-	if !verification.OK {
-		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
-	}
-	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+	return result, nil
 }
 
 func profileError(dir string, err error) error { return fmt.Errorf("load profile at %s: %w", dir, err) }
@@ -924,6 +542,16 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
 	}
 	for _, op := range plan.Operations {
+		if op.Provider == "config" && op.Risk == model.RiskMedium && op.File != nil {
+			if op.File.Backup {
+				fmt.Fprintln(&b, "! Existing Hyprland configuration files will be replaced; backups will be stored beside the restore journal.")
+			} else {
+				fmt.Fprintln(&b, "! Missing Hyprland configuration files will be created.")
+			}
+			break
+		}
+	}
+	for _, op := range plan.Operations {
 		if op.Provider == "plugins" && op.Risk == model.RiskHigh {
 			fmt.Fprintln(&b, "! Third-party plugins execute unsandboxed code inside omarchy-shell; review their source before approval.")
 			break
@@ -936,6 +564,19 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "config" {
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "Restoring %s...\n", event.Operation.Resource)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ Restored %s (%s)\n", event.Operation.Resource, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still restoring %s (%s elapsed)...\n", event.Operation.Resource, event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed restoring %s after %s\n", event.Operation.Resource, event.Elapsed)
+		}
+		return
+	}
 	if event.Operation.Provider == "plugins" {
 		verb := strings.ToUpper(event.Operation.Action[:1]) + event.Operation.Action[1:] + "ing"
 		if event.Operation.Action == "enable" {

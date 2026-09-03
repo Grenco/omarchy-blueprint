@@ -3,8 +3,10 @@ package restore
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -41,6 +43,52 @@ func (j *Journal) Write(event Event) error {
 }
 
 func (j *Journal) Close() error { return j.file.Close() }
+
+// CreateBackup stores a copy of source beside the journal and returns its path.
+func (j *Journal) CreateBackup(operation, source string) (string, error) {
+	if operation == "" || filepath.Base(operation) != operation {
+		return "", fmt.Errorf("invalid backup operation: %q", operation)
+	}
+	dir := strings.TrimSuffix(j.Path, ".jsonl") + ".backup"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return "", err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	path := filepath.Join(dir, operation)
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return "", err
+	}
+	_, copyErr := io.Copy(out, in)
+	syncErr := out.Sync()
+	closeErr := out.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if syncErr != nil {
+		return "", syncErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return "", err
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return "", err
+	}
+	return path, nil
+}
 
 func StateHome() (string, error) {
 	if path := os.Getenv("XDG_STATE_HOME"); path != "" {

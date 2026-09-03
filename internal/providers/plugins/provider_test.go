@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/graeme/omarchy-blueprint/internal/model"
-	"github.com/graeme/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 type runnerFunc func(context.Context, string, ...string) (string, error)

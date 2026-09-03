@@ -1,0 +1,454 @@
+package config
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/Grenco/omarchy-blueprint/internal/content"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+)
+
+// FileStatus describes how a managed file currently sits on the machine.
+type FileStatus string
+
+const (
+	FileDefault     FileStatus = "default"
+	FileCustomized  FileStatus = "customized"
+	FileMissing     FileStatus = "missing"
+	FileUnsupported FileStatus = "unsupported"
+)
+
+// Spec identifies one managed configuration file by relative path.
+type Spec struct {
+	ID   string `json:"id" toml:"id"`
+	Path string `json:"path" toml:"path"`
+}
+
+// DefaultSpecs are the supported Omarchy Hyprland configuration files.
+var DefaultSpecs = []Spec{
+	{ID: "hypr.main", Path: "hypr/hyprland.lua"},
+	{ID: "hypr.bindings", Path: "hypr/bindings.lua"},
+	{ID: "hypr.looknfeel", Path: "hypr/looknfeel.lua"},
+	{ID: "hypr.autostart", Path: "hypr/autostart.lua"},
+}
+
+// Provider captures customized Hyprland configuration files.
+type Provider struct {
+	UserRoot     string
+	BaselineRoot string
+	ProfileDir   string
+	Specs        []Spec
+}
+
+// DetectedFile is the live machine state for one spec.
+type DetectedFile struct {
+	ID           string     `json:"id"`
+	Path         string     `json:"path"`
+	Status       FileStatus `json:"status"`
+	Hash         string     `json:"hash,omitempty"`
+	BaselineHash string     `json:"baseline_hash,omitempty"`
+}
+
+// State is the detected state of all managed files.
+type State struct {
+	Files []DetectedFile `json:"files"`
+}
+
+func (p Provider) specs() []Spec {
+	if p.Specs != nil {
+		return p.Specs
+	}
+	return DefaultSpecs
+}
+
+// Detect inspects the live filesystem without following symlinks.
+func (p Provider) Detect() (State, error) {
+	state := State{Files: make([]DetectedFile, 0, len(p.specs()))}
+	for _, spec := range p.specs() {
+		detected, err := p.detect(spec)
+		if err != nil {
+			return State{}, fmt.Errorf("detect config %s: %w", spec.ID, err)
+		}
+		state.Files = append(state.Files, detected)
+	}
+	return state, nil
+}
+
+func (p Provider) detect(spec Spec) (DetectedFile, error) {
+	detected := DetectedFile{ID: spec.ID, Path: spec.Path}
+	baselinePath := filepath.Join(p.BaselineRoot, filepath.FromSlash(spec.Path))
+	baselineInfo, err := os.Lstat(baselinePath)
+	if os.IsNotExist(err) {
+		detected.Status = FileUnsupported
+		return detected, nil
+	}
+	if err != nil {
+		return detected, err
+	}
+	if err := rejectSpecial(baselineInfo, baselinePath); err != nil {
+		return detected, err
+	}
+	baselineHash, err := content.HashRegularFile(baselinePath)
+	if err != nil {
+		return detected, fmt.Errorf("hash baseline: %w", err)
+	}
+	detected.BaselineHash = baselineHash
+	userPath := filepath.Join(p.UserRoot, filepath.FromSlash(spec.Path))
+	userInfo, err := os.Lstat(userPath)
+	if os.IsNotExist(err) {
+		detected.Status = FileMissing
+		return detected, nil
+	}
+	if err != nil {
+		return detected, err
+	}
+	if err := rejectSpecial(userInfo, userPath); err != nil {
+		return detected, err
+	}
+	userHash, err := content.HashRegularFile(userPath)
+	if err != nil {
+		return detected, fmt.Errorf("hash user config: %w", err)
+	}
+	detected.Hash = userHash
+	if userHash == baselineHash {
+		detected.Status = FileDefault
+	} else {
+		detected.Status = FileCustomized
+	}
+	return detected, nil
+}
+
+func rejectSpecial(info os.FileInfo, path string) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path is a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("path is not a regular file: %s", path)
+	}
+	return nil
+}
+
+// Capture copies customized files (plus their baselines) into the profile
+// via a staged directory swap per tree. The two swaps and the later profile
+// metadata write are separate boundaries, not a single transaction.
+func (p Provider) Capture() (profile.Configs, error) {
+	state, err := p.Detect()
+	if err != nil {
+		return profile.Configs{}, err
+	}
+	if p.ProfileDir == "" {
+		return profile.Configs{}, fmt.Errorf("profile directory is required to capture config")
+	}
+	parent := filepath.Join(p.ProfileDir, "config")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return profile.Configs{}, err
+	}
+	staging, err := os.MkdirTemp(parent, ".capture-*")
+	if err != nil {
+		return profile.Configs{}, err
+	}
+	defer os.RemoveAll(staging)
+	configs := profile.Configs{Files: []profile.ConfigFile{}}
+	for _, detected := range state.Files {
+		if detected.Status != FileCustomized {
+			continue
+		}
+		userPath := filepath.Join(p.UserRoot, filepath.FromSlash(detected.Path))
+		baselinePath := filepath.Join(p.BaselineRoot, filepath.FromSlash(detected.Path))
+		if err := copyFileInto(staging, "files", detected.Path, userPath); err != nil {
+			return profile.Configs{}, fmt.Errorf("capture config %s: %w", detected.ID, err)
+		}
+		if err := copyFileInto(staging, "baseline", detected.Path, baselinePath); err != nil {
+			return profile.Configs{}, fmt.Errorf("capture config %s: %w", detected.ID, err)
+		}
+		configs.Files = append(configs.Files, profile.ConfigFile{
+			ID:           detected.ID,
+			Path:         detected.Path,
+			Hash:         detected.Hash,
+			BaselineHash: detected.BaselineHash,
+		})
+	}
+	sortConfigFiles(configs.Files)
+	if err := swapDir(staging, filepath.Join(parent, "files")); err != nil {
+		return profile.Configs{}, err
+	}
+	if err := swapDir(staging, filepath.Join(parent, "baseline")); err != nil {
+		return profile.Configs{}, err
+	}
+	return configs, nil
+}
+
+func copyFileInto(staging, kind, relPath, source string) error {
+	target := filepath.Join(staging, kind, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	f, info, err := content.OpenRegularFile(source)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, f); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// swapDir atomically replaces dir with staging/<base name>.
+func swapDir(staging, dir string) error {
+	name := filepath.Base(dir)
+	staged := filepath.Join(staging, name)
+	if err := os.MkdirAll(staged, 0o755); err != nil {
+		return err
+	}
+	old := filepath.Join(filepath.Dir(dir), "."+name+"-previous")
+	_ = os.RemoveAll(old)
+	if _, err := os.Lstat(dir); err == nil {
+		if err := os.Rename(dir, old); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(staged, dir); err != nil {
+		_ = os.Rename(old, dir)
+		return err
+	}
+	return os.RemoveAll(old)
+}
+
+func sortConfigFiles(files []profile.ConfigFile) {
+	sort.Slice(files, func(i, j int) bool { return files[i].ID < files[j].ID })
+}
+
+// DiffConfigs compares the previous captured configuration with a new capture.
+func DiffConfigs(previous, next profile.Configs) []model.Change {
+	prevMap := map[string]profile.ConfigFile{}
+	for _, f := range previous.Files {
+		prevMap[f.ID] = f
+	}
+	var changes []model.Change
+	for _, f := range next.Files {
+		if p, ok := prevMap[f.ID]; ok {
+			delete(prevMap, f.ID)
+			if p.Hash != f.Hash {
+				changes = append(changes, model.Change{Type: model.ChangeModify, Provider: "config", Kind: "config", Name: f.ID, Summary: "~ config " + f.Path + " differs"})
+			}
+			continue
+		}
+		changes = append(changes, model.Change{Type: model.ChangeAdd, Provider: "config", Kind: "config", Name: f.ID, Summary: "+ config " + f.Path + " customized"})
+	}
+	for _, f := range prevMap {
+		changes = append(changes, model.Change{Type: model.ChangeRemove, Provider: "config", Kind: "config", Name: f.ID, Summary: "- config " + f.Path + " customization removed"})
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
+	return changes
+}
+
+// Diff compares the saved profile configuration with the live machine state.
+func Diff(saved profile.Configs, current State) []model.Change {
+	savedMap := map[string]profile.ConfigFile{}
+	for _, f := range saved.Files {
+		savedMap[f.ID] = f
+	}
+	changes := make([]model.Change, 0, len(current.Files))
+	for _, f := range current.Files {
+		switch f.Status {
+		case FileCustomized:
+			if s, ok := savedMap[f.ID]; ok {
+				delete(savedMap, f.ID)
+				if s.Hash != f.Hash {
+					changes = append(changes, change(model.ChangeModify, f, fmt.Sprintf("~ config %s differs", f.Path)))
+				}
+				continue
+			}
+			changes = append(changes, change(model.ChangeAdd, f, "+ config "+f.Path+" customized"))
+		case FileDefault, FileMissing, FileUnsupported:
+			if _, ok := savedMap[f.ID]; ok {
+				delete(savedMap, f.ID)
+				changes = append(changes, change(model.ChangeRemove, f, "- config "+f.Path+" customization removed"))
+			}
+		}
+	}
+	for _, f := range savedMap {
+		changes = append(changes, model.Change{Type: model.ChangeRemove, Provider: "config", Kind: "config", Name: f.ID, Summary: "- config " + f.Path + " customization removed"})
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
+	return changes
+}
+
+// Verify checks that every saved customization exists with the desired hash.
+// Extra customization on the machine is drift, not verification failure.
+func Verify(saved profile.Configs, current State) model.VerificationResult {
+	currentMap := map[string]DetectedFile{}
+	for _, f := range current.Files {
+		currentMap[f.ID] = f
+	}
+	var missing []string
+	for _, s := range saved.Files {
+		f, ok := currentMap[s.ID]
+		if !ok || f.Status != FileCustomized || f.Hash != s.Hash {
+			missing = append(missing, "config:"+s.Path)
+		}
+	}
+	sort.Strings(missing)
+	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+}
+
+func change(kind model.ChangeType, f DetectedFile, summary string) model.Change {
+	return model.Change{Type: kind, Provider: "config", Kind: "config", Name: f.ID, Summary: summary}
+}
+
+// Validate rejects a profile config entry unless its ID and path match
+// exactly one known spec, with no duplicate IDs, so profile metadata can
+// never choose arbitrary filesystem destinations during restore.
+func Validate(files []profile.ConfigFile, specs []Spec) error {
+	specsByID := map[string]Spec{}
+	for _, spec := range specs {
+		if _, dup := specsByID[spec.ID]; dup {
+			return fmt.Errorf("duplicate config spec id %q", spec.ID)
+		}
+		specsByID[spec.ID] = spec
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		spec, ok := specsByID[f.ID]
+		if !ok {
+			return fmt.Errorf("config %q: unknown id", f.ID)
+		}
+		if f.Path != spec.Path {
+			return fmt.Errorf("config %q has unexpected path %q; expected %q", f.ID, f.Path, spec.Path)
+		}
+		if seen[f.ID] {
+			return fmt.Errorf("duplicate config id %q in profile", f.ID)
+		}
+		seen[f.ID] = true
+	}
+	return nil
+}
+
+// Check validates the profile's config state: known ID/path pairs, regular
+// non-symlink snapshots, and content hashes matching the recorded metadata.
+
+func (p Provider) Check(saved profile.Configs) error {
+	if err := Validate(saved.Files, p.specs()); err != nil {
+		return err
+	}
+	specsByID := map[string]Spec{}
+	for _, spec := range p.specs() {
+		specsByID[spec.ID] = spec
+	}
+	for _, s := range saved.Files {
+		spec := specsByID[s.ID]
+		if err := checkSnapshot(filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(spec.Path)), s.Hash); err != nil {
+			return fmt.Errorf("config %s desired snapshot: %w", s.ID, err)
+		}
+		if err := checkSnapshot(filepath.Join(p.ProfileDir, "config", "baseline", filepath.FromSlash(spec.Path)), s.BaselineHash); err != nil {
+			return fmt.Errorf("config %s baseline snapshot: %w", s.ID, err)
+		}
+	}
+	return nil
+}
+
+func checkSnapshot(path, wantHash string) error {
+	hash, err := content.HashRegularFile(path)
+	if err != nil {
+		return err
+	}
+	if hash != wantHash {
+		return fmt.Errorf("hash mismatch (%s != %s)", hash, wantHash)
+	}
+	return nil
+}
+
+// Plan builds safe FileWrite operations using captured baselines as proof
+// that the target is not carrying unknown user work.
+func (p Provider) Plan(saved profile.Configs, current State, schema int, from, to string) (model.RestorePlan, error) {
+	if err := Validate(saved.Files, p.specs()); err != nil {
+		return model.RestorePlan{}, err
+	}
+	specsByID := map[string]Spec{}
+	for _, spec := range p.specs() {
+		specsByID[spec.ID] = spec
+	}
+	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
+	detected := map[string]DetectedFile{}
+	for _, f := range current.Files {
+		detected[f.ID] = f
+	}
+	var writeIDs []string
+	for _, s := range saved.Files {
+		spec := specsByID[s.ID]
+		resource := "config:" + spec.Path
+		d, ok := detected[s.ID]
+		if !ok {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "unsupported config file"})
+			continue
+		}
+		if d.Status == FileUnsupported {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "config is no longer shipped by this Omarchy version"})
+			continue
+		}
+		if d.Status == FileCustomized && d.Hash == s.Hash {
+			continue
+		}
+		if d.BaselineHash != s.BaselineHash {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "Omarchy baseline changed; migration required"})
+			continue
+		}
+		if d.Status == FileCustomized {
+			if d.Hash == s.Hash {
+				continue
+			}
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "existing user configuration differs; overwrite disabled"})
+			continue
+		}
+		if p.ProfileDir == "" || p.UserRoot == "" {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "profile or user config root unavailable"})
+			continue
+		}
+		source := filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(spec.Path))
+		if _, err := os.Lstat(source); err != nil {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "captured config file is missing from the profile"})
+			continue
+		}
+		write := model.FileWrite{
+			Source:       source,
+			Destination:  filepath.Join(p.UserRoot, filepath.FromSlash(spec.Path)),
+			SourceHash:   s.Hash,
+			ExpectedHash: d.BaselineHash,
+			Backup:       true,
+		}
+		if d.Status == FileMissing {
+			write = rewriteMissing(write)
+		}
+		id := "config.write." + s.ID
+		writeIDs = append(writeIDs, id)
+		plan.Operations = append(plan.Operations, model.Operation{
+			ID: id, Provider: "config", Action: "write", Resource: resource,
+			File: &write, Risk: model.RiskMedium, Reversible: true,
+		})
+	}
+	if len(writeIDs) > 0 {
+		plan.Operations = append(plan.Operations, model.Operation{
+			ID: "config.reload", Provider: "config", Action: "reload",
+			Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"},
+			DependsOn: writeIDs, Risk: model.RiskLow, Reversible: false,
+		})
+	}
+	return plan, nil
+}
+
+func rewriteMissing(w model.FileWrite) model.FileWrite {
+	w.ExpectedHash = ""
+	w.ExpectedMissing = true
+	w.Backup = false
+	return w
+}
