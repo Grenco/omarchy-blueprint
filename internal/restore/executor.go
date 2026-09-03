@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/graeme/omarchy-blueprint/internal/command"
+	"github.com/graeme/omarchy-blueprint/internal/content"
 	"github.com/graeme/omarchy-blueprint/internal/model"
 )
 
@@ -68,15 +69,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		notify(progress, Progress{Type: ProgressStarted, Operation: op})
 		result := make(chan error, 1)
 		go func() {
-			var err error
-			if op.Copy != nil {
-				err = copyTreeExclusive(op.Copy.Source, op.Copy.Destination)
-			} else if len(op.Command) == 0 {
-				err = fmt.Errorf("operation %s has no command or copy action", op.ID)
-			} else {
-				_, err = runner.Run(ctx, op.Command[0], op.Command[1:]...)
-			}
-			result <- err
+			result <- executeOperation(ctx, runner, op, journal, now)
 		}()
 		ticker := time.NewTicker(heartbeat)
 		var err error
@@ -108,10 +101,145 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		if err := journal.Write(Event{Time: now().UTC(), Type: "OPERATION_COMPLETED", Operation: op.ID}); err != nil {
 			return execution, err
 		}
-		execution.Completed = append(execution.Completed, op)
+		completed := op
+		if completed.File != nil && completed.File.Backup {
+			completed.Reversible = true
+		}
+		execution.Completed = append(execution.Completed, completed)
 		notify(progress, Progress{Type: ProgressCompleted, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
 	}
 	return execution, nil
+}
+
+func executeOperation(ctx context.Context, runner command.Runner, op model.Operation, journal *Journal, now func() time.Time) error {
+	actions := 0
+	if len(op.Command) > 0 {
+		actions++
+	}
+	if op.Copy != nil {
+		actions++
+	}
+	if op.File != nil {
+		actions++
+	}
+	if actions != 1 {
+		return fmt.Errorf("operation %s must contain exactly one command, copy, or file action", op.ID)
+	}
+	if op.Copy != nil {
+		return copyTreeExclusive(op.Copy.Source, op.Copy.Destination)
+	}
+	if op.File != nil {
+		return writeFileAtomic(op.ID, *op.File, journal, now)
+	}
+	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
+	return err
+}
+
+func writeFileAtomic(operation string, action model.FileWrite, journal *Journal, now func() time.Time) error {
+	if action.SourceHash == "" {
+		return fmt.Errorf("file write source hash is required: %s", operation)
+	}
+	if action.ExpectedMissing == (action.ExpectedHash != "") {
+		return fmt.Errorf("file write requires exactly one destination precondition: %s", operation)
+	}
+	source, sourceInfo, err := content.OpenRegularFile(action.Source)
+	if err != nil {
+		return fmt.Errorf("validate file write source: %w", err)
+	}
+	defer source.Close()
+	sourceHash, err := content.HashOpenFile(source)
+	if err != nil {
+		return fmt.Errorf("hash file write source: %w", err)
+	}
+	if sourceHash != action.SourceHash {
+		return fmt.Errorf("file write source hash mismatch: %s", action.Source)
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	destinationInfo, err := validateDestination(action)
+	if err != nil {
+		return err
+	}
+	if destinationInfo != nil && action.Backup {
+		backup, err := journal.CreateBackup(operation, action.Destination)
+		if err != nil {
+			return fmt.Errorf("create file backup: %w", err)
+		}
+		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+			return err
+		}
+	}
+
+	parent := filepath.Dir(action.Destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(parent, ".omarchy-blueprint-file-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	mode := sourceInfo.Mode().Perm()
+	if destinationInfo != nil {
+		mode = destinationInfo.Mode().Perm()
+	}
+	if err := temp.Chmod(mode); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := io.Copy(temp, source); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, action.Destination); err != nil {
+		return err
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func validateDestination(action model.FileWrite) (os.FileInfo, error) {
+	info, err := os.Lstat(action.Destination)
+	if os.IsNotExist(err) {
+		if action.ExpectedMissing {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("file write destination is missing: %s", action.Destination)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("file write destination is a symlink: %s", action.Destination)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("file write destination is not a regular file: %s", action.Destination)
+	}
+	if action.ExpectedMissing {
+		return nil, fmt.Errorf("file write destination already exists: %s", action.Destination)
+	}
+	hash, err := content.HashRegularFile(action.Destination)
+	if err != nil {
+		return nil, fmt.Errorf("hash file write destination: %w", err)
+	}
+	if hash != action.ExpectedHash {
+		return nil, fmt.Errorf("file write destination hash mismatch: %s", action.Destination)
+	}
+	return info, nil
 }
 
 func copyTreeExclusive(source, destination string) error {
@@ -124,7 +252,7 @@ func copyTreeExclusive(source, destination string) error {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
-	temp, err := os.MkdirTemp(parent, ".omarchy-blueprint-theme-*")
+	temp, err := os.MkdirTemp(parent, ".omarchy-blueprint-copy-*")
 	if err != nil {
 		return err
 	}
@@ -145,7 +273,7 @@ func copyTreeContents(source, destination string) error {
 			return err
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("theme snapshot contains unsupported symlink: %s", relative)
+			return fmt.Errorf("snapshot contains unsupported symlink: %s", relative)
 		}
 		target := filepath.Join(destination, relative)
 		info, err := entry.Info()
@@ -156,7 +284,7 @@ func copyTreeContents(source, destination string) error {
 			return os.MkdirAll(target, info.Mode().Perm())
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("theme snapshot contains unsupported file: %s", relative)
+			return fmt.Errorf("snapshot contains unsupported file: %s", relative)
 		}
 		in, err := os.Open(path)
 		if err != nil {

@@ -17,25 +17,38 @@ type Change struct {
 
 type Risk string
 
-const RiskLow Risk = "low"
-const RiskHigh Risk = "high"
+const (
+	RiskLow    Risk = "low"
+	RiskMedium Risk = "medium"
+	RiskHigh   Risk = "high"
+)
 
 type Operation struct {
-	ID         string   `json:"id"`
-	Provider   string   `json:"provider"`
-	Action     string   `json:"action"`
-	Resource   string   `json:"resource"`
-	Items      []string `json:"items,omitempty"`
-	Command    []string `json:"command"`
-	Copy       *Copy    `json:"copy,omitempty"`
-	DependsOn  []string `json:"depends_on,omitempty"`
-	Risk       Risk     `json:"risk"`
-	Reversible bool     `json:"reversible"`
+	ID         string     `json:"id"`
+	Provider   string     `json:"provider"`
+	Action     string     `json:"action"`
+	Resource   string     `json:"resource"`
+	Items      []string   `json:"items,omitempty"`
+	Command    []string   `json:"command"`
+	Copy       *Copy      `json:"copy,omitempty"`
+	File       *FileWrite `json:"file,omitempty"`
+	DependsOn  []string   `json:"depends_on,omitempty"`
+	Risk       Risk       `json:"risk"`
+	Reversible bool       `json:"reversible"`
 }
 
 type Copy struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
+}
+
+type FileWrite struct {
+	Source          string `json:"source"`
+	Destination     string `json:"destination"`
+	SourceHash      string `json:"source_hash"`
+	ExpectedHash    string `json:"expected_hash,omitempty"`
+	ExpectedMissing bool   `json:"expected_missing,omitempty"`
+	Backup          bool   `json:"backup"`
 }
 
 type RestorePlan struct {
