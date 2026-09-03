@@ -18,6 +18,14 @@ plugins retain their public URL and revision; modified, cloned, and local
 plugins are snapshotted under `plugins/local/`. Restore uses Omarchy validation
 and lifecycle commands, and marks executable third-party code as high risk.
 
+Customized Hyprland configuration files (`hypr/hyprland.lua`,
+`hypr/bindings.lua`, `hypr/looknfeel.lua`, and `hypr/autostart.lua`) are
+captured as content together with the Omarchy baseline they were captured
+against. Restore writes a file only when the target is missing or still matches
+that baseline; otherwise it is skipped as migration-required or user drift, so
+unknown user work is never overwritten. Every write is backed up beside the
+restore journal and Hyprland is reloaded only after all writes succeed.
+
 ## Requirements
 
 - Omarchy 4 or newer
@@ -53,10 +61,15 @@ omarchy-blueprint restore
 
 Category-less `status`, `diff`, and `restore` operate on every captured
 provider. Use `status packages`, `status themes`, `restore packages`, or
-`restore themes` when you want to target one category.
+`restore themes` when you want to target one category. Configuration state
+supports the same explicit categories, for example
+`omarchy-blueprint status config` and
+`omarchy-blueprint restore config --dry-run`.
 
 Category-less `capture` captures every supported provider. Use
-`capture packages` or `capture themes` for a targeted refresh.
+`capture packages`, `capture themes`, or `capture config` for a targeted
+refresh. Only files that differ from the Omarchy baseline are captured; clean
+defaults stay out of the profile.
 
 The non-interactive form is `omarchy-blueprint restore --yes`. Combine `--json`
 with `--dry-run` or `--yes`; JSON restores never wait for a prompt.
@@ -73,6 +86,9 @@ themes/themes.toml
 themes/local/<theme>/
 plugins/plugins.toml
 plugins/local/<plugin-id>/
+config/config.toml
+config/files/hypr/<file>.lua
+config/baseline/hypr/<file>.lua
 ```
 
 Machine-specific entries retain provenance, for example
@@ -106,7 +122,10 @@ This milestone does not yet distinguish packages added by the user from other
 explicit packages. Theme restore installs only missing themes. An existing
 theme with different provenance or content is reported as a conflict and is
 never overwritten automatically. Internal symlinks and special files are
-rejected during local-theme capture. The TUI, plugins, shell configuration,
+rejected during local-theme capture. Config restore never overwrites a target
+that differs from both the desired content and the current Omarchy baseline,
+and cross-version baseline changes are reported as migration-required rather
+than auto-merged. The TUI, shell configuration, monitors/input config,
 directories, Git automation, migrations, and AI remain postponed.
 
 Capture and inspect theme state explicitly with:
@@ -116,6 +135,15 @@ omarchy-blueprint --profile ~/omarchy-profile capture themes
 omarchy-blueprint --profile ~/omarchy-profile status themes
 omarchy-blueprint --profile ~/omarchy-profile restore themes --dry-run
 omarchy-blueprint --profile ~/omarchy-profile restore themes
+```
+
+The same pattern applies to configuration state:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile capture config
+omarchy-blueprint --profile ~/omarchy-profile status config
+omarchy-blueprint --profile ~/omarchy-profile restore config --dry-run
+omarchy-blueprint --profile ~/omarchy-profile restore config
 ```
 
 ## Exit codes
@@ -148,3 +176,9 @@ omarchy-blueprint --profile ~/omarchy-profile restore themes
 - Additional explicit packages remain visible as status drift, but restore
   reports them as intentionally left installed because removal is disabled.
 - Package installs are journaled and are not automatically rolled back.
+- Config capture rejects symlinks and special files for both baseline and user
+  paths and never captures clean Omarchy defaults.
+- Config restore writes with a validated hash, an atomic rename, and a backup
+  beside the restore journal. A target carrying user work or a changed Omarchy
+  baseline is skipped, never overwritten.
+- Hyprland is reloaded only after every config write succeeds.

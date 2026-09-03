@@ -18,23 +18,23 @@ import (
 	"github.com/graeme/omarchy-blueprint/internal/model"
 	"github.com/graeme/omarchy-blueprint/internal/omarchy"
 	"github.com/graeme/omarchy-blueprint/internal/profile"
+	configprovider "github.com/graeme/omarchy-blueprint/internal/providers/config"
 	packagesprovider "github.com/graeme/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/graeme/omarchy-blueprint/internal/providers/plugins"
 	themesprovider "github.com/graeme/omarchy-blueprint/internal/providers/themes"
-	configprovider "github.com/graeme/omarchy-blueprint/internal/providers/config"
 	"github.com/graeme/omarchy-blueprint/internal/restore"
 )
 
 type Dependencies struct {
-	Runner    command.Runner
-	In        io.Reader
-	Out       io.Writer
-	Err       io.Writer
-	Now       func() time.Time
-	StateHome func() (string, error)
-	ThemeDirs    func() (builtin, user string, err error)
-	PluginDir    func() (string, error)
-	ConfigDirs   func() (baseline, user string, err error)
+	Runner     command.Runner
+	In         io.Reader
+	Out        io.Writer
+	Err        io.Writer
+	Now        func() time.Time
+	StateHome  func() (string, error)
+	ThemeDirs  func() (builtin, user string, err error)
+	PluginDir  func() (string, error)
+	ConfigDirs func() (baseline, user string, err error)
 }
 
 type options struct {

@@ -2791,7 +2791,7 @@ The first usable release should support:
 - Omarchy plugins;
 - custom/local plugins;
 - shell configuration;
-- selected Hyprland configuration;
+- `hypr/hyprland.lua`, `hypr/bindings.lua`, `hypr/looknfeel.lua`, and `hypr/autostart.lua`;
 - hooks.
 
 ## Operations
@@ -2990,6 +2990,11 @@ hardware-specific exclusions
 path remapping
 restore compatibility checks
 ```
+
+Config restore already protects against cross-version drift: a file is written
+only when the target is missing or still matches the captured Omarchy baseline,
+and baseline changes are skipped as `Omarchy baseline changed; migration
+required` until the migration engine (v0.4) three-way merges them.
 
 ---
 

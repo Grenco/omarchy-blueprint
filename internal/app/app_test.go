@@ -179,8 +179,8 @@ func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
 	var out, stderr bytes.Buffer
 	deps := Dependencies{
 		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
-		StateHome: func() (string, error) { return stateDir, nil },
-		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+		StateHome:  func() (string, error) { return stateDir, nil },
+		ThemeDirs:  func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
@@ -567,8 +567,8 @@ func configSandbox(t *testing.T) (profileDir string, deps Dependencies) {
 	var out, stderr bytes.Buffer
 	deps = Dependencies{
 		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
-		StateHome: func() (string, error) { return stateDir, nil },
-		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
+		StateHome:  func() (string, error) { return stateDir, nil },
+		ThemeDirs:  func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {

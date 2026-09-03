@@ -252,7 +252,8 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 }
 
 // Diff compares the saved profile configuration with the live machine state.
-func Diff(saved profile.Configs, current State) []model.Change {	savedMap := map[string]profile.ConfigFile{}
+func Diff(saved profile.Configs, current State) []model.Change {
+	savedMap := map[string]profile.ConfigFile{}
 	for _, f := range saved.Files {
 		savedMap[f.ID] = f
 	}
