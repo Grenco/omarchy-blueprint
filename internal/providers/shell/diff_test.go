@@ -79,7 +79,7 @@ func TestDiffIgnoresWhitespaceAndKeyOrder(t *testing.T) {
 
 func TestDiffSummarizesKnownShellFields(t *testing.T) {
 	f := newShellFixture(t)
-	f.writeUser(defaultShellJSON)
+	f.writeUser(customizedShellJSON)
 	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
 	state, err := p.Detect()
 	if err != nil {
@@ -89,8 +89,14 @@ func TestDiffSummarizesKnownShellFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The machine now has the customized document instead.
-	f.writeUser(customizedShellJSON)
+	// The machine now carries a different customized document: position,
+	// transparency, idle lock, layout right, and plugins all differ.
+	different := strings.Replace(customizedShellJSON, `"position": "bottom"`, `"position": "top"`, 1)
+	different = strings.Replace(different, `"lock": 900`, `"lock": 300`, 1)
+	different = strings.Replace(different, `"transparent": true`, `"transparent": false`, 1)
+	different = strings.Replace(different, `{"id":"acme.weather","units":"celsius"}`, `{"id":"acme.weather","units":"fahrenheit"}`, 1)
+	different = strings.Replace(different, `"plugins": []`, `"plugins": [{"id":"acme.panel"}]`, 1)
+	f.writeUser(different)
 	after, err := p.Detect()
 	if err != nil {
 		t.Fatal(err)
