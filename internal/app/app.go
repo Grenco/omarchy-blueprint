@@ -542,8 +542,12 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
 	}
 	for _, op := range plan.Operations {
-		if op.Provider == "config" && op.Risk == model.RiskMedium {
-			fmt.Fprintln(&b, "! Hyprland configuration files will be replaced; a backup is stored beside the restore journal.")
+		if op.Provider == "config" && op.Risk == model.RiskMedium && op.File != nil {
+			if op.File.Backup {
+				fmt.Fprintln(&b, "! Existing Hyprland configuration files will be replaced; backups will be stored beside the restore journal.")
+			} else {
+				fmt.Fprintln(&b, "! Missing Hyprland configuration files will be created.")
+			}
 			break
 		}
 	}

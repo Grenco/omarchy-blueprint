@@ -2,6 +2,7 @@ package restore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -391,5 +392,108 @@ func TestExecuteWaitsForInFlightOperationBeforeReturning(t *testing.T) {
 	}
 	if elapsed < 190*time.Millisecond {
 		t.Fatalf("Execute returned in %v; it must wait for the in-flight operation to finish", elapsed)
+	}
+}
+
+type contextAwareRunner struct{}
+
+func (contextAwareRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+type completeAfterCancelRunner struct{}
+
+func (completeAfterCancelRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
+	<-ctx.Done()
+	return "", nil
+}
+
+func journalEvents(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var event Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event.Type)
+	}
+	return events
+}
+
+func TestExecuteRecordsCompletedOperationDespiteCancellation(t *testing.T) {
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		// Emulates a local mutation that is already past its safe
+		// cancellation point when the context is cancelled: it finishes
+		// successfully during the cancellation wait.
+		ID: "config.write.hypr.bindings", Command: []string{"finish-after-cancel"},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+	result, err := Execute(ctx, completeAfterCancelRunner{}, plan, journal, time.Now, 10*time.Millisecond, nil)
+	if err != context.Canceled {
+		t.Fatalf("err = %v want context.Canceled", err)
+	}
+	if len(result.Completed) != 1 || result.Completed[0].ID != "config.write.hypr.bindings" {
+		t.Fatalf("operation completed during cancellation must be recorded: %#v", result)
+	}
+	events := journalEvents(t, journal.Path)
+	found := false
+	for _, eventType := range events {
+		if eventType == "OPERATION_COMPLETED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("journal must record OPERATION_COMPLETED, got %v", events)
+	}
+}
+
+func TestExecuteJournalsCancelledCommand(t *testing.T) {
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		ID: "slow.command", Command: []string{"slow"},
+	}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	result, err := Execute(ctx, contextAwareRunner{}, plan, journal, time.Now, 10*time.Millisecond, nil)
+	if err != context.Canceled {
+		t.Fatalf("err = %v want context.Canceled", err)
+	}
+	if len(result.Completed) != 0 {
+		t.Fatalf("aborted command must not be completed: %#v", result)
+	}
+	events := journalEvents(t, journal.Path)
+	hasCancelled, hasCancelling := false, false
+	for _, eventType := range events {
+		if eventType == "OPERATION_CANCELLED" {
+			hasCancelled = true
+		}
+		if eventType == "OPERATION_CANCELLING" {
+			hasCancelling = true
+		}
+	}
+	if !hasCancelled || !hasCancelling {
+		t.Fatalf("journal must record OPERATION_CANCELLING then OPERATION_CANCELLED, got %v", events)
 	}
 }

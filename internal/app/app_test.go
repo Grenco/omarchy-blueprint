@@ -822,3 +822,30 @@ func TestCheckValidatesConfigSnapshotIntegrity(t *testing.T) {
 		t.Fatalf("check with tampered snapshot code=%d out=%q", code, out)
 	}
 }
+
+func TestConfigDryRunWarnsAboutReplacementVersusCreation(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatal("capture failed")
+	}
+	// Replacing an existing default target warns about backups.
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run")
+	if code != 0 || !strings.Contains(out, "Existing Hyprland configuration files will be replaced; backups will be stored beside the restore journal.") {
+		t.Fatalf("replacement dry-run code=%d out=%q", code, out)
+	}
+	// Creating a missing target warns about creation instead.
+	if err := os.Remove(filepath.Join(userRoot, "hypr", "bindings.lua")); err != nil {
+		t.Fatal(err)
+	}
+	code, out = configRun(t, deps, profileDir, "restore", "config", "--dry-run")
+	if code != 0 || !strings.Contains(out, "Missing Hyprland configuration files will be created.") {
+		t.Fatalf("creation dry-run code=%d out=%q", code, out)
+	}
+}

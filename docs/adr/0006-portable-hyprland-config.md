@@ -68,11 +68,11 @@ work.
 
 Config writes are medium-risk atomic `FileWrite` operations: the source hash is
 verified immediately before mutation, the destination is revalidated against
-its expected hash or expected-missing precondition, a backup of the replaced
-file is created beside the restore journal (`<journal>.backup/`), the write is
-staged in a temporary file, fsynced, and atomically renamed. Every write is
-journaled with a `BACKUP_CREATED` event so it can be reversed manually until a
-dedicated rollback command exists.
+its expected hash or expected-missing precondition, and every replacement of an
+existing file creates a backup beside the restore journal
+(`<journal>.backup/`) and records a `BACKUP_CREATED` event so it can be
+reversed manually until a dedicated rollback command exists. Writes are staged
+in a temporary file, fsynced, and atomically renamed.
 
 When at least one file is written, a final `hyprctl reload` operation is
 appended and depends on every write, so a failed write blocks the reload while
