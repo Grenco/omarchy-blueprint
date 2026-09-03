@@ -76,10 +76,12 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		}()
 		ticker := time.NewTicker(heartbeat)
 		var err error
-		cancelled := false
 		// Never abandon an in-flight mutation: commands honor the context
 		// and abort quickly, while local file writes finish their small
-		// atomic mutation before the journal closes.
+		// atomic mutation before the journal closes. The outcome is
+		// classified by ctx.Err() after the operation finishes, because a
+		// simultaneous cancel-and-complete race may deliver either select
+		// case first.
 		cancelCh := ctx.Done()
 	wait:
 		for {
@@ -93,32 +95,16 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			case <-cancelCh:
 				// Done stays readable forever after cancellation; nil the
 				// channel so this case never spins while waiting.
-				cancelled = true
 				cancelCh = nil
 				ticker.Stop()
 				_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_CANCELLING", Operation: op.ID, Message: "waiting for in-flight operation"})
 			}
 		}
 		ticker.Stop()
-		if cancelled && err == nil {
-			// The in-flight mutation finished successfully during the
-			// cancellation wait; journal its real outcome before reporting
-			// the cancellation.
-			if err := journal.Write(Event{Time: now().UTC(), Type: "OPERATION_COMPLETED", Operation: op.ID}); err != nil {
-				return execution, err
-			}
-			completed := op
-			if completed.File != nil && completed.File.Backup {
-				completed.Reversible = true
-			}
-			execution.Completed = append(execution.Completed, completed)
-			notify(progress, Progress{Type: ProgressCompleted, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
-			return execution, ctx.Err()
-		}
 		if err != nil {
 			failed[op.ID] = true
 			eventType := "OPERATION_FAILED"
-			if cancelled {
+			if ctx.Err() != nil {
 				eventType = "OPERATION_CANCELLED"
 			}
 			_ = journal.Write(Event{Time: now().UTC(), Type: eventType, Operation: op.ID, Message: err.Error()})
@@ -129,6 +115,10 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			execution.Failed = append(execution.Failed, Failure{Operation: op, Error: summarizeError(err)})
 			continue
 		}
+		// The operation finished successfully — including one that was
+		// already past its safe cancellation point when the context was
+		// cancelled. Journal its real outcome before reporting the
+		// cancellation.
 		if err := journal.Write(Event{Time: now().UTC(), Type: "OPERATION_COMPLETED", Operation: op.ID}); err != nil {
 			return execution, err
 		}
@@ -138,6 +128,9 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		}
 		execution.Completed = append(execution.Completed, completed)
 		notify(progress, Progress{Type: ProgressCompleted, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
+		if ctx.Err() != nil {
+			return execution, ctx.Err()
+		}
 	}
 	return execution, nil
 }

@@ -399,6 +399,9 @@ type contextAwareRunner struct{}
 
 func (contextAwareRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
 	<-ctx.Done()
+	// Give the executor's wait loop a moment to observe the cancellation
+	// before the result races with the Done channel.
+	time.Sleep(10 * time.Millisecond)
 	return "", ctx.Err()
 }
 
