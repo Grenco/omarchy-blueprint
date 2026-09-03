@@ -238,12 +238,16 @@ func TestValidateRejectsSchema1AfterMigration(t *testing.T) {
 func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
-	// bumps do not silently drop existing provider state.
-	if configSchema != 2 || defaultsSchema != 3 {
-		t.Fatalf("introduction versions = config:%d defaults:%d", configSchema, defaultsSchema)
+	// bumps do not silently drop existing provider state. Introduction
+	// constants are pinned: they must not move when Schema advances.
+	if configSchema != 2 {
+		t.Fatalf("configSchema = %d, want 2", configSchema)
 	}
-	if defaultsSchema != Schema {
-		t.Fatalf("defaultsSchema %d must be updated together with Schema %d", defaultsSchema, Schema)
+	if defaultsSchema != 3 {
+		t.Fatalf("defaultsSchema = %d, want 3", defaultsSchema)
+	}
+	if configSchema > Schema || defaultsSchema > Schema {
+		t.Fatalf("introduction versions must not exceed the latest Schema %d", Schema)
 	}
 }
 
