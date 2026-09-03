@@ -119,12 +119,12 @@ type Plugin struct {
 
 type Data struct {
 	Manifest Manifest `json:"manifest"`
-	Packages Packages  `json:"packages"`
-	Themes   Themes    `json:"themes"`
-	Plugins  Plugins   `json:"plugins"`
-	Config   Configs   `json:"config"`
-	Defaults Defaults  `json:"defaults"`
-	Shell    Shell     `json:"shell"`
+	Packages Packages `json:"packages"`
+	Themes   Themes   `json:"themes"`
+	Plugins  Plugins  `json:"plugins"`
+	Config   Configs  `json:"config"`
+	Defaults Defaults `json:"defaults"`
+	Shell    Shell    `json:"shell"`
 }
 
 func New(name string, now time.Time) Data {
