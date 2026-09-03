@@ -70,6 +70,8 @@ func providerStateLabel(ids []string) string {
 			labels = append(labels, "theme")
 		case "plugins":
 			labels = append(labels, "plugin")
+		case "config":
+			labels = append(labels, "configuration")
 		default:
 			labels = append(labels, id)
 		}
@@ -94,6 +96,8 @@ func providerCheckLabel(id string) string {
 		return "theme discovery available"
 	case "plugins":
 		return "plugin discovery available"
+	case "config":
+		return "config roots available"
 	default:
 		return id + " discovery available"
 	}
@@ -320,7 +324,7 @@ type configStateProvider struct {
 
 func (configStateProvider) ID() string { return "config" }
 
-func (configStateProvider) CategoryEnabled() bool { return false }
+func (configStateProvider) CategoryEnabled() bool { return true }
 
 func (configStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Config }
 
