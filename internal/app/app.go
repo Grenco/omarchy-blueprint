@@ -32,6 +32,7 @@ type Dependencies struct {
 	Now       func() time.Time
 	StateHome func() (string, error)
 	ThemeDirs func() (builtin, user string, err error)
+	PluginDir func() (string, error)
 }
 
 type options struct {
@@ -64,6 +65,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.ThemeDirs == nil {
 		deps.ThemeDirs = defaultThemeDirs
+	}
+	if deps.PluginDir == nil {
+		deps.PluginDir = defaultPluginDir
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -323,6 +327,16 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 			}
 			checks = append(checks, "theme discovery available")
 		}
+		if d.Manifest.Capture.Plugins {
+			p, err := pluginProvider(deps, opt)
+			if err != nil {
+				return err
+			}
+			if _, err := p.Detect(cmd.Context()); err != nil {
+				return err
+			}
+			checks = append(checks, "plugin discovery available")
+		}
 		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
 		if len(d.Packages.Excluded) > 0 {
 			human += fmt.Sprintf("ℹ %d excluded package(s): %s\n", len(d.Packages.Excluded), strings.Join(d.Packages.Excluded, ", "))
@@ -389,6 +403,18 @@ func defaultThemeDirs() (string, string, error) {
 	return "/usr/share/omarchy/themes", filepath.Join(home, ".config", "omarchy", "themes"), nil
 }
 
+func defaultPluginDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "omarchy", "plugins"), nil
+}
+func pluginProvider(deps Dependencies, opt *options) (pluginsprovider.Provider, error) {
+	dir, err := deps.PluginDir()
+	return pluginsprovider.Provider{Runner: deps.Runner, UserDir: dir, ProfileDir: opt.profileDir}, err
+}
+
 func themeProvider(deps Dependencies, opt *options) (themesprovider.Provider, error) {
 	builtin, user, err := deps.ThemeDirs()
 	return themesprovider.Provider{Runner: deps.Runner, BuiltinDir: builtin, UserDir: user, ProfileDir: opt.profileDir}, err
@@ -437,7 +463,11 @@ func captureAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 	if err != nil {
 		return err
 	}
-	plugins, err := (pluginsprovider.Provider{Runner: deps.Runner}).Detect(ctx)
+	pluginStateProvider, err := pluginProvider(deps, opt)
+	if err != nil {
+		return err
+	}
+	plugins, err := pluginStateProvider.Capture(ctx)
 	if err != nil {
 		return err
 	}
@@ -456,7 +486,11 @@ func captureAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 }
 
 func capturePlugins(ctx context.Context, deps Dependencies, opt *options, d profile.Data) error {
-	current, err := (pluginsprovider.Provider{Runner: deps.Runner}).Detect(ctx)
+	p, err := pluginProvider(deps, opt)
+	if err != nil {
+		return err
+	}
+	current, err := p.Capture(ctx)
 	if err != nil {
 		return err
 	}
@@ -523,7 +557,11 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		changes = append(changes, themesprovider.Diff(d.Themes, current)...)
 	}
 	if d.Manifest.Capture.Plugins {
-		current, err := (pluginsprovider.Provider{Runner: deps.Runner}).Detect(ctx)
+		p, err := pluginProvider(deps, opt)
+		if err != nil {
+			return err
+		}
+		current, err := p.Detect(ctx)
 		if err != nil {
 			return err
 		}
@@ -552,7 +590,11 @@ func statusPlugins(ctx context.Context, deps Dependencies, opt *options, d profi
 	if !d.Manifest.Capture.Plugins {
 		return errors.New("plugin state has not been captured; run capture plugins first")
 	}
-	current, err := (pluginsprovider.Provider{Runner: deps.Runner}).Detect(ctx)
+	p, err := pluginProvider(deps, opt)
+	if err != nil {
+		return err
+	}
+	current, err := p.Detect(ctx)
 	if err != nil {
 		return err
 	}
@@ -580,7 +622,10 @@ func restorePlugins(ctx context.Context, deps Dependencies, opt *options, d prof
 	if !d.Manifest.Capture.Plugins {
 		return errors.New("plugin state has not been captured; run capture plugins first")
 	}
-	p := pluginsprovider.Provider{Runner: deps.Runner}
+	p, err := pluginProvider(deps, opt)
+	if err != nil {
+		return err
+	}
 	current, err := p.Detect(ctx)
 	if err != nil {
 		return err
@@ -589,7 +634,7 @@ func restorePlugins(ctx context.Context, deps Dependencies, opt *options, d prof
 	if err != nil {
 		return err
 	}
-	plan := pluginsprovider.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	plan := p.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
 	}
@@ -662,7 +707,10 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 	var currentThemes profile.Themes
 	var themes themesprovider.Provider
 	var currentPlugins profile.Plugins
-	plugins := pluginsprovider.Provider{Runner: deps.Runner}
+	plugins, err := pluginProvider(deps, opt)
+	if err != nil {
+		return err
+	}
 	if d.Manifest.Capture.Themes {
 		themes, err = themeProvider(deps, opt)
 		if err != nil {
@@ -681,7 +729,7 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 		if err != nil {
 			return err
 		}
-		pluginPlan := pluginsprovider.Plan(d.Plugins, currentPlugins, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+		pluginPlan := plugins.Plan(d.Plugins, currentPlugins, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 		plan.Operations = append(plan.Operations, pluginPlan.Operations...)
 		plan.Skipped = append(plan.Skipped, pluginPlan.Skipped...)
 	}
@@ -874,6 +922,12 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 	}
 	for _, op := range plan.Operations {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
+	}
+	for _, op := range plan.Operations {
+		if op.Provider == "plugins" && op.Risk == model.RiskHigh {
+			fmt.Fprintln(&b, "! Third-party plugins execute unsandboxed code inside omarchy-shell; review their source before approval.")
+			break
+		}
 	}
 	for _, skipped := range plan.Skipped {
 		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)

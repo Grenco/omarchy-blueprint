@@ -42,10 +42,25 @@ type Result struct {
 
 func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time, heartbeat time.Duration, progress ProgressFunc) (Result, error) {
 	var execution Result
+	failed := map[string]bool{}
 	if err := journal.Write(Event{Time: now().UTC(), Type: "PLAN_CREATED", Message: fmt.Sprintf("%d operations", len(plan.Operations))}); err != nil {
 		return execution, err
 	}
 	for _, op := range plan.Operations {
+		blocked := ""
+		for _, dependency := range op.DependsOn {
+			if failed[dependency] {
+				blocked = dependency
+				break
+			}
+		}
+		if blocked != "" {
+			message := "dependency failed: " + blocked
+			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_FAILED", Operation: op.ID, Message: message})
+			execution.Failed = append(execution.Failed, Failure{Operation: op, Error: message})
+			failed[op.ID] = true
+			continue
+		}
 		started := time.Now()
 		if err := journal.Write(Event{Time: now().UTC(), Type: "OPERATION_STARTED", Operation: op.ID}); err != nil {
 			return execution, err
@@ -81,6 +96,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		}
 		ticker.Stop()
 		if err != nil {
+			failed[op.ID] = true
 			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_FAILED", Operation: op.ID, Message: err.Error()})
 			notify(progress, Progress{Type: ProgressFailed, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
 			if ctx.Err() != nil {
