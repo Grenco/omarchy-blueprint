@@ -1434,6 +1434,25 @@ func TestHooksVerticalSliceRestoresExactBytesAndMode(t *testing.T) {
 	}
 }
 
+func TestHooksUnmanagedSymlinkWarnsWithoutDrift(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	hooksDir := t.TempDir()
+	deps.HooksDir = func() (string, error) { return hooksDir, nil }
+	target := filepath.Join(t.TempDir(), "external-hook")
+	if err := os.WriteFile(target, []byte("#!/bin/bash\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(hooksDir, "theme-set")); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "hooks"); code != 0 || !strings.Contains(out, "theme-set is a symlink and was left unmanaged") {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "hooks"); code != 0 || !strings.Contains(out, "Profile matches this machine") || !strings.Contains(out, "left unmanaged") {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)

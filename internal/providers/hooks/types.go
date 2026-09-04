@@ -9,7 +9,16 @@ type DetectedHook struct {
 }
 
 type State struct {
-	Items []DetectedHook
+	Items     []DetectedHook
+	Unmanaged []UnmanagedHook
+}
+
+// UnmanagedHook is a runtime-relevant symlink. Blueprint records no source
+// from it and never follows, replaces, or verifies it as portable state.
+type UnmanagedHook struct {
+	Path   string
+	Target string
+	Broken bool
 }
 
 type Provider struct {

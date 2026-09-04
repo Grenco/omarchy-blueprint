@@ -37,3 +37,10 @@ func TestDiffAndVerifyRespectModesAndExtras(t *testing.T) {
 		t.Fatal("extra hooks must not fail verification")
 	}
 }
+
+func TestDiffWarnsForUnmanagedSymlink(t *testing.T) {
+	changes := Diff(profile.Hooks{}, State{Unmanaged: []UnmanagedHook{{Path: "theme-set", Target: "/external/hook"}}})
+	if len(changes) != 1 || changes[0].Type != model.ChangeWarn || !strings.Contains(changes[0].Summary, "left unmanaged") {
+		t.Fatalf("changes=%#v", changes)
+	}
+}

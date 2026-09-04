@@ -33,7 +33,9 @@ It ignores nested directories, hidden `.d` children, and `.d/*.sample` files.
 
 Unknown event names are allowed. Blueprint does not maintain an Omarchy event allowlist.
 
-Runtime-relevant symlinks are rejected rather than followed.
+Runtime-relevant entry symlinks are never followed or captured. They are
+surfaced as unmanaged external hooks and left untouched. A Hooks root symlink
+remains an error because Blueprint cannot establish the provider boundary.
 
 ### Profile representation
 
@@ -62,7 +64,8 @@ Restore is additive and conservative.
 - Desired bytes present with wrong mode: safely repair using the file-write primitive.
 - Different target bytes: skip; overwrite disabled.
 - Extra target hook: leave installed; removal disabled.
-- Symlink or special target: never follow or replace.
+- Symlink or special target: never follow or replace. An unmanaged symlink at
+  a path owned by the saved profile is skipped as a conflict.
 
 Every hook mutation is `RiskHigh`.
 

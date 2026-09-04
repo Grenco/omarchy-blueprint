@@ -62,7 +62,7 @@ The milestone must:
 5. produce semantic add/remove/content/mode drift;
 6. restore missing or safely repairable hooks without overwriting unknown content;
 7. preserve permission modes even when the profile is stored in Git;
-8. reject path traversal, symlinks, special files, invalid metadata, and corrupt snapshots;
+8. reject path traversal, special files, invalid metadata, and corrupt snapshots; leave runtime entry symlinks unmanaged without following them;
 9. mark every hook mutation high-risk;
 10. never execute captured hook source during capture, restore, `check`, or verification;
 11. integrate through the existing provider registry with no new provider-specific orchestration path.
@@ -106,7 +106,9 @@ where the first form is a regular flat file and the second form is an immediate 
 
 Directories not ending in `.d`, nested directories, hidden entries inside `.d`, and `*.sample` entries inside `.d` are outside the provider's desired-state model because current `omarchy-hook` does not execute them for a normal event invocation.
 
-Symlinks in runtime-relevant positions are rejected rather than followed.
+Runtime-relevant entry symlinks are never followed or captured. They are
+reported as unmanaged external hooks and do not count as portable drift. A root
+symlink remains an error because it escapes the provider boundary.
 
 ## Threat model
 
@@ -325,7 +327,7 @@ Use `os.Lstat` for classification. Do not follow symlinks to decide they are saf
 For each immediate entry under the Hooks root:
 
 - regular file: capture as a flat hook;
-- symlink: reject;
+- symlink: record as unmanaged and continue;
 - directory ending in `.d`: scan its immediate children;
 - other directory: ignore;
 - other special file: ignore because current `omarchy-hook` does not treat it as a regular hook file.
@@ -337,7 +339,7 @@ For each immediate child of an event `.d/` directory:
 1. if the name begins with `.`, ignore it;
 2. if the name ends in `.sample`, ignore it;
 3. regular file: capture;
-4. symlink: reject;
+4. symlink: record as unmanaged and continue;
 5. directory: ignore and do not recurse;
 6. special file: ignore.
 
@@ -499,7 +501,8 @@ additional hook left installed; removal disabled
 
 ### Target symlink or special file
 
-Detection fails conservatively for runtime-relevant symlinks. Restore must never follow them.
+An individual runtime symlink is unmanaged. Restore must never follow or
+replace it; if it occupies a saved regular-hook path, restore skips that path.
 
 ## Backups and reversibility
 
@@ -620,7 +623,7 @@ Provider errors should identify the problematic relative path whenever possible.
 Examples:
 
 ```text
-detect hooks: runtime hook post-update.d/foo is a symlink
+detect hooks: hooks root is a symlink
 capture hook post-boot: unsupported permission bits
 check hooks: duplicate hook path "post-update.d/update-rust"
 check hooks: snapshot hash mismatch for "theme-set.d/retint-zellij"
@@ -637,7 +640,7 @@ Cover valid flat/unknown/`.d` paths, flat names ending `.d`, absolute traversal,
 
 ### Detection tests
 
-Cover missing root, flat files, multiple `.d` hooks, unknown events, ignored samples/dotfiles/nested directories, non-`.d` directories, root/runtime symlinks, special permission bits, exact bytes, and mode retention.
+Cover missing root, flat files, multiple `.d` hooks, unknown events, ignored samples/dotfiles/nested directories, non-`.d` directories, rejected root symlinks, unmanaged runtime symlinks, special permission bits, exact bytes, and mode retention.
 
 ### Capture/check tests
 
@@ -669,7 +672,7 @@ The milestone is complete when all of the following hold:
 4. Flat hooks and direct `.d` hooks are captured.
 5. Runtime-ignored `.sample`, dotfile, and nested `.d` content is not captured.
 6. Unknown event names are portable without a Blueprint allowlist.
-7. Runtime-relevant symlinks are rejected.
+7. Runtime-relevant entry symlinks are unmanaged and never followed; root symlinks are rejected.
 8. Captured source bytes are exact.
 9. Profile snapshots are inert mode `0644`.
 10. Desired runtime mode is represented in `hooks.toml`.

@@ -20,6 +20,10 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 	}
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	actual := currentMap(current.Items)
+	unmanaged := make(map[string]UnmanagedHook, len(current.Unmanaged))
+	for _, item := range current.Unmanaged {
+		unmanaged[item.Path] = item
+	}
 	desired := append([]profile.Hook(nil), saved.Items...)
 	sort.Slice(desired, func(i, j int) bool { return desired[i].Path < desired[j].Path })
 	for _, item := range desired {
@@ -30,6 +34,10 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 		resource := "hook:" + item.Path
 		current, exists := actual[item.Path]
 		delete(actual, item.Path)
+		if _, blocked := unmanaged[item.Path]; blocked {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "hooks", Resource: resource, Reason: "existing hook is an unmanaged symlink; overwrite disabled"})
+			continue
+		}
 		if exists && current.Hash != item.Hash {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "hooks", Resource: resource, Reason: "existing hook content differs; overwrite disabled"})
 			continue

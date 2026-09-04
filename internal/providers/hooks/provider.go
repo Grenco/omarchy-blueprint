@@ -39,17 +39,23 @@ func (p Provider) Detect() (State, error) {
 	for _, entry := range entries {
 		path := filepath.Join(p.UserDir, entry.Name())
 		if entry.Type()&os.ModeSymlink != 0 {
-			return State{}, fmt.Errorf("runtime hook %s is a symlink", entry.Name())
+			unmanaged, err := unmanagedHook(entry.Name(), path)
+			if err != nil {
+				return State{}, err
+			}
+			state.Unmanaged = append(state.Unmanaged, unmanaged)
+			continue
 		}
 		if entry.IsDir() {
 			if !strings.HasSuffix(entry.Name(), ".d") {
 				continue
 			}
-			children, err := p.detectDirectory(entry.Name(), path)
+			children, unmanaged, err := p.detectDirectory(entry.Name(), path)
 			if err != nil {
 				return State{}, err
 			}
 			state.Items = append(state.Items, children...)
+			state.Unmanaged = append(state.Unmanaged, unmanaged...)
 			continue
 		}
 		info, err := entry.Info()
@@ -66,15 +72,17 @@ func (p Provider) Detect() (State, error) {
 		state.Items = append(state.Items, hook)
 	}
 	sort.Slice(state.Items, func(i, j int) bool { return state.Items[i].Path < state.Items[j].Path })
+	sort.Slice(state.Unmanaged, func(i, j int) bool { return state.Unmanaged[i].Path < state.Unmanaged[j].Path })
 	return state, nil
 }
 
-func (p Provider) detectDirectory(dir, path string) ([]DetectedHook, error) {
+func (p Provider) detectDirectory(dir, path string) ([]DetectedHook, []UnmanagedHook, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var hooks []DetectedHook
+	var unmanagedHooks []UnmanagedHook
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".sample") {
@@ -82,25 +90,42 @@ func (p Provider) detectDirectory(dir, path string) ([]DetectedHook, error) {
 		}
 		rel := dir + "/" + name
 		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("runtime hook %s is a symlink", rel)
+			unmanaged, err := unmanagedHook(rel, filepath.Join(path, name))
+			if err != nil {
+				return nil, nil, err
+			}
+			unmanagedHooks = append(unmanagedHooks, unmanaged)
+			continue
 		}
 		if entry.IsDir() {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
 		hook, err := detectFile(rel, filepath.Join(path, name))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		hooks = append(hooks, hook)
 	}
-	return hooks, nil
+	return hooks, unmanagedHooks, nil
+}
+
+func unmanagedHook(rel, path string) (UnmanagedHook, error) {
+	if err := ValidatePath(rel); err != nil {
+		return UnmanagedHook{}, err
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return UnmanagedHook{}, err
+	}
+	_, err = os.Stat(path)
+	return UnmanagedHook{Path: rel, Target: target, Broken: errors.Is(err, os.ErrNotExist)}, nil
 }
 
 func detectFile(rel, path string) (DetectedHook, error) {

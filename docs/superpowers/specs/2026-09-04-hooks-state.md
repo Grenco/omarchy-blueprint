@@ -19,7 +19,7 @@
 - Unknown event names are allowed; no hard-coded Omarchy event allowlist.
 - `.d` children beginning with `.` or ending with `.sample` are not captured.
 - Nested `.d` directories are not traversed.
-- Runtime-relevant symlinks are rejected and never followed.
+- Runtime-relevant entry symlinks are never followed or captured; they are surfaced as unmanaged warnings and left untouched. Hooks-root symlinks are rejected.
 - Hook source is captured verbatim and snapshot files are stored mode `0644`.
 - Desired runtime mode is stored as exactly four octal digits in `0000..0777`.
 - Every Hook file mutation is `model.RiskHigh`.
@@ -699,7 +699,7 @@ func TestDetectSortsDirectoryHooks(t *testing.T)
 func TestDetectIgnoresSamplesHiddenFilesAndNestedDirectories(t *testing.T)
 func TestDetectIgnoresNonDotDDirectory(t *testing.T)
 func TestDetectRejectsRootSymlink(t *testing.T)
-func TestDetectRejectsRuntimeRelevantSymlink(t *testing.T)
+func TestDetectLeavesRuntimeRelevantSymlinkUnmanaged(t *testing.T)
 func TestDetectRetainsExactBytesAndMode(t *testing.T)
 ```
 
@@ -749,7 +749,7 @@ Read root entries with `os.ReadDir`.
 
 For each root entry:
 
-- symlink: return an error;
+- symlink: record as unmanaged and continue;
 - regular file: capture as flat Hook;
 - directory ending `.d`: scan immediate children;
 - other directory/special file: ignore.
@@ -764,7 +764,8 @@ if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".sample") {
     continue
 }
 if entry.Type()&os.ModeSymlink != 0 {
-    return fmt.Errorf("runtime hook %s is a symlink", rel)
+    recordUnmanagedSymlink(rel)
+    continue
 }
 if entry.IsDir() {
     continue
@@ -1593,7 +1594,7 @@ Before opening the PR, verify these invariants manually:
 - [ ] No production code contains a hard-coded known-event allowlist.
 - [ ] `.d/*.sample` and `.d/.hidden` are ignored.
 - [ ] Detection never recurses into `.d` children.
-- [ ] Runtime-relevant symlinks are never followed.
+- [ ] Runtime-relevant entry symlinks are never followed, captured, or overwritten.
 - [ ] Snapshot files are written `0644`.
 - [ ] Profile metadata stores desired runtime mode.
 - [ ] Existing Config/Shell FileWrite operations leave `Mode` and `ExpectedMode` nil.

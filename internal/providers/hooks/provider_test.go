@@ -65,7 +65,7 @@ func TestDetectCapturesAndSortsRuntimeHooks(t *testing.T) {
 	}
 }
 
-func TestDetectRejectsRuntimeSymlinks(t *testing.T) {
+func TestDetectLeavesRuntimeSymlinksUnmanaged(t *testing.T) {
 	p, user, _ := hookProvider(t)
 	if err := os.MkdirAll(user, 0o755); err != nil {
 		t.Fatal(err)
@@ -85,8 +85,19 @@ func TestDetectRejectsRuntimeSymlinks(t *testing.T) {
 	if err := os.Symlink(filepath.Join(user, "real"), filepath.Join(user, "post-boot")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Detect(); err == nil {
-		t.Fatal("runtime symlink must fail")
+	state, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Items) != 1 || state.Items[0].Path != "real" || len(state.Unmanaged) != 1 || state.Unmanaged[0].Path != "post-boot" || state.Unmanaged[0].Target == "" {
+		t.Fatalf("state=%#v", state)
+	}
+	if err := os.Symlink(filepath.Join(user, "missing"), filepath.Join(user, "future")); err != nil {
+		t.Fatal(err)
+	}
+	state, err = p.Detect()
+	if err != nil || len(state.Unmanaged) != 2 || !state.Unmanaged[0].Broken && !state.Unmanaged[1].Broken {
+		t.Fatalf("state=%#v err=%v", state, err)
 	}
 }
 

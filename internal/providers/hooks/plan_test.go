@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -55,5 +56,14 @@ func TestPlanRejectsInvalidMetadata(t *testing.T) {
 	p, _, _ := hookProvider(t)
 	if _, err := p.Plan(profile.Hooks{Items: []profile.Hook{{Path: "../bad", Hash: "bad", Mode: "0755"}}}, State{}, 5, "1", "2"); err == nil {
 		t.Fatal("invalid metadata must fail")
+	}
+}
+
+func TestPlanSkipsUnmanagedSymlinkAtDesiredPath(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	savedHook := planHook(t, p, "post-boot", "desired", "0755")
+	plan, err := p.Plan(profile.Hooks{Items: []profile.Hook{savedHook}}, State{Unmanaged: []UnmanagedHook{{Path: "post-boot", Target: "/external/hook"}}}, 5, "1", "2")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "unmanaged symlink") {
+		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 }

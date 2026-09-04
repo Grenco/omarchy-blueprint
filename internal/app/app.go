@@ -410,28 +410,34 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		}
 		changes = append(changes, providerChanges...)
 	}
+	driftCount := 0
+	for _, change := range changes {
+		if change.Type != model.ChangeWarn || change.Provider != "hooks" {
+			driftCount++
+		}
+	}
 	title := "Profile matches this machine"
 	if diff {
 		title = "Profile differences"
-	} else if len(changes) > 0 {
-		title = fmt.Sprintf("%d profile difference(s)", len(changes))
+	} else if driftCount > 0 {
+		title = fmt.Sprintf("%d profile difference(s)", driftCount)
 	}
 	if len(providers) == 1 && providers[0].ID() == "packages" {
 		title = "Profile matches this machine"
 		if diff {
 			title = "Package differences"
-		} else if len(changes) > 0 {
-			title = fmt.Sprintf("%d package differences", len(changes))
+		} else if driftCount > 0 {
+			title = fmt.Sprintf("%d package differences", driftCount)
 		}
 	}
 	commandName := "status"
 	if diff {
 		commandName = "diff"
 	}
-	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
+	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": driftCount > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
 		return err
 	}
-	if len(changes) > 0 {
+	if driftCount > 0 {
 		return driftError{}
 	}
 	return nil

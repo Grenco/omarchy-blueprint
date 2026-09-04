@@ -670,6 +670,7 @@ func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []
 		return nil, nil, err
 	}
 	changes := hooksprovider.DiffCaptures(d.Hooks, captured)
+	changes = append(changes, hooksprovider.UnmanagedWarnings(current.Unmanaged)...)
 	d.Hooks = captured
 	d.Manifest.Capture.Hooks = true
 	return captured, changes, nil

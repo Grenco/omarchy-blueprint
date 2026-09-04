@@ -12,7 +12,23 @@ func DiffCaptures(previous, next profile.Hooks) []model.Change {
 }
 
 func Diff(saved profile.Hooks, current State) []model.Change {
-	return compare(savedMap(saved.Items), currentMap(current.Items))
+	changes := compare(savedMap(saved.Items), currentMap(current.Items))
+	return append(changes, UnmanagedWarnings(current.Unmanaged)...)
+}
+
+func UnmanagedWarnings(items []UnmanagedHook) []model.Change {
+	warnings := make([]model.Change, 0, len(items))
+	for _, item := range items {
+		summary := "! hook " + item.Path + " is a symlink and was left unmanaged"
+		if item.Broken {
+			summary = "! hook " + item.Path + " is a broken symlink and was left unmanaged"
+		} else if item.Target != "" {
+			summary += " -> " + item.Target
+		}
+		warnings = append(warnings, hookChange(model.ChangeWarn, item.Path, summary))
+	}
+	sort.Slice(warnings, func(i, j int) bool { return warnings[i].Name < warnings[j].Name })
+	return warnings
 }
 
 func compare(saved map[string]profile.Hook, current map[string]DetectedHook) []model.Change {

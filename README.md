@@ -256,7 +256,8 @@ or another external secret source rather than embedding secret values directly.
   third-party plugin references without captured provenance. Shell restore
   preserves independent target state, writes atomically, and restarts only after
   a planned merge write.
-- Hooks capture only flat hooks and immediate `.d/` children, rejects runtime
-  symlinks, and stores source snapshots inertly at mode `0644`. Restore is
-  high-risk, never executes hook source, restores recorded modes atomically, and
-  never overwrites differing target contents or removes extra hooks.
+- Hooks capture only flat hooks and immediate `.d/` children. Runtime symlink
+  entries are never followed or captured; they are reported as unmanaged and
+  left untouched. Snapshots are inert at mode `0644`. Restore is high-risk,
+  never executes hook source, restores recorded modes atomically, and never
+  overwrites differing target contents or removes extra hooks.
