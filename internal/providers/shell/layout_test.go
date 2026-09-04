@@ -95,6 +95,39 @@ func TestLayoutPreservesTargetOnlyMovementForSourceUntouchedWidget(t *testing.T)
 	}
 }
 
+func TestLayoutInsertionDoesNotClaimShiftedWidgetPlacement(t *testing.T) {
+	a := layoutDocument(nil, []any{"A", "B", "C"}, nil)
+	b := layoutDocument(nil, []any{"A", "X", "B", "C"}, nil)
+	c := layoutDocument(nil, []any{"A", "B", "C"}, nil)
+	target := layoutDocument(nil, []any{"A", "C"}, []any{"B"})
+	result := mergeLayout(t, a, b, c, target, MergeOptions{})
+	if !reflect.DeepEqual(ids(entries(result.Value, "center")), []string{"A", "X", "C"}) || !reflect.DeepEqual(ids(entries(result.Value, "right")), []string{"B"}) || widgetCount(result.Value, "X") != 1 || len(result.Conflicts) != 0 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestLayoutRemovalDoesNotClaimShiftedWidgetPlacement(t *testing.T) {
+	a := layoutDocument(nil, []any{"A", "X", "B", "C"}, nil)
+	b := layoutDocument(nil, []any{"A", "B", "C"}, nil)
+	c := layoutDocument(nil, []any{"A", "X", "B", "C"}, nil)
+	target := layoutDocument(nil, []any{"A", "X", "C"}, []any{"B"})
+	result := mergeLayout(t, a, b, c, target, MergeOptions{})
+	if !reflect.DeepEqual(ids(entries(result.Value, "center")), []string{"A", "C"}) || !reflect.DeepEqual(ids(entries(result.Value, "right")), []string{"B"}) || widgetCount(result.Value, "X") != 0 || len(result.Conflicts) != 0 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestLayoutRecognizesSameSectionReordering(t *testing.T) {
+	a := layoutDocument(nil, []any{"A", "B", "C"}, nil)
+	b := layoutDocument(nil, []any{"B", "A", "C"}, nil)
+	c := layoutDocument(nil, []any{"A", "B", "C"}, nil)
+	target := layoutDocument(nil, []any{"A", "C"}, []any{"B"})
+	result := mergeLayout(t, a, b, c, target, MergeOptions{})
+	if !reflect.DeepEqual(ids(entries(result.Value, "center")), []string{"B", "A", "C"}) || widgetCount(result.Value, "B") != 1 || len(result.Conflicts) != 0 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestLayoutAmbiguousTargetPreservesNormalAndForceResolves(t *testing.T) {
 	a := layoutDocument(nil, nil, nil)
 	b := layoutDocument(nil, []any{"acme.weather"}, nil)

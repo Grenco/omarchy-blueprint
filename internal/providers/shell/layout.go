@@ -45,7 +45,7 @@ func reconcileBarLayout(sourceBaseline, sourceDesired, targetCurrent map[string]
 	sort.Strings(names)
 	for _, id := range names {
 		before, desired := singlePlacement(a, id), singlePlacement(b, id)
-		if samePlacement(before, desired) {
+		if !placementChanged(id, before, desired, a, b) {
 			continue
 		}
 		targetPlacements := target.placements[id]
@@ -142,11 +142,26 @@ func singlePlacement(state layoutState, id string) *widgetPlacement {
 	return &placement
 }
 
-func samePlacement(left, right *widgetPlacement) bool {
+func placementChanged(id string, left, right *widgetPlacement, before, desired layoutState) bool {
 	if left == nil || right == nil {
-		return left == right
+		return left != right
 	}
-	return left.Section == right.Section && left.Index == right.Index && nodeEqual(mergeNode{Present: true, Value: left.Entry}, mergeNode{Present: true, Value: right.Entry})
+	if left.Section != right.Section {
+		return true
+	}
+	for otherID, placements := range before.placements {
+		if otherID == id || len(placements) != 1 || placements[0].Section != left.Section {
+			continue
+		}
+		otherDesired := singlePlacement(desired, otherID)
+		if otherDesired == nil || otherDesired.Section != right.Section {
+			continue
+		}
+		if (left.Index < placements[0].Index) != (right.Index < otherDesired.Index) {
+			return true
+		}
+	}
+	return false
 }
 
 func removeWidget(layout map[string]any, id string, modified map[string]bool) {
