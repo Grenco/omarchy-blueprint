@@ -174,7 +174,11 @@ func (p Provider) Analyze(saved profile.Shell, current State, options MergeOptio
 	if target.Version != SupportedVersion {
 		return MergeResult{}, fmt.Errorf("Shell schema changed; migration required")
 	}
-	return Merge(intent.Baseline.Value, intent.Desired.Value, current.Baseline.Value, target.Value, options)
+	result, err := Merge(intent.Baseline.Value, intent.Desired.Value, current.Baseline.Value, target.Value, options)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	return reconcileBarLayout(intent.Baseline.Value, intent.Desired.Value, target.Value, result, options), nil
 }
 
 func removeStaleSnapshots(dir string) error {

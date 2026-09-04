@@ -33,6 +33,13 @@ Portable source intent is `A -> B`; independent target customization is `C -> T`
 
 JSON objects merge recursively only when all four corresponding nodes are objects. Arrays, scalars, null, additions/deletions, and type changes are atomic merge units.
 
+Bar layout is a focused exception after generic merge: uniquely identifiable
+widget membership and placement are reconciled as one relationship across
+`left`, `center`, and `right`. Captured additions, removals, and moves win over
+target/default placement while target-only widgets remain. Duplicate IDs stay
+conservatively conflict-managed; Blueprint never silently collapses ambiguous
+target instances.
+
 ### Normal conflict policy
 
 - Source-untouched target state is preserved and is not drift.

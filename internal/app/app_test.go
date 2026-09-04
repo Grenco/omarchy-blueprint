@@ -1332,6 +1332,52 @@ func TestLaptopToDesktopShellMergePreservesTargetLayoutAndResolvesConflict(t *te
 	}
 }
 
+func TestLaptopToDesktopShellMergeMovesWidgetWithoutForce(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	pluginDir := filepath.Join(t.TempDir(), "plugins")
+	pluginPath := filepath.Join(pluginDir, "acme.weather")
+	if err := os.MkdirAll(pluginPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginPath, "Weather.qml"), []byte("Item {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.pluginDir = pluginDir
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	source := strings.Replace(defaultShellJSON, `[{"id":"omarchy.clock","format":"HH:mm"}]`, `[{"id":"omarchy.clock","format":"HH:mm"},{"id":"acme.weather","units":"celsius"}]`, 1)
+	if err := os.WriteFile(user, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "plugins"); code != 0 {
+		t.Fatalf("capture plugins code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "shell"); code != 0 {
+		t.Fatalf("capture shell code=%d out=%s", code, out)
+	}
+	target := strings.Replace(defaultShellJSON, `[{"id":"omarchy.audio"}]`, `[{"id":"desktop.only"},"acme.weather"]`, 1)
+	if err := os.WriteFile(user, []byte(target), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "shell", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+	merged, err := shellprovider.ReadDocument(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bar := merged.Value["bar"].(map[string]any)
+	layout := bar["layout"].(map[string]any)
+	if strings.Count(shellCanonical(layout), "acme.weather") != 1 || !strings.Contains(shellCanonical(layout["center"]), "acme.weather") || !strings.Contains(shellCanonical(layout["right"]), "desktop.only") {
+		t.Fatalf("merged layout=%#v", layout)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 0 {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)

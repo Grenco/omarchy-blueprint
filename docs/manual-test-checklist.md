@@ -151,6 +151,11 @@
   intent without replacing unrelated target state.
 - Change an Omarchy baseline field untouched by the source and confirm restore
   retains the current baseline value.
+- Place a captured widget in center while the target has the same widget in
+  right beside a desktop-only widget. Confirm normal restore leaves one widget
+  in center and preserves the desktop-only widget without `--force`.
+- Create duplicate target widget IDs and confirm normal restore reports a
+  conflict rather than silently deleting either instance.
 - Reset the target to the Omarchy baseline, restore a captured customization,
   and confirm a backup exists beside the restore journal.
 

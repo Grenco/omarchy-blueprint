@@ -174,6 +174,13 @@ futureObject.someField
 
 Inline widget settings remain part of their containing layout array in this milestone.
 
+After generic merge, `bar.layout.left`, `bar.layout.center`, and
+`bar.layout.right` receive a focused widget-aware reconciliation. A uniquely
+identifiable widget explicitly added, removed, or moved by A -> B has portable
+placement intent across all three sections; target-only widgets remain.
+Ambiguous duplicate IDs retain conservative array conflict behavior. Source
+entries, including inline settings, move as atomic entries.
+
 ## Atomic decision table
 
 For each atomic unit:

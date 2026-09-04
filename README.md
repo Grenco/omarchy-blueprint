@@ -46,6 +46,11 @@ without discarding unrelated target state. Once Shell state is captured, it owns
 plugin enablement and layout; plugin restore still reconstructs source and
 provenance, but does not enable plugins independently of Shell.
 
+Bar widgets are reconciled across left, center, and right by widget ID. A
+uniquely identifiable widget explicitly added, removed, or moved by the
+captured profile follows that placement without `--force`; target-only widgets
+remain. Duplicate widget IDs remain conservatively conflict-managed.
+
 ## Requirements
 
 - Omarchy 4 or newer
