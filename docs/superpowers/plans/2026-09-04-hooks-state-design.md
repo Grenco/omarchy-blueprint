@@ -1,9 +1,9 @@
 # Omarchy Hooks State Design
 
-**Status:** Approved design  
-**Date:** 2026-09-04  
-**Project:** `omarchy-blueprint`  
-**Target profile schema:** 5  
+**Status:** Approved design
+**Date:** 2026-09-04
+**Project:** `omarchy-blueprint`
+**Target profile schema:** 5
 **Prerequisite:** Merge the schema-4 Shell-state milestone before implementation.
 
 ## Summary

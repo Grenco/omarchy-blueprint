@@ -1,6 +1,6 @@
 # ADR 0010: Portable Omarchy Hooks
 
-**Status:** Accepted  
+**Status:** Accepted
 **Date:** 2026-09-04
 
 ## Context
