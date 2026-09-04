@@ -43,6 +43,9 @@ type Result struct {
 
 func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time, heartbeat time.Duration, progress ProgressFunc) (Result, error) {
 	var execution Result
+	if err := ValidatePlan(plan); err != nil {
+		return execution, err
+	}
 	failed := map[string]bool{}
 	if err := journal.Write(Event{Time: now().UTC(), Type: "PLAN_CREATED", Message: fmt.Sprintf("%d operations", len(plan.Operations))}); err != nil {
 		return execution, err

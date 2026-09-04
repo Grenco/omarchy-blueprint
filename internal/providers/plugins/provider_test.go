@@ -66,7 +66,7 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 func TestLocalRestorePlanUsesDependentValidationChain(t *testing.T) {
 	p := Provider{UserDir: t.TempDir(), ProfileDir: t.TempDir()}
 	saved := profile.Plugins{Items: []profile.Plugin{{ID: "mine.local", Source: "local", Hash: "abc", Enabled: true}}}
-	plan := p.Plan(saved, profile.Plugins{}, 1, "4", "4")
+	plan := p.Plan(saved, profile.Plugins{}, 1, "4", "4", Semantics{ManageEnabled: true})
 	if len(plan.Operations) != 4 {
 		t.Fatalf("operations=%#v", plan.Operations)
 	}
@@ -78,7 +78,7 @@ func TestLocalRestorePlanUsesDependentValidationChain(t *testing.T) {
 func TestGitRestorePlanRequiresTrustAndRevalidatesPinnedRevision(t *testing.T) {
 	p := Provider{UserDir: t.TempDir()}
 	saved := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "git", URL: "https://example.test/acme.git", Revision: strings.Repeat("a", 40), Enabled: true}}}
-	plan := p.Plan(saved, profile.Plugins{}, 1, "4", "4")
+	plan := p.Plan(saved, profile.Plugins{}, 1, "4", "4", Semantics{ManageEnabled: true})
 	if len(plan.Operations) != 5 {
 		t.Fatalf("operations=%#v", plan.Operations)
 	}
@@ -101,14 +101,68 @@ func TestDetectDiffPlanAndVerify(t *testing.T) {
 		t.Fatalf("plugins=%#v", current.Items)
 	}
 	saved := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Enabled: false}}}
-	if len(Diff(saved, current)) != 1 {
+	if len(Diff(saved, current, Semantics{ManageEnabled: true})) != 1 {
 		t.Fatal("expected drift")
 	}
-	plan := p.Plan(saved, current, 1, "4", "4")
+	plan := p.Plan(saved, current, 1, "4", "4", Semantics{ManageEnabled: true})
 	if got := plan.Operations[0].Command; !reflect.DeepEqual(got, []string{"omarchy", "plugin", "disable", "omarchy.clock"}) {
 		t.Fatalf("command=%#v", got)
 	}
-	if Verify(saved, current).OK {
+	if Verify(saved, current, Semantics{ManageEnabled: true}).OK {
 		t.Fatal("verification unexpectedly passed")
+	}
+}
+
+func TestShellOwnedSemanticsIgnoreEnabledDrift(t *testing.T) {
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: false}}}
+	semantics := Semantics{ManageEnabled: false}
+
+	if got := Diff(saved, current, semantics); len(got) != 0 {
+		t.Fatalf("diff = %#v", got)
+	}
+	if got := Verify(saved, current, semantics); !got.OK {
+		t.Fatalf("verify = %#v", got)
+	}
+}
+
+func TestShellOwnedSemanticsEmitNoEnableDisableOperations(t *testing.T) {
+	p := Provider{UserDir: t.TempDir(), ProfileDir: t.TempDir()}
+	// Missing local plugin: install/pin/validate/copy/rescan still planned,
+	// but no enable/disable even though Enabled is true.
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "h", Enabled: true}}}
+	current := profile.Plugins{}
+	plan := p.Plan(saved, current, 4, "1.0", "1.0", Semantics{ManageEnabled: false})
+	for _, operation := range plan.Operations {
+		if operation.Action == "enable" || operation.Action == "disable" {
+			t.Fatalf("shell-owned enablement must not be planned: %#v", plan.Operations)
+		}
+	}
+	if len(plan.Operations) == 0 {
+		t.Fatal("source reconstruction operations must still be planned")
+	}
+}
+
+func TestLegacySemanticsPreserveEnablementBehavior(t *testing.T) {
+	p := Provider{UserDir: t.TempDir(), ProfileDir: t.TempDir()}
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: false}}}
+	semantics := Semantics{ManageEnabled: true}
+	changes := Diff(saved, current, semantics)
+	if len(changes) != 1 || !strings.Contains(changes[0].Summary, "enabled: false → true") {
+		t.Fatalf("legacy diff = %#v", changes)
+	}
+	plan := p.Plan(saved, current, 3, "1.0", "1.0", semantics)
+	foundEnable := false
+	for _, operation := range plan.Operations {
+		if operation.Action == "enable" {
+			foundEnable = true
+		}
+	}
+	if !foundEnable {
+		t.Fatalf("legacy plan must emit enable: %#v", plan.Operations)
+	}
+	if got := Verify(saved, current, semantics); got.OK {
+		t.Fatalf("legacy verify must fail on enabled drift: %#v", got)
 	}
 }

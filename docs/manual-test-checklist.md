@@ -132,6 +132,22 @@
 - Clone the profile to a second Omarchy machine and confirm the captured defaults are applied and `status defaults` is clean.
 - On a machine where a captured default value is not offered by this Omarchy version, confirm the operation fails with Omarchy's own message and the journal records the failure without touching other defaults.
 
+## Portable Omarchy Shell
+
+- Customize the bar placement/layout and idle settings, then run `capture shell`.
+- Include one third-party widget after capturing its plugin provenance.
+- Remove the plugin and target `shell.json`, then confirm aggregate
+  `restore --dry-run` reconstructs the plugin before `shell.write` and
+  `shell.restart`.
+- Restore in a disposable or fresh session and confirm bar placement, widget
+  settings, and idle values after the restart.
+- Confirm `omarchy-shell shell ping` responds after restore; do not rely only
+  on the restart command's success because Shell readiness can lag upstream.
+- Independently modify the target `shell.json` and confirm restore skips it
+  rather than overwriting it.
+- Reset the target to the Omarchy baseline, restore a captured customization,
+  and confirm a backup exists beside the restore journal.
+
 ## Aggregate cross-machine workflow
 
 - Clone the profile into an empty directory on the second machine.

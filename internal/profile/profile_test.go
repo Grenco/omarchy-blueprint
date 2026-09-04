@@ -13,8 +13,8 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	d := New("main", now)
-	if d.Manifest.Schema != 3 {
-		t.Fatalf("new profile schema = %d, want 3", d.Manifest.Schema)
+	if d.Manifest.Schema != 4 {
+		t.Fatalf("new profile schema = %d, want 4", d.Manifest.Schema)
 	}
 	d.Manifest.Capture.Packages = true
 	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
@@ -91,8 +91,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 3 {
-		t.Fatalf("schema = %d, want 3", got.Manifest.Schema)
+	if got.Manifest.Schema != 4 {
+		t.Fatalf("schema = %d, want 4", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Config || len(got.Config.Files) != 0 {
 		t.Fatalf("config state = %#v, want empty uncaptured config", got.Config)
@@ -113,8 +113,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 3\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 3", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 4\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 4", savedManifest)
 	}
 }
 
@@ -159,6 +159,78 @@ func TestSaveLoadRoundTripConfigMetadataInStableOrder(t *testing.T) {
 	}
 }
 
+func TestLoadSchema3UpgradesWithoutShellAndPreservesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	profileTOML := `schema = 3
+
+[profile]
+name = "schema3"
+created_at = 2026-09-03T12:00:00Z
+updated_at = 2026-09-03T12:00:00Z
+
+[capture]
+defaults = true
+`
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "defaults"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "defaults", "defaults.toml"), []byte("terminal = 'ghostty'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest.Schema != 4 {
+		t.Fatalf("schema = %d, want 4", got.Manifest.Schema)
+	}
+	if got.Manifest.Capture.Shell {
+		t.Fatal("schema-3 profile must upgrade with shell uncaptured")
+	}
+	if got.Shell != (Shell{}) {
+		t.Fatalf("shell = %#v, want zero value", got.Shell)
+	}
+	if got.Defaults.Terminal != "ghostty" {
+		t.Fatalf("defaults were not preserved: %#v", got.Defaults)
+	}
+}
+
+func TestSaveLoadRoundTripShellMetadata(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+	d.Manifest.Capture.Shell = true
+	d.Shell = Shell{
+		Version:      1,
+		Hash:         "desired",
+		BaselineHash: "baseline",
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Shell != d.Shell {
+		t.Fatalf("shell = %#v, want %#v", got.Shell, d.Shell)
+	}
+	if !got.Manifest.Capture.Shell {
+		t.Fatal("shell capture metadata was not retained")
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "shell", "shell.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "version = 1\nhash = 'desired'\nbaseline_hash = 'baseline'\n"
+	if string(b) != want {
+		t.Fatalf("shell/shell.toml = %q, want %q", b, want)
+	}
+}
+
 func TestLoadSchema2UpgradesWithoutDefaultsAndPreservesConfig(t *testing.T) {
 	dir := t.TempDir()
 	profileTOML := `schema = 2
@@ -185,8 +257,8 @@ config = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 3 {
-		t.Fatalf("schema = %d, want 3", got.Manifest.Schema)
+	if got.Manifest.Schema != 4 {
+		t.Fatalf("schema = %d, want 4", got.Manifest.Schema)
 	}
 	if !got.Manifest.Capture.Config || len(got.Config.Files) != 1 {
 		t.Fatalf("config state = %#v, want retained schema-2 config", got.Config)
@@ -238,16 +310,18 @@ func TestValidateRejectsSchema1AfterMigration(t *testing.T) {
 func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
-	// bumps do not silently drop existing provider state. Introduction
-	// constants are pinned: they must not move when Schema advances.
-	if configSchema != 2 {
-		t.Fatalf("configSchema = %d, want 2", configSchema)
+	// bumps do not silently drop existing provider state.
+	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 {
+		t.Fatalf(
+			"introduction versions = config:%d defaults:%d shell:%d",
+			configSchema, defaultsSchema, shellSchema,
+		)
 	}
-	if defaultsSchema != 3 {
-		t.Fatalf("defaultsSchema = %d, want 3", defaultsSchema)
-	}
-	if configSchema > Schema || defaultsSchema > Schema {
-		t.Fatalf("introduction versions must not exceed the latest Schema %d", Schema)
+	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema {
+		t.Fatalf(
+			"introduction versions must not exceed current schema %d",
+			Schema,
+		)
 	}
 }
 

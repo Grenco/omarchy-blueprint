@@ -13,7 +13,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 3
+const Schema = 4
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -21,6 +21,7 @@ const Schema = 3
 const (
 	configSchema   = 2
 	defaultsSchema = 3
+	shellSchema    = 4
 )
 
 type Manifest struct {
@@ -47,6 +48,7 @@ type CaptureMeta struct {
 	Plugins  bool `toml:"plugins"`
 	Config   bool `toml:"config"`
 	Defaults bool `toml:"defaults"`
+	Shell    bool `toml:"shell"`
 }
 
 type Packages struct {
@@ -96,6 +98,15 @@ type Defaults struct {
 	Agent    string `json:"agent,omitempty" toml:"agent,omitempty"`
 }
 
+// Shell records Omarchy Shell state metadata. An empty Hash means the captured
+// desired state is "no Blueprint-managed Shell customization"; Hash and
+// BaselineHash are canonical JSON hashes of the exact captured snapshots.
+type Shell struct {
+	Version      int    `json:"version,omitempty" toml:"version,omitempty"`
+	Hash         string `json:"hash,omitempty" toml:"hash,omitempty"`
+	BaselineHash string `json:"baseline_hash,omitempty" toml:"baseline_hash,omitempty"`
+}
+
 type Plugin struct {
 	ID         string `json:"id" toml:"id"`
 	Source     string `json:"source,omitempty" toml:"source,omitempty"`
@@ -113,6 +124,7 @@ type Data struct {
 	Plugins  Plugins  `json:"plugins"`
 	Config   Configs  `json:"config"`
 	Defaults Defaults `json:"defaults"`
+	Shell    Shell    `json:"shell"`
 }
 
 func New(name string, now time.Time) Data {
@@ -190,6 +202,19 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	if loadedSchema >= shellSchema {
+		shellState, err := os.ReadFile(filepath.Join(dir, "shell", "shell.toml"))
+		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Shell {
+			return d, errors.New("shell state marked captured but shell/shell.toml is missing")
+		}
+		if err == nil {
+			if err := toml.Unmarshal(shellState, &d.Shell); err != nil {
+				return d, fmt.Errorf("parse shell/shell.toml: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
 	return d, nil
 }
 
@@ -215,6 +240,9 @@ func Save(dir string, d Data) error {
 	if err := os.MkdirAll(filepath.Join(dir, "defaults"), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "shell"), 0o755); err != nil {
+		return err
+	}
 	b, err := toml.Marshal(d.Manifest)
 	if err != nil {
 		return err
@@ -235,6 +263,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	shellState, err := toml.Marshal(d.Shell)
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -248,6 +280,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "plugins", "plugins.toml"), plugins},
 		{filepath.Join(dir, "config", "config.toml"), configs},
 		{filepath.Join(dir, "defaults", "defaults.toml"), defaults},
+		{filepath.Join(dir, "shell", "shell.toml"), shellState},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {
