@@ -177,7 +177,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 }
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
-	var dryRun, yes bool
+	var dryRun, yes, force bool
 	providers := stateProviders(deps, opt)
 	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -185,7 +185,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 			return profileError(opt.profileDir, err)
 		}
 		if len(args) == 0 {
-			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes)
+			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes, restorePlanOptions{Force: force})
 		}
 		provider, ok := categoryProvider(providers, selectedCategory(args))
 		if !ok {
@@ -194,10 +194,11 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 		if !provider.Captured(d) {
 			return captureRequiredError(provider.ID())
 		}
-		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes)
+		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes, restorePlanOptions{Force: force})
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the restore plan without changing the machine")
 	cmd.Flags().BoolVar(&yes, "yes", false, "approve the restore non-interactively")
+	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile (currently Shell)")
 	return cmd
 }
 
@@ -423,25 +424,29 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	return nil
 }
 
-func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
-	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes)
+type restorePlanOptions struct {
+	Force bool
 }
 
-func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
+func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
+	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes, planOptions)
+}
+
+func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
 	}
 	plan := model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
 	for _, provider := range providers {
-		providerPlan, err := provider.Plan(ctx, d, info)
+		providerPlan, err := provider.Plan(ctx, d, info, planOptions)
 		if err != nil {
 			return fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
 		plan.Operations = append(plan.Operations, providerPlan.Operations...)
 		plan.Skipped = append(plan.Skipped, providerPlan.Skipped...)
 	}
-	if err := finalizeRestorePlan(ctx, deps, opt, d, providers, &plan); err != nil {
+	if err := finalizeRestorePlan(ctx, deps, opt, d, providers, &plan, planOptions); err != nil {
 		return fmt.Errorf("finalize restore plan: %w", err)
 	}
 	if dryRun {

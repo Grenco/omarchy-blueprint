@@ -33,7 +33,7 @@ func TestPlanNoOpsWhenDesiredShellAlreadyMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestPlanCreatesMissingUserShellAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestPlanReplacesCurrentDefaultShellWithBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestPlanAllowsBaselineContentChangeWhenVersionMatches(t *testing.T) {
 	if current.BaselineHash == saved.BaselineHash {
 		t.Fatal("fixture must actually change the baseline")
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,14 +129,14 @@ func TestPlanSkipsDifferentUserCustomization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 0 {
 		t.Fatalf("operations = %#v; user drift must never be overwritten", plan.Operations)
 	}
-	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "existing user Shell configuration differs; overwrite disabled") {
+	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "keeping the current value") {
 		t.Fatalf("skipped = %#v", plan.Skipped)
 	}
 }
@@ -148,7 +148,7 @@ func TestPlanSkipsShellVersionMismatchAsMigrationRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,14 +166,14 @@ func TestPlanDefaultDesiredStateDoesNotDeleteExtraCustomization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 0 {
 		t.Fatalf("operations = %#v; removal is disabled", plan.Operations)
 	}
-	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "removal disabled") {
+	if len(plan.Skipped) != 0 {
 		t.Fatalf("skipped = %#v", plan.Skipped)
 	}
 }
@@ -187,7 +187,7 @@ func TestPlanUsesExactCapturedRawHashForFileWriteSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0")
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

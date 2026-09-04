@@ -2,6 +2,8 @@ package restore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +17,11 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 )
+
+func generatedHash(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
 
 type delayedRunner struct{ delay time.Duration }
 
@@ -94,6 +101,84 @@ func TestExecuteReportsAndJournalsProgress(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "OPERATION_PROGRESS") {
 		t.Fatalf("journal missing progress: %s", b)
+	}
+}
+
+func TestFileWriteGeneratedContentCreatesMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "created.json")
+	data := []byte("generated content\n")
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "shell.write", File: &model.FileWrite{Generated: true, Content: data, Destination: destination, SourceHash: generatedHash(data), ExpectedMissing: true}}}}
+	result, err := Execute(context.Background(), delayedRunner{}, plan, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 0 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("content=%q err=%v", got, err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func TestFileWriteGeneratedContentPreservesExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "existing.json")
+	if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("new")
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "shell.write", File: &model.FileWrite{Generated: true, Content: data, Destination: destination, SourceHash: generatedHash(data), ExpectedHash: hashFile(t, destination), Backup: true}}}}
+	if _, err := Execute(context.Background(), delayedRunner{}, plan, journal, time.Now, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func TestFileWriteGeneratedContentRejectsInvalidSourcesAndHash(t *testing.T) {
+	cases := []model.FileWrite{
+		{Generated: true, Source: "unexpected", Content: []byte("x"), SourceHash: generatedHash([]byte("x")), ExpectedMissing: true},
+		{Generated: true, SourceHash: generatedHash([]byte("x")), ExpectedMissing: true},
+		{Source: "", Content: []byte("x"), SourceHash: generatedHash([]byte("x")), ExpectedMissing: true},
+		{Generated: true, Content: []byte("x"), SourceHash: "wrong", ExpectedMissing: true},
+	}
+	for _, action := range cases {
+		action.Destination = filepath.Join(t.TempDir(), "target")
+		journal, err := NewJournal(t.TempDir(), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Execute(context.Background(), delayedRunner{}, model.RestorePlan{Operations: []model.Operation{{ID: "shell.write", File: &action}}}, journal, time.Now, time.Second, nil)
+		journal.Close()
+		if err != nil || len(result.Failed) != 1 {
+			t.Fatalf("action=%#v result=%#v err=%v", action, result, err)
+		}
+	}
+}
+
+func TestFileWriteGeneratedContentIsOmittedFromJSON(t *testing.T) {
+	action := model.FileWrite{Generated: true, Content: []byte("secret shell settings"), Destination: "/tmp/shell.json", SourceHash: "hash", ExpectedMissing: true}
+	encoded, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret shell settings") || !strings.Contains(string(encoded), `"generated":true`) {
+		t.Fatalf("JSON=%s", encoded)
 	}
 }
 

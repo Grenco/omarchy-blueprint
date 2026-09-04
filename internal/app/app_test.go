@@ -14,6 +14,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
@@ -1161,7 +1162,7 @@ func TestShellVerticalSliceRestoresReferencedLocalPluginFirst(t *testing.T) {
 
 func TestRestoreShellAllowsMatchingInstalledPlugin(t *testing.T) {
 	deps, opt, data, plan, providers := shellLinkFixture(t)
-	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan); err != nil {
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan, restorePlanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 2 || plan.Operations[0].ID != "shell.write" || plan.Operations[1].ID != "shell.restart" {
@@ -1178,7 +1179,7 @@ func TestRestoreShellBlocksDifferingInstalledPlugin(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pluginDir, "acme.weather", "Weather.qml"), []byte("different code"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan); err != nil {
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan, restorePlanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 0 {
@@ -1211,6 +1212,24 @@ func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model
 	if err := os.WriteFile(filepath.Join(profileDir, "shell", "shell.json"), []byte(custom), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	baselineBytes, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "shell", "baseline.json"), baselineBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := shellprovider.ParseDocument([]byte(custom))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capturedBaseline, err := shellprovider.ParseDocument(baselineBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(user); err != nil {
+		t.Fatal(err)
+	}
 	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, plugins: map[string]bool{}, pluginDir: pluginDir}
 	deps := Dependencies{
 		Runner:     runner,
@@ -1226,7 +1245,7 @@ func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: "captured"}}
+	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: desired.Hash, BaselineHash: capturedBaseline.Hash}}
 	plan := model.RestorePlan{Operations: []model.Operation{
 		{ID: "shell.write", Provider: "shell", Action: "write", File: &model.FileWrite{}},
 		{ID: "shell.restart", Provider: "shell", Action: "restart", DependsOn: []string{"shell.write"}},

@@ -371,17 +371,24 @@ func TestRequiredThirdPartyPlugins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(mustRequired(t, p, saved), []string{"acme.weather"}) {
+	if err := os.Remove(f.user); err != nil {
+		t.Fatal(err)
+	}
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(mustRequired(t, p, saved, current), []string{"acme.weather"}) {
 		t.Fatal("references mismatch")
 	}
-	if got, _ := p.RequiredThirdPartyPlugins(profile.Shell{Version: 1}); len(got) != 0 {
+	if got, _ := p.RequiredThirdPartyPlugins(profile.Shell{Version: 1}, current, MergeOptions{}); len(got) != 0 {
 		t.Fatalf("default desired state requires no plugins: %v", got)
 	}
 }
 
-func mustRequired(t *testing.T, p Provider, saved profile.Shell) []string {
+func mustRequired(t *testing.T, p Provider, saved profile.Shell, current State) []string {
 	t.Helper()
-	got, err := p.RequiredThirdPartyPlugins(saved)
+	got, err := p.RequiredThirdPartyPlugins(saved, current, MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
@@ -43,7 +44,7 @@ func lastPluginOperationID(plan model.RestorePlan, pluginID string) string {
 
 // finalizeRestorePlan links Shell configuration writes to source reconstruction
 // for any third-party plugins the captured document references.
-func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, plan *model.RestorePlan) error {
+func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, plan *model.RestorePlan, options restorePlanOptions) error {
 	if !providerSelected(providers, "shell") {
 		return restore.ValidatePlan(*plan)
 	}
@@ -55,7 +56,11 @@ func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d
 	if err != nil {
 		return err
 	}
-	required, err := shell.RequiredThirdPartyPlugins(d.Shell)
+	currentShell, err := shell.Detect()
+	if err != nil {
+		return err
+	}
+	required, err := shell.RequiredThirdPartyPlugins(d.Shell, currentShell, shellprovider.MergeOptions{Force: options.Force})
 	if err != nil {
 		return err
 	}
