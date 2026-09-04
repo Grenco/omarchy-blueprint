@@ -133,3 +133,30 @@ func TestDiffKeepsChangedCurrentBaselineForUntouchedSourceField(t *testing.T) {
 		t.Fatalf("analysis=%#v", analysis)
 	}
 }
+
+func TestCaptureChangesDescribeProfileUpdateNotRestoreIntent(t *testing.T) {
+	f := newShellFixture(t)
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	f.writeUser(strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "bottom"`, 1))
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := p.CaptureChanges(profile.Shell{Version: 1}, current)
+	if err != nil || len(changes) != 1 || changes[0].Type != model.ChangeAdd || !strings.Contains(changes[0].Summary, "captured") {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+	saved, err := p.Capture(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.writeUser(defaultShellJSON)
+	current, err = p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err = p.CaptureChanges(saved, current)
+	if err != nil || len(changes) != 1 || changes[0].Type != model.ChangeRemove || !strings.Contains(changes[0].Summary, "reset") {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}

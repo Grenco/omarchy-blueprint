@@ -46,6 +46,32 @@ func (p Provider) Diff(saved profile.Shell, current State) ([]model.Change, erro
 	return changes, nil
 }
 
+// CaptureChanges compares previous captured state with the state being
+// captured now. It is intentionally separate from Diff, which describes
+// restore intent versus the current target machine.
+func (p Provider) CaptureChanges(saved profile.Shell, current State) ([]model.Change, error) {
+	if saved.Hash == "" {
+		if current.Status == StatusCustomized {
+			return []model.Change{change(model.ChangeAdd, "shell", "+ shell customization captured")}, nil
+		}
+		return nil, nil
+	}
+	if current.Status == StatusDefault {
+		return []model.Change{change(model.ChangeRemove, "shell", "- shell customization reset to the Omarchy default")}, nil
+	}
+	if current.Status == StatusUnsupported {
+		return nil, fmt.Errorf("Shell schema changed; migration required")
+	}
+	intent, err := p.loadIntent(saved)
+	if err != nil {
+		return nil, err
+	}
+	if intent.Desired.Hash == current.Hash {
+		return nil, nil
+	}
+	return []model.Change{change(model.ChangeModify, "shell", "~ shell customization updated from this machine")}, nil
+}
+
 func (p Provider) Verify(saved profile.Shell, current State) (model.VerificationResult, error) {
 	if saved.Hash == "" {
 		return model.VerificationResult{OK: true}, nil

@@ -565,7 +565,7 @@ func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, 
 	if err != nil {
 		return nil, nil, err
 	}
-	changes, err := provider.Diff(d.Shell, current)
+	changes, err := provider.CaptureChanges(d.Shell, current)
 	if err != nil {
 		return nil, nil, err
 	}

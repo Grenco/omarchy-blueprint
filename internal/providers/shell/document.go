@@ -140,11 +140,12 @@ func references(root map[string]any) []string {
 					continue
 				}
 				for _, entry := range entries {
-					widget, ok := entry.(map[string]any)
-					if !ok {
-						continue
+					switch widget := entry.(type) {
+					case string:
+						collect(widget)
+					case map[string]any:
+						collect(widget["id"])
 					}
-					collect(widget["id"])
 				}
 			}
 		}

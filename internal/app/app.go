@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -458,6 +459,12 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return err
 		}
 		if !verification.OK {
+			if message, ok := unresolvedShellConflictMessage(plan); ok {
+				if err := emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, message); err != nil {
+					return err
+				}
+				return driftError{}
+			}
 			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
 		}
 		message := "All captured state is already restored. No changes applied.\n"
@@ -507,9 +514,29 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
 	}
 	if !verification.OK {
+		if message, ok := unresolvedShellConflictMessage(plan); ok {
+			if err := emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, message); err != nil {
+				return err
+			}
+			return driftError{}
+		}
 		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
 	}
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+}
+
+func unresolvedShellConflictMessage(plan model.RestorePlan) (string, bool) {
+	var conflicts []string
+	for _, skipped := range plan.Skipped {
+		if skipped.Provider == "shell" && strings.HasPrefix(skipped.Resource, "shell:") && skipped.Resource != "shell:config" && strings.Contains(skipped.Reason, "keeping the current value") {
+			conflicts = append(conflicts, strings.TrimPrefix(skipped.Resource, "shell:"))
+		}
+	}
+	if len(conflicts) == 0 {
+		return "", false
+	}
+	sort.Strings(conflicts)
+	return fmt.Sprintf("Safe Shell changes were restored. %d conflict(s) remain: %s\nRun `restore shell --force` to apply captured intent.\n", len(conflicts), strings.Join(conflicts, ", ")), true
 }
 
 func verifyProviders(ctx context.Context, d profile.Data, providers []stateProvider) (model.VerificationResult, error) {

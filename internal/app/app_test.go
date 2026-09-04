@@ -1280,3 +1280,59 @@ func TestRenderShellConflictAndForceWarning(t *testing.T) {
 		t.Fatalf("rendered=%q", text)
 	}
 }
+
+func TestLaptopToDesktopShellMergePreservesTargetLayoutAndResolvesConflict(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	source := strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1)
+	source = strings.Replace(source, `"position": "top"`, `"position": "bottom"`, 1)
+	if err := os.WriteFile(user, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "shell"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	target := strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 900`, 1)
+	target = strings.Replace(target, `{"id":"omarchy.audio"}`, `{"id":"desktop.widget"}`, 1)
+	if err := os.WriteFile(user, []byte(target), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "restore", "shell", "--yes")
+	if code != 2 || !strings.Contains(out, "Safe Shell changes were restored") {
+		t.Fatalf("normal restore code=%d out=%s", code, out)
+	}
+	merged, err := shellprovider.ReadDocument(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := merged.Value["idle"].(map[string]any)
+	bar := merged.Value["bar"].(map[string]any)
+	if shellCanonical(idle["lock"]) != "900" || bar["position"] != "bottom" || !strings.Contains(shellCanonical(bar["layout"]), "desktop.widget") {
+		t.Fatalf("normal merged state=%#v", merged.Value)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 2 || !strings.Contains(out, "idle.lock") {
+		t.Fatalf("status conflict code=%d out=%s", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "restore", "shell", "--force", "--yes")
+	if code != 0 || !strings.Contains(out, "Restore verified") {
+		t.Fatalf("forced restore code=%d out=%s", code, out)
+	}
+	merged, err = shellprovider.ReadDocument(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle = merged.Value["idle"].(map[string]any)
+	bar = merged.Value["bar"].(map[string]any)
+	if shellCanonical(idle["lock"]) != "600" || bar["position"] != "bottom" || !strings.Contains(shellCanonical(bar["layout"]), "desktop.widget") {
+		t.Fatalf("forced merged state=%#v", merged.Value)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 0 {
+		t.Fatalf("status after force code=%d out=%s", code, out)
+	}
+}
+
+func shellCanonical(value any) string {
+	data, _ := json.Marshal(value)
+	return string(data)
+}

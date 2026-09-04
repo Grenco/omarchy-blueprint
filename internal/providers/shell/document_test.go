@@ -71,7 +71,7 @@ func TestThirdPartyReferencesFindsBarLayoutAndPluginInstances(t *testing.T) {
 			"layout": {
 				"left": [{"id":"omarchy.menu"},{"id":"acme.weather"}],
 				"center": [{"id":"omarchy.clock"}],
-				"right": [{"id":"acme.weather"}]
+				"right": ["acme.string-widget", {"id":"acme.weather"}]
 			}
 		},
 		"plugins": [
@@ -84,7 +84,7 @@ func TestThirdPartyReferencesFindsBarLayoutAndPluginInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := ThirdPartyReferences(doc)
-	want := []string{"acme.fullbar", "acme.panel", "acme.weather"}
+	want := []string{"acme.fullbar", "acme.panel", "acme.string-widget", "acme.weather"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("references = %v, want %v", got, want)
 	}
