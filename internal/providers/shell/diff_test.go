@@ -1,7 +1,7 @@
 package shell
 
 import (
-	"reflect"
+	"os"
 	"strings"
 	"testing"
 
@@ -9,77 +9,10 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
-func diffState(t *testing.T, raw string) State {
+func captureIntent(t *testing.T, desired string) (shellFixture, Provider, profile.Shell) {
 	t.Helper()
-	doc, err := ParseDocument([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return State{
-		Status:     StatusCustomized,
-		Version:    doc.Version,
-		Hash:       doc.Hash,
-		UserExists: true,
-		Current:    doc,
-	}
-}
-
-func TestDiffDefaultToDefaultNoDrift(t *testing.T) {
-	p := Provider{}
-	changes, err := p.Diff(profile.Shell{}, State{Status: StatusDefault, Version: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 0 {
-		t.Fatalf("changes = %#v", changes)
-	}
-}
-
-func TestDiffDefaultToCustomizationIsAdditiveDrift(t *testing.T) {
-	p := Provider{}
-	changes, err := p.Diff(profile.Shell{Version: 1}, diffState(t, customizedShellJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 1 || changes[0].Type != model.ChangeAdd || !strings.Contains(changes[0].Summary, "customization present") {
-		t.Fatalf("changes = %#v", changes)
-	}
-}
-
-func TestDiffCustomizedToDefaultIsRemoval(t *testing.T) {
-	p := Provider{}
-	saved := profile.Shell{Version: 1, Hash: "desired", BaselineHash: "base"}
-	changes, err := p.Diff(saved, State{Status: StatusDefault, Version: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 1 || changes[0].Type != model.ChangeRemove || !strings.Contains(changes[0].Summary, "removed") {
-		t.Fatalf("changes = %#v", changes)
-	}
-}
-
-func TestDiffIgnoresWhitespaceAndKeyOrder(t *testing.T) {
-	p := Provider{}
-	// Desired is the compacted customized JSON; current is a reindented but
-	// semantically identical document (produced by re-marshaling).
-	compact, err := ParseDocument([]byte(customizedShellJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved := profile.Shell{Version: 1, Hash: compact.Hash}
-	current := State{Status: StatusCustomized, Version: 1, Hash: compact.Hash, UserExists: true, Current: compact}
-	changes, err := p.Diff(saved, current)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 0 {
-		t.Fatalf("changes = %#v", changes)
-	}
-}
-
-func TestDiffSummarizesKnownShellFields(t *testing.T) {
 	f := newShellFixture(t)
-	f.writeUser(customizedShellJSON)
+	f.writeUser(desired)
 	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
 	state, err := p.Detect()
 	if err != nil {
@@ -89,67 +22,141 @@ func TestDiffSummarizesKnownShellFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The machine now carries a different customized document: position,
-	// transparency, idle lock, layout right, and plugins all differ.
-	different := strings.Replace(customizedShellJSON, `"position": "bottom"`, `"position": "top"`, 1)
-	different = strings.Replace(different, `"lock": 900`, `"lock": 300`, 1)
-	different = strings.Replace(different, `"transparent": true`, `"transparent": false`, 1)
-	different = strings.Replace(different, `{"id":"acme.weather","units":"celsius"}`, `{"id":"acme.weather","units":"fahrenheit"}`, 1)
-	different = strings.Replace(different, `"plugins": []`, `"plugins": [{"id":"acme.panel"}]`, 1)
-	f.writeUser(different)
-	after, err := p.Detect()
+	return f, p, saved
+}
+
+func sourceLock(value int) string {
+	return strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": `+string(rune('0'+value/100))+`00`, 1)
+}
+
+func TestDiffEmptySourceIntentIgnoresTargetCustomization(t *testing.T) {
+	f := newShellFixture(t)
+	f.writeUser(strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "left"`, 1))
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	current, err := p.Detect()
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := p.Diff(saved, after)
+	changes, err := p.Diff(profile.Shell{Version: 1}, current)
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}
+
+func TestDiffReportsSourceOnlyIntent(t *testing.T) {
+	f, p, saved := captureIntent(t, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1))
+	f.writeUser(defaultShellJSON)
+	current, err := p.Detect()
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := map[string]string{}
-	for _, c := range changes {
-		names[c.Name] = c.Summary
+	changes, err := p.Diff(saved, current)
+	if err != nil || len(changes) != 1 || changes[0].Name != "idle.lock" || changes[0].Type != model.ChangeModify {
+		t.Fatalf("changes=%#v err=%v", changes, err)
 	}
-	for _, name := range []string{"bar.position", "bar.transparent", "idle.lock", "bar.layout.right", "plugins"} {
-		if _, ok := names[name]; !ok {
-			t.Fatalf("known field %q missing from changes %#v", name, changes)
+}
+
+func TestDiffIgnoresTargetOnlyFieldChange(t *testing.T) {
+	f, p, saved := captureIntent(t, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1))
+	target := strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "left"`, 1)
+	target = strings.Replace(target, `"lock": 300`, `"lock": 600`, 1)
+	f.writeUser(target)
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := p.Diff(saved, current)
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}
+
+func TestDiffReportsIndependentConflict(t *testing.T) {
+	f, p, saved := captureIntent(t, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1))
+	f.writeUser(strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 900`, 1))
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := p.Diff(saved, current)
+	if err != nil || len(changes) != 1 || changes[0].Type != model.ChangeWarn || !strings.Contains(changes[0].Summary, "preserved") {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}
+
+func TestVerifyAllowsTargetOnlyCustomization(t *testing.T) {
+	f := newShellFixture(t)
+	f.writeUser(strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "left"`, 1))
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Verify(profile.Shell{Version: 1}, current)
+	if err != nil || !result.OK {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestVerifyFailsUnsatisfiedSourceIntentAndConflict(t *testing.T) {
+	f, p, saved := captureIntent(t, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1))
+	for _, target := range []string{defaultShellJSON, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 900`, 1)} {
+		f.writeUser(target)
+		current, err := p.Detect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := p.Verify(saved, current)
+		if err != nil || result.OK || len(result.Missing) != 1 || result.Missing[0] != "shell:idle.lock" {
+			t.Fatalf("target=%s result=%#v err=%v", target, result, err)
 		}
 	}
 }
 
-func TestDiffFallsBackForUnknownFieldChange(t *testing.T) {
-	p := Provider{}
-	a, err := ParseDocument([]byte(`{"version":1,"future":{"keep":1}}`))
+func TestDiffKeepsChangedCurrentBaselineForUntouchedSourceField(t *testing.T) {
+	f, p, saved := captureIntent(t, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1))
+	currentBaseline := strings.Replace(defaultShellJSON, `"screensaver": 150`, `"screensaver": 200`, 1)
+	f.writeBaseline(currentBaseline)
+	if err := os.Remove(f.user); err != nil {
+		t.Fatal(err)
+	}
+	current, err := p.Detect()
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := ParseDocument([]byte(`{"version":1,"future":{"keep":2}}`))
+	analysis, err := p.Analyze(saved, current, MergeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := p.Diff(profile.Shell{Version: 1, Hash: a.Hash}, State{Status: StatusCustomized, Version: 1, Hash: b.Hash, UserExists: true, Current: b})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 1 || changes[0].Name != "shell" || !strings.Contains(changes[0].Summary, "shell configuration differs") {
-		t.Fatalf("changes = %#v", changes)
+	idle := analysis.Value["idle"].(map[string]any)
+	if canonicalValue(idle["screensaver"]) != "200" || len(analysis.Applied) != 1 || pathName(analysis.Applied[0].Path) != "idle.lock" {
+		t.Fatalf("analysis=%#v", analysis)
 	}
 }
 
-func TestVerifyRequiresDesiredCustomizationButIgnoresExtraCustomization(t *testing.T) {
-	if result := Verify(profile.Shell{Version: 1}, State{Status: StatusCustomized, Version: 1}); !result.OK {
-		t.Fatalf("no desired state must verify OK: %#v", result)
+func TestCaptureChangesDescribeProfileUpdateNotRestoreIntent(t *testing.T) {
+	f := newShellFixture(t)
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	f.writeUser(strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "bottom"`, 1))
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
 	}
-	saved := profile.Shell{Version: 1, Hash: "desired"}
-	if result := Verify(saved, State{Status: StatusCustomized, Version: 1, Hash: "desired"}); !result.OK {
-		t.Fatalf("matching desired state must verify OK: %#v", result)
+	changes, err := p.CaptureChanges(profile.Shell{Version: 1}, current)
+	if err != nil || len(changes) != 1 || changes[0].Type != model.ChangeAdd || !strings.Contains(changes[0].Summary, "captured") {
+		t.Fatalf("changes=%#v err=%v", changes, err)
 	}
-	if result := Verify(saved, State{Status: StatusDefault, Version: 1}); result.OK || !reflect.DeepEqual(result.Missing, []string{"shell:config"}) {
-		t.Fatalf("missing desired customization must fail: %#v", result)
+	saved, err := p.Capture(current)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result := Verify(saved, State{Status: StatusCustomized, Version: 2, Hash: "desired"}); result.OK {
-		t.Fatal("version mismatch must fail verification")
+	f.writeUser(defaultShellJSON)
+	current, err = p.Detect()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result := Verify(saved, State{Status: StatusCustomized, Version: 1, Hash: "other"}); result.OK {
-		t.Fatal("hash mismatch must fail verification")
+	changes, err = p.CaptureChanges(saved, current)
+	if err != nil || len(changes) != 1 || changes[0].Type != model.ChangeRemove || !strings.Contains(changes[0].Summary, "reset") {
+		t.Fatalf("changes=%#v err=%v", changes, err)
 	}
 }

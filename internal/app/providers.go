@@ -24,7 +24,7 @@ type stateProvider interface {
 	Captured(profile.Data) bool
 	Capture(context.Context, *profile.Data) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
-	Plan(context.Context, profile.Data, omarchy.Info) (model.RestorePlan, error)
+	Plan(context.Context, profile.Data, omarchy.Info, restorePlanOptions) (model.RestorePlan, error)
 	Verify(context.Context, profile.Data) (model.VerificationResult, error)
 	Check(context.Context, profile.Data) error
 }
@@ -187,7 +187,7 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 	return packagesprovider.Diff(d.Packages, current), nil
 }
 
-func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -256,7 +256,7 @@ func (p themesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.
 	return themesprovider.Diff(d.Themes, current), nil
 }
 
-func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -338,7 +338,7 @@ func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model
 	return pluginsprovider.Diff(d.Plugins, current, pluginSemantics(d)), nil
 }
 
-func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -422,7 +422,7 @@ func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Ch
 	return configprovider.Diff(d.Config, current), nil
 }
 
-func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -501,7 +501,7 @@ func (p defaultsStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 	return defaultsprovider.Diff(d.Defaults, current), nil
 }
 
-func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
 	current, err := p.provider().Detect(ctx)
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -565,7 +565,7 @@ func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, 
 	if err != nil {
 		return nil, nil, err
 	}
-	changes, err := provider.Diff(d.Shell, current)
+	changes, err := provider.CaptureChanges(d.Shell, current)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -595,7 +595,7 @@ func (p shellStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 	return provider.Diff(d.Shell, current)
 }
 
-func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -604,7 +604,7 @@ func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Shell, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	return provider.Plan(d.Shell, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, shellprovider.MergeOptions{Force: options.Force})
 }
 
 func (p shellStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
@@ -616,7 +616,7 @@ func (p shellStateProvider) Verify(_ context.Context, d profile.Data) (model.Ver
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return shellprovider.Verify(d.Shell, current), nil
+	return provider.Verify(d.Shell, current)
 }
 
 func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {

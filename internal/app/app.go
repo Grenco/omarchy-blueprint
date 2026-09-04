@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -177,7 +178,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 }
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
-	var dryRun, yes bool
+	var dryRun, yes, force bool
 	providers := stateProviders(deps, opt)
 	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -185,7 +186,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 			return profileError(opt.profileDir, err)
 		}
 		if len(args) == 0 {
-			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes)
+			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes, restorePlanOptions{Force: force})
 		}
 		provider, ok := categoryProvider(providers, selectedCategory(args))
 		if !ok {
@@ -194,10 +195,11 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 		if !provider.Captured(d) {
 			return captureRequiredError(provider.ID())
 		}
-		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes)
+		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes, restorePlanOptions{Force: force})
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the restore plan without changing the machine")
 	cmd.Flags().BoolVar(&yes, "yes", false, "approve the restore non-interactively")
+	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile (currently Shell)")
 	return cmd
 }
 
@@ -423,29 +425,33 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	return nil
 }
 
-func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
-	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes)
+type restorePlanOptions struct {
+	Force bool
 }
 
-func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool) error {
+func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
+	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes, planOptions)
+}
+
+func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
 	info, err := omarchy.Detect(ctx, deps.Runner)
 	if err != nil {
 		return err
 	}
 	plan := model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
 	for _, provider := range providers {
-		providerPlan, err := provider.Plan(ctx, d, info)
+		providerPlan, err := provider.Plan(ctx, d, info, planOptions)
 		if err != nil {
 			return fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
 		plan.Operations = append(plan.Operations, providerPlan.Operations...)
 		plan.Skipped = append(plan.Skipped, providerPlan.Skipped...)
 	}
-	if err := finalizeRestorePlan(ctx, deps, opt, d, providers, &plan); err != nil {
+	if err := finalizeRestorePlan(ctx, deps, opt, d, providers, &plan, planOptions); err != nil {
 		return fmt.Errorf("finalize restore plan: %w", err)
 	}
 	if dryRun {
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}
 	if len(plan.Operations) == 0 {
 		verification, err := verifyProviders(ctx, d, providers)
@@ -453,19 +459,25 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return err
 		}
 		if !verification.OK {
+			if message, ok := unresolvedShellConflictMessage(plan); ok {
+				if err := emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, message); err != nil {
+					return err
+				}
+				return driftError{}
+			}
 			return fmt.Errorf("nothing can be restored automatically; verification failed: missing %s", strings.Join(verification.Missing, ", "))
 		}
 		message := "All captured state is already restored. No changes applied.\n"
 		if len(providers) == 1 && providers[0].ID() == "packages" {
 			message = "All desired packages are installed. No changes applied.\n"
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+message)
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlanWithOptions(plan, false, planOptions)+message)
 	}
 	if !yes {
 		if opt.json {
 			return errors.New("restore with --json requires --yes or --dry-run")
 		}
-		fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
+		fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions), "Apply this restore? [y/N] ")
 		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
 		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
 			return errors.New("restore cancelled")
@@ -502,9 +514,29 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
 	}
 	if !verification.OK {
+		if message, ok := unresolvedShellConflictMessage(plan); ok {
+			if err := emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, message); err != nil {
+				return err
+			}
+			return driftError{}
+		}
 		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
 	}
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+}
+
+func unresolvedShellConflictMessage(plan model.RestorePlan) (string, bool) {
+	var conflicts []string
+	for _, skipped := range plan.Skipped {
+		if skipped.Provider == "shell" && strings.HasPrefix(skipped.Resource, "shell:") && skipped.Resource != "shell:config" && strings.Contains(skipped.Reason, "keeping the current value") {
+			conflicts = append(conflicts, strings.TrimPrefix(skipped.Resource, "shell:"))
+		}
+	}
+	if len(conflicts) == 0 {
+		return "", false
+	}
+	sort.Strings(conflicts)
+	return fmt.Sprintf("Safe Shell changes were restored. %d conflict(s) remain: %s\nRun `restore shell --force` to apply captured intent.\n", len(conflicts), strings.Join(conflicts, ", ")), true
 }
 
 func verifyProviders(ctx context.Context, d profile.Data, providers []stateProvider) (model.VerificationResult, error) {
@@ -594,9 +626,26 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		}
 	}
 	for _, skipped := range plan.Skipped {
+		if skipped.Provider == "shell" && strings.HasPrefix(skipped.Resource, "shell:") && skipped.Resource != "shell:config" && strings.Contains(skipped.Reason, "keeping the current value") {
+			fmt.Fprintf(&b, "! %s changed independently on this machine; keeping the current value\n", strings.TrimPrefix(skipped.Resource, "shell:"))
+			continue
+		}
 		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)
 	}
 	return b.String()
+}
+
+func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlanOptions) string {
+	rendered := renderPlan(plan, dry)
+	if !options.Force {
+		return rendered
+	}
+	for _, operation := range plan.Operations {
+		if operation.Provider == "shell" {
+			return rendered + "! Force enabled: conflicting Shell values will be replaced by captured profile intent; unrelated target-only Shell customization is preserved.\n"
+		}
+	}
+	return rendered
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {

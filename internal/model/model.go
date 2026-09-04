@@ -45,7 +45,9 @@ type Copy struct {
 }
 
 type FileWrite struct {
-	Source          string `json:"source"`
+	Source          string `json:"source,omitempty"`
+	Generated       bool   `json:"generated,omitempty"`
+	Content         []byte `json:"-"`
 	Destination     string `json:"destination"`
 	SourceHash      string `json:"source_hash"`
 	ExpectedHash    string `json:"expected_hash,omitempty"`

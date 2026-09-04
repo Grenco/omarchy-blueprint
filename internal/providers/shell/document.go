@@ -82,6 +82,17 @@ func ParseDocument(raw []byte) (Document, error) {
 	}, nil
 }
 
+// EncodeDocument serializes a generated merged document deterministically,
+// retaining the same semantic/raw hash and version validation as disk input.
+func EncodeDocument(value map[string]any) (Document, error) {
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return Document{}, fmt.Errorf("encode shell JSON: %w", err)
+	}
+	raw = append(raw, '\n')
+	return ParseDocument(raw)
+}
+
 // ThirdPartyReferences returns the document's unique sorted plugin references,
 // excluding first-party `omarchy.*` entries and the built-in bar.
 func ThirdPartyReferences(doc Document) []string {
@@ -129,11 +140,12 @@ func references(root map[string]any) []string {
 					continue
 				}
 				for _, entry := range entries {
-					widget, ok := entry.(map[string]any)
-					if !ok {
-						continue
+					switch widget := entry.(type) {
+					case string:
+						collect(widget)
+					case map[string]any:
+						collect(widget["id"])
 					}
-					collect(widget["id"])
 				}
 			}
 		}

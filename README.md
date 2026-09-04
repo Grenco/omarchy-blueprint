@@ -38,12 +38,18 @@ diffed, and verified, but never set automatically: Omarchy's agent setter
 launches the selected agent, so restore reports it as skipped until a set-only
 path exists.
 
-Customized Omarchy Shell state is captured from `shell.json` with its baseline.
-Blueprint compares it semantically but restores the exact captured bytes only
-when the target is missing or still an Omarchy default; unknown user Shell work
-is never overwritten. Once Shell state is captured, it owns plugin enablement
-and layout. Plugin restore still reconstructs source and provenance, but does
-not enable plugins independently of Shell.
+Customized Omarchy Shell state is captured relative to its Omarchy baseline.
+Blueprint restores captured intent with a semantic merge: independent target
+customization is preserved, while overlapping changes are reported as conflicts.
+`restore --force` resolves supported Shell conflicts in favor of captured intent
+without discarding unrelated target state. Once Shell state is captured, it owns
+plugin enablement and layout; plugin restore still reconstructs source and
+provenance, but does not enable plugins independently of Shell.
+
+Bar widgets are reconciled across left, center, and right by widget ID. A
+uniquely identifiable widget explicitly added, removed, or moved by the
+captured profile follows that placement without `--force`; target-only widgets
+remain. Duplicate widget IDs remain conservatively conflict-managed.
 
 ## Requirements
 
@@ -232,4 +238,5 @@ omarchy-blueprint --profile ~/omarchy-profile restore shell
   launches the selected agent, so restore skips it with an explicit reason.
 - Shell capture rejects symlinks, special files, unsupported JSON versions, and
   third-party plugin references without captured provenance. Shell restore
-  never overwrites unknown user customization and restarts only after a write.
+  preserves independent target state, writes atomically, and restarts only after
+  a planned merge write.

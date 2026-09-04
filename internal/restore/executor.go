@@ -1,7 +1,10 @@
 package restore
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -169,19 +172,19 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	if action.ExpectedMissing == (action.ExpectedHash != "") {
 		return fmt.Errorf("file write requires exactly one destination precondition: %s", operation)
 	}
-	source, sourceInfo, err := content.OpenRegularFile(action.Source)
+	source, err := openFileWriteSource(action)
 	if err != nil {
-		return fmt.Errorf("validate file write source: %w", err)
+		return err
 	}
 	defer source.Close()
-	sourceHash, err := content.HashOpenFile(source)
+	sourceHash, err := hashFileWriteSource(source.Reader)
 	if err != nil {
 		return fmt.Errorf("hash file write source: %w", err)
 	}
 	if sourceHash != action.SourceHash {
 		return fmt.Errorf("file write source hash mismatch: %s", action.Source)
 	}
-	if _, err := source.Seek(0, io.SeekStart); err != nil {
+	if _, err := source.Reader.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
 
@@ -209,7 +212,7 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
-	mode := sourceInfo.Mode().Perm()
+	mode := source.Mode.Perm()
 	if destinationInfo != nil {
 		mode = destinationInfo.Mode().Perm()
 	}
@@ -217,7 +220,7 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 		temp.Close()
 		return err
 	}
-	if _, err := io.Copy(temp, source); err != nil {
+	if _, err := io.Copy(temp, source.Reader); err != nil {
 		temp.Close()
 		return err
 	}
@@ -242,6 +245,37 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func hashFileWriteSource(reader io.Reader) (string, error) {
+	hash := sha256.New()
+	if _, err := io.Copy(hash, reader); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+type fileWriteSource struct {
+	Reader io.ReadSeeker
+	Mode   os.FileMode
+	Close  func() error
+}
+
+func openFileWriteSource(action model.FileWrite) (fileWriteSource, error) {
+	if action.Generated {
+		if action.Source != "" || action.Content == nil {
+			return fileWriteSource{}, fmt.Errorf("generated file write requires content and no source path")
+		}
+		return fileWriteSource{Reader: bytes.NewReader(action.Content), Mode: 0o644, Close: func() error { return nil }}, nil
+	}
+	if action.Source == "" || action.Content != nil {
+		return fileWriteSource{}, fmt.Errorf("file write requires a source path and no generated content")
+	}
+	file, info, err := content.OpenRegularFile(action.Source)
+	if err != nil {
+		return fileWriteSource{}, fmt.Errorf("validate file write source: %w", err)
+	}
+	return fileWriteSource{Reader: file, Mode: info.Mode(), Close: file.Close}, nil
 }
 
 func validateDestination(action model.FileWrite) (os.FileInfo, error) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
@@ -1161,7 +1162,7 @@ func TestShellVerticalSliceRestoresReferencedLocalPluginFirst(t *testing.T) {
 
 func TestRestoreShellAllowsMatchingInstalledPlugin(t *testing.T) {
 	deps, opt, data, plan, providers := shellLinkFixture(t)
-	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan); err != nil {
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan, restorePlanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 2 || plan.Operations[0].ID != "shell.write" || plan.Operations[1].ID != "shell.restart" {
@@ -1178,7 +1179,7 @@ func TestRestoreShellBlocksDifferingInstalledPlugin(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pluginDir, "acme.weather", "Weather.qml"), []byte("different code"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan); err != nil {
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan, restorePlanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 0 {
@@ -1211,6 +1212,24 @@ func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model
 	if err := os.WriteFile(filepath.Join(profileDir, "shell", "shell.json"), []byte(custom), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	baselineBytes, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "shell", "baseline.json"), baselineBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := shellprovider.ParseDocument([]byte(custom))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capturedBaseline, err := shellprovider.ParseDocument(baselineBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(user); err != nil {
+		t.Fatal(err)
+	}
 	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, plugins: map[string]bool{}, pluginDir: pluginDir}
 	deps := Dependencies{
 		Runner:     runner,
@@ -1226,7 +1245,7 @@ func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: "captured"}}
+	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: desired.Hash, BaselineHash: capturedBaseline.Hash}}
 	plan := model.RestorePlan{Operations: []model.Operation{
 		{ID: "shell.write", Provider: "shell", Action: "write", File: &model.FileWrite{}},
 		{ID: "shell.restart", Provider: "shell", Action: "restart", DependsOn: []string{"shell.write"}},
@@ -1249,4 +1268,117 @@ func TestRenderShellProgressAndPlanWarnings(t *testing.T) {
 	if text := out.String(); !strings.Contains(text, "Restoring Omarchy Shell configuration") || !strings.Contains(text, "Restarted Omarchy Shell") || strings.Contains(text, "0 shell packages") {
 		t.Fatalf("shell progress = %q", text)
 	}
+}
+
+func TestRenderShellConflictAndForceWarning(t *testing.T) {
+	plan := model.RestorePlan{
+		Operations: []model.Operation{{Provider: "shell", Action: "write"}},
+		Skipped:    []model.Skipped{{Provider: "shell", Resource: "shell:idle.lock", Reason: "changed independently on this machine; keeping the current value (use --force to apply captured intent)"}},
+	}
+	text := renderPlanWithOptions(plan, true, restorePlanOptions{Force: true})
+	if !strings.Contains(text, "idle.lock changed independently on this machine; keeping the current value") || !strings.Contains(text, "Force enabled: conflicting Shell values") || strings.Contains(text, "whole file") {
+		t.Fatalf("rendered=%q", text)
+	}
+}
+
+func TestLaptopToDesktopShellMergePreservesTargetLayoutAndResolvesConflict(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	source := strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1)
+	source = strings.Replace(source, `"position": "top"`, `"position": "bottom"`, 1)
+	if err := os.WriteFile(user, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "shell"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	target := strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 900`, 1)
+	target = strings.Replace(target, `{"id":"omarchy.audio"}`, `{"id":"desktop.widget"}`, 1)
+	if err := os.WriteFile(user, []byte(target), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "restore", "shell", "--yes")
+	if code != 2 || !strings.Contains(out, "Safe Shell changes were restored") {
+		t.Fatalf("normal restore code=%d out=%s", code, out)
+	}
+	merged, err := shellprovider.ReadDocument(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := merged.Value["idle"].(map[string]any)
+	bar := merged.Value["bar"].(map[string]any)
+	if shellCanonical(idle["lock"]) != "900" || bar["position"] != "bottom" || !strings.Contains(shellCanonical(bar["layout"]), "desktop.widget") {
+		t.Fatalf("normal merged state=%#v", merged.Value)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 2 || !strings.Contains(out, "idle.lock") {
+		t.Fatalf("status conflict code=%d out=%s", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "restore", "shell", "--force", "--yes")
+	if code != 0 || !strings.Contains(out, "Restore verified") {
+		t.Fatalf("forced restore code=%d out=%s", code, out)
+	}
+	merged, err = shellprovider.ReadDocument(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle = merged.Value["idle"].(map[string]any)
+	bar = merged.Value["bar"].(map[string]any)
+	if shellCanonical(idle["lock"]) != "600" || bar["position"] != "bottom" || !strings.Contains(shellCanonical(bar["layout"]), "desktop.widget") {
+		t.Fatalf("forced merged state=%#v", merged.Value)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 0 {
+		t.Fatalf("status after force code=%d out=%s", code, out)
+	}
+}
+
+func TestLaptopToDesktopShellMergeMovesWidgetWithoutForce(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	pluginDir := filepath.Join(t.TempDir(), "plugins")
+	pluginPath := filepath.Join(pluginDir, "acme.weather")
+	if err := os.MkdirAll(pluginPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginPath, "Weather.qml"), []byte("Item {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.pluginDir = pluginDir
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	source := strings.Replace(defaultShellJSON, `[{"id":"omarchy.clock","format":"HH:mm"}]`, `[{"id":"omarchy.clock","format":"HH:mm"},{"id":"acme.weather","units":"celsius"}]`, 1)
+	if err := os.WriteFile(user, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "plugins"); code != 0 {
+		t.Fatalf("capture plugins code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "shell"); code != 0 {
+		t.Fatalf("capture shell code=%d out=%s", code, out)
+	}
+	target := strings.Replace(defaultShellJSON, `[{"id":"omarchy.audio"}]`, `[{"id":"desktop.only"},"acme.weather"]`, 1)
+	if err := os.WriteFile(user, []byte(target), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "shell", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+	merged, err := shellprovider.ReadDocument(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bar := merged.Value["bar"].(map[string]any)
+	layout := bar["layout"].(map[string]any)
+	if strings.Count(shellCanonical(layout), "acme.weather") != 1 || !strings.Contains(shellCanonical(layout["center"]), "acme.weather") || !strings.Contains(shellCanonical(layout["right"]), "desktop.only") {
+		t.Fatalf("merged layout=%#v", layout)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 0 {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
+func shellCanonical(value any) string {
+	data, _ := json.Marshal(value)
+	return string(data)
 }
