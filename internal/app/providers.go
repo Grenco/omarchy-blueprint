@@ -13,6 +13,7 @@ import (
 	defaultsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/defaults"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 )
 
@@ -35,7 +36,7 @@ type categoryStateProvider interface {
 
 // stateEmptyer lets a provider report an empty captured state so it can
 // remain in the captured-provider list for labeling while its output field is
-// omitted from the machine-readable JSON envelope。
+// omitted from the machine-readable JSON envelope.
 type stateEmptyer interface {
 	Empty(any) bool
 }
@@ -47,6 +48,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		pluginsStateProvider{deps: deps, opt: opt},
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
+		shellStateProvider{deps: deps, opt: opt},
 	}
 }
 
@@ -81,6 +83,8 @@ func captureRequiredError(id string) error {
 		return errors.New("config state has not been captured; run capture config first")
 	case "defaults":
 		return errors.New("defaults state has not been captured; run capture defaults first")
+	case "shell":
+		return errors.New("shell state has not been captured; run capture shell first")
 	}
 	return fmt.Errorf("%s state has not been %s", id, verb)
 }
@@ -109,6 +113,8 @@ func providerStateLabel(ids []string) string {
 			labels = append(labels, "configuration")
 		case "defaults":
 			labels = append(labels, "defaults")
+		case "shell":
+			labels = append(labels, "Shell")
 		default:
 			labels = append(labels, id)
 		}
@@ -138,6 +144,8 @@ func providerCheckLabel(id string) string {
 		return "config state valid"
 	case "defaults":
 		return "defaults discovery available"
+	case "shell":
+		return "shell state valid"
 	default:
 		return id + " discovery available"
 	}
@@ -520,4 +528,101 @@ func captureProvider(ctx context.Context, provider stateProvider, d *profile.Dat
 		return nil, nil, fmt.Errorf("capture %s: %w", provider.ID(), err)
 	}
 	return state, changes, nil
+}
+
+// shellStateProvider captures Omarchy Shell state; after capture it owns
+// plugin enablement/layout semantics while the plugins provider keeps source
+// provenance.
+type shellStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
+
+func (shellStateProvider) ID() string { return "shell" }
+
+func (shellStateProvider) CategoryEnabled() bool { return true }
+
+func (shellStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Shell }
+
+func (shellStateProvider) Empty(state any) bool {
+	if s, ok := state.(profile.Shell); ok {
+		return s.Hash == ""
+	}
+	return false
+}
+
+func (p shellStateProvider) provider() (shellprovider.Provider, error) {
+	baseline, user, err := p.deps.ShellPaths()
+	return shellprovider.Provider{BaselinePath: baseline, UserPath: user, ProfileDir: p.opt.profileDir}, err
+}
+
+func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, nil, err
+	}
+	changes, err := provider.Diff(d.Shell, current)
+	if err != nil {
+		return nil, nil, err
+	}
+	if current.Status == shellprovider.StatusCustomized {
+		if err := shellprovider.ValidatePluginReferences(current.References, d.Plugins); err != nil {
+			return nil, nil, err
+		}
+	}
+	captured, err := provider.Capture(current)
+	if err != nil {
+		return nil, nil, err
+	}
+	d.Shell = captured
+	d.Manifest.Capture.Shell = true
+	return captured, changes, nil
+}
+
+func (p shellStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	return provider.Diff(d.Shell, current)
+}
+
+func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info) (model.RestorePlan, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(d.Shell, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+}
+
+func (p shellStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return shellprovider.Verify(d.Shell, current), nil
+}
+
+func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {
+	provider, err := p.provider()
+	if err != nil {
+		return err
+	}
+	return provider.Check(d.Shell, d.Plugins)
 }

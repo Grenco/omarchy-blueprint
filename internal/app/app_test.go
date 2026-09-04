@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -22,6 +23,7 @@ type machineRunner struct {
 	failInstall  string
 	theme        string
 	plugins      map[string]bool
+	pluginDir    string
 	failReload   bool
 	defaults     map[string]string
 }
@@ -56,6 +58,17 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		for id, enabled := range r.plugins {
 			catalog = append(catalog, map[string]any{"id": id, "enabled": enabled, "firstParty": true, "canDisable": true})
 		}
+		if r.pluginDir != "" {
+			entries, err := os.ReadDir(r.pluginDir)
+			if err != nil && !os.IsNotExist(err) {
+				return "", err
+			}
+			for _, entry := range entries {
+				if entry.IsDir() {
+					catalog = append(catalog, map[string]any{"id": entry.Name(), "enabled": false, "firstParty": false, "canDisable": true})
+				}
+			}
+		}
 		data, _ := json.Marshal(catalog)
 		return string(data), nil
 	case "hyprctl reload":
@@ -89,6 +102,15 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 			r.plugins = map[string]bool{}
 		}
 		r.plugins[args[2]] = args[1] == "enable"
+		return "", nil
+	}
+	if len(args) == 3 && name == "omarchy" && args[0] == "plugin" && args[1] == "validate" {
+		return "", nil
+	}
+	if len(args) == 2 && name == "omarchy-shell" && args[0] == "shell" && args[1] == "rescanPlugins" {
+		return "", nil
+	}
+	if name == "omarchy-restart-shell" && len(args) == 0 {
 		return "", nil
 	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "set" {
@@ -127,7 +149,7 @@ func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
 	for _, provider := range providers {
 		got = append(got, provider.ID())
 	}
-	if want := []string{"packages", "themes", "plugins", "config", "defaults"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if want := []string{"packages", "themes", "plugins", "config", "defaults", "shell"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("provider order = %v, want %v", got, want)
 	}
 }
@@ -146,6 +168,7 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 		ConfigDirs: func() (string, string, error) {
 			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
 		},
+		ShellPaths: shellPathFunc(t),
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -203,6 +226,7 @@ func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
 		StateHome:  func() (string, error) { return stateDir, nil },
 		ThemeDirs:  func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
+		ShellPaths: shellPathFunc(t),
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -297,6 +321,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 		ConfigDirs: func() (string, string, error) {
 			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
 		},
+		ShellPaths: shellPathFunc(t),
 	}
 	run := func(args ...string) (int, string, string) {
 		var out, stderr bytes.Buffer
@@ -306,7 +331,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, configuration, and defaults state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, configuration, defaults, and Shell state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
@@ -594,6 +619,7 @@ func configSandbox(t *testing.T) (profileDir string, deps Dependencies) {
 		StateHome:  func() (string, error) { return stateDir, nil },
 		ThemeDirs:  func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
+		ShellPaths: shellPathFunc(t),
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -942,5 +968,192 @@ func TestDefaultsVerticalSlice(t *testing.T) {
 	code, text = run("status", "defaults")
 	if code != 2 || !strings.Contains(text, "agent: codex") || strings.Contains(text, "terminal") {
 		t.Fatalf("status after restore code=%d out=%q", code, text)
+	}
+}
+
+// defaultShellJSON must match the fixture in the shell provider tests.
+const defaultShellJSON = `{
+  "version": 1,
+  "idle": {"screensaver": 150, "lock": 300},
+  "bar": {
+    "id": "omarchy.bar",
+    "position": "top",
+    "transparent": false,
+    "centerAnchor": "omarchy.clock",
+    "layout": {
+      "left": [{"id":"omarchy.menu"}],
+      "center": [{"id":"omarchy.clock","format":"HH:mm"}],
+      "right": [{"id":"omarchy.audio"}]
+    }
+  },
+  "plugins": []
+}`
+
+func shellPathsFixture(t *testing.T) (baseline, user string) {
+	t.Helper()
+	root := t.TempDir()
+	baseline = filepath.Join(root, "baseline", "shell.json")
+	user = filepath.Join(root, "user", "shell.json")
+	if err := os.MkdirAll(filepath.Dir(baseline), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(user), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(baseline, []byte(defaultShellJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return baseline, user
+}
+
+func shellPathFunc(t *testing.T) func() (string, string, error) {
+	t.Helper()
+	baseline, user := shellPathsFixture(t)
+	return func() (string, string, error) { return baseline, user, nil }
+}
+
+func TestShellStatusRequiresCapture(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	code, out := configRun(t, deps, profileDir, "status", "shell")
+	if code != 1 || !strings.Contains(out, "shell state has not been captured; run capture shell first") {
+		t.Fatalf("status shell code=%d out=%q", code, out)
+	}
+}
+
+func setShellPaths(deps *Dependencies, baseline, user string) {
+	deps.ShellPaths = func() (string, string, error) { return baseline, user, nil }
+}
+
+func TestCaptureShellRejectsThirdPartyReferencesWithoutPluginCapture(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	// A customized shell.json referencing a plugin the profile has not captured.
+	if err := os.WriteFile(user, []byte(strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "capture", "shell")
+	if code != 1 || !strings.Contains(out, "capture plugins first") {
+		t.Fatalf("capture shell code=%d out=%q", code, out)
+	}
+}
+
+func TestCapturedShellMakesPluginEnabledDriftOwnedByShell(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	runner := deps.Runner.(*machineRunner)
+	runner.plugins = map[string]bool{"omarchy.clock": true}
+	if code, out := configRun(t, deps, profileDir, "capture", "plugins"); code != 0 {
+		t.Fatalf("capture plugins code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "shell"); code != 0 {
+		t.Fatalf("capture shell code=%d out=%s", code, out)
+	}
+	// Flip only the mocked plugin enabled bit; shell.json is unchanged.
+	runner.plugins["omarchy.clock"] = false
+	code, out := configRun(t, deps, profileDir, "status", "plugins")
+	if code != 0 {
+		t.Fatalf("plugin enabled drift must be Shell-owned after capture shell, code=%d out=%q", code, out)
+	}
+}
+
+func TestShellVerticalSliceRestoresReferencedLocalPluginFirst(t *testing.T) {
+	profileDir, stateDir := t.TempDir(), t.TempDir()
+	pluginDir := filepath.Join(t.TempDir(), "plugins")
+	baseline, user := shellPathsFixture(t)
+	pluginPath := filepath.Join(pluginDir, "acme.weather")
+	if err := os.MkdirAll(pluginPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginPath, "manifest.json"), []byte(`{"name":"weather"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginPath, "Weather.qml"), []byte("Item {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	custom := strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)
+	if err := os.WriteFile(user, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := os.ReadFile(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, plugins: map[string]bool{}, pluginDir: pluginDir}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader("yes\n"), Out: &out, Err: &stderr, Now: time.Now,
+		StateHome:  func() (string, error) { return stateDir, nil },
+		PluginDir:  func() (string, error) { return pluginDir, nil },
+		ShellPaths: func() (string, string, error) { return baseline, user, nil },
+	}
+	run := func(args ...string) (int, string) {
+		out.Reset()
+		stderr.Reset()
+		code := Execute(context.Background(), args, deps)
+		return code, out.String() + stderr.String()
+	}
+	if code, text := run("init", profileDir); code != 0 {
+		t.Fatalf("init code=%d out=%s", code, text)
+	}
+	if code, text := run("--profile", profileDir, "capture", "plugins"); code != 0 {
+		t.Fatalf("capture plugins code=%d out=%s", code, text)
+	}
+	if code, text := run("--profile", profileDir, "capture", "shell"); code != 0 {
+		t.Fatalf("capture shell code=%d out=%s", code, text)
+	}
+	if err := os.RemoveAll(pluginPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(user); err != nil {
+		t.Fatal(err)
+	}
+	if code, text := run("--profile", profileDir, "status", "shell"); code != 2 {
+		t.Fatalf("status shell code=%d out=%s", code, text)
+	}
+	code, text := run("--profile", profileDir, "--json", "restore", "--dry-run")
+	if code != 0 {
+		t.Fatalf("restore dry-run code=%d out=%s", code, text)
+	}
+	var envelope struct {
+		Data struct {
+			Plan model.RestorePlan `json:"plan"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("parse restore plan: %v\n%s", err, text)
+	}
+	indices := map[string]int{}
+	var write model.Operation
+	for i, operation := range envelope.Data.Plan.Operations {
+		indices[operation.ID] = i
+		if operation.ID == "shell.write" {
+			write = operation
+		}
+	}
+	if indices["plugins.validate.acme.weather"] >= indices["plugins.copy.acme.weather"] ||
+		indices["plugins.copy.acme.weather"] >= indices["plugins.rescan.acme.weather"] ||
+		indices["plugins.rescan.acme.weather"] >= indices["shell.write"] ||
+		indices["shell.write"] >= indices["shell.restart"] {
+		t.Fatalf("restore operation ordering = %#v", envelope.Data.Plan.Operations)
+	}
+	if len(write.DependsOn) != 1 || write.DependsOn[0] != "plugins.rescan.acme.weather" {
+		t.Fatalf("shell write dependencies = %#v", write.DependsOn)
+	}
+	if code, text := run("--profile", profileDir, "restore", "--yes"); code != 0 || !strings.Contains(text, "Restore verified") {
+		t.Fatalf("restore code=%d out=%s", code, text)
+	}
+	if code, text := run("--profile", profileDir, "status", "shell"); code != 0 {
+		t.Fatalf("status shell code=%d out=%s", code, text)
+	}
+	restored, err := os.ReadFile(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, captured) {
+		t.Fatalf("restored shell.json differs from capture\nwant=%q\ngot=%q", captured, restored)
 	}
 }

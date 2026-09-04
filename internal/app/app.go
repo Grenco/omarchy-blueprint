@@ -34,6 +34,7 @@ type Dependencies struct {
 	ThemeDirs  func() (builtin, user string, err error)
 	PluginDir  func() (string, error)
 	ConfigDirs func() (baseline, user string, err error)
+	ShellPaths func() (baseline, user string, err error)
 }
 
 type options struct {
@@ -72,6 +73,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.ConfigDirs == nil {
 		deps.ConfigDirs = defaultConfigDirs
+	}
+	if deps.ShellPaths == nil {
+		deps.ShellPaths = defaultShellPaths
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -131,7 +135,7 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults|shell]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -149,9 +153,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	use, short := "status [packages|themes|plugins|config|defaults]", "Show profile drift"
+	use, short := "status [packages|themes|plugins|config|defaults|shell]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages|themes|plugins|config|defaults]", "Show semantic differences"
+		use, short = "diff [packages|themes|plugins|config|defaults|shell]", "Show semantic differences"
 	}
 	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -175,7 +179,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes bool
 	providers := stateProviders(deps, opt)
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -311,6 +315,19 @@ func defaultPluginDir() (string, error) {
 	return filepath.Join(home, ".config", "omarchy", "plugins"), nil
 }
 
+func defaultShellPaths() (string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	omarchyPath := strings.TrimSpace(os.Getenv("OMARCHY_PATH"))
+	if omarchyPath == "" {
+		omarchyPath = "/usr/share/omarchy"
+	}
+	return filepath.Join(omarchyPath, "config", "omarchy", "shell.json"),
+		filepath.Join(home, ".config", "omarchy", "shell.json"), nil
+}
+
 func defaultConfigDirs() (string, string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -423,6 +440,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 		plan.Operations = append(plan.Operations, providerPlan.Operations...)
 		plan.Skipped = append(plan.Skipped, providerPlan.Skipped...)
+	}
+	if err := finalizeRestorePlan(ctx, deps, opt, d, providers, &plan); err != nil {
+		return fmt.Errorf("finalize restore plan: %w", err)
 	}
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))

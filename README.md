@@ -38,6 +38,13 @@ diffed, and verified, but never set automatically: Omarchy's agent setter
 launches the selected agent, so restore reports it as skipped until a set-only
 path exists.
 
+Customized Omarchy Shell state is captured from `shell.json` with its baseline.
+Blueprint compares it semantically but restores the exact captured bytes only
+when the target is missing or still an Omarchy default; unknown user Shell work
+is never overwritten. Once Shell state is captured, it owns plugin enablement
+and layout. Plugin restore still reconstructs source and provenance, but does
+not enable plugins independently of Shell.
+
 ## Requirements
 
 - Omarchy 4 or newer
@@ -73,13 +80,14 @@ omarchy-blueprint restore
 
 Category-less `status`, `diff`, and `restore` operate on every captured
 provider. Use `status packages`, `status themes`, `restore packages`, or
-`restore themes` when you want to target one category. Configuration and
-defaults state support the same explicit categories, for example
-`omarchy-blueprint status config` and
-`omarchy-blueprint restore defaults --dry-run`.
+`restore themes` when you want to target one category. Configuration, defaults,
+and Shell state support the same explicit categories, for example
+`omarchy-blueprint status config`, `omarchy-blueprint restore defaults --dry-run`,
+or `omarchy-blueprint restore shell --dry-run`.
 
 Category-less `capture` captures every supported provider. Use
-`capture packages`, `capture themes`, `capture config`, or `capture defaults`
+`capture packages`, `capture themes`, `capture config`, `capture defaults`, or
+`capture shell`
 for a targeted refresh. Only files that differ from the Omarchy baseline are
 captured; clean defaults stay out of the profile.
 
@@ -102,6 +110,9 @@ config/config.toml
 config/files/hypr/<file>.lua
 config/baseline/hypr/<file>.lua
 defaults/defaults.toml
+shell/shell.toml
+shell/shell.json
+shell/baseline.json
 ```
 
 Machine-specific entries retain provenance, for example
@@ -139,8 +150,8 @@ rejected during local-theme capture. Config restore never overwrites a target
 that differs from both the desired content and the current Omarchy baseline,
 and cross-version baseline changes are reported as migration-required rather
 than auto-merged. Defaults restore is additive: it never unsets a
-machine-selected default. The TUI, shell configuration, monitors/input config,
-directories, Git automation, migrations, and AI remain postponed.
+machine-selected default. The TUI, monitors/input config, directories, Git
+automation, migrations, and AI remain postponed.
 
 Capture and inspect theme state explicitly with:
 
@@ -167,6 +178,15 @@ omarchy-blueprint --profile ~/omarchy-profile capture defaults
 omarchy-blueprint --profile ~/omarchy-profile status defaults
 omarchy-blueprint --profile ~/omarchy-profile restore defaults --dry-run
 omarchy-blueprint --profile ~/omarchy-profile restore defaults
+```
+
+And to Shell state:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile capture shell
+omarchy-blueprint --profile ~/omarchy-profile status shell
+omarchy-blueprint --profile ~/omarchy-profile restore shell --dry-run
+omarchy-blueprint --profile ~/omarchy-profile restore shell
 ```
 
 ## Exit codes
@@ -210,3 +230,6 @@ omarchy-blueprint --profile ~/omarchy-profile restore defaults
   values and Blueprint never maintains its own allowlist of valid choices.
 - The default agent is never set automatically: Omarchy's agent setter
   launches the selected agent, so restore skips it with an explicit reason.
+- Shell capture rejects symlinks, special files, unsupported JSON versions, and
+  third-party plugin references without captured provenance. Shell restore
+  never overwrites unknown user customization and restarts only after a write.
