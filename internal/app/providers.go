@@ -11,6 +11,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	defaultsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/defaults"
+	hooksprovider "github.com/Grenco/omarchy-blueprint/internal/providers/hooks"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
@@ -49,6 +50,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
 		shellStateProvider{deps: deps, opt: opt},
+		hooksStateProvider{deps: deps, opt: opt},
 	}
 }
 
@@ -85,6 +87,8 @@ func captureRequiredError(id string) error {
 		return errors.New("defaults state has not been captured; run capture defaults first")
 	case "shell":
 		return errors.New("shell state has not been captured; run capture shell first")
+	case "hooks":
+		return errors.New("hooks state has not been captured; run capture hooks first")
 	}
 	return fmt.Errorf("%s state has not been %s", id, verb)
 }
@@ -115,6 +119,8 @@ func providerStateLabel(ids []string) string {
 			labels = append(labels, "defaults")
 		case "shell":
 			labels = append(labels, "Shell")
+		case "hooks":
+			labels = append(labels, "hooks")
 		default:
 			labels = append(labels, id)
 		}
@@ -146,6 +152,8 @@ func providerCheckLabel(id string) string {
 		return "defaults discovery available"
 	case "shell":
 		return "shell state valid"
+	case "hooks":
+		return "hooks state valid"
 	default:
 		return id + " discovery available"
 	}
@@ -625,4 +633,88 @@ func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Shell, d.Plugins)
+}
+
+type hooksStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
+
+func (hooksStateProvider) ID() string { return "hooks" }
+
+func (hooksStateProvider) CategoryEnabled() bool { return true }
+
+func (hooksStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Hooks }
+
+func (hooksStateProvider) Empty(state any) bool {
+	s, ok := state.(profile.Hooks)
+	return ok && len(s.Items) == 0
+}
+
+func (p hooksStateProvider) provider() (hooksprovider.Provider, error) {
+	dir, err := p.deps.HooksDir()
+	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir}, err
+}
+
+func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, nil, err
+	}
+	captured, err := provider.Capture(current)
+	if err != nil {
+		return nil, nil, err
+	}
+	changes := hooksprovider.DiffCaptures(d.Hooks, captured)
+	d.Hooks = captured
+	d.Manifest.Capture.Hooks = true
+	return captured, changes, nil
+}
+
+func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	return hooksprovider.Diff(d.Hooks, current), nil
+}
+
+func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(d.Hooks, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+}
+
+func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return hooksprovider.Verify(d.Hooks, current), nil
+}
+
+func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
+	provider, err := p.provider()
+	if err != nil {
+		return err
+	}
+	return provider.Check(d.Hooks)
 }

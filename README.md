@@ -87,9 +87,9 @@ omarchy-blueprint restore
 Category-less `status`, `diff`, and `restore` operate on every captured
 provider. Use `status packages`, `status themes`, `restore packages`, or
 `restore themes` when you want to target one category. Configuration, defaults,
-and Shell state support the same explicit categories, for example
+and Shell and Hooks state support the same explicit categories, for example
 `omarchy-blueprint status config`, `omarchy-blueprint restore defaults --dry-run`,
-or `omarchy-blueprint restore shell --dry-run`.
+`omarchy-blueprint restore shell --dry-run`, or `omarchy-blueprint restore hooks --dry-run`.
 
 Category-less `capture` captures every supported provider. Use
 `capture packages`, `capture themes`, `capture config`, `capture defaults`, or
@@ -119,6 +119,9 @@ defaults/defaults.toml
 shell/shell.toml
 shell/shell.json
 shell/baseline.json
+hooks/hooks.toml
+hooks/files/<event>
+hooks/files/<event>.d/<hook>
 ```
 
 Machine-specific entries retain provenance, for example
@@ -195,6 +198,19 @@ omarchy-blueprint --profile ~/omarchy-profile restore shell --dry-run
 omarchy-blueprint --profile ~/omarchy-profile restore shell
 ```
 
+And to Hooks state:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile capture hooks
+omarchy-blueprint --profile ~/omarchy-profile status hooks
+omarchy-blueprint --profile ~/omarchy-profile restore hooks --dry-run
+omarchy-blueprint --profile ~/omarchy-profile restore hooks
+```
+
+Hook source is stored verbatim in the profile. Hooks intended for version
+control should read credentials from environment variables, a password manager,
+or another external secret source rather than embedding secret values directly.
+
 ## Exit codes
 
 - `0`: success or state matches
@@ -240,3 +256,7 @@ omarchy-blueprint --profile ~/omarchy-profile restore shell
   third-party plugin references without captured provenance. Shell restore
   preserves independent target state, writes atomically, and restarts only after
   a planned merge write.
+- Hooks capture only flat hooks and immediate `.d/` children, rejects runtime
+  symlinks, and stores source snapshots inertly at mode `0644`. Restore is
+  high-risk, never executes hook source, restores recorded modes atomically, and
+  never overwrites differing target contents or removes extra hooks.

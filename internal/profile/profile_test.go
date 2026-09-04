@@ -13,8 +13,8 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	d := New("main", now)
-	if d.Manifest.Schema != 4 {
-		t.Fatalf("new profile schema = %d, want 4", d.Manifest.Schema)
+	if d.Manifest.Schema != 5 {
+		t.Fatalf("new profile schema = %d, want 5", d.Manifest.Schema)
 	}
 	d.Manifest.Capture.Packages = true
 	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
@@ -91,8 +91,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 4 {
-		t.Fatalf("schema = %d, want 4", got.Manifest.Schema)
+	if got.Manifest.Schema != 5 {
+		t.Fatalf("schema = %d, want 5", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Config || len(got.Config.Files) != 0 {
 		t.Fatalf("config state = %#v, want empty uncaptured config", got.Config)
@@ -113,8 +113,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 4\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 4", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 5\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 5", savedManifest)
 	}
 }
 
@@ -185,8 +185,8 @@ defaults = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 4 {
-		t.Fatalf("schema = %d, want 4", got.Manifest.Schema)
+	if got.Manifest.Schema != 5 {
+		t.Fatalf("schema = %d, want 5", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Shell {
 		t.Fatal("schema-3 profile must upgrade with shell uncaptured")
@@ -257,8 +257,8 @@ config = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 4 {
-		t.Fatalf("schema = %d, want 4", got.Manifest.Schema)
+	if got.Manifest.Schema != 5 {
+		t.Fatalf("schema = %d, want 5", got.Manifest.Schema)
 	}
 	if !got.Manifest.Capture.Config || len(got.Config.Files) != 1 {
 		t.Fatalf("config state = %#v, want retained schema-2 config", got.Config)
@@ -311,17 +311,75 @@ func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
 	// bumps do not silently drop existing provider state.
-	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 {
+	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 {
 		t.Fatalf(
-			"introduction versions = config:%d defaults:%d shell:%d",
-			configSchema, defaultsSchema, shellSchema,
+			"introduction versions = config:%d defaults:%d shell:%d hooks:%d",
+			configSchema, defaultsSchema, shellSchema, hooksSchema,
 		)
 	}
-	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema {
+	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema {
 		t.Fatalf(
 			"introduction versions must not exceed current schema %d",
 			Schema,
 		)
+	}
+}
+
+func TestSchema4LoadsAsSchema5WithHooksUncaptured(t *testing.T) {
+	dir := t.TempDir()
+	profileTOML := `schema = 4
+
+[profile]
+name = "schema4"
+created_at = 2026-09-03T12:00:00Z
+updated_at = 2026-09-03T12:00:00Z
+`
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest.Schema != 5 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
+		t.Fatalf("schema-4 migration = %#v", got)
+	}
+}
+
+func TestHooksRoundTripSchema5(t *testing.T) {
+	dir := t.TempDir()
+	d := New("test", time.Unix(0, 0))
+	d.Manifest.Capture.Hooks = true
+	d.Hooks.Items = []Hook{{Path: "post-update.d/update-rust", Hash: strings.Repeat("a", 64), Mode: "0755"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(loaded.Hooks, d.Hooks) {
+		t.Fatalf("hooks = %#v, want %#v", loaded.Hooks, d.Hooks)
+	}
+}
+
+func TestCapturedHooksRequiresHooksToml(t *testing.T) {
+	dir := t.TempDir()
+	profileTOML := `schema = 5
+
+[profile]
+name = "broken"
+created_at = 2026-09-03T12:00:00Z
+updated_at = 2026-09-03T12:00:00Z
+
+[capture]
+hooks = true
+`
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "hooks state marked captured") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

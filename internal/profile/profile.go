@@ -13,7 +13,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 4
+const Schema = 5
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -22,6 +22,7 @@ const (
 	configSchema   = 2
 	defaultsSchema = 3
 	shellSchema    = 4
+	hooksSchema    = 5
 )
 
 type Manifest struct {
@@ -49,6 +50,7 @@ type CaptureMeta struct {
 	Config   bool `toml:"config"`
 	Defaults bool `toml:"defaults"`
 	Shell    bool `toml:"shell"`
+	Hooks    bool `toml:"hooks"`
 }
 
 type Packages struct {
@@ -107,6 +109,16 @@ type Shell struct {
 	BaselineHash string `json:"baseline_hash,omitempty" toml:"baseline_hash,omitempty"`
 }
 
+type Hooks struct {
+	Items []Hook `json:"hooks" toml:"hook"`
+}
+
+type Hook struct {
+	Path string `json:"path" toml:"path"`
+	Hash string `json:"hash" toml:"hash"`
+	Mode string `json:"mode" toml:"mode"`
+}
+
 type Plugin struct {
 	ID         string `json:"id" toml:"id"`
 	Source     string `json:"source,omitempty" toml:"source,omitempty"`
@@ -125,6 +137,7 @@ type Data struct {
 	Config   Configs  `json:"config"`
 	Defaults Defaults `json:"defaults"`
 	Shell    Shell    `json:"shell"`
+	Hooks    Hooks    `json:"hooks"`
 }
 
 func New(name string, now time.Time) Data {
@@ -215,6 +228,19 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	if loadedSchema >= hooksSchema {
+		hooks, err := os.ReadFile(filepath.Join(dir, "hooks", "hooks.toml"))
+		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Hooks {
+			return d, errors.New("hooks state marked captured but hooks/hooks.toml is missing")
+		}
+		if err == nil {
+			if err := toml.Unmarshal(hooks, &d.Hooks); err != nil {
+				return d, fmt.Errorf("parse hooks/hooks.toml: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
 	return d, nil
 }
 
@@ -225,6 +251,7 @@ func Save(dir string, d Data) error {
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
 	sortConfigFiles(d.Config.Files)
+	sortHooks(d.Hooks.Items)
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
@@ -241,6 +268,9 @@ func Save(dir string, d Data) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "shell"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0o755); err != nil {
 		return err
 	}
 	b, err := toml.Marshal(d.Manifest)
@@ -267,6 +297,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	hooks, err := toml.Marshal(d.Hooks)
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -281,6 +315,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "config", "config.toml"), configs},
 		{filepath.Join(dir, "defaults", "defaults.toml"), defaults},
 		{filepath.Join(dir, "shell", "shell.toml"), shellState},
+		{filepath.Join(dir, "hooks", "hooks.toml"), hooks},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {
@@ -361,6 +396,10 @@ func sortConfigFiles(files []ConfigFile) {
 		}
 		return files[i].BaselineHash < files[j].BaselineHash
 	})
+}
+
+func sortHooks(items []Hook) {
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
 }
 
 func joinList(items []string) string {
