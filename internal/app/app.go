@@ -450,7 +450,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return fmt.Errorf("finalize restore plan: %w", err)
 	}
 	if dryRun {
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlan(plan, true))
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}
 	if len(plan.Operations) == 0 {
 		verification, err := verifyProviders(ctx, d, providers)
@@ -464,13 +464,13 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		if len(providers) == 1 && providers[0].ID() == "packages" {
 			message = "All desired packages are installed. No changes applied.\n"
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlan(plan, false)+message)
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlanWithOptions(plan, false, planOptions)+message)
 	}
 	if !yes {
 		if opt.json {
 			return errors.New("restore with --json requires --yes or --dry-run")
 		}
-		fmt.Fprint(deps.Out, renderPlan(plan, false), "Apply this restore? [y/N] ")
+		fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions), "Apply this restore? [y/N] ")
 		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
 		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
 			return errors.New("restore cancelled")
@@ -599,9 +599,26 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		}
 	}
 	for _, skipped := range plan.Skipped {
+		if skipped.Provider == "shell" && strings.HasPrefix(skipped.Resource, "shell:") && skipped.Resource != "shell:config" && strings.Contains(skipped.Reason, "keeping the current value") {
+			fmt.Fprintf(&b, "! %s changed independently on this machine; keeping the current value\n", strings.TrimPrefix(skipped.Resource, "shell:"))
+			continue
+		}
 		fmt.Fprintf(&b, "- skip %s (%s)\n", skipped.Resource, skipped.Reason)
 	}
 	return b.String()
+}
+
+func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlanOptions) string {
+	rendered := renderPlan(plan, dry)
+	if !options.Force {
+		return rendered
+	}
+	for _, operation := range plan.Operations {
+		if operation.Provider == "shell" {
+			return rendered + "! Force enabled: conflicting Shell values will be replaced by captured profile intent; unrelated target-only Shell customization is preserved.\n"
+		}
+	}
+	return rendered
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {

@@ -1269,3 +1269,14 @@ func TestRenderShellProgressAndPlanWarnings(t *testing.T) {
 		t.Fatalf("shell progress = %q", text)
 	}
 }
+
+func TestRenderShellConflictAndForceWarning(t *testing.T) {
+	plan := model.RestorePlan{
+		Operations: []model.Operation{{Provider: "shell", Action: "write"}},
+		Skipped:    []model.Skipped{{Provider: "shell", Resource: "shell:idle.lock", Reason: "changed independently on this machine; keeping the current value (use --force to apply captured intent)"}},
+	}
+	text := renderPlanWithOptions(plan, true, restorePlanOptions{Force: true})
+	if !strings.Contains(text, "idle.lock changed independently on this machine; keeping the current value") || !strings.Contains(text, "Force enabled: conflicting Shell values") || strings.Contains(text, "whole file") {
+		t.Fatalf("rendered=%q", text)
+	}
+}

@@ -143,8 +143,14 @@
   settings, and idle values after the restart.
 - Confirm `omarchy-shell shell ping` responds after restore; do not rely only
   on the restart command's success because Shell readiness can lag upstream.
-- Independently modify the target `shell.json` and confirm restore skips it
-  rather than overwriting it.
+- Independently change a scalar and bar layout on the target, then confirm
+  normal restore preserves target-only values while applying unrelated captured
+  intent.
+- Change the same scalar differently on source and target; confirm normal
+  restore reports a conflict and `restore shell --force --yes` selects captured
+  intent without replacing unrelated target state.
+- Change an Omarchy baseline field untouched by the source and confirm restore
+  retains the current baseline value.
 - Reset the target to the Omarchy baseline, restore a captured customization,
   and confirm a backup exists beside the restore journal.
 

@@ -3,6 +3,10 @@
 Blueprint captures customized Omarchy Shell configuration from
 `~/.config/omarchy/shell.json` and restores it conservatively.
 
+ADR 0009 supersedes this ADR's whole-document restore conflict rule. The
+capture format, Shell ownership, provenance, backup, restart, and schema-4
+decisions below remain in force.
+
 ## Profile layout (schema 4)
 
 ```text
@@ -18,14 +22,10 @@ semantic comparison but `shell.json` is restored as the exact captured bytes.
 
 ## Safety and restore behavior
 
-Customized `shell.json` is authoritative. Baseline content drift alone is not
-a conflict, but a Shell JSON version mismatch requires migration. A target
-with unknown Shell customization is never overwritten. Empty/default desired
-Shell state is additive and does not delete an extra target `shell.json`.
-
-Restore only writes when the target is missing or still semantically equals the
-current Omarchy baseline. It then restarts the full Shell with
-`omarchy-restart-shell`.
+Shell JSON version mismatches require migration. Empty/default desired Shell
+state is additive and does not delete an extra target `shell.json`. See ADR
+0009 for baseline-aware semantic merge and conflict resolution; a successful
+write restarts the full Shell with `omarchy-restart-shell`.
 
 ## Plugin ownership
 

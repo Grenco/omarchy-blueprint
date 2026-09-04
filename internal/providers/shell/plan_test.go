@@ -202,3 +202,74 @@ func TestPlanUsesExactCapturedRawHashForFileWriteSource(t *testing.T) {
 		t.Fatalf("risk = %s", plan.Operations[0].Risk)
 	}
 }
+
+func TestPlanUsesGeneratedMergeWhenCurrentBaselineChanged(t *testing.T) {
+	desired := strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1)
+	f, p, saved := captureIntent(t, desired)
+	f.writeBaseline(strings.Replace(defaultShellJSON, `"screensaver": 150`, `"screensaver": 200`, 1))
+	if err := os.Remove(f.user); err != nil {
+		t.Fatal(err)
+	}
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := plan.Operations[0].File
+	if !write.Generated || write.Source != "" || len(write.Content) == 0 {
+		t.Fatalf("write=%#v", write)
+	}
+	merged, err := ParseDocument(write.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := merged.Value["idle"].(map[string]any)
+	if canonicalValue(idle["lock"]) != "600" || canonicalValue(idle["screensaver"]) != "200" {
+		t.Fatalf("merged=%#v", idle)
+	}
+}
+
+func TestPlanPartialConflictStillWritesSafeChangesAndForceResolvesIt(t *testing.T) {
+	desired := strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 600`, 1)
+	desired = strings.Replace(desired, `"position": "top"`, `"position": "bottom"`, 1)
+	f, p, saved := captureIntent(t, desired)
+	f.writeUser(strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 900`, 1))
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 2 || len(plan.Skipped) != 1 || plan.Operations[0].Risk != model.RiskMedium {
+		t.Fatalf("plan=%#v", plan)
+	}
+	normal, err := ParseDocument(plan.Operations[0].File.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idle := normal.Value["idle"].(map[string]any); canonicalValue(idle["lock"]) != "900" {
+		t.Fatalf("normal conflict was not preserved: %#v", idle)
+	}
+	if bar := normal.Value["bar"].(map[string]any); bar["position"] != "bottom" {
+		t.Fatalf("safe sibling was not applied: %#v", bar)
+	}
+	forced, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forced.Skipped) != 0 || forced.Operations[0].Risk != model.RiskHigh {
+		t.Fatalf("forced plan=%#v", forced)
+	}
+	forcedDoc, err := ParseDocument(forced.Operations[0].File.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idle := forcedDoc.Value["idle"].(map[string]any); canonicalValue(idle["lock"]) != "600" {
+		t.Fatalf("forced conflict was not applied: %#v", idle)
+	}
+}
