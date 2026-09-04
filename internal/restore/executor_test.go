@@ -405,9 +405,14 @@ func (contextAwareRunner) Run(ctx context.Context, _ string, _ ...string) (strin
 	return "", ctx.Err()
 }
 
-type completeAfterCancelRunner struct{}
+type completeAfterCancelRunner struct {
+	started chan<- struct{}
+}
 
-func (completeAfterCancelRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
+func (r completeAfterCancelRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
+	// Signal that Execute has started this operation before the test cancels.
+	// A timer can otherwise fire before the executor reaches the operation loop.
+	r.started <- struct{}{}
 	<-ctx.Done()
 	return "", nil
 }
@@ -442,11 +447,20 @@ func TestExecuteRecordsCompletedOperationDespiteCancellation(t *testing.T) {
 		ID: "config.write.hypr.bindings", Command: []string{"finish-after-cancel"},
 	}}}
 	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		time.Sleep(30 * time.Millisecond)
-		cancel()
+		result, err := Execute(ctx, completeAfterCancelRunner{started: started}, plan, journal, time.Now, 10*time.Millisecond, nil)
+		done <- outcome{result: result, err: err}
 	}()
-	result, err := Execute(ctx, completeAfterCancelRunner{}, plan, journal, time.Now, 10*time.Millisecond, nil)
+	<-started
+	cancel()
+	received := <-done
+	result, err := received.result, received.err
 	if err != context.Canceled {
 		t.Fatalf("err = %v want context.Canceled", err)
 	}
