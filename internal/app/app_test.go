@@ -14,6 +14,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 type machineRunner struct {
@@ -1155,5 +1156,97 @@ func TestShellVerticalSliceRestoresReferencedLocalPluginFirst(t *testing.T) {
 	}
 	if !bytes.Equal(restored, captured) {
 		t.Fatalf("restored shell.json differs from capture\nwant=%q\ngot=%q", captured, restored)
+	}
+}
+
+func TestRestoreShellAllowsMatchingInstalledPlugin(t *testing.T) {
+	deps, opt, data, plan, providers := shellLinkFixture(t)
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 2 || plan.Operations[0].ID != "shell.write" || plan.Operations[1].ID != "shell.restart" {
+		t.Fatalf("matching plugin removed Shell operations: %#v", plan.Operations)
+	}
+}
+
+func TestRestoreShellBlocksDifferingInstalledPlugin(t *testing.T) {
+	deps, opt, data, plan, providers := shellLinkFixture(t)
+	pluginDir, err := deps.PluginDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "acme.weather", "Weather.qml"), []byte("different code"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 {
+		t.Fatalf("differing plugin must block Shell operations: %#v", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "differ from captured provenance") {
+		t.Fatalf("skip = %#v", plan.Skipped)
+	}
+}
+
+func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model.RestorePlan, []stateProvider) {
+	t.Helper()
+	profileDir := t.TempDir()
+	pluginDir := filepath.Join(t.TempDir(), "plugins")
+	pluginPath := filepath.Join(pluginDir, "acme.weather")
+	if err := os.MkdirAll(pluginPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginPath, "Weather.qml"), []byte("captured code"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseline, user := shellPathsFixture(t)
+	custom := strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)
+	if err := os.WriteFile(user, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(profileDir, "shell"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "shell", "shell.json"), []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, plugins: map[string]bool{}, pluginDir: pluginDir}
+	deps := Dependencies{
+		Runner:     runner,
+		PluginDir:  func() (string, error) { return pluginDir, nil },
+		ShellPaths: func() (string, string, error) { return baseline, user, nil },
+	}
+	opt := &options{profileDir: profileDir}
+	provider, err := pluginProvider(deps, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugins, err := provider.Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: "captured"}}
+	plan := model.RestorePlan{Operations: []model.Operation{
+		{ID: "shell.write", Provider: "shell", Action: "write", File: &model.FileWrite{}},
+		{ID: "shell.restart", Provider: "shell", Action: "restart", DependsOn: []string{"shell.write"}},
+	}}
+	providers := []stateProvider{shellStateProvider{deps: deps, opt: opt}}
+	return deps, opt, data, plan, providers
+}
+
+func TestRenderShellProgressAndPlanWarnings(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{
+		{Provider: "shell", Action: "write", File: &model.FileWrite{Backup: true}},
+		{Provider: "shell", Action: "restart"},
+	}}
+	if text := renderPlan(plan, true); !strings.Contains(text, "Existing Omarchy Shell configuration will be replaced") || !strings.Contains(text, "Omarchy Shell will be restarted") {
+		t.Fatalf("plan warnings = %q", text)
+	}
+	var out bytes.Buffer
+	renderProgress(&out, restore.Progress{Type: restore.ProgressStarted, Operation: plan.Operations[0]})
+	renderProgress(&out, restore.Progress{Type: restore.ProgressCompleted, Operation: plan.Operations[1]})
+	if text := out.String(); !strings.Contains(text, "Restoring Omarchy Shell configuration") || !strings.Contains(text, "Restarted Omarchy Shell") || strings.Contains(text, "0 shell packages") {
+		t.Fatalf("shell progress = %q", text)
 	}
 }

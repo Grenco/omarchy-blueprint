@@ -8,6 +8,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
@@ -66,13 +67,22 @@ func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d
 	if err != nil {
 		return err
 	}
-	installed := make(map[string]bool, len(current.Items))
+	installed := make(map[string]profile.Plugin, len(current.Items))
 	for _, item := range current.Items {
-		installed[item.ID] = true
+		installed[item.ID] = item
 	}
-	var blocked, dependencies []string
+	saved := make(map[string]profile.Plugin, len(d.Plugins.Items))
+	for _, item := range d.Plugins.Items {
+		saved[item.ID] = item
+	}
+	var blocked, conflicts, dependencies []string
 	for _, id := range required {
-		if installed[id] {
+		wanted, captured := saved[id]
+		if item, ok := installed[id]; ok && captured && pluginsprovider.Equivalent(wanted, item) {
+			continue
+		}
+		if _, ok := installed[id]; ok {
+			conflicts = append(conflicts, id)
 			continue
 		}
 		if !providerSelected(providers, "plugins") {
@@ -86,8 +96,9 @@ func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d
 		}
 		dependencies = appendUnique(dependencies, dependency)
 	}
-	if len(blocked) > 0 {
+	if len(blocked) > 0 || len(conflicts) > 0 {
 		sort.Strings(blocked)
+		sort.Strings(conflicts)
 		kept := plan.Operations[:0]
 		for _, operation := range plan.Operations {
 			if operation.Provider != "shell" {
@@ -95,10 +106,16 @@ func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d
 			}
 		}
 		plan.Operations = kept
+		reason := ""
+		if len(conflicts) > 0 {
+			reason = fmt.Sprintf("required plugin(s) %s are installed but differ from captured provenance; Shell restore blocked to avoid activating unexpected code", strings.Join(conflicts, ", "))
+		} else {
+			reason = fmt.Sprintf("required plugin(s) %s are not installed and cannot be restored in this plan; restore plugins first or run aggregate restore", strings.Join(blocked, ", "))
+		}
 		plan.Skipped = append(plan.Skipped, model.Skipped{
 			Provider: "shell",
 			Resource: "shell:config",
-			Reason:   fmt.Sprintf("required plugin(s) %s are not installed and cannot be restored in this plan; restore plugins first or run aggregate restore", strings.Join(blocked, ", ")),
+			Reason:   reason,
 		})
 		return restore.ValidatePlan(*plan)
 	}

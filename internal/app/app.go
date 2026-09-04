@@ -562,6 +562,22 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
 	}
 	for _, op := range plan.Operations {
+		if op.Provider == "shell" && op.Action == "write" && op.File != nil {
+			if op.File.Backup {
+				fmt.Fprintln(&b, "! Existing Omarchy Shell configuration will be replaced; a backup will be stored beside the restore journal.")
+			} else {
+				fmt.Fprintln(&b, "! Missing Omarchy Shell configuration will be created.")
+			}
+			break
+		}
+	}
+	for _, op := range plan.Operations {
+		if op.Provider == "shell" && op.Action == "restart" {
+			fmt.Fprintln(&b, "! Omarchy Shell will be restarted after restore.")
+			break
+		}
+	}
+	for _, op := range plan.Operations {
 		if op.Provider == "config" && op.Risk == model.RiskMedium && op.File != nil {
 			if op.File.Backup {
 				fmt.Fprintln(&b, "! Existing Hyprland configuration files will be replaced; backups will be stored beside the restore journal.")
@@ -584,6 +600,23 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "shell" {
+		verb, past := "Restoring Omarchy Shell configuration", "Restored Omarchy Shell configuration"
+		if event.Operation.Action == "restart" {
+			verb, past = "Restarting Omarchy Shell", "Restarted Omarchy Shell"
+		}
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "%s...\n", verb)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ %s (%s)\n", past, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still %s (%s elapsed)...\n", strings.ToLower(verb), event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed %s after %s\n", strings.ToLower(verb), event.Elapsed)
+		}
+		return
+	}
 	if event.Operation.Provider == "defaults" {
 		kind := ""
 		if len(event.Operation.Items) > 0 {

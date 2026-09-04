@@ -144,7 +144,7 @@ func Diff(saved, current profile.Plugins, semantics Semantics) []model.Change {
 			out = append(out, change(want.ID, "- plugin "+want.ID+" ("+want.Source+")"))
 			continue
 		}
-		if !equivalent(want, got) {
+		if !Equivalent(want, got) {
 			out = append(out, change(want.ID, fmt.Sprintf("~ plugin %s differs (%s → %s)", want.ID, want.Source, got.Source)))
 		} else if semantics.ManageEnabled && got.Enabled != want.Enabled {
 			out = append(out, change(want.ID, fmt.Sprintf("~ plugin %s enabled: %t → %t", want.ID, got.Enabled, want.Enabled)))
@@ -170,7 +170,7 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + want.ID, Reason: "unsafe plugin identifier"})
 			continue
 		}
-		if ok && !equivalent(want, got) {
+		if ok && !Equivalent(want, got) {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + want.ID, Reason: "existing plugin differs; overwrite disabled"})
 			continue
 		}
@@ -230,7 +230,7 @@ func Verify(saved, current profile.Plugins, semantics Semantics) model.Verificat
 	var missing []string
 	for _, want := range saved.Items {
 		got, ok := have[want.ID]
-		if !ok || !equivalent(want, got) {
+		if !ok || !Equivalent(want, got) {
 			missing = append(missing, "plugin:"+want.ID)
 			continue
 		}
@@ -241,7 +241,10 @@ func Verify(saved, current profile.Plugins, semantics Semantics) model.Verificat
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
 }
-func equivalent(a, b profile.Plugin) bool {
+
+// Equivalent reports whether a discovered plugin is the same captured source.
+// Enabled state is intentionally excluded because Shell owns it after capture.
+func Equivalent(a, b profile.Plugin) bool {
 	as, bs := a.Source, b.Source
 	if as == "" {
 		as = "builtin"

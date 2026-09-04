@@ -253,6 +253,25 @@ func TestCaptureDefaultRemovesStaleSnapshots(t *testing.T) {
 	}
 }
 
+func TestCaptureDefaultFailsWhenStaleSnapshotCannotBeRemoved(t *testing.T) {
+	f := newShellFixture(t)
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	state, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(f.profile, "shell", "shell.json")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "nested"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Capture(state); err == nil {
+		t.Fatal("default capture must fail when stale snapshot cannot be removed")
+	}
+}
+
 func TestCaptureUnsupportedStateFails(t *testing.T) {
 	f := newShellFixture(t)
 	f.writeBaseline(`{"version":2}`)
@@ -329,6 +348,14 @@ func TestCheckValidatesSnapshotHashesVersionsAndPluginReferences(t *testing.T) {
 	defaultSaved := profile.Shell{Version: 1, BaselineHash: hashFixture(t, f.baseline)}
 	if err := p.Check(defaultSaved, profile.Plugins{}); err == nil {
 		t.Fatal("default desired state must reject stale snapshots")
+	}
+}
+
+func TestCheckRejectsDefaultStateWithoutSupportedVersion(t *testing.T) {
+	f := newShellFixture(t)
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	if err := p.Check(profile.Shell{}, profile.Plugins{}); err == nil {
+		t.Fatal("captured default state without a supported version must fail")
 	}
 }
 

@@ -110,16 +110,22 @@ func (p Provider) Capture(state State) (profile.Shell, error) {
 			BaselineHash: state.BaselineHash,
 		}, nil
 	}
-	removeStaleSnapshots(shellDir)
+	if err := removeStaleSnapshots(shellDir); err != nil {
+		return profile.Shell{}, err
+	}
 	return profile.Shell{
 		Version:      state.Baseline.Version,
 		BaselineHash: state.Baseline.Hash,
 	}, nil
 }
 
-func removeStaleSnapshots(dir string) {
-	_ = os.Remove(filepath.Join(dir, "shell.json"))
-	_ = os.Remove(filepath.Join(dir, "baseline.json"))
+func removeStaleSnapshots(dir string) error {
+	for _, name := range []string{"shell.json", "baseline.json"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale shell snapshot %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // ValidatePluginReferences requires every third-party Shell reference to have
@@ -158,7 +164,7 @@ func (p Provider) RequiredThirdPartyPlugins(saved profile.Shell) ([]string, erro
 // canonical hashes, versions, and third-party plugin provenance.
 func (p Provider) Check(saved profile.Shell, plugins profile.Plugins) error {
 	if saved.Hash == "" {
-		if saved.Version != 0 && saved.Version != SupportedVersion {
+		if saved.Version != SupportedVersion {
 			return fmt.Errorf("unsupported recorded shell schema version %d; supported: %d", saved.Version, SupportedVersion)
 		}
 		for _, name := range []string{"shell.json", "baseline.json"} {
