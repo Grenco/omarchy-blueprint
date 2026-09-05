@@ -65,7 +65,8 @@ Restore is additive and conservative.
 - Different target bytes: skip; overwrite disabled.
 - Extra target hook: leave installed; removal disabled.
 - Symlink or special target: never follow or replace. An unmanaged symlink at
-  a path owned by the saved profile is skipped as a conflict.
+  a path owned by the saved profile is skipped as a conflict. An unmanaged
+  `<event>.d` symlink also blocks restore of every saved child beneath it.
 
 Every hook mutation is `RiskHigh`.
 

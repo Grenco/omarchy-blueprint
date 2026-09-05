@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -34,8 +35,8 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 		resource := "hook:" + item.Path
 		current, exists := actual[item.Path]
 		delete(actual, item.Path)
-		if _, blocked := unmanaged[item.Path]; blocked {
-			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "hooks", Resource: resource, Reason: "existing hook is an unmanaged symlink; overwrite disabled"})
+		if reason, blocked := blockedByUnmanaged(item.Path, unmanaged); blocked {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "hooks", Resource: resource, Reason: reason})
 			continue
 		}
 		if exists && current.Hash != item.Hash {
@@ -73,6 +74,19 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "hooks", Resource: "hook:" + path, Reason: "extra target hook preserved; removal disabled"})
 	}
 	return plan, nil
+}
+
+func blockedByUnmanaged(path string, unmanaged map[string]UnmanagedHook) (string, bool) {
+	if _, ok := unmanaged[path]; ok {
+		return "existing hook is an unmanaged symlink; overwrite disabled", true
+	}
+	parent, _, hasChild := strings.Cut(path, "/")
+	if hasChild {
+		if _, ok := unmanaged[parent]; ok {
+			return "hook directory " + parent + " is an unmanaged symlink; restore into it disabled", true
+		}
+	}
+	return "", false
 }
 
 func operationID(path string) string {

@@ -3,6 +3,7 @@ package hooks
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -65,5 +66,31 @@ func TestPlanSkipsUnmanagedSymlinkAtDesiredPath(t *testing.T) {
 	plan, err := p.Plan(profile.Hooks{Items: []profile.Hook{savedHook}}, State{Unmanaged: []UnmanagedHook{{Path: "post-boot", Target: "/external/hook"}}}, 5, "1", "2")
 	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "unmanaged symlink") {
 		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestPlanSkipsChildOfUnmanagedSymlinkDirectory(t *testing.T) {
+	p, user, _ := hookProvider(t)
+	external := filepath.Join(t.TempDir(), "post-update.d")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(user, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(user, "post-update.d")); err != nil {
+		t.Fatal(err)
+	}
+	savedHook := planHook(t, p, "post-update.d/update-rust", "desired", "0755")
+	current, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(profile.Hooks{Items: []profile.Hook{savedHook}}, current, 5, "1", "2")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "hook directory post-update.d") {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	if _, err := os.Stat(filepath.Join(external, "update-rust")); !os.IsNotExist(err) {
+		t.Fatalf("external hook was created: %v", err)
 	}
 }
