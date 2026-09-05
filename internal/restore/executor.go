@@ -169,8 +169,17 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	if action.SourceHash == "" {
 		return fmt.Errorf("file write source hash is required: %s", operation)
 	}
+	if action.Mode != nil && *action.Mode > 0o777 {
+		return fmt.Errorf("file write mode is invalid: %04o", *action.Mode)
+	}
+	if action.ExpectedMode != nil && *action.ExpectedMode > 0o777 {
+		return fmt.Errorf("file write expected mode is invalid: %04o", *action.ExpectedMode)
+	}
 	if action.ExpectedMissing == (action.ExpectedHash != "") {
 		return fmt.Errorf("file write requires exactly one destination precondition: %s", operation)
+	}
+	if action.ExpectedMissing && action.ExpectedMode != nil {
+		return fmt.Errorf("file write expected mode requires an existing destination: %s", operation)
 	}
 	source, err := openFileWriteSource(action)
 	if err != nil {
@@ -215,6 +224,9 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	mode := source.Mode.Perm()
 	if destinationInfo != nil {
 		mode = destinationInfo.Mode().Perm()
+	}
+	if action.Mode != nil {
+		mode = os.FileMode(*action.Mode)
 	}
 	if err := temp.Chmod(mode); err != nil {
 		temp.Close()
@@ -304,6 +316,9 @@ func validateDestination(action model.FileWrite) (os.FileInfo, error) {
 	}
 	if hash != action.ExpectedHash {
 		return nil, fmt.Errorf("file write destination hash mismatch: %s", action.Destination)
+	}
+	if action.ExpectedMode != nil && uint32(info.Mode().Perm()) != *action.ExpectedMode {
+		return nil, fmt.Errorf("file write destination mode mismatch: %s", action.Destination)
 	}
 	return info, nil
 }

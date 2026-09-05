@@ -168,3 +168,13 @@
 - Confirm provider failures are summarized together and independent operations continue.
 - Re-run aggregate `status`; only intentionally skipped conflicts or machine-specific differences should remain.
 - Capture again, review the Git diff for secrets and unexpected machine-local data, then push the profile.
+
+## Portable Omarchy Hooks
+
+- Capture a flat `post-boot` hook and an immediate `post-update.d` hook; confirm both source bytes and recorded modes are present in the profile.
+- Confirm `.d/*.sample`, hidden `.d` children, nested files, and an unknown event's valid hook follow the documented capture rules.
+- Capture hooks with modes `0644` and `0755`; confirm profile snapshots are `0644` while restore returns each recorded mode.
+- Capture an empty Hooks state, add a hook later, and confirm `status hooks` reports drift.
+- Remove a captured hook and confirm `restore hooks --yes` recreates it without executing it.
+- Change target hook content and confirm restore skips it; retain an extra target hook and confirm it is not removed.
+- Confirm restoring an existing mode-only drift creates a backup and that hook source is never run during capture, restore, or check.

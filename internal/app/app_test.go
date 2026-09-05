@@ -151,13 +151,13 @@ func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
 	for _, provider := range providers {
 		got = append(got, provider.ID())
 	}
-	if want := []string{"packages", "themes", "plugins", "config", "defaults", "shell"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if want := []string{"packages", "themes", "plugins", "config", "defaults", "shell", "hooks"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("provider order = %v, want %v", got, want)
 	}
 }
 
 func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T) {
-	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	profileDir, stateDir, builtin, user, hooksDir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +171,7 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
 		},
 		ShellPaths: shellPathFunc(t),
+		HooksDir:   func() (string, error) { return hooksDir, nil },
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -203,7 +204,7 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 }
 
 func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
-	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	profileDir, stateDir, builtin, user, hooksDir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,6 +230,7 @@ func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
 		ThemeDirs:  func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
 		ShellPaths: shellPathFunc(t),
+		HooksDir:   func() (string, error) { return hooksDir, nil },
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -309,7 +311,7 @@ func TestAggregateCommandsHandlePackagesBeforePackageCapture(t *testing.T) {
 }
 
 func TestThemeVerticalSlice(t *testing.T) {
-	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	profileDir, stateDir, builtin, user, hooksDir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	for _, theme := range []string{"osaka-jade", "nord"} {
 		if err := os.Mkdir(filepath.Join(builtin, theme), 0o755); err != nil {
 			t.Fatal(err)
@@ -324,6 +326,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 			return filepath.Join(builtin, "config"), filepath.Join(user, ".config"), nil
 		},
 		ShellPaths: shellPathFunc(t),
+		HooksDir:   func() (string, error) { return hooksDir, nil },
 	}
 	run := func(args ...string) (int, string, string) {
 		var out, stderr bytes.Buffer
@@ -333,7 +336,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	if code, _, errout := run("init", profileDir); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, errout)
 	}
-	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, configuration, defaults, and Shell state") {
+	if code, out, errout := run("--profile", profileDir, "capture"); code != 0 || !strings.Contains(out, "Captured package, theme, plugin, configuration, defaults, Shell, and hooks state") {
 		t.Fatalf("capture code=%d out=%s err=%s", code, out, errout)
 	}
 	runner.theme = "Nord"
@@ -602,7 +605,7 @@ func TestRestoreContinuesAfterAURFailureAndSummarizesIt(t *testing.T) {
 
 func configSandbox(t *testing.T) (profileDir string, deps Dependencies) {
 	t.Helper()
-	profileDir, stateDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	profileDir, stateDir, builtin, user, hooksDir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	baselineRoot := filepath.Join(builtin, "config")
 	userRoot := filepath.Join(user, ".config")
 	if err := os.MkdirAll(filepath.Join(baselineRoot, "hypr"), 0o755); err != nil {
@@ -622,6 +625,7 @@ func configSandbox(t *testing.T) (profileDir string, deps Dependencies) {
 		ThemeDirs:  func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) { return baselineRoot, userRoot, nil },
 		ShellPaths: shellPathFunc(t),
+		HooksDir:   func() (string, error) { return hooksDir, nil },
 	}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code=%d err=%s", code, stderr.String())
@@ -1374,6 +1378,77 @@ func TestLaptopToDesktopShellMergeMovesWidgetWithoutForce(t *testing.T) {
 		t.Fatalf("merged layout=%#v", layout)
 	}
 	if code, out := configRun(t, deps, profileDir, "status", "shell"); code != 0 {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
+func TestHooksVerticalSliceRestoresExactBytesAndMode(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	hooksDir := t.TempDir()
+	deps.HooksDir = func() (string, error) { return hooksDir, nil }
+	hook := filepath.Join(hooksDir, "post-update.d", "update-rust")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("#!/bin/bash\nprintf hook\\n\n")
+	if err := os.WriteFile(hook, source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "hooks"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Manifest.Capture.Hooks || len(d.Hooks.Items) != 1 || d.Hooks.Items[0].Mode != "0755" {
+		t.Fatalf("hooks=%#v capture=%#v", d.Hooks, d.Manifest.Capture)
+	}
+	snapshot := filepath.Join(profileDir, "hooks", "files", "post-update.d", "update-rust")
+	info, err := os.Stat(snapshot)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("snapshot mode=%v err=%v", info.Mode(), err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "hooks"); code != 2 || !strings.Contains(out, "- hook post-update.d/update-rust") {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "hooks", "--dry-run"); code != 0 || !strings.Contains(out, "Omarchy hooks are arbitrary user code") {
+		t.Fatalf("dry run code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "hooks", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+	got, err := os.ReadFile(hook)
+	if err != nil || string(got) != string(source) {
+		t.Fatalf("hook=%q err=%v", got, err)
+	}
+	info, err = os.Stat(hook)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("hook mode=%v err=%v", info.Mode(), err)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "hooks"); code != 0 {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
+func TestHooksUnmanagedSymlinkWarnsWithoutDrift(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	hooksDir := t.TempDir()
+	deps.HooksDir = func() (string, error) { return hooksDir, nil }
+	target := filepath.Join(t.TempDir(), "external-hook")
+	if err := os.WriteFile(target, []byte("#!/bin/bash\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(hooksDir, "theme-set")); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "hooks"); code != 0 || !strings.Contains(out, "theme-set is a symlink and was left unmanaged") {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "hooks"); code != 0 || !strings.Contains(out, "Profile matches this machine") || !strings.Contains(out, "left unmanaged") {
 		t.Fatalf("status code=%d out=%s", code, out)
 	}
 }

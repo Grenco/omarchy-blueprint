@@ -36,6 +36,7 @@ type Dependencies struct {
 	PluginDir  func() (string, error)
 	ConfigDirs func() (baseline, user string, err error)
 	ShellPaths func() (baseline, user string, err error)
+	HooksDir   func() (string, error)
 }
 
 type options struct {
@@ -77,6 +78,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.ShellPaths == nil {
 		deps.ShellPaths = defaultShellPaths
+	}
+	if deps.HooksDir == nil {
+		deps.HooksDir = defaultHooksDir
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -136,7 +140,7 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults|shell]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -154,9 +158,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	use, short := "status [packages|themes|plugins|config|defaults|shell]", "Show profile drift"
+	use, short := "status [packages|themes|plugins|config|defaults|shell|hooks]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages|themes|plugins|config|defaults|shell]", "Show semantic differences"
+		use, short = "diff [packages|themes|plugins|config|defaults|shell|hooks]", "Show semantic differences"
 	}
 	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -180,7 +184,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes, force bool
 	providers := stateProviders(deps, opt)
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -317,6 +321,14 @@ func defaultPluginDir() (string, error) {
 	return filepath.Join(home, ".config", "omarchy", "plugins"), nil
 }
 
+func defaultHooksDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "omarchy", "hooks"), nil
+}
+
 func defaultShellPaths() (string, string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -398,28 +410,34 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		}
 		changes = append(changes, providerChanges...)
 	}
+	driftCount := 0
+	for _, change := range changes {
+		if change.Type != model.ChangeWarn || change.Provider != "hooks" {
+			driftCount++
+		}
+	}
 	title := "Profile matches this machine"
 	if diff {
 		title = "Profile differences"
-	} else if len(changes) > 0 {
-		title = fmt.Sprintf("%d profile difference(s)", len(changes))
+	} else if driftCount > 0 {
+		title = fmt.Sprintf("%d profile difference(s)", driftCount)
 	}
 	if len(providers) == 1 && providers[0].ID() == "packages" {
 		title = "Profile matches this machine"
 		if diff {
 			title = "Package differences"
-		} else if len(changes) > 0 {
-			title = fmt.Sprintf("%d package differences", len(changes))
+		} else if driftCount > 0 {
+			title = fmt.Sprintf("%d package differences", driftCount)
 		}
 	}
 	commandName := "status"
 	if diff {
 		commandName = "diff"
 	}
-	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": len(changes) > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
+	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": driftCount > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
 		return err
 	}
-	if len(changes) > 0 {
+	if driftCount > 0 {
 		return driftError{}
 	}
 	return nil
@@ -625,6 +643,12 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 			break
 		}
 	}
+	for _, op := range plan.Operations {
+		if op.Provider == "hooks" && op.Risk == model.RiskHigh {
+			fmt.Fprintln(&b, "! Omarchy hooks are arbitrary user code that runs automatically on system events. Review captured hook source before approving this restore.")
+			break
+		}
+	}
 	for _, skipped := range plan.Skipped {
 		if skipped.Provider == "shell" && strings.HasPrefix(skipped.Resource, "shell:") && skipped.Resource != "shell:config" && strings.Contains(skipped.Reason, "keeping the current value") {
 			fmt.Fprintf(&b, "! %s changed independently on this machine; keeping the current value\n", strings.TrimPrefix(skipped.Resource, "shell:"))
@@ -649,6 +673,20 @@ func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlan
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "hooks" {
+		path := strings.TrimPrefix(event.Operation.Resource, "hook:")
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "Restoring hook %s...\n", path)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ Restored hook %s (%s)\n", path, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still restoring hook %s (%s elapsed)...\n", path, event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed restoring hook %s after %s\n", path, event.Elapsed)
+		}
+		return
+	}
 	if event.Operation.Provider == "shell" {
 		verb, past := "Restoring Omarchy Shell configuration", "Restored Omarchy Shell configuration"
 		if event.Operation.Action == "restart" {

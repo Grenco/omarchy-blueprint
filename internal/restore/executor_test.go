@@ -23,6 +23,18 @@ func generatedHash(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func modePtr(value uint32) *uint32 { return &value }
+
+func executeModeFileWrite(t *testing.T, action model.FileWrite) error {
+	t.Helper()
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	return writeFileAtomic("test.write", action, journal, time.Now)
+}
+
 type delayedRunner struct{ delay time.Duration }
 
 func (r delayedRunner) Run(context.Context, string, ...string) (string, error) {
@@ -179,6 +191,56 @@ func TestFileWriteGeneratedContentIsOmittedFromJSON(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "secret shell settings") || !strings.Contains(string(encoded), `"generated":true`) {
 		t.Fatalf("JSON=%s", encoded)
+	}
+}
+
+func TestFileWriteAppliesExplicitModeAndValidatesExpectedMode(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(source, []byte("desired\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := executeModeFileWrite(t, model.FileWrite{Source: source, Destination: missing, SourceHash: hashFile(t, source), ExpectedMissing: true, Mode: modePtr(0o755)}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(missing)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("created mode=%v err=%v", info.Mode(), err)
+	}
+	existing := filepath.Join(t.TempDir(), "existing")
+	if err := os.WriteFile(existing, []byte("desired\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeModeFileWrite(t, model.FileWrite{Source: source, Destination: existing, SourceHash: hashFile(t, source), ExpectedHash: hashFile(t, existing), ExpectedMode: modePtr(0o600), Backup: true, Mode: modePtr(0o755)}); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(existing)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("replaced mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func TestFileWriteModePreconditionsRejectInvalidOrChangedDestination(t *testing.T) {
+	source, destination := filepath.Join(t.TempDir(), "source"), filepath.Join(t.TempDir(), "destination")
+	if err := os.WriteFile(source, []byte("desired\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("current\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []model.FileWrite{
+		{Source: source, Destination: destination, SourceHash: hashFile(t, source), ExpectedHash: hashFile(t, destination), ExpectedMode: modePtr(0o600), Mode: modePtr(0o755)},
+		{Source: source, Destination: destination, SourceHash: hashFile(t, source), ExpectedHash: hashFile(t, destination), Mode: modePtr(0o1000)},
+		{Source: source, Destination: filepath.Join(t.TempDir(), "missing"), SourceHash: hashFile(t, source), ExpectedMissing: true, ExpectedMode: modePtr(0o644)},
+	} {
+		err := executeModeFileWrite(t, action)
+		if err == nil {
+			t.Fatalf("action=%#v succeeded", action)
+		}
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil || string(content) != "current\n" {
+		t.Fatalf("destination=%q err=%v", content, err)
 	}
 }
 
