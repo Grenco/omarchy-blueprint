@@ -145,21 +145,29 @@ func TestPlanSkipsAlreadyCorrectDefaults(t *testing.T) {
 
 func TestPlanEmitsOneNativeOperationPerDriftedDefault(t *testing.T) {
 	p := testProvider(nil, "")
-	saved := profile.Defaults{Terminal: "ghostty", Browser: "firefox", Editor: "zed"}
-	current := profile.Defaults{Terminal: "foot", Browser: "firefox", Editor: "nvim"}
+	saved := profile.Defaults{Terminal: "ghostty", Browser: "zen", Editor: "nvim"}
+	current := profile.Defaults{Terminal: "foot", Browser: "firefox", Editor: "zed"}
 	plan := p.Plan(saved, current, 3, "1.0", "1.0")
-	if len(plan.Operations) != 2 {
-		t.Fatalf("operations = %#v, want terminal+editor", plan.Operations)
+	if len(plan.Operations) != 3 {
+		t.Fatalf("operations = %#v, want terminal+browser+editor", plan.Operations)
 	}
 	byKind := map[string]model.Operation{}
 	for _, op := range plan.Operations {
 		byKind[op.Items[0]] = op
 	}
-	if cmd := byKind["terminal"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "terminal", "--install", "ghostty"}) {
-		t.Fatalf("terminal command = %v, want non-interactive install path", cmd)
-	}
-	if cmd := byKind["editor"].Command; !reflect.DeepEqual(cmd, []string{"omarchy", "default", "editor", "--install", "zed"}) {
-		t.Fatalf("editor command = %v, want non-interactive install path", cmd)
+	for kind, want := range map[string][]string{
+		"terminal": {"omarchy", "default", "terminal", "ghostty"},
+		"browser":  {"omarchy", "default", "browser", "zen"},
+		"editor":   {"omarchy", "default", "editor", "nvim"},
+	} {
+		if cmd := byKind[kind].Command; !reflect.DeepEqual(cmd, want) {
+			t.Fatalf("%s command = %v, want %v", kind, cmd, want)
+		}
+		for _, arg := range byKind[kind].Command {
+			if arg == "--install" {
+				t.Fatalf("%s command must not use unsupported --install flag: %v", kind, byKind[kind].Command)
+			}
+		}
 	}
 	for _, op := range plan.Operations {
 		if op.Risk != model.RiskLow {

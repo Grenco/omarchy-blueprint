@@ -46,13 +46,12 @@ Diff compares the saved desired values against the live machine state:
 
 ## Restore
 
-Plan emits one `omarchy default <kind> --install <value>` operation per drifted
-managed default, classified low risk. The `--install` form performs a direct,
-non-interactive installation instead of Omarchy's floating presentation UI, so
-aggregate restore stays properly CLI-driven. An empty saved value produces no
-operation. Omarchy validates values and handles installation; Blueprint
-detects and replays and never maintains its own allowlist of valid choices,
-because Omarchy's supported set evolves.
+Plan emits one public `omarchy default <kind> <value>` operation per drifted
+managed default, classified low risk. An empty saved value produces no
+operation. Defaults selects applications; installation belongs to the Packages
+provider. Omarchy validates values, and Blueprint detects and replays without
+maintaining its own allowlist of valid choices because Omarchy's supported set
+evolves.
 
 Two kinds are deliberately excluded from automatic restore:
 

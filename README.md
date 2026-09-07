@@ -29,14 +29,14 @@ writes succeed.
 
 Omarchy's semantic default applications — terminal, browser, editor, and
 agent — are captured as plain values in `defaults/defaults.toml`. Restore
-replays drifted values through `omarchy default <kind> --install <value>`, a
-non-interactive path, and Omarchy itself validates the values. Unset defaults
-carry no desired state, restore never unsets a machine-selected default, and
-values Omarchy does not manage (raw `.desktop` IDs) are captured with a
-portability warning but skipped by restore. The default agent is captured,
-diffed, and verified, but never set automatically: Omarchy's agent setter
-launches the selected agent, so restore reports it as skipped until a set-only
-path exists.
+replays drifted values through the public `omarchy default <kind> <value>`
+setter, and Omarchy itself validates the values. Defaults selects applications;
+their installation belongs to the Packages provider. Unset defaults carry no
+desired state, restore never unsets a machine-selected default, and values
+Omarchy does not manage (raw `.desktop` IDs) are captured with a portability
+warning but skipped by restore. The default agent is captured, diffed, and
+verified, but never set automatically: Omarchy's agent setter launches the
+selected agent, so restore reports it as skipped until a set-only path exists.
 
 Customized Omarchy Shell state is captured relative to its Omarchy baseline.
 Blueprint restores captured intent with a semantic merge: independent target
@@ -247,9 +247,10 @@ or another external secret source rather than embedding secret values directly.
   beside the restore journal. A target carrying user work or a changed Omarchy
   baseline is skipped, never overwritten.
 - Hyprland is reloaded only after every config write succeeds.
-- Defaults restore replays captured values through Omarchy's own
-  `omarchy default <kind> --install <value>` commands; Omarchy validates
-  values and Blueprint never maintains its own allowlist of valid choices.
+- Defaults restore replays captured values through Omarchy's public
+  `omarchy default <kind> <value>` commands. Defaults selects applications;
+  packages are installed by the Packages provider. Omarchy validates values and
+  Blueprint never maintains its own allowlist of valid choices.
 - The default agent is never set automatically: Omarchy's agent setter
   launches the selected agent, so restore skips it with an explicit reason.
 - Shell capture rejects symlinks, special files, unsupported JSON versions, and
