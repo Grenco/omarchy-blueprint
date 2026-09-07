@@ -133,7 +133,7 @@ func (p Provider) Plan(saved, current profile.Defaults, schema int, from, to str
 			Action:   "set",
 			Resource: "default:" + kind,
 			Items:    []string{kind},
-			Command:  []string{"omarchy", "default", kind, "--install", desired},
+			Command:  []string{"omarchy", "default", kind, desired},
 			Risk:     model.RiskLow,
 		})
 	}
