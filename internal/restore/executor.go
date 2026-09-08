@@ -203,7 +203,10 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 		return fmt.Errorf("hash file write source: %w", err)
 	}
 	if sourceHash != action.SourceHash {
-		return fmt.Errorf("file write source hash mismatch: %s", action.Source)
+		canonical, err := content.HashRegularTree(action.Source)
+		if err != nil || canonical != action.SourceHash {
+			return fmt.Errorf("file write source hash mismatch: %s", action.Source)
+		}
 	}
 	if _, err := source.Reader.Seek(0, io.SeekStart); err != nil {
 		return err
