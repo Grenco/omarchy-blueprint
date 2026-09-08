@@ -14,8 +14,8 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	d := New("main", now)
-	if d.Manifest.Schema != 6 {
-		t.Fatalf("new profile schema = %d, want 6", d.Manifest.Schema)
+	if d.Manifest.Schema != 7 {
+		t.Fatalf("new profile schema = %d, want 7", d.Manifest.Schema)
 	}
 	d.Manifest.Capture.Packages = true
 	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
@@ -92,8 +92,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 6 {
-		t.Fatalf("schema = %d, want 6", got.Manifest.Schema)
+	if got.Manifest.Schema != 7 {
+		t.Fatalf("schema = %d, want 7", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Config || len(got.Config.Files) != 0 {
 		t.Fatalf("config state = %#v, want empty uncaptured config", got.Config)
@@ -114,8 +114,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 6\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 6", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 7\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 7", savedManifest)
 	}
 }
 
@@ -186,8 +186,8 @@ defaults = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 6 {
-		t.Fatalf("schema = %d, want 6", got.Manifest.Schema)
+	if got.Manifest.Schema != 7 {
+		t.Fatalf("schema = %d, want 7", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Shell {
 		t.Fatal("schema-3 profile must upgrade with shell uncaptured")
@@ -258,8 +258,8 @@ config = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 6 {
-		t.Fatalf("schema = %d, want 6", got.Manifest.Schema)
+	if got.Manifest.Schema != 7 {
+		t.Fatalf("schema = %d, want 7", got.Manifest.Schema)
 	}
 	if !got.Manifest.Capture.Config || len(got.Config.Files) != 1 {
 		t.Fatalf("config state = %#v, want retained schema-2 config", got.Config)
@@ -312,13 +312,13 @@ func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
 	// bumps do not silently drop existing provider state.
-	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 {
+	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 {
 		t.Fatalf(
-			"introduction versions = config:%d defaults:%d shell:%d hooks:%d mise:%d",
-			configSchema, defaultsSchema, shellSchema, hooksSchema, misePackagesSchema,
+			"introduction versions = config:%d defaults:%d shell:%d hooks:%d mise:%d resources:%d",
+			configSchema, defaultsSchema, shellSchema, hooksSchema, misePackagesSchema, resourcesSchema,
 		)
 	}
-	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema {
+	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema {
 		t.Fatalf(
 			"introduction versions must not exceed current schema %d",
 			Schema,
@@ -342,7 +342,7 @@ updated_at = 2026-09-03T12:00:00Z
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 6 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
+	if got.Manifest.Schema != 7 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
 		t.Fatalf("schema-4 migration = %#v", got)
 	}
 }
@@ -434,7 +434,7 @@ func TestSchema5LoadsAsSchema6WithMiseEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 6 || len(got.Packages.Mise) != 0 {
+	if got.Manifest.Schema != 7 || len(got.Packages.Mise) != 0 {
 		t.Fatalf("migration = %#v", got)
 	}
 }
@@ -471,5 +471,69 @@ func TestMisePackagesRoundTripSchema6(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.Packages.Mise, d.Packages.Mise) {
 		t.Fatalf("mise = %#v, want %#v", loaded.Packages.Mise, d.Packages.Mise)
+	}
+}
+
+func TestSchema6LoadsAsSchema7WithResourcesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	profileTOML := "schema = 6\n\n[profile]\nname = 'schema6'\ncreated_at = 2026-09-08T00:00:00Z\nupdated_at = 2026-09-08T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest.Schema != 7 {
+		t.Fatalf("schema=%d want=7", got.Manifest.Schema)
+	}
+	if got.Manifest.Capture.Resources {
+		t.Fatal("schema-6 profile unexpectedly captured resources")
+	}
+	if len(got.Resources.Items) != 0 || len(got.Resources.Links) != 0 {
+		t.Fatalf("resources=%#v want empty", got.Resources)
+	}
+}
+
+func TestResourcesRoundTripSchema7(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Manifest.Capture.Resources = true
+	d.Resources = Resources{
+		Items: []Resource{
+			{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git", Remote: "git@github.com:example/dotfiles.git", Branch: "main", Revision: strings.Repeat("b", 40)},
+			{ID: "deploy", Path: "~/.local/bin/deploy", Kind: "file", Strategy: "copy", Hash: strings.Repeat("a", 64), Mode: "0755"},
+		},
+		Links: []ResourceLink{
+			{Source: "~/.config/nvim", TargetResource: "dotfiles", Target: "nvim", Origin: "inbound"},
+			{SourceResource: "scripts", Source: "current", TargetResource: "dotfiles", Target: "bin/current", Origin: "resource"},
+		},
+		IgnoredLinks: []string{"~/.config/ignored", "~/.config/ignored"},
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(filepath.Join(dir, "resources", "resources.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := d.Resources
+	sortResources(&want)
+	if !reflect.DeepEqual(loaded.Resources, want) {
+		t.Fatalf("resources=%#v want=%#v", loaded.Resources, want)
+	}
+	if err := Save(dir, loaded); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(filepath.Join(dir, "resources", "resources.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("resources.toml not deterministic:\n%s\n---\n%s", first, second)
 	}
 }
