@@ -128,7 +128,7 @@ func (p resourcesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mod
 	}
 	return resourcesprovider.Diff(d.Resources, current), nil
 }
-func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -137,7 +137,7 @@ func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info o
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(ctx, d.Resources, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	return provider.Plan(ctx, d.Resources, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, resourcesprovider.PlanOptions{Force: options.Force})
 }
 func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
 	provider, err := p.provider()

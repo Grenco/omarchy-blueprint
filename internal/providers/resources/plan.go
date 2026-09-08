@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -17,8 +18,10 @@ type resourcePlanState struct {
 	Satisfied           bool
 	ReadyOpID, Conflict string
 }
+type PlanOptions struct{ Force bool }
 
-func (p Provider) Plan(_ context.Context, saved, current profile.Resources, schema int, from, to string) (model.RestorePlan, error) {
+func (p Provider) Plan(_ context.Context, saved, current profile.Resources, schema int, from, to string, options ...PlanOptions) (model.RestorePlan, error) {
+	force := len(options) > 0 && options[0].Force
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	currentItems := resourceMap(current.Items)
 	states := map[string]resourcePlanState{}
@@ -79,6 +82,22 @@ func (p Provider) Plan(_ context.Context, saved, current profile.Resources, sche
 			if info.Mode()&os.ModeSymlink != 0 && equivalentLink(sourcePath, target) {
 				continue
 			}
+			if force {
+				precondition, err := filesystemPrecondition(sourcePath, info)
+				if err != nil {
+					return model.RestorePlan{}, err
+				}
+				raw, err := RelativeSymlinkTarget(sourcePath, target)
+				if err != nil {
+					return model.RestorePlan{}, err
+				}
+				if targetState.ReadyOpID != "" {
+					deps = append(deps, targetState.ReadyOpID)
+				}
+				sort.Strings(deps)
+				plan.Operations = append(plan.Operations, model.Operation{ID: "resources.link." + safeOperationID(linkKey(link)), Provider: "resources", Action: "replace resource link", Resource: "link:" + link.Source, Symlink: &model.SymlinkWrite{Destination: sourcePath, Target: raw, ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, DependsOn: deps, Risk: model.RiskHigh, Reversible: true})
+				continue
+			}
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "resources", Resource: "link:" + link.Source, Reason: "existing link destination differs; overwrite disabled"})
 			continue
 		} else if !os.IsNotExist(err) {
@@ -95,6 +114,28 @@ func (p Provider) Plan(_ context.Context, saved, current profile.Resources, sche
 		plan.Operations = append(plan.Operations, model.Operation{ID: "resources.link." + safeOperationID(linkKey(link)), Provider: "resources", Action: "symlink", Resource: "link:" + link.Source, Symlink: &model.SymlinkWrite{Destination: sourcePath, Target: raw, ExpectedMissing: true, RejectSymlinkParents: true}, DependsOn: deps, Risk: model.RiskLow})
 	}
 	return plan, nil
+}
+
+func filesystemPrecondition(path string, info os.FileInfo) (model.FilesystemPrecondition, error) {
+	p := model.FilesystemPrecondition{Mode: uint32(info.Mode().Perm())}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return p, err
+		}
+		p.Type, p.Target = "symlink", target
+		return p, nil
+	}
+	if info.IsDir() {
+		p.Type = "directory"
+	} else if info.Mode().IsRegular() {
+		p.Type = "file"
+	} else {
+		return p, fmt.Errorf("unsupported link destination: %s", path)
+	}
+	hash, err := content.HashFilesystemObject(path)
+	p.Hash = hash
+	return p, err
 }
 
 func (p Provider) planResource(saved, current profile.Resource) (resourcePlanState, []model.Operation, string, error) {

@@ -171,6 +171,26 @@ func TestPlanSuppressesLinkForConflictingTargetAndRejectsMode(t *testing.T) {
 	}
 }
 
+func TestPlanForceReplacesOnlyConflictingResourceLink(t *testing.T) {
+	home := t.TempDir()
+	p := Provider{HomeDir: home, ProfileDir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "nvim"), []byte("local"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	item := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git", Remote: "github.com/example/dotfiles", Revision: strings.Repeat("a", 40)}
+	saved := profile.Resources{Items: []profile.Resource{item}, Links: []profile.ResourceLink{{Source: "~/.config/nvim", TargetResource: "dotfiles", Target: "nvim", Origin: "inbound"}}}
+	plan, err := p.Plan(context.Background(), saved, profile.Resources{Items: []profile.Resource{item}}, 7, "", "", PlanOptions{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 1 || plan.Operations[0].Risk != model.RiskHigh || plan.Operations[0].Symlink == nil || !plan.Operations[0].Symlink.ReplaceExisting || !plan.Operations[0].Symlink.Backup || plan.Operations[0].Symlink.ExpectedExisting.Type != "file" {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
 func plannedCopyFile(t *testing.T) (Provider, profile.Resources) {
 	t.Helper()
 	home, profileDir := t.TempDir(), t.TempDir()

@@ -135,7 +135,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			return execution, err
 		}
 		completed := op
-		if completed.File != nil && completed.File.Backup {
+		if (completed.File != nil && completed.File.Backup) || (completed.Symlink != nil && completed.Symlink.Backup) {
 			completed.Reversible = true
 		}
 		execution.Completed = append(execution.Completed, completed)
@@ -177,7 +177,7 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 		return executeDirectoryCreate(*op.Directory)
 	}
 	if op.Symlink != nil {
-		return executeSymlinkWrite(*op.Symlink)
+		return executeSymlinkWriteWithJournal(op.ID, *op.Symlink, journal, now)
 	}
 	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
 	return err
@@ -423,16 +423,57 @@ func executeDirectoryCreate(action model.DirectoryCreate) error {
 }
 
 func executeSymlinkWrite(action model.SymlinkWrite) error {
+	return executeSymlinkWriteWithJournal("", action, nil, time.Now)
+}
+
+func executeSymlinkWriteWithJournal(operation string, action model.SymlinkWrite, journal *Journal, now func() time.Time) error {
 	if action.Target == "" {
 		return fmt.Errorf("symlink target is required")
 	}
-	if !action.ExpectedMissing {
-		return fmt.Errorf("symlink write requires expected missing destination: %s", action.Destination)
+	if action.ExpectedMissing == action.ReplaceExisting {
+		return fmt.Errorf("symlink write requires exactly one destination precondition: %s", action.Destination)
 	}
 	if action.RejectSymlinkParents {
 		if err := validateSymlinkParents(action.Destination); err != nil {
 			return err
 		}
+	}
+	if action.ReplaceExisting {
+		if action.ExpectedExisting == nil {
+			return fmt.Errorf("symlink replacement requires existing precondition: %s", action.Destination)
+		}
+		if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+			return err
+		}
+		backup, err := reserveSiblingBackupPath(action.Destination)
+		if err != nil {
+			return err
+		}
+		if action.RejectSymlinkParents {
+			if err := validateSymlinkParents(action.Destination); err != nil {
+				return err
+			}
+		}
+		if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+			return err
+		}
+		if err := os.Rename(action.Destination, backup); err != nil {
+			return err
+		}
+		if journal != nil {
+			if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+				_ = os.Rename(backup, action.Destination)
+				return err
+			}
+		}
+		if err := installSymlinkAtomic(action); err != nil {
+			_ = os.Remove(action.Destination)
+			if rollback := os.Rename(backup, action.Destination); rollback != nil {
+				return fmt.Errorf("%v; rollback failed: %w", err, rollback)
+			}
+			return err
+		}
+		return nil
 	}
 	if _, err := os.Lstat(action.Destination); err == nil {
 		return fmt.Errorf("symlink destination already exists: %s", action.Destination)
@@ -454,6 +495,68 @@ func executeSymlinkWrite(action model.SymlinkWrite) error {
 		return err
 	}
 	return os.Symlink(action.Target, action.Destination)
+}
+
+func validateFilesystemPrecondition(path string, expected model.FilesystemPrecondition) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("symlink replacement precondition failed: %w", err)
+	}
+	actual := model.FilesystemPrecondition{Mode: uint32(info.Mode().Perm())}
+	if info.Mode()&os.ModeSymlink != 0 {
+		actual.Type = "symlink"
+		actual.Target, err = os.Readlink(path)
+	} else if info.IsDir() {
+		actual.Type = "directory"
+		actual.Hash, err = content.HashFilesystemObject(path)
+	} else if info.Mode().IsRegular() {
+		actual.Type = "file"
+		actual.Hash, err = content.HashFilesystemObject(path)
+	} else {
+		return fmt.Errorf("symlink replacement precondition failed: unsupported object")
+	}
+	if err != nil || actual != expected {
+		return fmt.Errorf("symlink replacement precondition failed: destination changed")
+	}
+	return nil
+}
+
+func reserveSiblingBackupPath(destination string) (string, error) {
+	dir, base := filepath.Dir(destination), filepath.Base(destination)
+	for n := 0; n < 10000; n++ {
+		candidate := filepath.Join(dir, fmt.Sprintf(".%s.omarchy-blueprint-backup-%d", base, n))
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("unable to reserve backup path for %s", destination)
+}
+
+func installSymlinkAtomic(action model.SymlinkWrite) error {
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	temp, err := reserveSiblingBackupPath(action.Destination + ".tmp")
+	if err != nil {
+		return err
+	}
+	if err := os.Symlink(action.Target, temp); err != nil {
+		return err
+	}
+	defer os.Remove(temp)
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); !os.IsNotExist(err) {
+		return fmt.Errorf("symlink destination changed during replacement: %s", action.Destination)
+	}
+	return os.Rename(temp, action.Destination)
 }
 
 func copyTreeExclusive(action model.Copy) error {

@@ -625,6 +625,27 @@ func TestSymlinkWriteRejectsSymlinkParent(t *testing.T) {
 	}
 }
 
+func TestForcedSymlinkWriteRejectsChangedDestination(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "nvim")
+	if err := os.WriteFile(destination, []byte("A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Lstat(destination)
+	hash, _ := content.HashFilesystemObject(destination)
+	action := model.SymlinkWrite{Destination: destination, Target: "dotfiles/nvim", ReplaceExisting: true, Backup: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "file", Mode: uint32(info.Mode().Perm()), Hash: hash}}
+	if err := os.WriteFile(destination, []byte("B"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeSymlinkWrite(action); err == nil {
+		t.Fatal("changed destination was replaced")
+	}
+	got, _ := os.ReadFile(destination)
+	if string(got) != "B" {
+		t.Fatalf("destination=%q", got)
+	}
+}
+
 func TestCopySourceHashRejectsMutationBeforeDestinationCreation(t *testing.T) {
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "content"), []byte("original"), 0o644); err != nil {

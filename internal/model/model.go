@@ -55,10 +55,20 @@ type DirectoryCreate struct {
 }
 
 type SymlinkWrite struct {
-	Destination          string `json:"destination"`
-	Target               string `json:"target"`
-	ExpectedMissing      bool   `json:"expected_missing"`
-	RejectSymlinkParents bool   `json:"reject_symlink_parents,omitempty"`
+	Destination          string                  `json:"destination"`
+	Target               string                  `json:"target"`
+	ExpectedMissing      bool                    `json:"expected_missing"`
+	ReplaceExisting      bool                    `json:"replace_existing,omitempty"`
+	ExpectedExisting     *FilesystemPrecondition `json:"expected_existing,omitempty"`
+	Backup               bool                    `json:"backup,omitempty"`
+	RejectSymlinkParents bool                    `json:"reject_symlink_parents,omitempty"`
+}
+
+type FilesystemPrecondition struct {
+	Type   string `json:"type"`
+	Hash   string `json:"hash,omitempty"`
+	Mode   uint32 `json:"mode,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 type FileWrite struct {

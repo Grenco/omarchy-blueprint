@@ -300,7 +300,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the restore plan without changing the machine")
 	cmd.Flags().BoolVar(&yes, "yes", false, "approve the restore non-interactively")
-	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile (currently Shell)")
+	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile")
 	return cmd
 }
 
