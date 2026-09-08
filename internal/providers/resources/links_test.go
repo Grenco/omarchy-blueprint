@@ -35,6 +35,43 @@ func TestDiscoverLinksClassifiesInboundAndUntrackedTargets(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].Classification != LinkUntrackedHomeTarget {
 		t.Fatalf("untracked=%#v err=%v", got, err)
 	}
+	got, err = DiscoverLinks(home, DefaultLinkSearchRoots(home), resources, ownership.Index{}, []string{"~/.config/hypr/overrides.lua"})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("ignored=%#v err=%v", got, err)
+	}
+}
+
+func TestDefaultLinkSearchRootsIncludesHomeConfigAndLocalBin(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	want := []LinkSearchRoot{{Path: home}, {Path: filepath.Join(home, ".config"), Recursive: true}, {Path: filepath.Join(home, ".local", "bin"), Recursive: true}}
+	if got := DefaultLinkSearchRoots(home); !reflect.DeepEqual(got, want) {
+		t.Fatalf("roots=%#v want=%#v", got, want)
+	}
+}
+
+func TestDiscoverLinksFindsDirectHomeAndLocalBin(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "dotfiles", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(home, "dotfiles", "zshrc"), filepath.Join(home, "dotfiles", "bin", "tool")} {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".local", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("dotfiles/zshrc", filepath.Join(home, ".zshrc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../dotfiles/bin/tool", filepath.Join(home, ".local", "bin", "tool")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverLinks(home, DefaultLinkSearchRoots(home), []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}}, ownership.Index{}, nil)
+	if err != nil || len(got) != 2 || got[0].Source != "~/.local/bin/tool" || got[1].Source != "~/.zshrc" {
+		t.Fatalf("links=%#v err=%v", got, err)
+	}
 }
 
 func TestDiscoverLinksDoesNotFollowSymlinkDirectoriesAndRespectsOwnership(t *testing.T) {
@@ -100,8 +137,40 @@ func TestClassifyResourceLinksAndRelativeTarget(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, []LinkCandidate{want}) {
 		t.Fatalf("links=%#v err=%v", got, err)
 	}
+	gitLink := filepath.Join(dotfiles, "current")
+	if err := os.Symlink(filepath.Join(dotfiles, "bin", "current"), gitLink); err != nil {
+		t.Fatal(err)
+	}
+	gitLinks, err := ClassifyResourceLinks(home, all[1], []RawLink{{SourceAbsolute: gitLink, RawTarget: filepath.Join(dotfiles, "bin", "current")}}, all)
+	if err != nil || len(gitLinks) != 1 || gitLinks[0].Classification != LinkGitOwned || gitLinks[0].SourceResource != "dotfiles" {
+		t.Fatalf("git links=%#v err=%v", gitLinks, err)
+	}
 	relative, err := RelativeSymlinkTarget(filepath.Join(home, ".config", "nvim"), filepath.Join(dotfiles, "nvim"))
 	if err != nil || filepath.IsAbs(relative) {
 		t.Fatalf("target=%q err=%v", relative, err)
+	}
+}
+
+func TestClassifyResourceLinksReportsExternalAndBrokenTargets(t *testing.T) {
+	home, scripts := t.TempDir(), ""
+	scripts = filepath.Join(home, "Scripts")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(external, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	externalLink, brokenLink := filepath.Join(scripts, "external"), filepath.Join(scripts, "broken")
+	if err := os.Symlink(external, externalLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("missing", brokenLink); err != nil {
+		t.Fatal(err)
+	}
+	resource := profile.Resource{ID: "scripts", Path: "~/Scripts", Kind: "directory", Strategy: "copy"}
+	got, err := ClassifyResourceLinks(home, resource, []RawLink{{SourceAbsolute: brokenLink, RawTarget: "missing"}, {SourceAbsolute: externalLink, RawTarget: external}}, []profile.Resource{resource})
+	if err != nil || len(got) != 2 || got[0].Classification != LinkBroken || got[1].Classification != LinkExternalTarget {
+		t.Fatalf("links=%#v err=%v", got, err)
 	}
 }

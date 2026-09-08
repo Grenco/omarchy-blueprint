@@ -70,14 +70,17 @@ func DiscoverLinks(home string, roots []LinkSearchRoot, resources []profile.Reso
 }
 
 func ClassifyResourceLinks(home string, resource profile.Resource, raw []RawLink, all []profile.Resource) ([]LinkCandidate, error) {
-	if resource.Strategy == "git" {
-		return nil, nil
-	}
 	var candidates []LinkCandidate
 	for _, link := range raw {
 		candidate, err := classifyLink(home, link.SourceAbsolute, all, resource.ID, ownership.Index{})
 		if err != nil {
 			return nil, err
+		}
+		if resource.Strategy == "git" {
+			candidate.Classification = LinkGitOwned
+			candidate.SourceResource = resource.ID
+			candidates = append(candidates, candidate)
+			continue
 		}
 		if candidate.Classification == LinkManagedInbound {
 			candidate.Classification = LinkManagedResource
