@@ -212,8 +212,18 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 
 	parent := filepath.Dir(action.Destination)
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
 	}
 	temp, err := os.CreateTemp(parent, ".omarchy-blueprint-file-*")
 	if err != nil {
@@ -248,6 +258,11 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	if _, err := validateDestination(action); err != nil {
 		return err
 	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
 	if err := os.Rename(tempPath, action.Destination); err != nil {
 		return err
 	}
@@ -257,6 +272,39 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func validateSymlinkParents(destination string) error {
+	abs, err := filepath.Abs(destination)
+	if err != nil {
+		return err
+	}
+	root := filepath.VolumeName(abs) + string(os.PathSeparator)
+	relative, err := filepath.Rel(root, filepath.Dir(abs))
+	if err != nil {
+		return err
+	}
+	parent := root
+	for _, part := range strings.Split(relative, string(os.PathSeparator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		parent = filepath.Join(parent, part)
+		info, err := os.Lstat(parent)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("file write destination parent is a symlink: %s", parent)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("file write destination parent is not a directory: %s", parent)
+		}
+	}
+	return nil
 }
 
 func hashFileWriteSource(reader io.Reader) (string, error) {

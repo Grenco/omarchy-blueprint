@@ -76,6 +76,7 @@ func (p Provider) Check(ctx context.Context, saved profile.Packages) error {
 
 func Diff(saved, current profile.Packages) []model.Change {
 	saved, current = classify(saved), classify(current)
+	saved = ApplyExclusions(saved, saved.Excluded)
 	current = ApplyExclusions(current, saved.Excluded)
 	savedNames := packageNames(saved)
 	currentNames := packageNames(current)
@@ -104,8 +105,9 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	if err := ValidateMiseSecrets(saved.Mise); err != nil {
 		return model.RestorePlan{}, err
 	}
-	saved, current = classify(saved), classify(current)
-	current = ApplyExclusions(current, saved.Excluded)
+	saved, physicalCurrent := classify(saved), classify(current)
+	saved = ApplyExclusions(saved, saved.Excluded)
+	current = ApplyExclusions(physicalCurrent, saved.Excluded)
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	currentNames := packageNames(current)
 	var missingOfficial, missingAUR []string
@@ -166,7 +168,7 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	}
 	var candidate []byte
 	if snapshot.Exists {
-		candidate, err = BuildMiseAppendCandidate(snapshot.Bytes, current.Mise, additions)
+		candidate, err = BuildMiseAppendCandidate(snapshot.Bytes, physicalCurrent.Mise, additions)
 	} else {
 		candidate, err = EncodeMiseTools(additions)
 	}
@@ -174,7 +176,7 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		return skipMiseAdditions(plan, additions, err.Error()), nil
 	}
 	ids := sortedMiseIDs(additions)
-	write := model.FileWrite{Generated: true, Content: candidate, Destination: p.MiseGlobalConfig, SourceHash: hashBytes(candidate), Backup: snapshot.Exists}
+	write := model.FileWrite{Generated: true, Content: candidate, Destination: p.MiseGlobalConfig, SourceHash: hashBytes(candidate), Backup: snapshot.Exists, RejectSymlinkParents: true}
 	if snapshot.Exists {
 		write.ExpectedHash = snapshot.Hash
 	} else {
@@ -189,6 +191,7 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 
 func Verify(saved, current profile.Packages) model.VerificationResult {
 	saved, current = classify(saved), classify(current)
+	saved = ApplyExclusions(saved, saved.Excluded)
 	current = ApplyExclusions(current, saved.Excluded)
 	var missing []string
 	currentNames := packageNames(current)

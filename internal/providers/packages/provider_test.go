@@ -313,3 +313,36 @@ func TestPlanAppendsMissingMiseToolsAndPreservesConflicts(t *testing.T) {
 		t.Fatalf("skipped=%#v", plan.Skipped)
 	}
 }
+
+func TestExcludedMiseToolIsNotDriftedVerifiedOrRestored(t *testing.T) {
+	saved := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "latest"}}, Excluded: []string{"mise:foo"}}
+	for _, current := range []profile.Packages{{}, {Mise: profile.MiseTools{"foo": {"version": "different"}}}} {
+		if changes := Diff(saved, current); len(changes) != 0 {
+			t.Fatalf("current=%#v changes=%#v", current, changes)
+		}
+		if verification := Verify(saved, current); !verification.OK {
+			t.Fatalf("current=%#v verification=%#v", current, verification)
+		}
+		plan, err := (Provider{MiseGlobalConfig: filepath.Join(t.TempDir(), "config.toml")}).Plan(saved, current, 6, "4.0", "4.1")
+		if err != nil || len(plan.Operations) != 0 {
+			t.Fatalf("current=%#v plan=%#v err=%v", current, plan, err)
+		}
+	}
+}
+
+func TestPlanPreservesExcludedPhysicalMiseToolWhenAddingManagedTool(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("[tools]\nfoo = \"local\"\n")
+	if err := os.WriteFile(config, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "latest"}, "bar": {"version": "1"}}, Excluded: []string{"mise:foo"}}
+	current := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "local"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 6, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 2 || !bytes.HasPrefix(plan.Operations[0].File.Content, existing) || !strings.Contains(string(plan.Operations[0].File.Content), "[tools.bar]") {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}

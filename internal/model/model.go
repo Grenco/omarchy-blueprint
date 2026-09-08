@@ -45,16 +45,17 @@ type Copy struct {
 }
 
 type FileWrite struct {
-	Source          string  `json:"source,omitempty"`
-	Generated       bool    `json:"generated,omitempty"`
-	Content         []byte  `json:"-"`
-	Destination     string  `json:"destination"`
-	SourceHash      string  `json:"source_hash"`
-	ExpectedHash    string  `json:"expected_hash,omitempty"`
-	ExpectedMissing bool    `json:"expected_missing,omitempty"`
-	Backup          bool    `json:"backup"`
-	Mode            *uint32 `json:"mode,omitempty"`
-	ExpectedMode    *uint32 `json:"expected_mode,omitempty"`
+	Source               string  `json:"source,omitempty"`
+	Generated            bool    `json:"generated,omitempty"`
+	Content              []byte  `json:"-"`
+	Destination          string  `json:"destination"`
+	SourceHash           string  `json:"source_hash"`
+	ExpectedHash         string  `json:"expected_hash,omitempty"`
+	ExpectedMissing      bool    `json:"expected_missing,omitempty"`
+	Backup               bool    `json:"backup"`
+	Mode                 *uint32 `json:"mode,omitempty"`
+	ExpectedMode         *uint32 `json:"expected_mode,omitempty"`
+	RejectSymlinkParents bool    `json:"reject_symlink_parents,omitempty"`
 }
 
 type RestorePlan struct {

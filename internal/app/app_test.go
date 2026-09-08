@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -28,6 +29,20 @@ type machineRunner struct {
 	pluginDir    string
 	failReload   bool
 	defaults     map[string]string
+	miseCommands [][]string
+}
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "omarchy-blueprint-mise-*")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("MISE_GLOBAL_CONFIG_FILE", filepath.Join(dir, "config.toml")); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -37,6 +52,8 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return "4.0.0-1\n", nil
 	case "omarchy version channel":
 		return "stable\n", nil
+	case "mise --version":
+		return "2026.1.0\n", nil
 	case "pacman -Qqen":
 		return keys(r.official), nil
 	case "pacman -Qqem":
@@ -135,6 +152,10 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		for _, pkg := range args[3:] {
 			r.aur[pkg] = true
 		}
+		return "", nil
+	}
+	if name == "mise" && len(args) >= 4 && args[0] == "-C" && args[1] == "/" && args[2] == "install" {
+		r.miseCommands = append(r.miseCommands, append([]string{"mise"}, args...))
 		return "", nil
 	}
 	return "", fmt.Errorf("unexpected command: %s", key)
@@ -1445,6 +1466,43 @@ func TestHooksUnmanagedSymlinkWarnsWithoutDrift(t *testing.T) {
 		t.Fatalf("capture code=%d out=%s", code, out)
 	}
 	if code, out := configRun(t, deps, profileDir, "status", "hooks"); code != 0 || !strings.Contains(out, "Profile matches this machine") || !strings.Contains(out, "left unmanaged") {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
+func TestPackagesMiseThreeSourceRestore(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	miseConfig := filepath.Join(t.TempDir(), "mise", "config.toml")
+	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	if err := os.MkdirAll(filepath.Dir(miseConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceConfig := []byte("# source\n[tools]\nnode = \"24\"\n\"npm:@anthropic-ai/claude-code\" = \"latest\"\n")
+	if err := os.WriteFile(miseConfig, sourceConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{"git": true}
+	runner.aur = map[string]bool{"visual-studio-code-bin": true}
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	targetConfig := []byte("# target-only prefix\n[tools]\nbun = \"latest\"\n\n[env]\nKEEP = \"yes\"\n")
+	if err := os.WriteFile(miseConfig, targetConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.official, runner.aur = map[string]bool{}, map[string]bool{}
+	if code, out := configRun(t, deps, profileDir, "restore", "packages", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+	result, err := os.ReadFile(miseConfig)
+	if err != nil || !bytes.HasPrefix(result, targetConfig) || !strings.Contains(string(result), "[tools.node]") || !strings.Contains(string(result), "npm:@anthropic-ai/claude-code") {
+		t.Fatalf("config=%s err=%v", result, err)
+	}
+	if !reflect.DeepEqual(runner.miseCommands, [][]string{{"mise", "-C", "/", "install", "node", "npm:@anthropic-ai/claude-code"}}) {
+		t.Fatalf("mise commands=%#v", runner.miseCommands)
+	}
+	if code, out := configRun(t, deps, profileDir, "status", "packages"); code != 2 || !strings.Contains(out, "mise package bun") {
 		t.Fatalf("status code=%d out=%s", code, out)
 	}
 }

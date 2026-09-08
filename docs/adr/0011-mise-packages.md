@@ -17,7 +17,9 @@ Restore is additive and conservative. Missing declarations are appended to the
 existing global config only after validating an exact candidate; differing and
 target-only declarations are preserved. A generated atomic write precedes
 `mise -C / install` for added IDs. Mutations through config or parent symlinks
-are refused.
+are refused. The generated write opts into ancestor-symlink checks immediately
+before temporary-file creation and rename, preventing approval-time path swaps
+from redirecting a restore outside the global config tree.
 
 Literal values under obvious secret keys are rejected during capture and check.
 Declarations with `postinstall` remain portable intent but make the install
