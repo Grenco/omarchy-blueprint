@@ -106,6 +106,28 @@ func TestMiseSecretGuardAndPostinstall(t *testing.T) {
 	}
 }
 
+func TestValidateMiseSecretsAllowsDisabledSensitiveEnv(t *testing.T) {
+	tools := profile.MiseTools{
+		"github:acme/internal-tool": {
+			"version": "v1.2.3",
+			"install_env": map[string]any{
+				"GITHUB_TOKEN": false,
+			},
+		},
+	}
+	if err := ValidateMiseSecrets(tools); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeMiseTools(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ReadMiseToolsFromBytes(encoded)
+	if err != nil || !EqualMiseTool(parsed["github:acme/internal-tool"], tools["github:acme/internal-tool"]) {
+		t.Fatalf("parsed = %#v, %v", parsed, err)
+	}
+}
+
 func TestEncodeMiseToolsAndSummaryAreDeterministic(t *testing.T) {
 	tools := profile.MiseTools{"node": {"version": "24"}, "python": {"version": []any{"3.12", "3.13"}}}
 	first, err := EncodeMiseTools(tools)

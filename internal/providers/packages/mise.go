@@ -236,7 +236,7 @@ func literalMiseScalar(value any) bool {
 	switch value := value.(type) {
 	case string:
 		return strings.TrimSpace(value) != "" && !(strings.Contains(value, "{{") && strings.Contains(value, "}}"))
-	case bool, int64, float64:
+	case int64, float64:
 		return true
 	}
 	return false
