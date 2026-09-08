@@ -1535,6 +1535,21 @@ func TestTrackTrackedAndUntrackResources(t *testing.T) {
 	if err != nil || !d.Manifest.Capture.Resources || len(d.Resources.Items) != 1 || len(d.Resources.Links) != 1 {
 		t.Fatalf("resources=%#v err=%v", d.Resources, err)
 	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "resources", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+	if _, err := os.Lstat(source); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.Readlink(link); err != nil || filepath.IsAbs(raw) {
+		t.Fatalf("link=%q err=%v", raw, err)
+	}
 	if code, out := configRun(t, deps, profileDir, "tracked"); code != 0 || !strings.Contains(out, "deploy") || !strings.Contains(out, "copy") {
 		t.Fatalf("tracked code=%d out=%s", code, out)
 	}

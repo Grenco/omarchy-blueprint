@@ -3,6 +3,15 @@
 ## Portable themes
 
 - Restore a missing clean Git theme and confirm the captured revision is checked out.
+
+## Portable resources
+
+- Track a regular file and confirm `resources/resources.toml` plus its copied snapshot are created.
+- Track a clean Git worktree and confirm only portable remote/revision metadata is saved.
+- Confirm an inbound `.config` symlink into a tracked resource is adopted and restored with relative link text.
+- Confirm a direct symlink root is refused and its target is not automatically tracked.
+- Confirm a differing existing resource or link is skipped rather than overwritten.
+- Confirm copied resources with a private key, `.env`, special file, or external internal symlink are rejected.
 - Restore a missing local/custom theme and compare its files and permissions.
 - Restore a missing built-in overlay and confirm packaged files remain unchanged.
 - Confirm the captured active theme is applied after all theme installs.

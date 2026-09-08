@@ -123,6 +123,8 @@ shell/baseline.json
 hooks/hooks.toml
 hooks/files/<event>
 hooks/files/<event>.d/<hook>
+resources/resources.toml
+resources/files/<resource-id>/
 ```
 
 Machine-specific entries retain provenance, for example
@@ -134,6 +136,29 @@ versions, and leaves global Mise environment, settings, tasks, and project-local
 configuration outside the profile. Restore appends only missing declarations,
 preserves target-only tools and conflicting target declarations, then runs
 `mise -C / install` for safely added tools.
+
+## Portable resources
+
+Track an explicit file, directory, or clean Git worktree under your home
+directory:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile track ~/dotfiles
+omarchy-blueprint --profile ~/omarchy-profile tracked
+omarchy-blueprint --profile ~/omarchy-profile untrack dotfiles
+```
+
+Copied resources are stored under `resources/files/`; clean Git worktrees store
+their portable origin and captured revision instead. Tracking a resource also
+adopts symlinks in `$HOME`, `$HOME/.config`, and `$HOME/.local/bin` that point
+into it. For example, `~/.config/hypr/overrides.lua ->
+~/dotfiles/hypr/overrides.lua` is restored as a target-machine-relative link.
+
+`capture resources`, `status resources`, and `restore resources` participate
+in the normal provider lifecycle. Restore is additive: existing differing
+files, directories, Git worktrees, and links are reported as conflicts and are
+never replaced automatically. Blueprint does not recursively track an
+untracked symlink target.
 
 ## Package exclusions
 
@@ -167,8 +192,8 @@ rejected during local-theme capture. Config restore never overwrites a target
 that differs from both the desired content and the current Omarchy baseline,
 and cross-version baseline changes are reported as migration-required rather
 than auto-merged. Defaults restore is additive: it never unsets a
-machine-selected default. The TUI, monitors/input config, directories, Git
-automation, migrations, and AI remain postponed.
+machine-selected default. The TUI, monitors/input config, dirty-Git state,
+path mappings, migrations, and AI remain postponed.
 
 Capture and inspect theme state explicitly with:
 

@@ -237,7 +237,7 @@ themes/
 plugins/
 config/
 hooks/
-directories/
+resources/
 machines/
 migrations/
 metadata/
@@ -272,7 +272,7 @@ shell
 hyprland
 hooks
 defaults
-directories
+resources
 fonts
 services
 webapps
@@ -730,8 +730,8 @@ omarchy-profile/
 │   ├── ghostty/
 │   └── git/
 ├── hooks/
-├── directories/
-│   ├── directories.toml
+├── resources/
+│   ├── resources.toml
 │   ├── files/
 │   └── git-state/
 ├── machines/
@@ -767,7 +767,7 @@ shell = true
 hyprland = true
 hooks = true
 defaults = true
-directories = true
+resources = true
 fonts = false
 services = false
 
@@ -961,7 +961,7 @@ strategy = "merge"
 
 ---
 
-# 21. User-selected directories
+# 21. Portable resources
 
 Users may optionally add arbitrary files or directories to their profile.
 
@@ -990,11 +990,11 @@ restore
 check
 ```
 
-The generic directories provider should only manage paths not already owned by a more specific provider unless the user explicitly overrides that protection.
+The generic Resources provider manages explicitly tracked files, directories, clean Git worktrees, and semantic symlink relationships. It must not take paths owned by a more specific provider.
 
 ---
 
-# 22. Directory reconstruction strategies
+# 22. Resource reconstruction strategies
 
 Tracked paths can use one of several strategies:
 
