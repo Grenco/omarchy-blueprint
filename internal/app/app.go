@@ -26,17 +26,18 @@ import (
 )
 
 type Dependencies struct {
-	Runner     command.Runner
-	In         io.Reader
-	Out        io.Writer
-	Err        io.Writer
-	Now        func() time.Time
-	StateHome  func() (string, error)
-	ThemeDirs  func() (builtin, user string, err error)
-	PluginDir  func() (string, error)
-	ConfigDirs func() (baseline, user string, err error)
-	ShellPaths func() (baseline, user string, err error)
-	HooksDir   func() (string, error)
+	Runner           command.Runner
+	In               io.Reader
+	Out              io.Writer
+	Err              io.Writer
+	Now              func() time.Time
+	StateHome        func() (string, error)
+	ThemeDirs        func() (builtin, user string, err error)
+	PluginDir        func() (string, error)
+	ConfigDirs       func() (baseline, user string, err error)
+	ShellPaths       func() (baseline, user string, err error)
+	HooksDir         func() (string, error)
+	MiseGlobalConfig func() (string, error)
 }
 
 type options struct {
@@ -81,6 +82,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.HooksDir == nil {
 		deps.HooksDir = defaultHooksDir
+	}
+	if deps.MiseGlobalConfig == nil {
+		deps.MiseGlobalConfig = packagesprovider.ResolveMiseGlobalConfigPath
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)

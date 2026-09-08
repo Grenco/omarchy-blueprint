@@ -169,15 +169,25 @@ func (packagesStateProvider) CategoryEnabled() bool { return true }
 // status, restore, and check retain their behavior for older/new profiles.
 func (packagesStateProvider) Captured(profile.Data) bool { return true }
 
+func (p packagesStateProvider) provider() (packagesprovider.Provider, error) {
+	path, err := p.deps.MiseGlobalConfig()
+	return packagesprovider.Provider{Runner: p.deps.Runner, MiseGlobalConfig: path}, err
+}
+
 func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 		return nil, nil, err
 	}
-	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, err := provider.Detect(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 	current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
+	current = packagesprovider.PreserveExcludedMise(current, d.Packages)
 	changes := packagesprovider.Diff(d.Packages, current)
 	d.Packages = current
 	d.Manifest.Capture.Packages = true
@@ -188,7 +198,11 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 		return nil, err
 	}
-	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -199,15 +213,23 @@ func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info om
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 		return model.RestorePlan{}, err
 	}
-	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return packagesprovider.Plan(d.Packages, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(d.Packages, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 }
 
 func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
-	current, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, err := provider.Detect(ctx)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
@@ -215,11 +237,11 @@ func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data) (mode
 }
 
 func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
+	provider, err := p.provider()
+	if err != nil {
 		return err
 	}
-	_, err := (packagesprovider.Provider{Runner: p.deps.Runner}).Detect(ctx)
-	return err
+	return provider.Check(ctx, d.Packages)
 }
 
 type themesStateProvider struct {

@@ -244,6 +244,26 @@ func TestFileWriteModePreconditionsRejectInvalidOrChangedDestination(t *testing.
 	}
 }
 
+func TestFileWriteRejectSymlinkParentsPreventsExternalWrite(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(source, []byte("desired\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	root := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "linked", "config.toml")
+	err := executeModeFileWrite(t, model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ExpectedMissing: true, RejectSymlinkParents: true})
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(external, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("external destination was written: %v", err)
+	}
+}
+
 func TestExecuteCopiesThemeOnlyWhenDestinationIsMissing(t *testing.T) {
 	source, destination := t.TempDir(), filepath.Join(t.TempDir(), "custom")
 	if err := os.WriteFile(filepath.Join(source, "colors.toml"), []byte("accent = '#fff'\n"), 0o640); err != nil {

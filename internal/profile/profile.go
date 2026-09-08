@@ -13,16 +13,17 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 5
+const Schema = 6
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
 // their state as new schema versions arrive.
 const (
-	configSchema   = 2
-	defaultsSchema = 3
-	shellSchema    = 4
-	hooksSchema    = 5
+	configSchema       = 2
+	defaultsSchema     = 3
+	shellSchema        = 4
+	hooksSchema        = 5
+	misePackagesSchema = 6
 )
 
 type Manifest struct {
@@ -54,11 +55,22 @@ type CaptureMeta struct {
 }
 
 type Packages struct {
-	Official        []string `json:"official"`
-	AUR             []string `json:"aur"`
-	MachineSpecific []string `json:"machine_specific,omitempty"`
-	Excluded        []string `json:"excluded,omitempty"`
-	Installed       []string `json:"-" toml:"-"`
+	Official        []string  `json:"official"`
+	AUR             []string  `json:"aur"`
+	Mise            MiseTools `json:"mise,omitempty" toml:"-"`
+	MachineSpecific []string  `json:"machine_specific,omitempty"`
+	Excluded        []string  `json:"excluded,omitempty"`
+	Installed       []string  `json:"-" toml:"-"`
+}
+
+// MiseTool is one normalized global Mise tool declaration.
+type MiseTool map[string]any
+
+// MiseTools is keyed by Mise tool ID, which may include backend punctuation.
+type MiseTools map[string]MiseTool
+
+type misePackagesFile struct {
+	Tools MiseTools `toml:"tools"`
 }
 
 type Themes struct {
@@ -175,6 +187,21 @@ func Load(dir string) (Data, error) {
 	d.Packages.Excluded, err = readList(filepath.Join(dir, "packages", "excluded.txt"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
+	}
+	if loadedSchema >= misePackagesSchema {
+		mise, err := os.ReadFile(filepath.Join(dir, "packages", "mise.toml"))
+		if err == nil {
+			var file misePackagesFile
+			if err := toml.Unmarshal(mise, &file); err != nil {
+				return d, fmt.Errorf("parse packages/mise.toml: %w", err)
+			}
+			d.Packages.Mise = file.Tools
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
+	if d.Packages.Mise == nil {
+		d.Packages.Mise = MiseTools{}
 	}
 	themes, err := os.ReadFile(filepath.Join(dir, "themes", "themes.toml"))
 	if err == nil {
@@ -301,6 +328,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	mise, err := toml.Marshal(misePackagesFile{Tools: d.Packages.Mise})
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -308,6 +339,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "profile.toml"), b},
 		{filepath.Join(dir, "packages", "official.txt"), []byte(joinList(d.Packages.Official))},
 		{filepath.Join(dir, "packages", "aur.txt"), []byte(joinList(d.Packages.AUR))},
+		{filepath.Join(dir, "packages", "mise.toml"), mise},
 		{filepath.Join(dir, "packages", "machine-specific.txt"), []byte(joinList(d.Packages.MachineSpecific))},
 		{filepath.Join(dir, "packages", "excluded.txt"), []byte(joinList(d.Packages.Excluded))},
 		{filepath.Join(dir, "themes", "themes.toml"), themes},

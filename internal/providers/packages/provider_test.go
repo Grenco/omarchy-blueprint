@@ -1,10 +1,13 @@
 package packages
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
@@ -238,5 +241,108 @@ func TestQueryPreservesRealPacmanFailures(t *testing.T) {
 		if _, err := (Provider{Runner: runner}).query(context.Background(), "-Qqem"); err == nil {
 			t.Fatalf("expected failure for %#v", runner)
 		}
+	}
+}
+
+func TestDetectDiffAndVerifyMisePackages(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise.toml")
+	if err := os.WriteFile(config, []byte("[tools]\nnode = \"24\"\n\"npm:@anthropic-ai/claude-code\" = \"latest\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current, err := (Provider{Runner: queryRunner{}, MiseGlobalConfig: config}).Detect(context.Background())
+	if err != nil || current.Mise["node"]["version"] != "24" {
+		t.Fatalf("current=%#v err=%v", current, err)
+	}
+	saved := profile.Packages{Official: []string{"node"}, Mise: profile.MiseTools{"node": {"version": "22"}, "python": {"version": "3.13"}}}
+	changes := Diff(saved, current)
+	containsMise := false
+	for _, change := range changes {
+		containsMise = containsMise || change.Kind == "mise"
+	}
+	if len(changes) == 0 || !containsMise {
+		t.Fatalf("changes=%#v", changes)
+	}
+	if Verify(profile.Packages{Official: []string{"node"}}, current).OK {
+		t.Fatal("mise:node must not satisfy official:node")
+	}
+	if Verify(profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}}, current).OK != true {
+		t.Fatal("equal Mise declaration must verify")
+	}
+}
+
+func TestMiseExclusionRetainsDeclarationAndGenericReferenceIsAmbiguous(t *testing.T) {
+	packages := profile.Packages{Official: []string{"node"}, Mise: profile.MiseTools{"node": {"version": "24"}, "npm:@scope/tool": {"version": "latest"}}}
+	if _, _, err := Exclude(packages, []string{"package:node"}); err == nil {
+		t.Fatal("cross-source generic reference must be ambiguous")
+	}
+	excluded, changed, err := Exclude(packages, []string{"mise:npm:@scope/tool"})
+	if err != nil || !reflect.DeepEqual(changed, []string{"mise:npm:@scope/tool"}) || excluded.Mise["npm:@scope/tool"] == nil {
+		t.Fatalf("excluded=%#v changed=%#v err=%v", excluded, changed, err)
+	}
+	if _, ok := ApplyExclusions(excluded, excluded.Excluded).Mise["npm:@scope/tool"]; ok {
+		t.Fatal("excluded Mise declaration remained in managed view")
+	}
+	if _, changed, err := Include(excluded, []string{"mise:npm:@scope/tool"}); err != nil || len(changed) != 1 {
+		t.Fatalf("include changed=%#v err=%v", changed, err)
+	}
+}
+
+func TestPlanAppendsMissingMiseToolsAndPreservesConflicts(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	existing := []byte("# target comment\n[tools]\nnode = \"22\"\n\n[env]\nKEEP = \"yes\"\n")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}, "python": {"version": "3.13", "postinstall": "echo setup"}}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "22"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 6, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 2 || len(plan.Skipped) != 1 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	configure, install := plan.Operations[0], plan.Operations[1]
+	if configure.ID != "packages.mise.configure" || !configure.File.Generated || !configure.File.Backup || configure.Risk != model.RiskMedium || !bytes.HasPrefix(configure.File.Content, existing) {
+		t.Fatalf("configure=%#v", configure)
+	}
+	if !reflect.DeepEqual(install.Command, []string{"mise", "-C", "/", "install", "python"}) || install.Risk != model.RiskHigh || !reflect.DeepEqual(install.DependsOn, []string{"packages.mise.configure"}) {
+		t.Fatalf("install=%#v", install)
+	}
+	if !strings.Contains(plan.Skipped[0].Resource, "mise:node") {
+		t.Fatalf("skipped=%#v", plan.Skipped)
+	}
+}
+
+func TestExcludedMiseToolIsNotDriftedVerifiedOrRestored(t *testing.T) {
+	saved := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "latest"}}, Excluded: []string{"mise:foo"}}
+	for _, current := range []profile.Packages{{}, {Mise: profile.MiseTools{"foo": {"version": "different"}}}} {
+		if changes := Diff(saved, current); len(changes) != 0 {
+			t.Fatalf("current=%#v changes=%#v", current, changes)
+		}
+		if verification := Verify(saved, current); !verification.OK {
+			t.Fatalf("current=%#v verification=%#v", current, verification)
+		}
+		plan, err := (Provider{MiseGlobalConfig: filepath.Join(t.TempDir(), "config.toml")}).Plan(saved, current, 6, "4.0", "4.1")
+		if err != nil || len(plan.Operations) != 0 {
+			t.Fatalf("current=%#v plan=%#v err=%v", current, plan, err)
+		}
+	}
+}
+
+func TestPlanPreservesExcludedPhysicalMiseToolWhenAddingManagedTool(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("[tools]\nfoo = \"local\"\n")
+	if err := os.WriteFile(config, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "latest"}, "bar": {"version": "1"}}, Excluded: []string{"mise:foo"}}
+	current := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "local"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 6, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 2 || !bytes.HasPrefix(plan.Operations[0].File.Content, existing) || !strings.Contains(string(plan.Operations[0].File.Content), "[tools.bar]") {
+		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 }
