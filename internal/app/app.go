@@ -114,8 +114,92 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
-	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false))
+	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false))
 	return root
+}
+
+func trackCommand(deps Dependencies, opt *options) *cobra.Command {
+	var id string
+	cmd := &cobra.Command{Use: "track <path|link:...>", Args: cobra.ExactArgs(1), Short: "Track a portable user resource", RunE: func(cmd *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		adapter := resourcesStateProvider{deps: deps, opt: opt}
+		provider, err := adapter.provider()
+		if err != nil {
+			return err
+		}
+		var changes []model.Change
+		if strings.HasPrefix(args[0], "link:") {
+			d.Resources, err = provider.EnableLink(d.Resources, strings.TrimPrefix(args[0], "link:"))
+			if err == nil {
+				changes = []model.Change{{Type: model.ChangeAdd, Provider: "resources", Kind: "link", Name: strings.TrimPrefix(args[0], "link:"), Summary: "+ link " + strings.TrimPrefix(args[0], "link:")}}
+			}
+		} else {
+			d.Resources, changes, err = provider.Track(cmd.Context(), d.Resources, args[0], id)
+		}
+		if err != nil {
+			return err
+		}
+		d.Manifest.Capture.Resources = true
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return err
+		}
+		return emit(deps.Out, opt.json, "track", true, map[string]any{"resources": d.Resources, "changes": changes}, renderChanges("Tracked portable resource", changes))
+	}}
+	cmd.Flags().StringVar(&id, "id", "", "stable resource ID")
+	return cmd
+}
+
+func untrackCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "untrack <resource-ref|link-ref>", Args: cobra.ExactArgs(1), Short: "Stop tracking a portable resource", RunE: func(cmd *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		ref := args[0]
+		if !strings.HasPrefix(ref, "resource:") && !strings.HasPrefix(ref, "link:") {
+			ref = "resource:" + ref
+		}
+		provider, err := (resourcesStateProvider{deps: deps, opt: opt}).provider()
+		if err != nil {
+			return err
+		}
+		updated, changed, err := provider.Untrack(d.Resources, ref)
+		if err != nil {
+			return err
+		}
+		d.Resources = updated
+		d.Manifest.Capture.Resources = true
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return err
+		}
+		return emit(deps.Out, opt.json, "untrack", true, map[string]any{"resources": d.Resources, "removed": changed}, "Untracked "+strings.Join(changed, ", ")+"\n")
+	}}
+}
+
+func trackedCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "tracked", Args: cobra.NoArgs, Short: "List tracked portable resources", RunE: func(_ *cobra.Command, _ []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		var b strings.Builder
+		b.WriteString("Portable resources\n\n")
+		for _, item := range d.Resources.Items {
+			fmt.Fprintf(&b, "%s\n  %s\n  %s\n", item.ID, item.Path, item.Strategy)
+		}
+		if len(d.Resources.IgnoredLinks) > 0 {
+			b.WriteString("Ignored links\n")
+			for _, link := range d.Resources.IgnoredLinks {
+				fmt.Fprintf(&b, "  %s\n", link)
+			}
+		}
+		return emit(deps.Out, opt.json, "tracked", true, map[string]any{"resources": d.Resources}, b.String())
+	}}
 }
 
 func initCommand(deps Dependencies, opt *options) *cobra.Command {

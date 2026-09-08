@@ -1507,6 +1507,51 @@ func TestPackagesMiseThreeSourceRestore(t *testing.T) {
 	}
 }
 
+func TestTrackTrackedAndUntrackResources(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return home, nil }
+	source := filepath.Join(home, "dotfiles", "deploy")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("echo deploy\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".config", "deploy")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../dotfiles/deploy", link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", source); code != 0 || !strings.Contains(out, "resource deploy") {
+		t.Fatalf("track code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || !d.Manifest.Capture.Resources || len(d.Resources.Items) != 1 || len(d.Resources.Links) != 1 {
+		t.Fatalf("resources=%#v err=%v", d.Resources, err)
+	}
+	if code, out := configRun(t, deps, profileDir, "tracked"); code != 0 || !strings.Contains(out, "deploy") || !strings.Contains(out, "copy") {
+		t.Fatalf("tracked code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "untrack", "deploy"); code != 0 || !strings.Contains(out, "resource:deploy") {
+		t.Fatalf("untrack code=%d out=%s", code, out)
+	}
+	if _, err := os.Lstat(source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", link); code != 1 || !strings.Contains(out, "is a symlink") {
+		t.Fatalf("symlink track code=%d out=%s", code, out)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
