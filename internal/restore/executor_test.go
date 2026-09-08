@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -643,6 +644,36 @@ func TestForcedSymlinkWriteRejectsChangedDestination(t *testing.T) {
 	got, _ := os.ReadFile(destination)
 	if string(got) != "B" {
 		t.Fatalf("destination=%q", got)
+	}
+}
+
+func TestForcedSymlinkWriteKeepsRecreatedDestinationWhenRollbackBlocked(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "nvim")
+	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Lstat(destination)
+	hash, _ := content.HashFilesystemObject(destination)
+	action := model.SymlinkWrite{Destination: destination, Target: "dotfiles/nvim", ReplaceExisting: true, Backup: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "file", Mode: uint32(info.Mode().Perm()), Hash: hash}}
+	old := symlinkInstaller
+	defer func() { symlinkInstaller = old }()
+	symlinkInstaller = func(model.SymlinkWrite) error {
+		if err := os.WriteFile(destination, []byte("new user work"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("install failed")
+	}
+	if err := executeSymlinkWrite(action); err == nil || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(destination)
+	if string(got) != "new user work" {
+		t.Fatalf("destination=%q", got)
+	}
+	entries, _ := os.ReadDir(root)
+	if len(entries) != 2 {
+		t.Fatalf("entries=%v", entries)
 	}
 }
 

@@ -102,6 +102,14 @@ func (p Provider) Check(ctx context.Context, saved profile.Resources) error {
 			break
 		}
 	}
+	for _, item := range saved.Items {
+		if item.Strategy == "git" && isGitHubRepo(item.Remote) {
+			if _, err := p.Runner.Run(ctx, "gh", "--version"); err != nil {
+				return fmt.Errorf("GitHub CLI is required for resource %s: %w", item.ID, err)
+			}
+			break
+		}
+	}
 	return nil
 }
 

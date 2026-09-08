@@ -99,6 +99,15 @@ func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
 		return resourcesprovider.Provider{}, err
 	}
 	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
+	if _, user, err := p.deps.ConfigDirs(); err == nil {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "config", Path: user, Recursive: true})
+	}
+	if _, user, err := p.deps.ShellPaths(); err == nil {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "shell", Path: user})
+	}
+	if hooks, err := p.deps.HooksDir(); err == nil {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "hooks", Path: hooks, Recursive: true, DelegateSymlinks: true})
+	}
 	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: p.opt.profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims}, nil
 }
 func (p resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {

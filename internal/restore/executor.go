@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/content"
@@ -457,18 +459,19 @@ func executeSymlinkWriteWithJournal(operation string, action model.SymlinkWrite,
 		if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
 			return err
 		}
-		if err := os.Rename(action.Destination, backup); err != nil {
+		if err := renameNoReplace(action.Destination, backup); err != nil {
 			return err
 		}
 		if journal != nil {
 			if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
-				_ = os.Rename(backup, action.Destination)
+				if rollback := renameNoReplace(backup, action.Destination); rollback != nil {
+					return fmt.Errorf("%v; rollback failed: %w", err, rollback)
+				}
 				return err
 			}
 		}
-		if err := installSymlinkAtomic(action); err != nil {
-			_ = os.Remove(action.Destination)
-			if rollback := os.Rename(backup, action.Destination); rollback != nil {
+		if err := symlinkInstaller(action); err != nil {
+			if rollback := renameNoReplace(backup, action.Destination); rollback != nil {
 				return fmt.Errorf("%v; rollback failed: %w", err, rollback)
 			}
 			return err
@@ -495,6 +498,25 @@ func executeSymlinkWriteWithJournal(operation string, action model.SymlinkWrite,
 		return err
 	}
 	return os.Symlink(action.Target, action.Destination)
+}
+
+var symlinkInstaller = installSymlinkAtomic
+
+func renameNoReplace(old, new string) error {
+	oldp, err := syscall.BytePtrFromString(old)
+	if err != nil {
+		return err
+	}
+	newp, err := syscall.BytePtrFromString(new)
+	if err != nil {
+		return err
+	}
+	// renameat2 is syscall 316 on Linux amd64; Omarchy only supports Linux.
+	_, _, errno := syscall.Syscall6(316, uintptr(^uint(99)), uintptr(unsafe.Pointer(oldp)), uintptr(^uint(99)), uintptr(unsafe.Pointer(newp)), 1, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func validateFilesystemPrecondition(path string, expected model.FilesystemPrecondition) error {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -132,6 +133,12 @@ func linkEntries(root LinkSearchRoot) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if path != root.Path && isBlueprintBackupName(entry.Name()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if path != root.Path && entry.Type()&os.ModeSymlink != 0 {
 			paths = append(paths, path)
 			if entry.IsDir() {
@@ -141,6 +148,10 @@ func linkEntries(root LinkSearchRoot) ([]string, error) {
 		return nil
 	})
 	return paths, err
+}
+
+func isBlueprintBackupName(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.Contains(name, ".omarchy-blueprint-backup-")
 }
 
 func classifyLink(home, source string, resources []profile.Resource, sourceResource string, index ownership.Index) (LinkCandidate, error) {
