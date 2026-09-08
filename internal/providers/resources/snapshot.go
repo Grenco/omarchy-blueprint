@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 )
 
 type SnapshotScan struct {
@@ -40,8 +42,12 @@ func ValidateSnapshotTree(root, expectedHash string) error {
 	if len(scan.Links) != 0 {
 		return fmt.Errorf("snapshot contains symlink: %s", scan.Links[0].SourceAbsolute)
 	}
-	if scan.Hash != expectedHash {
-		return fmt.Errorf("snapshot hash mismatch: got %s want %s", scan.Hash, expectedHash)
+	hash, err := content.HashRegularTree(root)
+	if err != nil {
+		return err
+	}
+	if hash != expectedHash {
+		return fmt.Errorf("snapshot hash mismatch: got %s want %s", hash, expectedHash)
 	}
 	return nil
 }

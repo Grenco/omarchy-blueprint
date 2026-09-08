@@ -501,6 +501,163 @@ func TestExecuteRejectsOperationsWithMultipleActions(t *testing.T) {
 	}
 }
 
+func TestExecuteOperationActionExclusivityIncludesDirectoryAndSymlink(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		name string
+		op   model.Operation
+		want bool
+	}{
+		{
+			name: "directory only",
+			op:   model.Operation{ID: "directory", Directory: &model.DirectoryCreate{Path: filepath.Join(root, "directory"), Mode: 0o755}},
+			want: true,
+		},
+		{
+			name: "symlink only",
+			op:   model.Operation{ID: "symlink", Symlink: &model.SymlinkWrite{Destination: filepath.Join(root, "symlink"), Target: "target", ExpectedMissing: true}},
+			want: true,
+		},
+		{
+			name: "file and symlink",
+			op:   model.Operation{ID: "invalid", File: &model.FileWrite{}, Symlink: &model.SymlinkWrite{}},
+		},
+		{
+			name: "copy and directory",
+			op:   model.Operation{ID: "invalid", Copy: &model.Copy{}, Directory: &model.DirectoryCreate{}},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := executeOperation(context.Background(), delayedRunner{}, tt.op, nil, time.Now)
+			if (err == nil) != tt.want {
+				t.Fatalf("err=%v want success=%t", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDirectoryCreateRejectsSymlinkParent(t *testing.T) {
+	external := t.TempDir()
+	root := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	action := model.DirectoryCreate{Path: filepath.Join(root, "linked", "Projects"), Mode: 0o755, RejectSymlinkParents: true}
+	err := executeDirectoryCreate(action)
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "Projects")); !os.IsNotExist(err) {
+		t.Fatalf("external directory was created: %v", err)
+	}
+}
+
+func TestDirectoryCreateIsIdempotentForRealDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Projects")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeDirectoryCreate(model.DirectoryCreate{Path: path, Mode: 0o755, RejectSymlinkParents: true}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("info=%v err=%v", info, err)
+	}
+}
+
+func TestSymlinkWriteCreatesOnlyMissingDestination(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, ".config", "nvim")
+	action := model.SymlinkWrite{Destination: destination, Target: "../../dotfiles/nvim", ExpectedMissing: true, RejectSymlinkParents: true}
+	if err := executeSymlinkWrite(action); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(destination); err != nil || target != action.Target {
+		t.Fatalf("target=%q err=%v", target, err)
+	}
+	for _, setup := range []func(string) error{
+		func(path string) error { return os.WriteFile(path, []byte("existing"), 0o644) },
+		func(path string) error { return os.Symlink("different", path) },
+	} {
+		path := filepath.Join(t.TempDir(), "destination")
+		if err := setup(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := executeSymlinkWrite(model.SymlinkWrite{Destination: path, Target: "target", ExpectedMissing: true}); err == nil {
+			t.Fatal("existing destination unexpectedly replaced")
+		}
+	}
+}
+
+func TestSymlinkWriteRejectsSymlinkParent(t *testing.T) {
+	external := t.TempDir()
+	root := t.TempDir()
+	parent := filepath.Join(root, "linked")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(parent, "config")
+	action := model.SymlinkWrite{Destination: destination, Target: "target", ExpectedMissing: true, RejectSymlinkParents: true}
+	// Model the parent changing after planning but before execution.
+	if err := os.Remove(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, parent); err != nil {
+		t.Fatal(err)
+	}
+	err := executeSymlinkWrite(action)
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "config")); !os.IsNotExist(err) {
+		t.Fatalf("external destination was written: %v", err)
+	}
+}
+
+func TestCopySourceHashRejectsMutationBeforeDestinationCreation(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "content"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := content.HashRegularTree(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "copy")
+	if err := os.WriteFile(filepath.Join(source, "content"), []byte("mutated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = copyTreeExclusive(model.Copy{Source: source, Destination: destination, SourceHash: hash})
+	if err == nil || !strings.Contains(err.Error(), "source hash mismatch") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination was created: %v", err)
+	}
+}
+
+func TestCopyRejectsSymlinkParent(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "content"), []byte("snapshot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	root := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "linked", "copy")
+	err := copyTreeExclusive(model.Copy{Source: source, Destination: destination, RejectSymlinkParents: true})
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "copy")); !os.IsNotExist(err) {
+		t.Fatalf("external destination was created: %v", err)
+	}
+}
+
 func hashFile(t *testing.T, path string) string {
 	t.Helper()
 	hash, err := content.HashRegularFile(path)

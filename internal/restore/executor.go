@@ -152,14 +152,26 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.File != nil {
 		actions++
 	}
+	if op.Directory != nil {
+		actions++
+	}
+	if op.Symlink != nil {
+		actions++
+	}
 	if actions != 1 {
-		return fmt.Errorf("operation %s must contain exactly one command, copy, or file action", op.ID)
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, directory, or symlink action", op.ID)
 	}
 	if op.Copy != nil {
-		return copyTreeExclusive(op.Copy.Source, op.Copy.Destination)
+		return copyTreeExclusive(*op.Copy)
 	}
 	if op.File != nil {
 		return writeFileAtomic(op.ID, *op.File, journal, now)
+	}
+	if op.Directory != nil {
+		return executeDirectoryCreate(*op.Directory)
+	}
+	if op.Symlink != nil {
+		return executeSymlinkWrite(*op.Symlink)
 	}
 	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
 	return err
@@ -371,14 +383,102 @@ func validateDestination(action model.FileWrite) (os.FileInfo, error) {
 	return info, nil
 }
 
-func copyTreeExclusive(source, destination string) error {
-	if _, err := os.Lstat(destination); err == nil {
-		return fmt.Errorf("destination already exists: %s", destination)
+func executeDirectoryCreate(action model.DirectoryCreate) error {
+	if action.Mode > 0o777 {
+		return fmt.Errorf("directory create mode is invalid: %04o", action.Mode)
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Path); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(action.Path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("directory create destination is not a directory: %s", action.Path)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(action.Path, os.FileMode(action.Mode)); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Path); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(action.Path, os.FileMode(action.Mode))
+}
+
+func executeSymlinkWrite(action model.SymlinkWrite) error {
+	if action.Target == "" {
+		return fmt.Errorf("symlink target is required")
+	}
+	if !action.ExpectedMissing {
+		return fmt.Errorf("symlink write requires expected missing destination: %s", action.Destination)
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("symlink destination already exists: %s", action.Destination)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	parent := filepath.Dir(destination)
+	parent := filepath.Dir(action.Destination)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("symlink destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(action.Target, action.Destination)
+}
+
+func copyTreeExclusive(action model.Copy) error {
+	if action.SourceHash != "" {
+		hash, err := content.HashRegularTree(action.Source)
+		if err != nil {
+			return fmt.Errorf("validate copy source: %w", err)
+		}
+		if hash != action.SourceHash {
+			return fmt.Errorf("copy source hash mismatch: %s", action.Source)
+		}
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	parent := filepath.Dir(action.Destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	temp, err := os.MkdirTemp(parent, ".omarchy-blueprint-copy-*")
@@ -386,10 +486,20 @@ func copyTreeExclusive(source, destination string) error {
 		return err
 	}
 	defer os.RemoveAll(temp)
-	if err := copyTreeContents(source, temp); err != nil {
+	if err := copyTreeContents(action.Source, temp); err != nil {
 		return err
 	}
-	return os.Rename(temp, destination)
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(temp, action.Destination)
 }
 
 func copyTreeContents(source, destination string) error {
