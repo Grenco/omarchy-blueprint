@@ -18,7 +18,7 @@
 - Tracked resource roots may not overlap each other, the active profile directory, or non-delegated provider-owned paths.
 - Ordinary files/directories use `strategy = "copy"`.
 - A directory uses `strategy = "git"` only when it is the clean worktree root with a portable `origin` remote and valid HEAD revision.
-- Dirty Git repositories are rejected; do not silently fall back to copied bytes.
+- Dirty Git repositories retain portable HEAD provenance; working-tree/index changes are reported as uncaptured drift and never silently copied.
 - Git restore pins the captured revision; branch-follow policy is outside v1.
 - Copy capture never follows symlinks and never stores symlinks in the snapshot tree.
 - Symlinks in copied resources are semantic `ResourceLink` records.
@@ -820,7 +820,7 @@ if state.Remote != "git@github.com:example/dotfiles.git" ||
 }
 ```
 
-- [ ] **Step 3: Write dirty Git refusal test**
+- [ ] **Step 3: Write dirty Git provenance warning test**
 
 A non-empty porcelain output must return `Dirty=true` and later Track/Capture must reject it.
 
@@ -1262,7 +1262,7 @@ Remote/Revision populated
 resources/files/<id> does not exist
 ```
 
-Dirty Git detection must cause Track error.
+Dirty Git detection must preserve HEAD provenance, warn that local changes are not captured, and leave later status drifted.
 
 - [ ] **Step 4: Write transactional capture failure test**
 

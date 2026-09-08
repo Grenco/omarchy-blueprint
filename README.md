@@ -192,8 +192,8 @@ rejected during local-theme capture. Config restore never overwrites a target
 that differs from both the desired content and the current Omarchy baseline,
 and cross-version baseline changes are reported as migration-required rather
 than auto-merged. Defaults restore is additive: it never unsets a
-machine-selected default. The TUI, monitors/input config, dirty-Git state,
-path mappings, migrations, and AI remain postponed.
+machine-selected default. The TUI, monitors/input config, dirty-Git patch
+preservation, path mappings, migrations, and AI remain postponed.
 
 Capture and inspect theme state explicitly with:
 

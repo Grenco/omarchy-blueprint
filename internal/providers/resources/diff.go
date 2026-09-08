@@ -16,11 +16,17 @@ func Diff(saved, current profile.Resources) []model.Change {
 	for id, item := range currentItems {
 		desired, ok := savedItems[id]
 		if !ok {
-			changes = append(changes, resourceChange(model.ChangeAdd, "resource", id, "+ resource "+id))
+			summary := "+ resource " + id
+			if item.Dirty {
+				summary += "; local changes are not captured"
+			}
+			changes = append(changes, resourceChange(model.ChangeAdd, "resource", id, summary))
 			continue
 		}
 		delete(savedItems, id)
-		if desired != item {
+		if item.Dirty {
+			changes = append(changes, resourceChange(model.ChangeModify, "resource", id, "~ resource "+id+" has uncommitted Git changes; local changes are not captured"))
+		} else if desired != item {
 			changes = append(changes, resourceChange(model.ChangeModify, "resource", id, "~ resource "+id+" differs"))
 		}
 	}
@@ -55,7 +61,7 @@ func Verify(saved, current profile.Resources) model.VerificationResult {
 	missing := []string{}
 	items := resourceMap(current.Items)
 	for _, item := range saved.Items {
-		if current, ok := items[item.ID]; !ok || current != item {
+		if current, ok := items[item.ID]; !ok || current != item || current.Dirty {
 			missing = append(missing, "resource:"+item.ID)
 		}
 	}

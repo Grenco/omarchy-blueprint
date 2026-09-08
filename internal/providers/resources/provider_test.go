@@ -211,3 +211,27 @@ func TestDetectRebuildsInternalResourceLinks(t *testing.T) {
 		t.Fatalf("links=%#v", current.Links)
 	}
 }
+
+func TestTrackAndCaptureDirtyGitKeepsHeadAsDrift(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	root := filepath.Join(home, "dotfiles")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	revision := strings.Repeat("a", 40)
+	runner := gitRunner{output: map[string]string{
+		"git -C " + root + " rev-parse --show-toplevel":                root + "\n",
+		"git -C " + root + " status --porcelain --untracked-files=all": " M init.lua\n?? experiment.sh\n",
+		"git -C " + root + " remote get-url origin":                    "https://github.com/example/dotfiles.git\n",
+		"git -C " + root + " rev-parse HEAD":                           revision + "\n",
+	}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: runner}
+	captured, changes, err := p.Track(context.Background(), profile.Resources{}, root, "")
+	if err != nil || len(captured.Items) != 1 || captured.Items[0].Revision != revision || !captured.Items[0].Dirty || len(changes) != 1 || !strings.Contains(changes[0].Summary, "local changes are not captured") {
+		t.Fatalf("resources=%#v changes=%#v err=%v", captured, changes, err)
+	}
+	current, _, err := p.Detect(context.Background(), profile.Resources{Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git", Remote: "https://github.com/example/dotfiles.git", Revision: revision}}})
+	if err != nil || current.Items[0].Revision != revision || !current.Items[0].Dirty || Verify(captured, current).OK {
+		t.Fatalf("current=%#v err=%v", current, err)
+	}
+}

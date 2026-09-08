@@ -73,3 +73,34 @@ func TestCopyResourceRejectsSpecialAndSensitiveFiles(t *testing.T) {
 		t.Fatalf("ordinary credential helper rejected: %v", err)
 	}
 }
+
+func TestStageCopyResourcePreservesModesDespiteUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	source := t.TempDir()
+	if err := os.Chmod(source, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "file"), []byte("file"), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(source, "file"), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "script"), []byte("script"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(source, "script"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "snapshot")
+	if _, err := StageCopyResource(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{destination: 0o775, filepath.Join(destination, "file"): 0o664, filepath.Join(destination, "script"): 0o775} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("path=%s mode=%o err=%v", path, info.Mode().Perm(), err)
+		}
+	}
+}

@@ -86,6 +86,9 @@ func scanCopyResource(root, destination string) (SnapshotScan, error) {
 		if err := os.Chmod(destination, info.Mode().Perm()); err != nil {
 			return SnapshotScan{}, err
 		}
+		if err := os.Chmod(destination, info.Mode().Perm()); err != nil {
+			return SnapshotScan{}, err
+		}
 	}
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -120,7 +123,11 @@ func scanCopyResource(root, destination string) (SnapshotScan, error) {
 		if info.IsDir() {
 			fmt.Fprintf(hash, "dir\x00%s\x00%04o\x00", name, info.Mode().Perm())
 			if destination != "" {
-				return os.MkdirAll(filepath.Join(destination, relative), info.Mode().Perm())
+				target := filepath.Join(destination, relative)
+				if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+					return err
+				}
+				return os.Chmod(target, info.Mode().Perm())
 			}
 			return nil
 		}
@@ -167,6 +174,10 @@ func copySnapshotFile(source, destination string, mode os.FileMode) error {
 	}
 	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
 	if err != nil {
+		return err
+	}
+	if err := output.Chmod(mode.Perm()); err != nil {
+		output.Close()
 		return err
 	}
 	if _, err := io.Copy(output, input); err != nil {

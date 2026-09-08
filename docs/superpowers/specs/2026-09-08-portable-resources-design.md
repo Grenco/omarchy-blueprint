@@ -598,13 +598,13 @@ Local filesystem-only remotes are rejected in v1 because they are not portable r
 
 ### 15.1 Dirty repository
 
-A dirty Git repository is not silently copied and is not partially captured.
-
-`track`/`capture resources` reports:
+A dirty Git repository is not silently copied. `track` and `capture resources`
+record its portable remote and current HEAD revision, but omit working-tree and
+index changes. They report:
 
 ```text
 resource dotfiles has uncommitted or untracked Git state;
-dirty Git preservation is not supported in Portable Resources v1
+local Git changes are not captured
 ```
 
 The future Git-state milestone will add tracked patches and selected untracked files.
@@ -2055,7 +2055,7 @@ Portable Resources v1 is complete when all of the following hold:
 7. A copied resource with a symlink to an untracked target fails capture.
 8. A broken symlink inside a copied resource fails capture.
 9. A clean Git repo is stored as remote + branch + exact revision without repository bytes.
-10. A dirty Git repo is refused.
+10. A dirty Git repo captures portable HEAD provenance and reports uncaptured local drift.
 11. A local-only Git remote is refused.
 12. URL credentials are not persisted.
 13. `track ~/omarchy-setup` auto-discovers `~/.config/hypr/overrides.lua` pointing into it.

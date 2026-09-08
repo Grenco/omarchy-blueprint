@@ -83,7 +83,7 @@ runtime files.
 - generic restore gains safe directory/symlink actions;
 - copied resources containing external untracked symlinks cannot yet be fully
   captured;
-- dirty Git repositories remain unsupported until a later milestone;
+- dirty Git working-tree/index changes are reported as drift but are not captured;
 - some provider-owned paths may require explicit ownership handoff before a
   symlink can be Resources-managed.
 

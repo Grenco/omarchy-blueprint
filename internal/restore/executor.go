@@ -489,6 +489,15 @@ func copyTreeExclusive(action model.Copy) error {
 		return err
 	}
 	defer os.RemoveAll(temp)
+	info, err := os.Lstat(action.Source)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.Chmod(temp, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
 	if err := copyTreeContents(action.Source, temp); err != nil {
 		return err
 	}
@@ -523,7 +532,10 @@ func copyTreeContents(source, destination string) error {
 			return err
 		}
 		if entry.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(target, info.Mode().Perm())
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("snapshot contains unsupported file: %s", relative)
@@ -535,6 +547,11 @@ func copyTreeContents(source, destination string) error {
 		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
 		if err != nil {
 			in.Close()
+			return err
+		}
+		if err := out.Chmod(info.Mode().Perm()); err != nil {
+			in.Close()
+			out.Close()
 			return err
 		}
 		_, copyErr := io.Copy(out, in)

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -655,6 +656,34 @@ func TestCopyRejectsSymlinkParent(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(external, "copy")); !os.IsNotExist(err) {
 		t.Fatalf("external destination was created: %v", err)
+	}
+}
+
+func TestCopyTreePreservesModesDespiteUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	source := t.TempDir()
+	if err := os.Chmod(source, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{"file": 0o664, "script": 0o775} {
+		full := filepath.Join(source, path)
+		if err := os.WriteFile(full, []byte(path), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(full, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination := filepath.Join(t.TempDir(), "copy")
+	if err := copyTreeExclusive(model.Copy{Source: source, Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{destination: 0o775, filepath.Join(destination, "file"): 0o664, filepath.Join(destination, "script"): 0o775} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("path=%s mode=%o err=%v", path, info.Mode().Perm(), err)
+		}
 	}
 }
 

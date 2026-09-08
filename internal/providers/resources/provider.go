@@ -72,11 +72,9 @@ func (p Provider) Track(ctx context.Context, saved profile.Resources, path, requ
 				return saved, nil, err
 			}
 			if isGit {
-				if git.Dirty {
-					return saved, nil, fmt.Errorf("resource %s has uncommitted or untracked Git state", id)
-				}
 				item.Kind, item.Strategy = "directory", "git"
 				item.Remote, item.Branch, item.Revision = git.Remote, git.Branch, git.Revision
+				item.Dirty = git.Dirty
 			}
 		}
 		if item.Strategy == "" {
@@ -130,10 +128,11 @@ func (p Provider) capture(ctx context.Context, next profile.Resources) (profile.
 				return profile.Resources{}, errors.New("command runner is required to capture Git resources")
 			}
 			git, isGit, err := DetectGitResource(ctx, p.Runner, root)
-			if err != nil || !isGit || git.Dirty {
-				return profile.Resources{}, fmt.Errorf("resource %s is not a clean Git worktree: %w", item.ID, err)
+			if err != nil || !isGit {
+				return profile.Resources{}, fmt.Errorf("resource %s is not a Git worktree: %w", item.ID, err)
 			}
 			item.Remote, item.Branch, item.Revision = git.Remote, git.Branch, git.Revision
+			item.Dirty = git.Dirty
 			continue
 		}
 		scan, err := StageCopyResource(root, resourceSnapshotPath(staging, *item))
@@ -271,11 +270,12 @@ func (p Provider) Detect(ctx context.Context, saved profile.Resources) (profile.
 				return profile.Resources{}, nil, errors.New("command runner is required to detect Git resources")
 			}
 			git, isGit, err := DetectGitResource(ctx, p.Runner, root)
-			if err != nil || !isGit || git.Dirty {
+			if err != nil || !isGit {
 				item.Revision = ""
 				continue
 			}
 			item.Remote, item.Branch, item.Revision = git.Remote, git.Branch, git.Revision
+			item.Dirty = git.Dirty
 		}
 	}
 	links, err := DiscoverLinks(p.HomeDir, p.roots(), current.Items, p.Ownership, current.IgnoredLinks)

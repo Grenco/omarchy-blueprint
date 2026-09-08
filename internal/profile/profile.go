@@ -143,6 +143,7 @@ type Resource struct {
 	Remote   string `json:"remote,omitempty" toml:"remote,omitempty"`
 	Branch   string `json:"branch,omitempty" toml:"branch,omitempty"`
 	Revision string `json:"revision,omitempty" toml:"revision,omitempty"`
+	Dirty    bool   `json:"-" toml:"-"`
 }
 
 type ResourceLink struct {
