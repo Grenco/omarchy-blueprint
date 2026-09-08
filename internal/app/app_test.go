@@ -168,7 +168,7 @@ func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
 	for _, provider := range providers {
 		got = append(got, provider.ID())
 	}
-	if want := []string{"packages", "themes", "plugins", "config", "defaults", "shell", "hooks"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if want := []string{"packages", "themes", "plugins", "resources", "config", "defaults", "shell", "hooks"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("provider order = %v, want %v", got, want)
 	}
 }

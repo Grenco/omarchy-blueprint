@@ -21,23 +21,26 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 type Dependencies struct {
-	Runner           command.Runner
-	In               io.Reader
-	Out              io.Writer
-	Err              io.Writer
-	Now              func() time.Time
-	StateHome        func() (string, error)
-	ThemeDirs        func() (builtin, user string, err error)
-	PluginDir        func() (string, error)
-	ConfigDirs       func() (baseline, user string, err error)
-	ShellPaths       func() (baseline, user string, err error)
-	HooksDir         func() (string, error)
-	MiseGlobalConfig func() (string, error)
+	Runner            command.Runner
+	In                io.Reader
+	Out               io.Writer
+	Err               io.Writer
+	Now               func() time.Time
+	StateHome         func() (string, error)
+	ThemeDirs         func() (builtin, user string, err error)
+	PluginDir         func() (string, error)
+	ConfigDirs        func() (baseline, user string, err error)
+	ShellPaths        func() (baseline, user string, err error)
+	HooksDir          func() (string, error)
+	MiseGlobalConfig  func() (string, error)
+	HomeDir           func() (string, error)
+	ResourceLinkRoots func(string) []resourcesprovider.LinkSearchRoot
 }
 
 type options struct {
@@ -85,6 +88,12 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.MiseGlobalConfig == nil {
 		deps.MiseGlobalConfig = packagesprovider.ResolveMiseGlobalConfigPath
+	}
+	if deps.HomeDir == nil {
+		deps.HomeDir = os.UserHomeDir
+	}
+	if deps.ResourceLinkRoots == nil {
+		deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
 	}
 	root := newRoot(deps)
 	root.SetArgs(args)
@@ -144,7 +153,7 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "capture [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -162,9 +171,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	use, short := "status [packages|themes|plugins|config|defaults|shell|hooks]", "Show profile drift"
+	use, short := "status [packages|themes|plugins|resources|config|defaults|shell|hooks]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages|themes|plugins|config|defaults|shell|hooks]", "Show semantic differences"
+		use, short = "diff [packages|themes|plugins|resources|config|defaults|shell|hooks]", "Show semantic differences"
 	}
 	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -188,7 +197,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes, force bool
 	providers := stateProviders(deps, opt)
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)

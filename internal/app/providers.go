@@ -8,12 +8,14 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	defaultsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/defaults"
 	hooksprovider "github.com/Grenco/omarchy-blueprint/internal/providers/hooks"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 )
@@ -47,6 +49,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		packagesStateProvider{deps: deps},
 		themesStateProvider{deps: deps, opt: opt},
 		pluginsStateProvider{deps: deps, opt: opt},
+		resourcesStateProvider{deps: deps, opt: opt},
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
 		shellStateProvider{deps: deps, opt: opt},
@@ -74,6 +77,87 @@ func categoryProvider(providers []stateProvider, id string) (stateProvider, bool
 	return nil, false
 }
 
+type resourcesStateProvider struct {
+	deps Dependencies
+	opt  *options
+}
+
+func (resourcesStateProvider) ID() string                     { return "resources" }
+func (resourcesStateProvider) CategoryEnabled() bool          { return true }
+func (p resourcesStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Resources }
+func (resourcesStateProvider) Empty(state any) bool {
+	resources, ok := state.(profile.Resources)
+	return ok && len(resources.Items) == 0
+}
+func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
+	home, err := p.deps.HomeDir()
+	if err != nil {
+		return resourcesprovider.Provider{}, err
+	}
+	state, err := p.deps.StateHome()
+	if err != nil {
+		return resourcesprovider.Provider{}, err
+	}
+	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
+	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: p.opt.profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims}, nil
+}
+func (p resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
+		return nil, nil, nil
+	}
+	provider, err := p.provider()
+	if err != nil {
+		return nil, nil, err
+	}
+	current, changes, err := provider.Capture(ctx, d.Resources)
+	if err != nil {
+		return nil, nil, err
+	}
+	d.Resources = current
+	d.Manifest.Capture.Resources = true
+	return current, changes, nil
+}
+func (p resourcesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, _, err := provider.Detect(ctx, d.Resources)
+	if err != nil {
+		return nil, err
+	}
+	return resourcesprovider.Diff(d.Resources, current), nil
+}
+func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	current, _, err := provider.Detect(ctx, d.Resources)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return provider.Plan(ctx, d.Resources, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+}
+func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	current, _, err := provider.Detect(ctx, d.Resources)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return resourcesprovider.Verify(d.Resources, current), nil
+}
+func (p resourcesStateProvider) Check(ctx context.Context, d profile.Data) error {
+	provider, err := p.provider()
+	if err != nil {
+		return err
+	}
+	return provider.Check(ctx, d.Resources)
+}
+
 func captureRequiredError(id string) error {
 	verb := "captured"
 	switch id {
@@ -89,6 +173,8 @@ func captureRequiredError(id string) error {
 		return errors.New("shell state has not been captured; run capture shell first")
 	case "hooks":
 		return errors.New("hooks state has not been captured; run capture hooks first")
+	case "resources":
+		return errors.New("resources state has not been captured; track a resource or run capture resources first")
 	}
 	return fmt.Errorf("%s state has not been %s", id, verb)
 }
@@ -121,6 +207,8 @@ func providerStateLabel(ids []string) string {
 			labels = append(labels, "Shell")
 		case "hooks":
 			labels = append(labels, "hooks")
+		case "resources":
+			labels = append(labels, "portable resources")
 		default:
 			labels = append(labels, id)
 		}
@@ -154,6 +242,8 @@ func providerCheckLabel(id string) string {
 		return "shell state valid"
 	case "hooks":
 		return "hooks state valid"
+	case "resources":
+		return "portable resource state valid"
 	default:
 		return id + " discovery available"
 	}
