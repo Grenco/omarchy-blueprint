@@ -42,6 +42,12 @@ type Failure struct {
 type Result struct {
 	Completed []model.Operation `json:"completed"`
 	Failed    []Failure         `json:"failed"`
+	Blocked   []Blocked         `json:"blocked,omitempty"`
+}
+
+type Blocked struct {
+	Operation  model.Operation `json:"operation"`
+	Dependency string          `json:"dependency"`
 }
 
 func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time, heartbeat time.Duration, progress ProgressFunc) (Result, error) {
@@ -66,8 +72,8 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		}
 		if blocked != "" {
 			message := "dependency failed: " + blocked
-			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_FAILED", Operation: op.ID, Message: message})
-			execution.Failed = append(execution.Failed, Failure{Operation: op, Error: message})
+			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_BLOCKED", Operation: op.ID, Message: message})
+			execution.Blocked = append(execution.Blocked, Blocked{Operation: op, Dependency: blocked})
 			failed[op.ID] = true
 			continue
 		}
@@ -574,10 +580,18 @@ func notify(progress ProgressFunc, event Progress) {
 }
 
 func summarizeError(err error) string {
-	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
-	message := strings.TrimSpace(lines[len(lines)-1])
-	if len(message) > 300 {
-		message = message[:297] + "..."
+	var lines []string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 4 {
+		lines = lines[len(lines)-4:]
+	}
+	message := strings.Join(lines, "\n")
+	if len(message) > 600 {
+		return message[len(message)-597:] + "..."
 	}
 	return message
 }

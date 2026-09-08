@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -136,7 +137,11 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 		return resourcePlanState{}, nil, "", err
 	}
 	clone := "resources.git.clone." + saved.ID
-	ops = append(ops, model.Operation{ID: clone, Provider: "resources", Action: "git clone", Resource: "resource:" + saved.ID, Command: []string{"git", "clone", "--no-checkout", saved.Remote, path}, DependsOn: nonEmpty(mkdir), Risk: model.RiskLow})
+	command := []string{"git", "clone", "--no-checkout", saved.Remote, path}
+	if repo, ok := githubRepo(saved.Remote); ok {
+		command = []string{"gh", "repo", "clone", strings.TrimPrefix(repo, "github.com/"), path, "--", "--no-checkout"}
+	}
+	ops = append(ops, model.Operation{ID: clone, Provider: "resources", Action: "git clone", Resource: "resource:" + saved.ID, Command: command, DependsOn: nonEmpty(mkdir), Risk: model.RiskLow})
 	checkout := "resources.git.checkout." + saved.ID
 	ops = append(ops, model.Operation{ID: checkout, Provider: "resources", Action: "git checkout", Resource: "resource:" + saved.ID, Command: []string{"git", "-C", path, "checkout", "--detach", saved.Revision}, DependsOn: []string{clone}, Risk: model.RiskLow})
 	return resourcePlanState{Satisfied: true, ReadyOpID: checkout}, ops, "", nil

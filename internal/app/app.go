@@ -770,6 +770,29 @@ func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlan
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "resources" {
+		name := strings.TrimPrefix(event.Operation.Resource, "resource:")
+		verb, past := "Restoring resource", "Restored resource"
+		switch event.Operation.Action {
+		case "git clone":
+			verb, past = "Cloning resource", "Cloned resource"
+		case "git checkout":
+			verb, past = "Checking out", "Checked out"
+		case "symlink":
+			name, verb, past = strings.TrimPrefix(event.Operation.Resource, "link:"), "Creating link", "Created link"
+		}
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "%s %s...\n", verb, name)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ %s %s (%s)\n", past, name, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still %s %s (%s elapsed)...\n", strings.ToLower(verb), name, event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed %s %s after %s\n", strings.ToLower(verb), name, event.Elapsed)
+		}
+		return
+	}
 	if event.Operation.Provider == "hooks" {
 		path := strings.TrimPrefix(event.Operation.Resource, "hook:")
 		switch event.Type {
@@ -895,6 +918,12 @@ func renderRestoreFailures(w io.Writer, execution restore.Result, verification m
 	fmt.Fprintf(w, "\nRestore completed with %d successful and %d failed operation(s).\n", len(execution.Completed), len(execution.Failed))
 	for _, failure := range execution.Failed {
 		fmt.Fprintf(w, "✗ %s: %s\n", failure.Operation.Resource, failure.Error)
+	}
+	if len(execution.Blocked) > 0 {
+		fmt.Fprintf(w, "%d dependent operation(s) skipped.\n", len(execution.Blocked))
+		for _, blocked := range execution.Blocked {
+			fmt.Fprintf(w, "↷ %s (dependency %s failed)\n", blocked.Operation.Resource, blocked.Dependency)
+		}
 	}
 	if len(verification.Missing) > 0 {
 		fmt.Fprintf(w, "Still missing: %s\n", strings.Join(verification.Missing, ", "))

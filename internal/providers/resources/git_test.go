@@ -31,7 +31,7 @@ func TestDetectCleanGitResource(t *testing.T) {
 		"git -C " + root + " symbolic-ref --quiet --short HEAD":        "main\n",
 	}}
 	state, isGit, err := DetectGitResource(context.Background(), runner, root)
-	if err != nil || !isGit || state != (GitState{Remote: "git@github.com:example/dotfiles.git", Branch: "main", Revision: revision}) {
+	if err != nil || !isGit || state != (GitState{Remote: "github.com/example/dotfiles", Branch: "main", Revision: revision}) {
 		t.Fatalf("state=%#v isGit=%t err=%v", state, isGit, err)
 	}
 	if !EqualGitResource(profile.Resource{Strategy: "git", Remote: state.Remote, Revision: state.Revision}, state) {
@@ -62,8 +62,8 @@ func TestDetectGitResourceMarksDirtyAndRejectsNestedWorktree(t *testing.T) {
 }
 
 func TestPortableGitRemote(t *testing.T) {
-	for _, raw := range []string{"https://github.com/example/dotfiles.git", "ssh://git@github.com/example/dotfiles.git", "git@github.com:example/dotfiles.git"} {
-		if got, err := PortableGitRemote(raw); err != nil || got != raw {
+	for _, raw := range []string{"https://github.com/Grenco/dotfiles.git", "ssh://git@github.com/Grenco/dotfiles.git", "git@github.com:Grenco/dotfiles.git"} {
+		if got, err := PortableGitRemote(raw); err != nil || got != "github.com/Grenco/dotfiles" {
 			t.Fatalf("remote=%q got=%q err=%v", raw, got, err)
 		}
 	}

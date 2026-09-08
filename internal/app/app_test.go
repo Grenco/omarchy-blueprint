@@ -1567,6 +1567,18 @@ func TestTrackTrackedAndUntrackResources(t *testing.T) {
 	}
 }
 
+func TestRenderResourceProgressUsesResourceLabels(t *testing.T) {
+	var out bytes.Buffer
+	for _, op := range []model.Operation{{Provider: "resources", Action: "git clone", Resource: "resource:dotfiles"}, {Provider: "resources", Action: "git checkout", Resource: "resource:dotfiles"}, {Provider: "resources", Action: "copy", Resource: "resource:scripts"}, {Provider: "resources", Action: "symlink", Resource: "link:~/.config/nvim"}} {
+		renderProgress(&out, restore.Progress{Type: restore.ProgressStarted, Operation: op})
+		renderProgress(&out, restore.Progress{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: time.Second})
+	}
+	got := out.String()
+	if strings.Contains(got, "package") || strings.Contains(got, "installing 0") || !strings.Contains(got, "Cloning resource dotfiles") || !strings.Contains(got, "Checking out dotfiles") || !strings.Contains(got, "Restoring resource scripts") || !strings.Contains(got, "Creating link ~/.config/nvim") {
+		t.Fatalf("progress=%q", got)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)

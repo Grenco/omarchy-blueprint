@@ -65,11 +65,19 @@ func TestExecuteBlocksDependentOperationsButContinuesIndependentOnes(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Failed) != 2 || len(result.Completed) != 1 {
+	if len(result.Failed) != 1 || len(result.Blocked) != 1 || len(result.Completed) != 1 || result.Blocked[0].Dependency != "validate" {
 		t.Fatalf("result=%#v", result)
 	}
 	if !reflect.DeepEqual(runner.calls, []string{"validate", "other"}) {
 		t.Fatalf("calls=%#v", runner.calls)
+	}
+}
+
+func TestSummarizeErrorRetainsUsefulCommandContext(t *testing.T) {
+	err := fmt.Errorf("git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.")
+	got := summarizeError(err)
+	if !strings.Contains(got, "Permission denied (publickey)") || !strings.Contains(got, "Could not read from remote repository") {
+		t.Fatalf("summary=%q", got)
 	}
 }
 
@@ -471,7 +479,7 @@ func TestExecuteFileWriteFailureBlocksDependentsButNotIndependentOperations(t *t
 		{ID: "independent", Command: []string{"other"}},
 	}}
 	result, err := Execute(context.Background(), runner, plan, journal, time.Now, time.Second, nil)
-	if err != nil || len(result.Failed) != 2 || len(result.Completed) != 1 {
+	if err != nil || len(result.Failed) != 1 || len(result.Blocked) != 1 || len(result.Completed) != 1 {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	if !reflect.DeepEqual(runner.calls, []string{"other"}) {

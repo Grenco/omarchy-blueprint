@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -76,7 +77,7 @@ func TestPlanMissingCopyDirectoryAndGitDependencies(t *testing.T) {
 	if copy.Copy == nil || copy.Copy.Source != filepath.Join(profileDir, "resources", "files", "scripts") || copy.Copy.SourceHash != "hash" {
 		t.Fatalf("copy=%#v", copy)
 	}
-	if mkdir.Directory == nil || clone.Command[0] != "git" || len(clone.DependsOn) != 1 || clone.DependsOn[0] != mkdir.ID || len(checkout.DependsOn) != 1 || checkout.DependsOn[0] != clone.ID {
+	if mkdir.Directory == nil || clone.Command[0] != "gh" || !reflect.DeepEqual(clone.Command, []string{"gh", "repo", "clone", "example/dotfiles", filepath.Join(home, "Projects", "dotfiles"), "--", "--no-checkout"}) || len(clone.DependsOn) != 1 || clone.DependsOn[0] != mkdir.ID || len(checkout.DependsOn) != 1 || checkout.DependsOn[0] != clone.ID {
 		t.Fatalf("git operations=%#v %#v %#v", mkdir, clone, checkout)
 	}
 }
