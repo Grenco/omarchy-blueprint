@@ -25,3 +25,15 @@ func TestDiffAndVerifyResourcesAndLinks(t *testing.T) {
 		t.Fatal("extra inbound link failed verification")
 	}
 }
+
+func TestDiffAndVerifyDetachedGitResourceAreClean(t *testing.T) {
+	saved := profile.Resources{Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git", Remote: "github.com/Grenco/dotfiles", Branch: "main", Revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
+	current := saved
+	current.Items[0].Branch = ""
+	if changes := Diff(saved, current); len(changes) != 0 {
+		t.Fatalf("changes=%#v", changes)
+	}
+	if result := Verify(saved, current); !result.OK {
+		t.Fatalf("result=%#v", result)
+	}
+}

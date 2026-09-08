@@ -26,7 +26,7 @@ func Diff(saved, current profile.Resources) []model.Change {
 		delete(savedItems, id)
 		if item.Dirty {
 			changes = append(changes, resourceChange(model.ChangeModify, "resource", id, "~ resource "+id+" has uncommitted Git changes; local changes are not captured"))
-		} else if desired != item {
+		} else if !resourceSatisfied(desired, item) {
 			changes = append(changes, resourceChange(model.ChangeModify, "resource", id, "~ resource "+id+" differs"))
 		}
 	}
@@ -61,7 +61,7 @@ func Verify(saved, current profile.Resources) model.VerificationResult {
 	missing := []string{}
 	items := resourceMap(current.Items)
 	for _, item := range saved.Items {
-		if current, ok := items[item.ID]; !ok || current != item || current.Dirty {
+		if current, ok := items[item.ID]; !ok || !resourceSatisfied(item, current) {
 			missing = append(missing, "resource:"+item.ID)
 		}
 	}
@@ -181,6 +181,20 @@ func resourceMap(items []profile.Resource) map[string]profile.Resource {
 		result[item.ID] = item
 	}
 	return result
+}
+
+func resourceSatisfied(saved, current profile.Resource) bool {
+	if saved.ID != current.ID || saved.Path != current.Path || saved.Kind != current.Kind || saved.Strategy != current.Strategy {
+		return false
+	}
+	switch saved.Strategy {
+	case "git":
+		return !current.Dirty && saved.Remote == current.Remote && saved.Revision == current.Revision
+	case "copy":
+		return saved.Hash == current.Hash && saved.Mode == current.Mode
+	default:
+		return false
+	}
 }
 func linkKey(link profile.ResourceLink) string {
 	if link.SourceResource != "" {

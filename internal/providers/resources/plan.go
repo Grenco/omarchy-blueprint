@@ -102,7 +102,7 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 	if err != nil {
 		return resourcePlanState{}, nil, "", err
 	}
-	if current.ID == saved.ID && current == saved {
+	if resourceSatisfied(saved, current) {
 		return resourcePlanState{Satisfied: true}, nil, "", nil
 	}
 	missing := current.ID == "" || (saved.Strategy == "copy" && current.Hash == "") || (saved.Strategy == "git" && current.Revision == "")
