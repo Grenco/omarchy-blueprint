@@ -106,6 +106,7 @@ Package profiles are human-readable:
 profile.toml
 packages/official.txt
 packages/aur.txt
+packages/mise.toml
 packages/machine-specific.txt
 packages/excluded.txt
 themes/themes.toml
@@ -126,6 +127,13 @@ hooks/files/<event>.d/<hook>
 
 Machine-specific entries retain provenance, for example
 `official:nvidia-open` or `aur:nvidia-580xx-dkms`.
+
+Mise global `[tools]` declarations are captured as a third Packages source.
+Blueprint preserves configured requests and options rather than resolved cache
+versions, and leaves global Mise environment, settings, tasks, and project-local
+configuration outside the profile. Restore appends only missing declarations,
+preserves target-only tools and conflicting target declarations, then runs
+`mise -C / install` for safely added tools.
 
 ## Package exclusions
 
