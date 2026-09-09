@@ -262,6 +262,40 @@ func TestFileWriteGeneratedContentRejectsInvalidSourcesAndHash(t *testing.T) {
 	}
 }
 
+func TestReplacementInstallDoesNotOverwriteConcurrentNewWork(t *testing.T) {
+	dir := t.TempDir()
+	source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+	if err := os.WriteFile(source, []byte("desired"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	originalInstaller := fileWriteNoReplace
+	fileWriteNoReplace = func(old, new string) error {
+		if err := os.WriteFile(new, []byte("concurrent"), 0o600); err != nil {
+			return err
+		}
+		return renameNoReplace(old, new)
+	}
+	defer func() { fileWriteNoReplace = originalInstaller }()
+	err := executeModeFileWrite(t, model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true})
+	if err == nil {
+		t.Fatal("replacement unexpectedly succeeded")
+	}
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "concurrent" {
+		t.Fatalf("destination=%q err=%v", got, err)
+	}
+	backups, err := filepath.Glob(filepath.Join(dir, ".destination.omarchy-blueprint-backup-*"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups=%v err=%v", backups, err)
+	}
+	if got, err := os.ReadFile(backups[0]); err != nil || string(got) != "original" {
+		t.Fatalf("backup=%q err=%v", got, err)
+	}
+}
+
 func TestFileWriteGeneratedContentIsOmittedFromJSON(t *testing.T) {
 	action := model.FileWrite{Generated: true, Content: []byte("secret shell settings"), Destination: "/tmp/shell.json", SourceHash: "hash", ExpectedMissing: true}
 	encoded, err := json.Marshal(action)

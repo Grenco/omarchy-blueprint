@@ -364,7 +364,11 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 			return err
 		}
 	}
-	if err := os.Rename(tempPath, action.Destination); err != nil {
+	if action.ExpectedMissing {
+		if err := fileWriteNoReplace(tempPath, action.Destination); err != nil {
+			return err
+		}
+	} else if err := os.Rename(tempPath, action.Destination); err != nil {
 		return err
 	}
 	directory, err := os.Open(parent)
@@ -375,6 +379,9 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	return directory.Sync()
 }
 
+// fileWriteNoReplace is a test seam for the final expected-missing install.
+var fileWriteNoReplace = renameNoReplace
+
 func replaceFileWriteWithJournal(operation string, action model.FileWrite, journal *Journal, now func() time.Time) error {
 	if action.RejectSymlinkParents {
 		if err := validateSymlinkParents(action.Destination); err != nil {
@@ -383,6 +390,17 @@ func replaceFileWriteWithJournal(operation string, action model.FileWrite, journ
 	}
 	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
 		return err
+	}
+	if journal != nil && action.ExpectedExisting.Type == "file" {
+		// Preserve the journal backup contract as well as the sibling backup
+		// used for an atomic rollback-safe replacement below.
+		backupCopy, err := journal.CreateBackup(operation, action.Destination)
+		if err != nil {
+			return fmt.Errorf("create file backup: %w", err)
+		}
+		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backupCopy}); err != nil {
+			return err
+		}
 	}
 	backup, err := reserveSiblingBackupPath(action.Destination)
 	if err != nil {
@@ -405,7 +423,7 @@ func replaceFileWriteWithJournal(operation string, action model.FileWrite, journ
 		}
 		return cause
 	}
-	if journal != nil {
+	if journal != nil && action.ExpectedExisting.Type != "file" {
 		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
 			return rollback(err)
 		}

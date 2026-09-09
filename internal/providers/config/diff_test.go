@@ -145,18 +145,19 @@ func TestPlanOverlaySkipsConflictingNonmergeableAndDisappearedBaselines(t *testi
 	desiredHash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
 	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
 	saved := profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: desiredHash, BaselineHash: baseHash}}}
-	plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: "new", BaselineHash: "new"}}}, 8, "old", "new")
-	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; merge required" {
+	currentHash := hashOf(t, filepath.Join(base, path))
+	plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, BaselineHash: currentHash}}}, 8, "old", "new")
+	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; merge conflict requires review" {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 	writeFile(t, filepath.Join(profileDir, "config", "files", path), "\x00")
 	saved.Files[0].Hash = hashOf(t, filepath.Join(profileDir, "config", "files", path))
-	plan, err = p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: "new", BaselineHash: "new"}}}, 8, "old", "new")
-	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; merge required" {
+	plan, err = p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, BaselineHash: currentHash}}}, 8, "old", "new")
+	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; configuration is not mergeable" {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 	plan, err = p.PlanOverlay(saved, ScanSummary{}, 8, "old", "new")
-	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline disappeared; migration required" {
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || plan.Operations[0].File.SourceHash != baseHash {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 }
