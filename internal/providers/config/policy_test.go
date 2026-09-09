@@ -7,8 +7,8 @@ import (
 )
 
 func TestConfigBackupAndExclusionPolicy(t *testing.T) {
-	for name, want := range map[string]bool{"bindings.lua.bak.20260909": true, "x.bak.y": true, ".bak.y": false, "x.bak.": false, ".zshrc.backup-now": true, ".backup-now": false} {
-		if got := IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name); got != want {
+	for name, want := range map[string]bool{"bindings.lua.bak.20260909": true, "x.bak.y": true, ".bak.y": false, "x.bak.": false, ".zshrc.backup-now": true, ".backup-now": false, ".config.omarchy-blueprint-backup-1": true, ".anything.with.dots.omarchy-blueprint-backup-42": true, ".omarchy-blueprint-backup-1": false, ".config.omarchy-blueprint-backup-x": false} {
+		if got := IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name) || IsBlueprintBackupName(name); got != want {
 			t.Fatalf("%s=%v", name, got)
 		}
 	}

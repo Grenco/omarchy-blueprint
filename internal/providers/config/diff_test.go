@@ -138,6 +138,32 @@ func TestPlanOverlayWritesUnchangedBaselineAndMergesNewBaseline(t *testing.T) {
 	}
 }
 
+func TestPlanOverlayMergesUpstreamBaselineModeTransition(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base\n")
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "user\n")
+	writeFile(t, filepath.Join(base, path), "base\n")
+	if err := os.Chmod(filepath.Join(base, path), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, path), "base\n")
+	if err := os.Chmod(filepath.Join(root, path), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	b := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	updated, err := p.Scan(profile.Configs{})
+	if err != nil || len(updated.Candidates) != 1 || updated.Candidates[0].Classification != ConfigUnchangedBaseline {
+		t.Fatalf("scan=%#v err=%v", updated, err)
+	}
+	plan, err := p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: b, Mode: "0644", BaselineHash: a, BaselineMode: "0644"}}}, updated, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || !plan.Operations[0].File.Generated || string(plan.Operations[0].File.Content) != "user\n" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
 func TestPlanOverlaySkipsConflictingNonmergeableAndDisappearedBaselines(t *testing.T) {
 	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
 	path := "app/config"
@@ -149,13 +175,13 @@ func TestPlanOverlaySkipsConflictingNonmergeableAndDisappearedBaselines(t *testi
 	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
 	saved := profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: desiredHash, BaselineHash: baseHash}}}
 	currentHash := hashOf(t, filepath.Join(base, path))
-	plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, BaselineHash: currentHash}}}, 8, "old", "new")
+	plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, UserMode: "0644", BaselineHash: currentHash, BaselineMode: "0644"}}}, 8, "old", "new")
 	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; merge conflict requires review" {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 	writeFile(t, filepath.Join(profileDir, "config", "files", path), "\x00")
 	saved.Files[0].Hash = hashOf(t, filepath.Join(profileDir, "config", "files", path))
-	plan, err = p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, BaselineHash: currentHash}}}, 8, "old", "new")
+	plan, err = p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, UserMode: "0644", BaselineHash: currentHash, BaselineMode: "0644"}}}, 8, "old", "new")
 	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; configuration is not mergeable" {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
@@ -165,7 +191,7 @@ func TestPlanOverlaySkipsConflictingNonmergeableAndDisappearedBaselines(t *testi
 	}
 }
 
-func TestDesiredCandidateSafelyHandlesMissingA_CAndM(t *testing.T) {
+func TestDesiredCandidateUsesCleanMergeBeforeClassifyingTarget(t *testing.T) {
 	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
 	path := "app/config"
 	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base\nold\n")
@@ -187,8 +213,9 @@ func TestDesiredCandidateSafelyHandlesMissingA_CAndM(t *testing.T) {
 		exists    bool
 		want      desiredState
 	}{
-		{"missing", Candidate{}, false, desiredMissing},
-		{"A", Candidate{UserHash: a, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredDirect},
+		{"missing", Candidate{BaselineHash: c, BaselineMode: "0644"}, true, desiredMissing},
+		{"A", Candidate{UserHash: a, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredMerge},
+		{"B", Candidate{UserHash: b, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredMerge},
 		{"C", Candidate{UserHash: c, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredMerge},
 		{"M", Candidate{UserHash: m, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredSatisfied},
 		{"unknown", Candidate{UserHash: "unknown", UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredUnknown},
@@ -199,6 +226,63 @@ func TestDesiredCandidateSafelyHandlesMissingA_CAndM(t *testing.T) {
 				t.Fatalf("got=%#v err=%v", got, err)
 			}
 		})
+	}
+}
+
+func TestPlanOverlaySkipsAllConflictedTargetsUnlessForced(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "value=old\n")
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "value=user\n")
+	writeFile(t, filepath.Join(base, path), "value=upstream\n")
+	a := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	b := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	c := hashOf(t, filepath.Join(base, path))
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	saved := profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: b, Mode: "0644", BaselineHash: a, BaselineMode: "0644"}}}
+	for _, test := range []struct {
+		name string
+		hash string
+	}{
+		{"missing", ""}, {"A", a}, {"B", b}, {"C", c}, {"unknown", "unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := Candidate{Path: path, BaselineHash: c, BaselineMode: "0644"}
+			if test.hash != "" {
+				candidate.UserHash, candidate.UserMode = test.hash, "0644"
+			}
+			plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{candidate}}, 8, "old", "new")
+			if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 {
+				t.Fatalf("plan=%#v err=%v", plan, err)
+			}
+		})
+	}
+	writeFile(t, filepath.Join(root, path), "value=user\n")
+	plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, UserHash: b, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}}}, 8, "old", "new", PlanOptions{Force: true})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || plan.Operations[0].File.SourceHash != b {
+		t.Fatalf("forced plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestBaselineIdentityRequiresModeExceptForLegacyProfiles(t *testing.T) {
+	if baselineIdentity("hash", "0600", "hash", "0644") {
+		t.Fatal("schema-8 baseline mode drift accepted")
+	}
+	if !baselineIdentity("hash", "0600", "hash", "") {
+		t.Fatal("legacy hash-only baseline identity rejected")
+	}
+}
+
+func TestTombstoneRequiresMatchingCurrentBaselineIdentity(t *testing.T) {
+	deletion := profile.ConfigDelete{Path: "app/default", BaselineHash: "base", BaselineMode: "0644"}
+	modeChanged := Candidate{Path: deletion.Path, UserHash: "base", UserMode: "0600", BaselineHash: "base", BaselineMode: "0600"}
+	if got := resolveDesiredDelete(deletion, modeChanged, true); got != desiredUnknown {
+		t.Fatalf("mode transition delete=%v, want unknown", got)
+	}
+	legacy := deletion
+	legacy.BaselineMode = ""
+	if got := resolveDesiredDelete(legacy, modeChanged, true); got != desiredDirect {
+		t.Fatalf("legacy delete=%v, want direct", got)
 	}
 }
 

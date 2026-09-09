@@ -209,14 +209,21 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 		return desiredCandidate{}, fmt.Errorf("read captured config %s: %w", a.Path, err)
 	}
 	direct := desiredCandidate{state: desiredDirect, hash: a.Hash, mode: a.Mode}
-	if !exists || t.UserHash == "" {
+	if !exists {
 		direct.state = desiredMissing
 		return direct, nil
 	}
-	if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
-		return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+	if t.UserHash == "" {
+		if a.BaselineHash != "" {
+			return p.resolveChangedBaseline(a, b, t, direct)
+		}
+		direct.state = desiredMissing
+		return direct, nil
 	}
 	if a.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+			return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+		}
 		return desiredCandidate{state: desiredUnknown}, nil
 	}
 	// The current baseline disappeared. A is still a known safe target, but any
@@ -227,14 +234,27 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 		}
 		return desiredCandidate{state: desiredUnknown}, nil
 	}
-	if t.BaselineHash == a.BaselineHash {
+	if baselineIdentity(t.BaselineHash, t.BaselineMode, a.BaselineHash, a.BaselineMode) {
+		if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+			return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+		}
 		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
 			return direct, nil
 		}
 		return desiredCandidate{state: desiredUnknown}, nil
 	}
-	// A changed C can safely receive M only when T is C. Calculate M even when
-	// T may already be M so verification and diff recognize an executed merge.
+	return p.resolveChangedBaseline(a, b, t, direct)
+}
+
+// resolveChangedBaseline calculates M before classifying T. A clean merge is
+// the desired result after an upstream baseline change, including for T=A/B.
+func (p Provider) resolveChangedBaseline(a profile.ConfigFile, b []byte, t Candidate, direct desiredCandidate) (desiredCandidate, error) {
+	if t.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+			return direct, nil
+		}
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
 	base, err := readExpectedRegularFile(p.overlaySnapshotPath("baseline", a.Path), a.BaselineHash)
 	if err != nil {
 		return desiredCandidate{}, fmt.Errorf("read captured baseline %s: %w", a.Path, err)
@@ -252,6 +272,10 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 		return desiredCandidate{state: desiredUnknown, conflict: true, mergeErr: err != nil}, nil
 	}
 	m := desiredCandidate{state: desiredMerge, hash: hashContent(merged.Content), mode: a.Mode, content: merged.Content}
+	if t.UserHash == "" {
+		m.state = desiredMissing
+		return m, nil
+	}
 	if matchesEffective(t.UserHash, t.UserMode, m.hash, m.mode) {
 		m.state = desiredSatisfied
 		return m, nil
@@ -259,8 +283,11 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 	if matchesEffective(t.UserHash, t.UserMode, t.BaselineHash, t.BaselineMode) {
 		return m, nil
 	}
+	if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+		return m, nil
+	}
 	if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
-		return direct, nil
+		return m, nil
 	}
 	return desiredCandidate{state: desiredUnknown}, nil
 }
@@ -268,11 +295,20 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 func matchesEffective(hash, mode, wantHash, wantMode string) bool {
 	return hash == wantHash && (wantMode == "" || mode == wantMode)
 }
+
+// baselineIdentity compares schema-8 baseline identities. Schema-7 records
+// have no mode, so their hash remains the compatible identity fallback.
+func baselineIdentity(hash, mode, wantHash, wantMode string) bool {
+	return hash == wantHash && (wantMode == "" || mode == wantMode)
+}
 func resolveDesiredDelete(a profile.ConfigDelete, m Candidate, exists bool) desiredState {
 	if !exists || m.Classification == ConfigDeletedBaseline {
 		return desiredSatisfied
 	}
-	if m.UserHash == a.BaselineHash || (m.BaselineHash != "" && m.UserHash == m.BaselineHash) {
+	if !baselineIdentity(m.BaselineHash, m.BaselineMode, a.BaselineHash, a.BaselineMode) {
+		return desiredUnknown
+	}
+	if matchesEffective(m.UserHash, m.UserMode, m.BaselineHash, m.BaselineMode) {
 		return desiredDirect
 	}
 	return desiredUnknown

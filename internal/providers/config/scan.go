@@ -109,8 +109,11 @@ func (p Provider) walkRoot(root, prefix string, user bool, excluded []string, en
 			return err
 		}
 		logical := filepath.ToSlash(rel)
-		if strings.HasPrefix(filepath.Base(logical), ".config.omarchy-blueprint-backup-") {
+		if IsBlueprintBackupName(filepath.Base(logical)) {
 			// Restore keeps replacement backups as siblings for rollback and journaling.
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if prefix != "" {
@@ -207,7 +210,7 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 		}
 	}
 	switch {
-	case uok && bok && c.UserHash == c.BaselineHash:
+	case uok && bok && baselineIdentity(c.UserHash, c.UserMode, c.BaselineHash, c.BaselineMode):
 		c.Classification = ConfigUnchangedBaseline
 	case uok && bok:
 		c.Classification = ConfigModifiedBaseline
