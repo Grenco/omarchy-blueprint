@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -56,8 +57,8 @@ func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
 			return ScanSummary{}, err
 		}
 	}
-	home := p.homeDir()
-	if filepath.Base(filepath.Clean(p.UserRoot)) == ".config" {
+	home := p.HomeDir
+	if p.hasHomeNamespace() {
 		for _, spec := range DefaultHomeConfigSpecs() {
 			logical := spec.Path
 			if err := p.addExact(entries, true, filepath.Join(home, filepath.FromSlash(logical)), logical); err != nil {
@@ -108,6 +109,9 @@ func (p Provider) walkRoot(root string, user bool, excluded []string, entries ma
 			return err
 		}
 		logical := filepath.ToSlash(rel)
+		if p.hasHomeNamespace() && filepath.Base(filepath.Clean(root)) == ".config" {
+			logical = ".config/" + logical
+		}
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
@@ -173,6 +177,11 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 		c.UserMode = fmt.Sprintf("%04o", user.info.Mode().Perm())
 	}
 	if bok {
+		if d := ClassifyConfigPolicy(path, base.info, excluded); d.Reason != PolicyAllowed {
+			c.Classification = policyClassification(d.Reason)
+			c.Reason = string(d.Reason)
+			return c, nil
+		}
 		if base.info.Mode()&os.ModeSymlink != 0 || !base.info.Mode().IsRegular() {
 			bok = false
 		} else {
@@ -211,22 +220,32 @@ func policyClassification(reason PolicyReason) Classification {
 	}
 }
 func (p Provider) homeDir() string {
-	if filepath.Base(filepath.Clean(p.UserRoot)) == ".config" {
-		return filepath.Dir(p.UserRoot)
-	}
-	return p.UserRoot
+	return p.HomeDir
+}
+func (p Provider) hasHomeNamespace() bool {
+	return p.HomeDir != "" && filepath.Clean(filepath.Join(p.HomeDir, ".config")) == filepath.Clean(p.UserRoot)
 }
 func (p Provider) absoluteUserPath(logical string) (string, error) {
 	if logical == "" {
 		return "", fmt.Errorf("empty config path")
 	}
-	if filepath.Base(filepath.Clean(p.UserRoot)) == ".config" {
+	logical, err := profile.NormalizeConfigPath(logical)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(logical, ".config/") {
+		return filepath.Join(p.UserRoot, filepath.FromSlash(strings.TrimPrefix(logical, ".config/"))), nil
+	}
+	if !p.hasHomeNamespace() {
 		return filepath.Join(p.UserRoot, filepath.FromSlash(logical)), nil
 	}
-	return filepath.Join(p.UserRoot, filepath.FromSlash(logical)), nil
+	return ExpandHomeConfigPath(p.HomeDir, logical)
 }
 func (p Provider) absoluteBaselinePath(logical string) (string, error) {
-	if filepath.Base(filepath.Clean(p.UserRoot)) == ".config" && logical[0] == '.' {
+	if strings.HasPrefix(logical, ".config/") {
+		return filepath.Join(p.BaselineRoot, filepath.FromSlash(strings.TrimPrefix(logical, ".config/"))), nil
+	}
+	if strings.HasPrefix(logical, ".") {
 		path, ok, err := p.ResolveBaselineFor(logical)
 		if err != nil || !ok {
 			return "", fmt.Errorf("baseline unavailable for %s", logical)

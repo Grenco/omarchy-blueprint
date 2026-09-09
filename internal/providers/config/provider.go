@@ -39,6 +39,7 @@ var DefaultSpecs = []Spec{
 
 // Provider captures customized Hyprland configuration files.
 type Provider struct {
+	HomeDir      string
 	UserRoot     string
 	BaselineRoot string
 	ProfileDir   string

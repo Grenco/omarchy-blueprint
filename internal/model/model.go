@@ -34,6 +34,7 @@ type Operation struct {
 	Command    []string         `json:"command"`
 	Copy       *Copy            `json:"copy,omitempty"`
 	File       *FileWrite       `json:"file,omitempty"`
+	Delete     *FileDelete      `json:"delete,omitempty"`
 	Directory  *DirectoryCreate `json:"directory,omitempty"`
 	Symlink    *SymlinkWrite    `json:"symlink,omitempty"`
 	DependsOn  []string         `json:"depends_on,omitempty"`
@@ -82,6 +83,15 @@ type FileWrite struct {
 	Backup               bool    `json:"backup"`
 	Mode                 *uint32 `json:"mode,omitempty"`
 	ExpectedMode         *uint32 `json:"expected_mode,omitempty"`
+	RejectSymlinkParents bool    `json:"reject_symlink_parents,omitempty"`
+}
+
+// FileDelete removes a proven regular file after preserving a sibling backup.
+type FileDelete struct {
+	Destination          string  `json:"destination"`
+	ExpectedHash         string  `json:"expected_hash"`
+	ExpectedMode         *uint32 `json:"expected_mode,omitempty"`
+	Backup               bool    `json:"backup"`
 	RejectSymlinkParents bool    `json:"reject_symlink_parents,omitempty"`
 }
 

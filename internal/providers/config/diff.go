@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -41,6 +43,99 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
 	return changes
+}
+
+// PlanOverlay restores sparse HOME-relative snapshots only where the target is
+// absent or still matches the captured Omarchy baseline. Tombstones use the
+// same proof before removing a baseline file.
+func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema int, from, to string) (model.RestorePlan, error) {
+	if err := p.Check(saved); err != nil {
+		return model.RestorePlan{}, err
+	}
+	byPath := map[string]Candidate{}
+	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
+	}
+	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
+	var reloadDependencies []string
+	for _, file := range saved.Files {
+		candidate, ok := byPath[file.Path]
+		if !ok || candidate.Classification == ConfigUnsupported {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "target config path unavailable"})
+			continue
+		}
+		if candidate.UserHash == file.Hash {
+			continue
+		}
+		if candidate.UserHash != "" && (file.BaselineHash == "" || candidate.UserHash != file.BaselineHash) {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "existing user configuration differs; overwrite disabled"})
+			continue
+		}
+		if file.BaselineHash != "" && candidate.BaselineHash != file.BaselineHash {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "Omarchy baseline changed; migration required"})
+			continue
+		}
+		destination, err := p.absoluteUserPath(file.Path)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		source := p.overlaySnapshotPath("files", file.Path)
+		write := model.FileWrite{Source: source, Destination: destination, SourceHash: file.Hash, Backup: candidate.UserHash != "", RejectSymlinkParents: true}
+		if candidate.UserHash == "" {
+			write.ExpectedMissing = true
+		} else {
+			write.ExpectedHash = candidate.UserHash
+		}
+		id := "config.write." + configOperationID(file.Path)
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: model.RiskMedium, Reversible: true})
+		if isHyprConfigPath(file.Path) {
+			reloadDependencies = append(reloadDependencies, id)
+		}
+	}
+	for _, deleted := range saved.Deletes {
+		candidate, ok := byPath[deleted.Path]
+		if !ok || candidate.UserHash == "" {
+			continue
+		}
+		if candidate.Classification != ConfigUnchangedBaseline || candidate.BaselineHash != deleted.BaselineHash {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + deleted.Path, Reason: "existing user configuration differs; deletion disabled"})
+			continue
+		}
+		destination, err := p.absoluteUserPath(deleted.Path)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		mode := uint32(0)
+		if candidate.UserMode != "" {
+			fmt.Sscanf(candidate.UserMode, "%o", &mode)
+		}
+		id := "config.delete." + configOperationID(deleted.Path)
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "delete", Resource: "config:" + deleted.Path, Delete: &model.FileDelete{Destination: destination, ExpectedHash: candidate.UserHash, ExpectedMode: &mode, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true})
+		if isHyprConfigPath(deleted.Path) {
+			reloadDependencies = append(reloadDependencies, id)
+		}
+	}
+	if len(reloadDependencies) > 0 {
+		plan.Operations = append(plan.Operations, model.Operation{ID: "config.reload", Provider: "config", Action: "reload", Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"}, DependsOn: reloadDependencies, Risk: model.RiskLow})
+	}
+	return plan, nil
+}
+
+func isHyprConfigPath(path string) bool {
+	return strings.HasPrefix(path, ".config/hypr/") || strings.HasPrefix(path, "hypr/")
+}
+
+func (p Provider) overlaySnapshotPath(tree, logical string) string {
+	path := filepath.Join(p.ProfileDir, "config", tree, filepath.FromSlash(logical))
+	if _, err := os.Lstat(path); err == nil {
+		return path
+	}
+	// Schema-7 snapshots were stored relative to ~/.config.
+	return filepath.Join(p.ProfileDir, "config", tree, filepath.FromSlash(strings.TrimPrefix(logical, ".config/")))
+}
+
+func configOperationID(path string) string {
+	return strings.NewReplacer("/", ".", " ", "_").Replace(strings.TrimPrefix(path, ".config/"))
 }
 
 func Diff(saved profile.Configs, current any) []model.Change {
@@ -116,6 +211,14 @@ func (p Provider) Check(saved profile.Configs) error {
 		return err
 	}
 	for _, f := range saved.Files {
+		if err := p.checkPolicy("files", f.Path, saved.Excluded); err != nil {
+			return err
+		}
+		if f.BaselineHash != "" {
+			if err := p.checkPolicy("baseline", f.Path, saved.Excluded); err != nil {
+				return err
+			}
+		}
 		if err := p.checkOwnership(f.Path); err != nil {
 			return err
 		}
@@ -129,6 +232,9 @@ func (p Provider) Check(saved profile.Configs) error {
 		}
 	}
 	for _, d := range saved.Deletes {
+		if err := p.checkPolicy("baseline", d.Path, saved.Excluded); err != nil {
+			return err
+		}
 		if err := p.checkOwnership(d.Path); err != nil {
 			return err
 		}
@@ -137,6 +243,32 @@ func (p Provider) Check(saved profile.Configs) error {
 		}
 	}
 	return nil
+}
+
+func (p Provider) checkPolicy(tree, logical string, excluded []string) error {
+	if p.hasHomeNamespace() && !isAllowedConfigPath(logical) {
+		return fmt.Errorf("config path is outside managed surfaces: %s", logical)
+	}
+	info, err := os.Lstat(p.overlaySnapshotPath(tree, logical))
+	if err != nil {
+		return fmt.Errorf("config %s snapshot: %w", logical, err)
+	}
+	if decision := ClassifyConfigPolicy(logical, info, excluded); decision.Reason != PolicyAllowed {
+		return fmt.Errorf("config path %s is %s by policy", logical, decision.Reason)
+	}
+	return nil
+}
+
+func isAllowedConfigPath(path string) bool {
+	if strings.HasPrefix(path, ".config/") {
+		return true
+	}
+	for _, spec := range DefaultHomeConfigSpecs() {
+		if path == spec.Path {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Provider) checkOwnership(logical string) error {
@@ -153,7 +285,7 @@ func (p Provider) checkOwnership(logical string) error {
 }
 
 func (p Provider) checkOverlaySnapshot(tree, logical, hash string) error {
-	path := filepath.Join(p.ProfileDir, "config", tree, filepath.FromSlash(logical))
+	path := p.overlaySnapshotPath(tree, logical)
 	got, err := content.HashRegularFile(path)
 	if err != nil {
 		return fmt.Errorf("config %s snapshot: %w", logical, err)

@@ -26,6 +26,14 @@ func TestConfigPolicyVolatileAndSize(t *testing.T) {
 	}
 }
 
+func TestConfigPolicyDeniesKnownSensitivePaths(t *testing.T) {
+	for _, path := range []string{".config/gh/hosts.yml", ".config/gcloud/configurations/config_default", ".config/rclone/rclone.conf", ".config/sops/age/keys.txt", ".config/containers/auth.json"} {
+		if got := ClassifyConfigPolicy(path, fakeInfo{}, nil).Reason; got != PolicySensitive {
+			t.Fatalf("%s policy=%s", path, got)
+		}
+	}
+}
+
 type fakeInfo struct{ size int64 }
 
 func (f fakeInfo) Name() string       { return "x" }

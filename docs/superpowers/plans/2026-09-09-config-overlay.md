@@ -2245,7 +2245,7 @@ Machine-readable capture data should include:
     },
     "candidates": [
       {
-        "path": "hypr/bindings.lua.bak.20260909",
+        "path": ".config/hypr/bindings.lua.bak.20260909",
         "classification": "volatile",
         "reason": "omarchy-update-backup"
       }

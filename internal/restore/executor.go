@@ -137,7 +137,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			return execution, err
 		}
 		completed := op
-		if (completed.File != nil && completed.File.Backup) || (completed.Symlink != nil && completed.Symlink.Backup) {
+		if (completed.File != nil && completed.File.Backup) || (completed.Delete != nil && completed.Delete.Backup) || (completed.Symlink != nil && completed.Symlink.Backup) {
 			completed.Reversible = true
 		}
 		execution.Completed = append(execution.Completed, completed)
@@ -160,6 +160,9 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.File != nil {
 		actions++
 	}
+	if op.Delete != nil {
+		actions++
+	}
 	if op.Directory != nil {
 		actions++
 	}
@@ -167,13 +170,16 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 		actions++
 	}
 	if actions != 1 {
-		return fmt.Errorf("operation %s must contain exactly one command, copy, file, directory, or symlink action", op.ID)
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, or symlink action", op.ID)
 	}
 	if op.Copy != nil {
 		return copyTreeExclusive(*op.Copy)
 	}
 	if op.File != nil {
 		return writeFileAtomic(op.ID, *op.File, journal, now)
+	}
+	if op.Delete != nil {
+		return deleteFileWithJournal(op.ID, *op.Delete, journal, now)
 	}
 	if op.Directory != nil {
 		return executeDirectoryCreate(*op.Directory)
@@ -183,6 +189,48 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	}
 	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
 	return err
+}
+
+func deleteFileWithJournal(operation string, action model.FileDelete, journal *Journal, now func() time.Time) error {
+	if action.ExpectedHash == "" {
+		return fmt.Errorf("file delete expected hash is required: %s", operation)
+	}
+	if action.ExpectedMode != nil && *action.ExpectedMode > 0o777 {
+		return fmt.Errorf("file delete expected mode is invalid: %04o", *action.ExpectedMode)
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(action.Destination)
+	if err != nil {
+		return fmt.Errorf("file delete destination: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("file delete destination is not a regular file: %s", action.Destination)
+	}
+	hash, err := content.HashRegularFile(action.Destination)
+	if err != nil || hash != action.ExpectedHash {
+		return fmt.Errorf("file delete destination hash mismatch: %s", action.Destination)
+	}
+	if action.ExpectedMode != nil && uint32(info.Mode().Perm()) != *action.ExpectedMode {
+		return fmt.Errorf("file delete destination mode mismatch: %s", action.Destination)
+	}
+	if !action.Backup {
+		return fmt.Errorf("file delete backup is required: %s", operation)
+	}
+	backup, err := journal.CreateBackup(operation, action.Destination)
+	if err != nil {
+		return fmt.Errorf("create file backup: %w", err)
+	}
+	if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+		return err
+	}
+	if err := os.Remove(action.Destination); err != nil {
+		return err
+	}
+	return nil
 }
 
 func writeFileAtomic(operation string, action model.FileWrite, journal *Journal, now func() time.Time) error {

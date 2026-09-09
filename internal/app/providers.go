@@ -530,7 +530,11 @@ func (configStateProvider) Empty(state any) bool {
 
 func (p configStateProvider) provider() (configprovider.Provider, error) {
 	baseline, user, err := p.deps.ConfigDirs()
-	return configprovider.Provider{UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
+	if err != nil {
+		return configprovider.Provider{}, err
+	}
+	home, err := p.deps.HomeDir()
+	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
 }
 
 func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -564,11 +568,11 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	current, err := provider.Detect()
+	current, err := provider.Scan(d.Config)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.Plan(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}

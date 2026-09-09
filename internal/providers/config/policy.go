@@ -57,6 +57,9 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 	if IsExcludedConfigPath(path, excluded) {
 		return PolicyDecision{PolicyExcluded}
 	}
+	if sensitiveConfigPath(path) {
+		return PolicyDecision{PolicySensitive}
+	}
 	if !info.IsDir() && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
 		return PolicyDecision{PolicyVolatile}
 	}
@@ -71,4 +74,13 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyOversized}
 	}
 	return PolicyDecision{PolicyAllowed}
+}
+
+func sensitiveConfigPath(path string) bool {
+	for _, exact := range []string{".config/gh/hosts.yml", ".config/rclone/rclone.conf", ".config/sops/age/keys.txt", ".config/containers/auth.json"} {
+		if path == exact {
+			return true
+		}
+	}
+	return strings.HasPrefix(path, ".config/gcloud/")
 }

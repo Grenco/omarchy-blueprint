@@ -164,7 +164,7 @@ func TestSchema8ConfigOverlayRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	d := New("overlay", time.Unix(0, 0))
 	d.Manifest.Capture.Config = true
-	d.Config = Configs{Files: []ConfigFile{{ID: "legacy", Path: ".config/hypr/bindings.lua", Hash: strings.Repeat("a", 64), Mode: "0644", BaselineHash: strings.Repeat("b", 64), BaselineMode: "0644"}, {Path: ".config/ghostty/config", Hash: strings.Repeat("c", 64), Mode: "0600"}}, Deletes: []ConfigDelete{{Path: ".config/example/default.conf", BaselineHash: strings.Repeat("d", 64), BaselineMode: "0644"}}, Excluded: []string{".config/google-chrome", ".config/discord", ".config/discord"}}
+	d.Config = Configs{Files: []ConfigFile{{ID: "legacy", Path: ".config/hypr/bindings.lua", Hash: strings.Repeat("a", 64), Mode: "0644", BaselineHash: strings.Repeat("b", 64), BaselineMode: "0644"}, {Path: ".config/ghostty/config", Hash: strings.Repeat("c", 64), Mode: "0600"}}, Deletes: []ConfigDelete{{Path: ".config/example/default.conf", BaselineHash: strings.Repeat("d", 64), BaselineMode: "0644"}}, Excluded: []string{".config/google-chrome", ".config/discord"}}
 	if err := Save(dir, d); err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +182,41 @@ func TestSchema8ConfigOverlayRoundTrip(t *testing.T) {
 	}
 	if strings.Index(string(contents), "ghostty/config") > strings.Index(string(contents), "hypr/bindings.lua") {
 		t.Fatalf("config is not path sorted: %s", contents)
+	}
+}
+
+func TestSaveRejectsNonCanonicalAndOverlappingConfigState(t *testing.T) {
+	for _, configs := range []Configs{
+		{Files: []ConfigFile{{Path: "a/../b", Hash: "x"}}},
+		{Files: []ConfigFile{{Path: ".config/a", Hash: "x"}}, Deletes: []ConfigDelete{{Path: ".config/a", BaselineHash: "x"}}},
+		{Excluded: []string{".config/a", ".config/a"}},
+	} {
+		d := New("test", time.Unix(0, 0))
+		d.Config = configs
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("invalid configs accepted: %#v", configs)
+		}
+	}
+}
+
+func TestLoadSchema7MigratesLegacyConfigPaths(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 7\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-09T00:00:00Z\nupdated_at = 2026-09-09T00:00:00Z\n\n[capture]\nconfig = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "config.toml"), []byte("[[file]]\npath = 'hypr/bindings.lua'\nhash = 'x'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Files[0].Path != ".config/hypr/bindings.lua" {
+		t.Fatalf("config=%#v", got.Config)
 	}
 }
 

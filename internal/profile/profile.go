@@ -211,6 +211,11 @@ func Load(dir string) (Data, error) {
 		return d, fmt.Errorf("unsupported profile schema %d (supported: %d)", d.Manifest.Schema, Schema)
 	}
 	if loadedSchema < Schema {
+		if loadedSchema < configOverlaySchema {
+			// Schema 7 stored config paths relative to ~/.config. Schema 8 stores
+			// all config surfaces relative to HOME.
+			defer migrateLegacyConfigPaths(&d.Config)
+		}
 		d.Manifest.Schema = Schema
 	}
 	d.Packages.Official, err = readList(filepath.Join(dir, "packages", "official.txt"))
@@ -331,7 +336,9 @@ func Save(dir string, d Data) error {
 	d.Packages.AUR = normalize(d.Packages.AUR)
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
-	normalizeConfigs(&d.Config)
+	if err := normalizeConfigs(&d.Config); err != nil {
+		return err
+	}
 	sortHooks(d.Hooks.Items)
 	sortResources(&d.Resources)
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
@@ -495,6 +502,7 @@ func sortConfigFiles(files []ConfigFile) {
 }
 
 func NormalizeConfigPath(path string) (string, error) {
+	original := path
 	path = filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
 	if path == "" || path == "." || filepath.IsAbs(path) {
 		return "", fmt.Errorf("invalid config path %q", path)
@@ -502,20 +510,73 @@ func NormalizeConfigPath(path string) (string, error) {
 	if path == ".." || strings.HasPrefix(path, "../") {
 		return "", fmt.Errorf("config path escapes root: %q", path)
 	}
+	if original != path {
+		return "", fmt.Errorf("config path is not canonical: %q", original)
+	}
 	return path, nil
 }
 func ValidateConfigPath(path string) error { _, err := NormalizeConfigPath(path); return err }
-func normalizeConfigs(config *Configs) {
+func normalizeConfigs(config *Configs) error {
+	seen := map[string]bool{}
 	for i := range config.Files {
-		config.Files[i].Path, _ = NormalizeConfigPath(config.Files[i].Path)
+		path, err := NormalizeConfigPath(config.Files[i].Path)
+		if err != nil {
+			return err
+		}
+		if seen[path] {
+			return fmt.Errorf("duplicate config path %q", path)
+		}
+		seen[path] = true
+		config.Files[i].Path = path
 		config.Files[i].ID = ""
 	}
 	for i := range config.Deletes {
-		config.Deletes[i].Path, _ = NormalizeConfigPath(config.Deletes[i].Path)
+		path, err := NormalizeConfigPath(config.Deletes[i].Path)
+		if err != nil {
+			return err
+		}
+		if seen[path] {
+			return fmt.Errorf("duplicate config path %q", path)
+		}
+		seen[path] = true
+		config.Deletes[i].Path = path
 	}
 	sortConfigFiles(config.Files)
 	sort.Slice(config.Deletes, func(i, j int) bool { return config.Deletes[i].Path < config.Deletes[j].Path })
-	config.Excluded = normalize(config.Excluded)
+	excluded := make([]string, 0, len(config.Excluded))
+	seenExcluded := map[string]bool{}
+	for _, item := range config.Excluded {
+		path, err := NormalizeConfigPath(item)
+		if err != nil {
+			return err
+		}
+		if seenExcluded[path] {
+			return fmt.Errorf("duplicate config exclusion %q", path)
+		}
+		seenExcluded[path] = true
+		excluded = append(excluded, path)
+	}
+	sort.Strings(excluded)
+	config.Excluded = excluded
+	return nil
+}
+
+func migrateLegacyConfigPaths(config *Configs) {
+	for i := range config.Files {
+		if !strings.HasPrefix(config.Files[i].Path, ".") {
+			config.Files[i].Path = ".config/" + config.Files[i].Path
+		}
+	}
+	for i := range config.Deletes {
+		if !strings.HasPrefix(config.Deletes[i].Path, ".") {
+			config.Deletes[i].Path = ".config/" + config.Deletes[i].Path
+		}
+	}
+	for i := range config.Excluded {
+		if !strings.HasPrefix(config.Excluded[i], ".") {
+			config.Excluded[i] = ".config/" + config.Excluded[i]
+		}
+	}
 }
 
 func sortHooks(items []Hook) {
