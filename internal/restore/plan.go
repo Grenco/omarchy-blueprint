@@ -68,6 +68,27 @@ func validateOperationAction(op model.Operation) error {
 	if op.Delete != nil {
 		return validateFileDelete(op.ID, *op.Delete)
 	}
+	if op.File != nil {
+		return validateFileWrite(op.ID, *op.File)
+	}
+	return nil
+}
+
+func validateFileWrite(operation string, action model.FileWrite) error {
+	if action.ReplaceExisting {
+		if action.ExpectedMissing || action.ExpectedExisting == nil || !action.Backup {
+			return fmt.Errorf("file replacement requires existing precondition and backup: %s", operation)
+		}
+		switch action.ExpectedExisting.Type {
+		case "file", "directory", "symlink":
+		default:
+			return fmt.Errorf("file replacement precondition has invalid type %q: %s", action.ExpectedExisting.Type, operation)
+		}
+		return nil
+	}
+	if action.ExpectedExisting != nil {
+		return fmt.Errorf("file write existing-object precondition requires replacement: %s", operation)
+	}
 	return nil
 }
 

@@ -563,7 +563,7 @@ func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Ch
 	return configprovider.Diff(d.Config, current), nil
 }
 
-func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -572,7 +572,7 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, configprovider.PlanOptions{Force: options.Force})
 	if err != nil {
 		return model.RestorePlan{}, err
 	}

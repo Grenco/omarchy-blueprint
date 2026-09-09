@@ -172,6 +172,75 @@ func TestFileWriteGeneratedContentPreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestFileWriteForceReplacementBacksUpObjectsAndRefusesChangedTarget(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		setup func(string)
+	}{
+		{"directory", func(destination string) {
+			if err := os.Mkdir(destination, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"symlink", func(destination string) {
+			if err := os.Symlink("target", destination); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+			if err := os.WriteFile(source, []byte("desired"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tt.setup(destination)
+			precondition := filesystemPreconditionForTest(t, destination)
+			journal, err := NewJournal(t.TempDir(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer journal.Close()
+			result, err := Execute(context.Background(), delayedRunner{}, model.RestorePlan{Operations: []model.Operation{{ID: "config.force", File: &model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}}}}, journal, time.Now, time.Second, nil)
+			if err != nil || len(result.Completed) != 1 || !result.Completed[0].Reversible {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if got, err := os.ReadFile(destination); err != nil || string(got) != "desired" {
+				t.Fatalf("destination=%q err=%v", got, err)
+			}
+			matches, err := filepath.Glob(filepath.Join(dir, ".destination.omarchy-blueprint-backup-*"))
+			if err != nil || len(matches) != 1 {
+				t.Fatalf("backups=%v err=%v", matches, err)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+	if err := os.WriteFile(source, []byte("desired"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("planned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	if err := os.WriteFile(destination, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	result, err := Execute(context.Background(), delayedRunner{}, model.RestorePlan{Operations: []model.Operation{{ID: "config.force.changed", File: &model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true}}}}, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "changed" {
+		t.Fatalf("destination=%q err=%v", got, err)
+	}
+}
+
 func TestFileWriteGeneratedContentRejectsInvalidSourcesAndHash(t *testing.T) {
 	cases := []model.FileWrite{
 		{Generated: true, Source: "unexpected", Content: []byte("x"), SourceHash: generatedHash([]byte("x")), ExpectedMissing: true},

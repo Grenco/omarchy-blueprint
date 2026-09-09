@@ -1,14 +1,84 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
+
+func TestPlanOverlayForceReplacesUnknownTargets(t *testing.T) {
+	profileDir := t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "wanted")
+	hash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	for _, target := range []struct {
+		name  string
+		setup func(string)
+		kind  string
+	}{
+		{"file", func(target string) { writeFile(t, target, "unknown") }, "file"},
+		{"directory", func(target string) {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, "directory"},
+		{"symlink", func(target string) {
+			if err := os.Symlink("elsewhere", target); err != nil {
+				t.Fatal(err)
+			}
+		}, "symlink"},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			caseRoot := t.TempDir()
+			p := Provider{UserRoot: caseRoot, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+			destination := filepath.Join(caseRoot, path)
+			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target.setup(destination)
+			plan, err := p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: hash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigAdded, UserHash: "unknown"}}}, 8, "old", "new", PlanOptions{Force: true})
+			if err != nil || len(plan.Operations) != 1 {
+				t.Fatalf("plan=%#v err=%v", plan, err)
+			}
+			op := plan.Operations[0]
+			if op.Risk != model.RiskHigh || !op.Reversible || op.File == nil || !op.File.ReplaceExisting || !op.File.Backup || op.File.ExpectedExisting.Type != target.kind {
+				t.Fatalf("operation=%#v", op)
+			}
+		})
+	}
+}
+
+func TestPlanOverlayForceUsesCapturedVersionForMergeConflictAndUnknownTombstone(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "value=user\n")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "value=old\n")
+	writeFile(t, filepath.Join(base, path), "value=upstream\n")
+	writeFile(t, filepath.Join(root, path), "value=upstream\n")
+	baseHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	desiredHash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	currentHash := hashOf(t, filepath.Join(base, path))
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	plan, err := p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: desiredHash, BaselineHash: baseHash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: currentHash, BaselineHash: currentHash}}}, 8, "old", "new", PlanOptions{Force: true})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || plan.Operations[0].File.SourceHash != desiredHash || !strings.Contains(plan.Operations[0].Action, "captured user version will win") {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+
+	deletePath := "app/removed"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", deletePath), "baseline")
+	writeFile(t, filepath.Join(root, deletePath), "unknown")
+	deleteHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", deletePath))
+	plan, err = p.PlanOverlay(profile.Configs{Deletes: []profile.ConfigDelete{{Path: deletePath, BaselineHash: deleteHash}}}, ScanSummary{Candidates: []Candidate{{Path: deletePath, Classification: ConfigAdded, UserHash: "unknown"}}}, 8, "old", "new", PlanOptions{Force: true})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].Risk != model.RiskHigh || !plan.Operations[0].Reversible || plan.Operations[0].Delete == nil || !plan.Operations[0].Delete.Backup || plan.Operations[0].Delete.ExpectedExisting.Type != "file" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
 
 func TestVerifyAcceptsTargetOnlyConfigAndRequiresTombstone(t *testing.T) {
 	saved := profile.Configs{Files: []profile.ConfigFile{{Path: "ghostty/config", Hash: "want"}}, Deletes: []profile.ConfigDelete{{Path: "example/default.conf", BaselineHash: "base"}}}

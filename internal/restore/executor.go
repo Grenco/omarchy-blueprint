@@ -266,7 +266,11 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	if action.ExpectedMode != nil && *action.ExpectedMode > 0o777 {
 		return fmt.Errorf("file write expected mode is invalid: %04o", *action.ExpectedMode)
 	}
-	if action.ExpectedMissing == (action.ExpectedHash != "") {
+	if action.ReplaceExisting {
+		if action.ExpectedMissing || action.ExpectedExisting == nil || !action.Backup {
+			return fmt.Errorf("file replacement requires existing precondition and backup: %s", operation)
+		}
+	} else if action.ExpectedMissing == (action.ExpectedHash != "") {
 		return fmt.Errorf("file write requires exactly one destination precondition: %s", operation)
 	}
 	if action.ExpectedMissing && action.ExpectedMode != nil {
@@ -289,6 +293,9 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	if _, err := source.Reader.Seek(0, io.SeekStart); err != nil {
 		return err
+	}
+	if action.ReplaceExisting {
+		return replaceFileWriteWithJournal(operation, action, journal, now)
 	}
 
 	destinationInfo, err := validateDestination(action)
@@ -366,6 +373,57 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func replaceFileWriteWithJournal(operation string, action model.FileWrite, journal *Journal, now func() time.Time) error {
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+		return err
+	}
+	backup, err := reserveSiblingBackupPath(action.Destination)
+	if err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+		return err
+	}
+	if err := renameNoReplace(action.Destination, backup); err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		if err := renameNoReplace(backup, action.Destination); err != nil {
+			return fmt.Errorf("%v; rollback failed: %w", cause, err)
+		}
+		return cause
+	}
+	if journal != nil {
+		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+			return rollback(err)
+		}
+	}
+	install := action
+	install.ReplaceExisting = false
+	install.ExpectedExisting = nil
+	install.ExpectedHash = ""
+	install.ExpectedMode = nil
+	install.ExpectedMissing = true
+	install.Backup = false
+	if err := writeFileAtomic(operation, install, journal, now); err != nil {
+		if _, statErr := os.Lstat(action.Destination); os.IsNotExist(statErr) {
+			return rollback(err)
+		}
+		return fmt.Errorf("%v; backup retained at %s", err, backup)
+	}
+	return nil
 }
 
 func validateSymlinkParents(destination string) error {
