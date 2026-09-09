@@ -396,6 +396,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			action = "Excluded"
 		}
 		human := fmt.Sprintf("%s %d package(s).\n", action, len(changed))
+		if exclude {
+			for _, association := range configprovider.RelatedConfig(changed, d.Config) {
+				human += fmt.Sprintf("Related Config state remains included:\n  ~/.config/%s\nRun:\n  omarchy-blueprint exclude config:%s\n", association.ConfigPath, association.ConfigPath)
+			}
+		}
 		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed, "excluded": d.Packages.Excluded}, human)
 	}}
 }

@@ -693,6 +693,34 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 	}
 }
 
+func TestPackageExcludeHintsRelatedConfigWithoutExcludingIt(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.MkdirAll(filepath.Join(userRoot, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "nvim", "init.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	deps.Runner.(*machineRunner).official["neovim"] = true
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture packages code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "exclude", "official:neovim"); code != 0 || !strings.Contains(out, "Related Config state remains included:\n  ~/.config/nvim\nRun:\n  omarchy-blueprint exclude config:nvim") {
+		t.Fatalf("exclude code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Config.Files) != 1 || d.Config.Files[0].Path != "nvim/init.lua" || len(d.Config.Excluded) != 0 {
+		t.Fatalf("config changed by package exclusion: %#v", d.Config)
+	}
+}
+
 func TestRestoreExplainsNonActionableAdditionalPackages(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{}}
