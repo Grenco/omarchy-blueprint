@@ -276,13 +276,207 @@ func TestBaselineIdentityRequiresModeExceptForLegacyProfiles(t *testing.T) {
 func TestTombstoneRequiresMatchingCurrentBaselineIdentity(t *testing.T) {
 	deletion := profile.ConfigDelete{Path: "app/default", BaselineHash: "base", BaselineMode: "0644"}
 	modeChanged := Candidate{Path: deletion.Path, UserHash: "base", UserMode: "0600", BaselineHash: "base", BaselineMode: "0600"}
-	if got := resolveDesiredDelete(deletion, modeChanged, true); got != desiredUnknown {
-		t.Fatalf("mode transition delete=%v, want unknown", got)
+	if got := resolveDesiredDelete(deletion, modeChanged, true); got != desiredDirect {
+		t.Fatalf("current baseline mode transition delete=%v, want direct", got)
 	}
 	legacy := deletion
 	legacy.BaselineMode = ""
 	if got := resolveDesiredDelete(legacy, modeChanged, true); got != desiredDirect {
 		t.Fatalf("legacy delete=%v, want direct", got)
+	}
+}
+
+func TestTombstoneAcceptsSavedOrCurrentBaselineWithRealScan(t *testing.T) {
+	for _, target := range []struct {
+		name, content string
+		mode          os.FileMode
+	}{
+		{"saved baseline", "saved", 0o644},
+		{"current baseline", "current", 0o600},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+			path := "app/removed"
+			writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "saved")
+			writeFile(t, filepath.Join(base, path), "current")
+			writeFile(t, filepath.Join(root, path), target.content)
+			if err := os.Chmod(filepath.Join(root, path), target.mode); err != nil {
+				t.Fatal(err)
+			}
+			if target.name == "current baseline" {
+				if err := os.Chmod(filepath.Join(base, path), target.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			saved := profile.Configs{Deletes: []profile.ConfigDelete{{Path: path, BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", path)), BaselineMode: "0644"}}}
+			p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+			scan, err := p.Scan(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := p.PlanOverlay(saved, scan, 8, "old", "new")
+			if err != nil || len(plan.Operations) != 1 || plan.Operations[0].Delete == nil || len(plan.Skipped) != 0 {
+				t.Fatalf("plan=%#v err=%v", plan, err)
+			}
+			verified, err := p.Verify(saved, scan)
+			if err != nil || verified.OK {
+				t.Fatalf("verify=%#v err=%v", verified, err)
+			}
+			changes, err := p.Diff(saved, scan)
+			if err != nil || len(changes) != 1 {
+				t.Fatalf("changes=%#v err=%v", changes, err)
+			}
+		})
+	}
+}
+
+func TestDisappearedBaselineRecognizesDesiredFileAcrossLifecycle(t *testing.T) {
+	root, profileDir := t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "saved baseline\n")
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "wanted\n")
+	writeFile(t, filepath.Join(root, path), "wanted\n")
+	saved := profile.Configs{Files: []profile.ConfigFile{{
+		Path: path, Hash: hashOf(t, filepath.Join(profileDir, "config", "files", path)), Mode: "0644",
+		BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", path)), BaselineMode: "0644",
+	}}}
+	p := Provider{UserRoot: root, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+	scan, err := p.Scan(saved)
+	if err != nil || len(scan.Candidates) != 1 || scan.Candidates[0].Classification != ConfigAdded {
+		t.Fatalf("scan=%#v err=%v", scan, err)
+	}
+	plan, err := p.PlanOverlay(saved, scan, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	verified, err := p.Verify(saved, scan)
+	if err != nil || !verified.OK {
+		t.Fatalf("verify=%#v err=%v", verified, err)
+	}
+	changes, err := p.Diff(saved, scan)
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}
+
+func TestForceMergeConflictAtMissingTargetWritesExpectedMissing(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "value=old\n")
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "value=user\n")
+	writeFile(t, filepath.Join(base, path), "value=upstream\n")
+	saved := profile.Configs{Files: []profile.ConfigFile{{
+		Path: path, Hash: hashOf(t, filepath.Join(profileDir, "config", "files", path)), Mode: "0644",
+		BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", path)), BaselineMode: "0644",
+	}}}
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	scan, err := p.Scan(saved)
+	if err != nil || len(scan.Candidates) != 1 || scan.Candidates[0].Classification != ConfigDeletedBaseline {
+		t.Fatalf("scan=%#v err=%v", scan, err)
+	}
+	plan, err := p.PlanOverlay(saved, scan, 8, "old", "new", PlanOptions{Force: true})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || !plan.Operations[0].File.ExpectedMissing || plan.Operations[0].File.Backup || plan.Operations[0].File.ExpectedExisting != nil {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestScanSavedPathDirectoriesConflictAndForceReplaceOrDelete(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		saved func(string) profile.Configs
+		setup func(string, string)
+		check func(t *testing.T, op model.Operation)
+	}{
+		{
+			name: "replace file",
+			saved: func(profileDir string) profile.Configs {
+				path := "app/config"
+				writeFile(t, filepath.Join(profileDir, "config", "files", path), "wanted")
+				return profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: hashOf(t, filepath.Join(profileDir, "config", "files", path)), Mode: "0644"}}}
+			},
+			setup: func(root, _ string) {
+				if err := os.MkdirAll(filepath.Join(root, "app", "config"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, op model.Operation) {
+				if op.File == nil || !op.File.ReplaceExisting || !op.File.Backup || op.File.ExpectedExisting.Type != "directory" {
+					t.Fatalf("operation=%#v", op)
+				}
+			},
+		},
+		{
+			name: "delete tombstone",
+			saved: func(profileDir string) profile.Configs {
+				path := "app/config"
+				writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "baseline")
+				return profile.Configs{Deletes: []profile.ConfigDelete{{Path: path, BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", path)), BaselineMode: "0644"}}}
+			},
+			setup: func(root, base string) {
+				writeFile(t, filepath.Join(base, "app", "config"), "baseline")
+				if err := os.MkdirAll(filepath.Join(root, "app", "config"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, op model.Operation) {
+				if op.Delete == nil || !op.Delete.Backup || op.Delete.ExpectedExisting.Type != "directory" {
+					t.Fatalf("operation=%#v", op)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+			saved := test.saved(profileDir)
+			test.setup(root, base)
+			p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+			scan, err := p.Scan(saved)
+			if err != nil || len(scan.Candidates) != 1 || scan.Candidates[0].Classification != ConfigUnsupported {
+				t.Fatalf("scan=%#v err=%v", scan, err)
+			}
+			plan, err := p.PlanOverlay(saved, scan, 8, "old", "new")
+			if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 {
+				t.Fatalf("plan=%#v err=%v", plan, err)
+			}
+			verified, err := p.Verify(saved, scan)
+			if err != nil || verified.OK {
+				t.Fatalf("verify=%#v err=%v", verified, err)
+			}
+			changes, err := p.Diff(saved, scan)
+			if err != nil || len(changes) != 1 {
+				t.Fatalf("changes=%#v err=%v", changes, err)
+			}
+			plan, err = p.PlanOverlay(saved, scan, 8, "old", "new", PlanOptions{Force: true})
+			if err != nil || len(plan.Operations) != 1 {
+				t.Fatalf("forced plan=%#v err=%v", plan, err)
+			}
+			test.check(t, plan.Operations[0])
+			journal, err := restore.NewJournal(t.TempDir(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer journal.Close()
+			if _, err := restore.Execute(context.Background(), noopRunner{}, plan, journal, time.Now, time.Second, nil); err != nil {
+				t.Fatal(err)
+			}
+			backups, err := filepath.Glob(filepath.Join(root, "app", ".config.omarchy-blueprint-backup-*"))
+			if err != nil || len(backups) != 1 {
+				t.Fatalf("backups=%v err=%v", backups, err)
+			}
+			if test.name == "replace file" {
+				assertFile(t, filepath.Join(root, "app", "config"), "wanted")
+			} else if _, err := os.Lstat(filepath.Join(root, "app", "config")); !os.IsNotExist(err) {
+				t.Fatalf("deleted target err=%v", err)
+			}
+			updated, err := p.Scan(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verified, err = p.Verify(saved, updated)
+			if err != nil || !verified.OK {
+				t.Fatalf("post-force verify=%#v err=%v", verified, err)
+			}
+		})
 	}
 }
 

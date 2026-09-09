@@ -213,6 +213,9 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 		direct.state = desiredMissing
 		return direct, nil
 	}
+	if t.Classification == ConfigUnsupported {
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
 	if t.UserHash == "" {
 		if a.BaselineHash != "" {
 			return p.resolveChangedBaseline(a, b, t, direct)
@@ -226,9 +229,12 @@ func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists b
 		}
 		return desiredCandidate{state: desiredUnknown}, nil
 	}
-	// The current baseline disappeared. A is still a known safe target, but any
-	// other target is user-owned and must be preserved unless force is requested.
+	// The current baseline disappeared. Either the captured desired B or saved
+	// baseline A is known; any other target remains user-owned.
 	if t.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+			return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+		}
 		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
 			return direct, nil
 		}
@@ -305,10 +311,11 @@ func resolveDesiredDelete(a profile.ConfigDelete, m Candidate, exists bool) desi
 	if !exists || m.Classification == ConfigDeletedBaseline {
 		return desiredSatisfied
 	}
-	if !baselineIdentity(m.BaselineHash, m.BaselineMode, a.BaselineHash, a.BaselineMode) {
+	if m.Classification == ConfigUnsupported {
 		return desiredUnknown
 	}
-	if matchesEffective(m.UserHash, m.UserMode, m.BaselineHash, m.BaselineMode) {
+	if matchesEffective(m.UserHash, m.UserMode, a.BaselineHash, a.BaselineMode) ||
+		matchesEffective(m.UserHash, m.UserMode, m.BaselineHash, m.BaselineMode) {
 		return desiredDirect
 	}
 	return desiredUnknown
@@ -360,6 +367,9 @@ func (p Provider) forceFileWrite(file profile.ConfigFile, action string) (model.
 		return model.Operation{}, err
 	}
 	precondition, err := configFilesystemPrecondition(destination)
+	if os.IsNotExist(err) {
+		return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &model.FileWrite{Source: p.overlaySnapshotPath("files", file.Path), Destination: destination, SourceHash: file.Hash, ExpectedMissing: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true}, nil
+	}
 	if err != nil {
 		return model.Operation{}, err
 	}

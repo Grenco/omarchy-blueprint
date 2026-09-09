@@ -75,6 +75,27 @@ func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
 			}
 		}
 	}
+	// Walks intentionally omit directories. Preserve that broad behavior, but
+	// surface a directory that blocks an exact saved destination so planning can
+	// safely report or replace it rather than treating the path as missing.
+	for _, path := range savedPaths(saved) {
+		abs, err := p.absoluteUserPath(path)
+		if err != nil {
+			return ScanSummary{}, err
+		}
+		info, err := os.Lstat(abs)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return ScanSummary{}, err
+		}
+		if info.IsDir() {
+			if err := p.addExact(entries, true, abs, path); err != nil {
+				return ScanSummary{}, err
+			}
+		}
+	}
 	paths := make([]string, 0, len(entries))
 	for path := range entries {
 		paths = append(paths, path)
@@ -89,6 +110,17 @@ func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
 		result.Candidates = append(result.Candidates, c)
 	}
 	return result, nil
+}
+
+func savedPaths(saved profile.Configs) []string {
+	paths := make([]string, 0, len(saved.Files)+len(saved.Deletes))
+	for _, file := range saved.Files {
+		paths = append(paths, file.Path)
+	}
+	for _, deletion := range saved.Deletes {
+		paths = append(paths, deletion.Path)
+	}
+	return paths
 }
 
 func (p Provider) walkRoot(root, prefix string, user bool, excluded []string, entries map[string]map[bool]treeEntry) error {
