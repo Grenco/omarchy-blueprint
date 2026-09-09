@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed; finalize with the Config v2 implementation.
+Accepted
 
 ## Context
 

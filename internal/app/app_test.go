@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -327,6 +328,209 @@ func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
 	if len(d.Resources.Items) != 1 || d.Resources.Items[0].ID != "dotfiles" {
 		t.Fatalf("resources lost ownership: %#v", d.Resources)
 	}
+}
+
+func TestConfigOverlayAcceptance(t *testing.T) {
+	t.Run("schema 7 loads restores and recaptures as schema 8", func(t *testing.T) {
+		profileDir, deps, home, baseline := overlaySandbox(t)
+		userRoot := filepath.Join(home, ".config")
+		paths := []string{"hypr/hyprland.lua", "hypr/bindings.lua", "hypr/looknfeel.lua", "hypr/autostart.lua"}
+		for _, path := range paths {
+			writeAppFile(t, filepath.Join(baseline, path), "default "+path)
+			writeAppFile(t, filepath.Join(userRoot, path), "default "+path)
+		}
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "captured")
+		writeAppFile(t, filepath.Join(profileDir, "profile.toml"), "schema = 7\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-09T00:00:00Z\nupdated_at = 2026-09-09T00:00:00Z\n\n[capture]\nconfig = true\n")
+		writeAppFile(t, filepath.Join(profileDir, "config", "config.toml"), "[[file]]\nid = 'hypr.bindings'\npath = 'hypr/bindings.lua'\nhash = '"+appHash(t, "captured")+"'\nmode = '0644'\nbaseline_hash = '"+appHash(t, "default hypr/bindings.lua")+"'\nbaseline_mode = '0644'\n")
+		writeAppFile(t, filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"), "captured")
+		writeAppFile(t, filepath.Join(profileDir, "config", "baseline", "hypr", "bindings.lua"), "default hypr/bindings.lua")
+
+		if code, out := configRun(t, deps, profileDir, "status", "config"); code != 0 {
+			t.Fatalf("status legacy code=%d out=%s", code, out)
+		}
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "default hypr/bindings.lua")
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+			t.Fatalf("restore legacy code=%d out=%s", code, out)
+		}
+		if got := readAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua")); got != "captured" {
+			t.Fatalf("legacy restore = %q", got)
+		}
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("recapture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil || d.Manifest.Schema != 8 || len(d.Config.Files) != 1 || d.Config.Files[0].Path != ".config/hypr/bindings.lua" {
+			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
+		}
+		if got := readAppFile(t, filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); got != "captured" {
+			t.Fatalf("recaptured snapshot = %q", got)
+		}
+	})
+
+	t.Run("ordinary config captures restores and ignores update backups", func(t *testing.T) {
+		profileDir, deps, home, baseline := overlaySandbox(t)
+		userRoot := filepath.Join(home, ".config")
+		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "default")
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "custom")
+		writeAppFile(t, filepath.Join(userRoot, "ghostty", "config"), "font-size=14")
+		writeAppFile(t, filepath.Join(userRoot, "lazygit", "config.yml"), "gui:\n  theme: dark")
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "clean.lua"), "unchanged")
+		writeAppFile(t, filepath.Join(baseline, "hypr", "clean.lua"), "unchanged")
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua.bak.20260909"), "backup")
+
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("capture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := configPaths(d.Config.Files); !reflect.DeepEqual(got, []string{".config/ghostty/config", ".config/hypr/bindings.lua", ".config/lazygit/config.yml"}) {
+			t.Fatalf("captured paths=%v", got)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua.bak.20260909")); !os.IsNotExist(err) {
+			t.Fatal("update backup was captured")
+		}
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "default")
+		if err := os.Remove(filepath.Join(userRoot, "ghostty", "config")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(userRoot, "lazygit", "config.yml")); err != nil {
+			t.Fatal(err)
+		}
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+			t.Fatalf("restore code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "status", "config"); code != 0 {
+			t.Fatalf("status after restore code=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("cross version merge, conflict force, and tombstone", func(t *testing.T) {
+		profileDir, deps, home, baseline := overlaySandbox(t)
+		userRoot := filepath.Join(home, ".config")
+		path := filepath.Join(userRoot, "hypr", "bindings.lua")
+		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "one\ntwo\nthree\n")
+		writeAppFile(t, path, "one\nsource\nthree\n")
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("capture code=%d out=%s", code, out)
+		}
+		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "one\ntwo\ntarget\n")
+		writeAppFile(t, path, "one\ntwo\ntarget\n")
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+			t.Fatalf("clean merge restore code=%d out=%s", code, out)
+		}
+		if got := readAppFile(t, path); got != "one\nsource\ntarget\n" {
+			t.Fatalf("merged config=%q", got)
+		}
+		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "one\nupstream\ntarget\n")
+		writeAppFile(t, path, "one\ntarget-change\ntarget\n")
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run"); code != 0 || !strings.Contains(out, "merge conflict requires review") {
+			t.Fatalf("conflict dry-run code=%d out=%s", code, out)
+		}
+		if got := readAppFile(t, path); got != "one\ntarget-change\ntarget\n" {
+			t.Fatalf("conflict overwrote target=%q", got)
+		}
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--force", "--yes"); code != 1 || !strings.Contains(out, "verification failed") {
+			t.Fatalf("force restore code=%d out=%s", code, out)
+		}
+		if got := readAppFile(t, path); got != "one\nsource\nthree\n" {
+			t.Fatalf("force restore=%q", got)
+		}
+
+		writeAppFile(t, filepath.Join(baseline, "example", "default.conf"), "delete-me")
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("tombstone capture code=%d out=%s", code, out)
+		}
+		tombstone := filepath.Join(userRoot, "example", "default.conf")
+		writeAppFile(t, tombstone, "delete-me")
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+			t.Fatalf("tombstone restore code=%d out=%s", code, out)
+		}
+		if _, err := os.Stat(tombstone); !os.IsNotExist(err) {
+			t.Fatalf("tombstone target remains: %v", err)
+		}
+		if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
+			t.Fatalf("check after tombstone code=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("resource handoff removes duplicate config ownership", func(t *testing.T) {
+		profileDir, deps, home, _ := overlaySandbox(t)
+		nvim := filepath.Join(home, ".config", "nvim")
+		writeAppFile(t, filepath.Join(nvim, "init.lua"), "vim.opt.number = true")
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("config capture code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "track", nvim); code != 0 {
+			t.Fatalf("track code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("handoff capture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Resources.Items) != 1 || d.Resources.Items[0].Path != "~/.config/nvim" || len(d.Config.Files) != 0 {
+			t.Fatalf("handoff resources=%#v config=%#v", d.Resources, d.Config)
+		}
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run"); code != 0 || strings.Contains(out, "nvim") {
+			t.Fatalf("config plan after handoff code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
+			t.Fatalf("check after handoff code=%d out=%s", code, out)
+		}
+	})
+}
+
+func overlaySandbox(t *testing.T) (profileDir string, deps Dependencies, home string, baseline string) {
+	t.Helper()
+	stateDir := t.TempDir()
+	profileDir, home, baseline = t.TempDir(), t.TempDir(), t.TempDir()
+	deps = Dependencies{
+		Runner: &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: time.Now,
+		StateHome:  func() (string, error) { return stateDir, nil },
+		HomeDir:    func() (string, error) { return home, nil },
+		ConfigDirs: func() (string, string, error) { return baseline, filepath.Join(home, ".config"), nil },
+	}
+	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
+		t.Fatalf("init code=%d", code)
+	}
+	return profileDir, deps, home, baseline
+}
+
+func writeAppFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readAppFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func appHash(t *testing.T, body string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("%x", sum)
+}
+
+func configPaths(files []profile.ConfigFile) []string {
+	paths := make([]string, len(files))
+	for i, file := range files {
+		paths[i] = file.Path
+	}
+	return paths
 }
 
 func TestConfigCaptureJSONIncludesScanSummary(t *testing.T) {

@@ -2991,10 +2991,16 @@ path remapping
 restore compatibility checks
 ```
 
-Config restore already protects against cross-version drift: a file is written
-only when the target is missing or still matches the captured Omarchy baseline,
-and baseline changes are skipped as `Omarchy baseline changed; migration
-required` until the migration engine (v0.4) three-way merges them.
+Baseline-aware Config overlay is complete: schema-8 profiles capture sparse
+HOME-relative additions, baseline modifications, and baseline-removal
+tombstones while ignoring update backups and stronger-provider paths. On an
+Omarchy baseline change, text configuration uses a three-way merge; conflicts
+preserve unknown target work unless a recoverable `--force` replacement is
+approved.
+
+The next major Resources feature is **Git Resource Policies / Dirty Git State
+v2**, covering `git`, `git+diff`, and `copy` reconstruction policies. Dirty-Git
+implementation remains out of the baseline-aware Config scope.
 
 ---
 
@@ -3005,9 +3011,15 @@ Make profiles resilient across Omarchy releases.
 ```text id="l4fuq6"
 schema migrations
 Omarchy migrations
-three-way merges
-conflict handling
+additional migration rules
+assisted conflict review
 ```
+
+Account login-shell state is a separate future semantic feature. It must detect
+the account shell, record the selected shell name/path with package provenance,
+and use `chsh -s <resolved executable>` or another native account operation as
+a high-risk, explicitly approved action. It must never edit `/etc/passwd`
+directly or infer login-shell intent merely from `.zshrc` or Fish configuration.
 
 ---
 

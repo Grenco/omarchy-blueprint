@@ -18,14 +18,14 @@ plugins retain their public URL and revision; modified, cloned, and local
 plugins are snapshotted under `plugins/local/`. Restore uses Omarchy validation
 and lifecycle commands, and marks executable third-party code as high risk.
 
-Customized Hyprland configuration files (`hypr/hyprland.lua`,
-`hypr/bindings.lua`, `hypr/looknfeel.lua`, and `hypr/autostart.lua`) are
-captured as content together with the Omarchy baseline they were captured
-against. Restore writes a file only when the target is missing or still matches
-that baseline; otherwise it is skipped as migration-required or user drift, so
-unknown user work is never overwritten. Existing files are backed up beside the
-restore journal before replacement and Hyprland is reloaded only after all
-writes succeed.
+Configuration is captured as a sparse, baseline-aware overlay: modified
+Omarchy defaults, ordinary added files under `~/.config`, and removed shipped
+files are recorded, while unchanged defaults and `*.bak.*` update backups are
+ignored. Semantic providers and tracked Resources own their paths ahead of
+Config. On an Omarchy upgrade, independent text changes are three-way merged;
+conflicts preserve target work unless `restore config --force` is explicitly
+approved, with a recoverable backup. Exclude a surface with, for example,
+`omarchy-blueprint exclude config:google-chrome`.
 
 Omarchy's semantic default applications — terminal, browser, editor, and
 agent — are captured as plain values in `defaults/defaults.toml`. Restore

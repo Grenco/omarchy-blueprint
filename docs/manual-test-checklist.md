@@ -46,7 +46,15 @@
 - Confirm additional target-machine plugins remain installed.
 - Confirm failures for one plugin do not prevent independent plugins from restoring.
 
-## Portable Hyprland configuration
+## Baseline-aware Config overlay
+
+- Run `capture config`, `status config`, `restore config --dry-run`, and `restore config` for a modified baseline file and an ordinary added application config file.
+- Confirm `restore config --force --dry-run` reports a recoverable backup before replacing a merge-conflicted or otherwise unknown target.
+- Use `exclude config:<path>` then `include config:<path>` and confirm capture preserves the explicit policy.
+- Confirm `*.bak.*` update backups appear in neither `config/files/` nor `config/baseline/` after capture.
+- On an upgraded baseline, confirm independent source and upstream edits merge cleanly; confirm overlapping edits preserve the target unless `--force` is approved.
+- Delete a shipped baseline file, capture, restore onto a target where it exists, and confirm it is backed up then removed.
+- Track a config directory as a Resource, capture again, and confirm Config no longer duplicates its bytes or restore destination.
 
 ### Same-machine capture and status
 
