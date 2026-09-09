@@ -232,12 +232,12 @@ func sortConfigFiles(files []profile.ConfigFile) {
 func DiffConfigs(previous, next profile.Configs) []model.Change {
 	prevMap := map[string]profile.ConfigFile{}
 	for _, f := range previous.Files {
-		prevMap[f.ID] = f
+		prevMap[f.Path] = f
 	}
 	var changes []model.Change
 	for _, f := range next.Files {
-		if p, ok := prevMap[f.ID]; ok {
-			delete(prevMap, f.ID)
+		if p, ok := prevMap[f.Path]; ok {
+			delete(prevMap, f.Path)
 			if p.Hash != f.Hash {
 				changes = append(changes, model.Change{Type: model.ChangeModify, Provider: "config", Kind: "config", Name: f.ID, Summary: "~ config " + f.Path + " differs"})
 			}
@@ -256,14 +256,14 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 func Diff(saved profile.Configs, current State) []model.Change {
 	savedMap := map[string]profile.ConfigFile{}
 	for _, f := range saved.Files {
-		savedMap[f.ID] = f
+		savedMap[f.Path] = f
 	}
 	changes := make([]model.Change, 0, len(current.Files))
 	for _, f := range current.Files {
 		switch f.Status {
 		case FileCustomized:
-			if s, ok := savedMap[f.ID]; ok {
-				delete(savedMap, f.ID)
+			if s, ok := savedMap[f.Path]; ok {
+				delete(savedMap, f.Path)
 				if s.Hash != f.Hash {
 					changes = append(changes, change(model.ChangeModify, f, fmt.Sprintf("~ config %s differs", f.Path)))
 				}
@@ -271,8 +271,8 @@ func Diff(saved profile.Configs, current State) []model.Change {
 			}
 			changes = append(changes, change(model.ChangeAdd, f, "+ config "+f.Path+" customized"))
 		case FileDefault, FileMissing, FileUnsupported:
-			if _, ok := savedMap[f.ID]; ok {
-				delete(savedMap, f.ID)
+			if _, ok := savedMap[f.Path]; ok {
+				delete(savedMap, f.Path)
 				changes = append(changes, change(model.ChangeRemove, f, "- config "+f.Path+" customization removed"))
 			}
 		}
@@ -289,11 +289,11 @@ func Diff(saved profile.Configs, current State) []model.Change {
 func Verify(saved profile.Configs, current State) model.VerificationResult {
 	currentMap := map[string]DetectedFile{}
 	for _, f := range current.Files {
-		currentMap[f.ID] = f
+		currentMap[f.Path] = f
 	}
 	var missing []string
 	for _, s := range saved.Files {
-		f, ok := currentMap[s.ID]
+		f, ok := currentMap[s.Path]
 		if !ok || f.Status != FileCustomized || f.Hash != s.Hash {
 			missing = append(missing, "config:"+s.Path)
 		}
@@ -311,25 +311,27 @@ func change(kind model.ChangeType, f DetectedFile, summary string) model.Change 
 // never choose arbitrary filesystem destinations during restore.
 func Validate(files []profile.ConfigFile, specs []Spec) error {
 	specsByID := map[string]Spec{}
+	specsByPath := map[string]Spec{}
 	for _, spec := range specs {
 		if _, dup := specsByID[spec.ID]; dup {
 			return fmt.Errorf("duplicate config spec id %q", spec.ID)
 		}
 		specsByID[spec.ID] = spec
+		specsByPath[spec.Path] = spec
 	}
 	seen := map[string]bool{}
 	for _, f := range files {
-		spec, ok := specsByID[f.ID]
+		spec, ok := specsByPath[f.Path]
 		if !ok {
-			return fmt.Errorf("config %q: unknown id", f.ID)
+			return fmt.Errorf("config %q: unknown path", f.Path)
 		}
-		if f.Path != spec.Path {
+		if f.ID != "" && f.ID != spec.ID {
 			return fmt.Errorf("config %q has unexpected path %q; expected %q", f.ID, f.Path, spec.Path)
 		}
-		if seen[f.ID] {
-			return fmt.Errorf("duplicate config id %q in profile", f.ID)
+		if seen[f.Path] {
+			return fmt.Errorf("duplicate config path %q in profile", f.Path)
 		}
-		seen[f.ID] = true
+		seen[f.Path] = true
 	}
 	return nil
 }
@@ -347,6 +349,14 @@ func (p Provider) Check(saved profile.Configs) error {
 	}
 	for _, s := range saved.Files {
 		spec := specsByID[s.ID]
+		if s.ID == "" {
+			for _, candidate := range p.specs() {
+				if candidate.Path == s.Path {
+					spec = candidate
+					break
+				}
+			}
+		}
 		if err := checkSnapshot(filepath.Join(p.ProfileDir, "config", "files", filepath.FromSlash(spec.Path)), s.Hash); err != nil {
 			return fmt.Errorf("config %s desired snapshot: %w", s.ID, err)
 		}
@@ -381,13 +391,21 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	detected := map[string]DetectedFile{}
 	for _, f := range current.Files {
-		detected[f.ID] = f
+		detected[f.Path] = f
 	}
 	var writeIDs []string
 	for _, s := range saved.Files {
 		spec := specsByID[s.ID]
+		if s.ID == "" {
+			for _, candidate := range p.specs() {
+				if candidate.Path == s.Path {
+					spec = candidate
+					break
+				}
+			}
+		}
 		resource := "config:" + spec.Path
-		d, ok := detected[s.ID]
+		d, ok := detected[s.Path]
 		if !ok {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: resource, Reason: "unsupported config file"})
 			continue

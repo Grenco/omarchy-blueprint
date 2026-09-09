@@ -13,18 +13,19 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 7
+const Schema = 8
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
 // their state as new schema versions arrive.
 const (
-	configSchema       = 2
-	defaultsSchema     = 3
-	shellSchema        = 4
-	hooksSchema        = 5
-	misePackagesSchema = 6
-	resourcesSchema    = 7
+	configSchema        = 2
+	defaultsSchema      = 3
+	shellSchema         = 4
+	hooksSchema         = 5
+	misePackagesSchema  = 6
+	resourcesSchema     = 7
+	configOverlaySchema = 8
 )
 
 type Manifest struct {
@@ -95,14 +96,24 @@ type Plugins struct {
 }
 
 type Configs struct {
-	Files []ConfigFile `json:"files" toml:"file"`
+	Files    []ConfigFile   `json:"files" toml:"file"`
+	Deletes  []ConfigDelete `json:"deletes,omitempty" toml:"delete,omitempty"`
+	Excluded []string       `json:"excluded,omitempty" toml:"excluded,omitempty"`
 }
 
 type ConfigFile struct {
-	ID           string `json:"id" toml:"id"`
+	ID           string `json:"id,omitempty" toml:"id,omitempty"`
 	Path         string `json:"path" toml:"path"`
 	Hash         string `json:"hash" toml:"hash"`
+	Mode         string `json:"mode,omitempty" toml:"mode,omitempty"`
+	BaselineHash string `json:"baseline_hash,omitempty" toml:"baseline_hash,omitempty"`
+	BaselineMode string `json:"baseline_mode,omitempty" toml:"baseline_mode,omitempty"`
+}
+
+type ConfigDelete struct {
+	Path         string `json:"path" toml:"path"`
 	BaselineHash string `json:"baseline_hash" toml:"baseline_hash"`
+	BaselineMode string `json:"baseline_mode,omitempty" toml:"baseline_mode,omitempty"`
 }
 
 // Defaults records the Omarchy-managed default applications. An empty value
@@ -320,7 +331,7 @@ func Save(dir string, d Data) error {
 	d.Packages.AUR = normalize(d.Packages.AUR)
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
-	sortConfigFiles(d.Config.Files)
+	normalizeConfigs(&d.Config)
 	sortHooks(d.Hooks.Items)
 	sortResources(&d.Resources)
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
@@ -416,6 +427,16 @@ func Validate(d Data) error {
 	if strings.TrimSpace(d.Manifest.Profile.Name) == "" {
 		return errors.New("profile name is empty")
 	}
+	for _, file := range d.Config.Files {
+		if err := ValidateConfigPath(file.Path); err != nil {
+			return err
+		}
+	}
+	for _, deleted := range d.Config.Deletes {
+		if err := ValidateConfigPath(deleted.Path); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -469,17 +490,32 @@ func normalize(in []string) []string {
 
 func sortConfigFiles(files []ConfigFile) {
 	sort.Slice(files, func(i, j int) bool {
-		if files[i].ID != files[j].ID {
-			return files[i].ID < files[j].ID
-		}
-		if files[i].Path != files[j].Path {
-			return files[i].Path < files[j].Path
-		}
-		if files[i].Hash != files[j].Hash {
-			return files[i].Hash < files[j].Hash
-		}
-		return files[i].BaselineHash < files[j].BaselineHash
+		return files[i].Path < files[j].Path
 	})
+}
+
+func NormalizeConfigPath(path string) (string, error) {
+	path = filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+	if path == "" || path == "." || filepath.IsAbs(path) {
+		return "", fmt.Errorf("invalid config path %q", path)
+	}
+	if path == ".." || strings.HasPrefix(path, "../") {
+		return "", fmt.Errorf("config path escapes root: %q", path)
+	}
+	return path, nil
+}
+func ValidateConfigPath(path string) error { _, err := NormalizeConfigPath(path); return err }
+func normalizeConfigs(config *Configs) {
+	for i := range config.Files {
+		config.Files[i].Path, _ = NormalizeConfigPath(config.Files[i].Path)
+		config.Files[i].ID = ""
+	}
+	for i := range config.Deletes {
+		config.Deletes[i].Path, _ = NormalizeConfigPath(config.Deletes[i].Path)
+	}
+	sortConfigFiles(config.Files)
+	sort.Slice(config.Deletes, func(i, j int) bool { return config.Deletes[i].Path < config.Deletes[j].Path })
+	config.Excluded = normalize(config.Excluded)
 }
 
 func sortHooks(items []Hook) {
