@@ -1,10 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
@@ -31,6 +34,121 @@ const (
 )
 
 type PolicyDecision struct{ Reason PolicyReason }
+
+// NormalizeExclusionPath converts a config policy argument to the logical path
+// used by the .config provider.
+func NormalizeExclusionPath(input string) (string, error) {
+	input = strings.TrimSpace(strings.ReplaceAll(input, "\\", "/"))
+	input = strings.TrimPrefix(input, "~/.config/")
+	input = strings.TrimPrefix(input, ".config/")
+	if input == "~/.config" || input == ".config" {
+		return "", fmt.Errorf("config exclusion path must name an entry below ~/.config")
+	}
+	if input == "" || strings.HasPrefix(input, "~") || strings.HasPrefix(input, "/") {
+		return "", fmt.Errorf("invalid config exclusion path %q", input)
+	}
+	input = path.Clean(input)
+	if input == "." || input == ".." || strings.HasPrefix(input, "../") || input == ".ssh" || strings.HasPrefix(input, ".ssh/") {
+		return "", fmt.Errorf("invalid config exclusion path %q", input)
+	}
+	return profile.NormalizeConfigPath(input)
+}
+
+// AddExclusion returns copied config metadata with path excluded and all saved
+// files and tombstones below that path removed. It never touches live config.
+func AddExclusion(saved profile.Configs, path string) (profile.Configs, []string, error) {
+	path, err := NormalizeExclusionPath(path)
+	if err != nil {
+		return saved, nil, err
+	}
+	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Excluded: append([]string{}, saved.Excluded...)}
+	for i, exclusion := range result.Excluded {
+		result.Excluded[i], err = NormalizeExclusionPath(exclusion)
+		if err != nil {
+			return saved, nil, err
+		}
+	}
+	if !containsPath(result.Excluded, path) {
+		result.Excluded = append(result.Excluded, path)
+	}
+	sort.Strings(result.Excluded)
+	result.Excluded = uniquePaths(result.Excluded)
+	var removed []string
+	result.Files, removed = pruneFiles(result.Files, path, removed)
+	result.Deletes, removed = pruneDeletes(result.Deletes, path, removed)
+	return result, removed, nil
+}
+
+// RemoveExclusion returns copied config metadata with path no longer excluded.
+func RemoveExclusion(saved profile.Configs, path string) (profile.Configs, bool, error) {
+	path, err := NormalizeExclusionPath(path)
+	if err != nil {
+		return saved, false, err
+	}
+	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Excluded: append([]string{}, saved.Excluded...)}
+	result.Excluded = result.Excluded[:0]
+	removed := false
+	for _, exclusion := range saved.Excluded {
+		exclusion, err = NormalizeExclusionPath(exclusion)
+		if err != nil {
+			return saved, false, err
+		}
+		if exclusion == path {
+			removed = true
+			continue
+		}
+		result.Excluded = append(result.Excluded, exclusion)
+	}
+	sort.Strings(result.Excluded)
+	result.Excluded = uniquePaths(result.Excluded)
+	return result, removed, nil
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, item := range paths {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func uniquePaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	result := paths[:1]
+	for _, item := range paths[1:] {
+		if item != result[len(result)-1] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func pruneFiles(files []profile.ConfigFile, excluded string, removed []string) ([]profile.ConfigFile, []string) {
+	result := files[:0]
+	for _, file := range files {
+		if IsExcludedConfigPath(file.Path, []string{excluded}) {
+			removed = append(removed, file.Path)
+			continue
+		}
+		result = append(result, file)
+	}
+	return result, removed
+}
+
+func pruneDeletes(deletes []profile.ConfigDelete, excluded string, removed []string) ([]profile.ConfigDelete, []string) {
+	result := deletes[:0]
+	for _, deletion := range deletes {
+		if IsExcludedConfigPath(deletion.Path, []string{excluded}) {
+			removed = append(removed, deletion.Path)
+			continue
+		}
+		result = append(result, deletion)
+	}
+	return result, removed
+}
 
 func IsOmarchyUpdateBackupName(name string) bool {
 	i := strings.Index(name, ".bak.")

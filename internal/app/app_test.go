@@ -643,6 +643,56 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	}
 }
 
+func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.MkdirAll(filepath.Join(userRoot, "ghostty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "ghostty", "config"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	code, out := configRun(t, deps, profileDir, "--json", "exclude", "config:~/.config/ghostty")
+	if code != 0 {
+		t.Fatalf("exclude code=%d out=%s", code, out)
+	}
+	var envelope struct {
+		Data struct {
+			Kind     string `json:"kind"`
+			Path     string `json:"path"`
+			Excluded bool   `json:"excluded"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil || envelope.Data.Kind != "config" || envelope.Data.Path != "ghostty" || !envelope.Data.Excluded {
+		t.Fatalf("json=%s err=%v", out, err)
+	}
+	for range 2 {
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("capture code=%d out=%s", code, out)
+		}
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d.Config.Excluded, []string{"ghostty"}) || len(d.Config.Files) != 0 {
+		t.Fatalf("config=%#v", d.Config)
+	}
+	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code != 0 {
+		t.Fatalf("include code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("adopt code=%d out=%s", code, out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || len(d.Config.Excluded) != 0 || len(d.Config.Files) != 1 || d.Config.Files[0].Path != "ghostty/config" {
+		t.Fatalf("config=%#v err=%v", d.Config, err)
+	}
+}
+
 func TestRestoreExplainsNonActionableAdditionalPackages(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{}}

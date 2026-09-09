@@ -348,6 +348,33 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
+		if strings.HasPrefix(refs[0], "config:") {
+			if len(refs) != 1 {
+				return fmt.Errorf("config policy accepts exactly one config:<path> reference")
+			}
+			path := strings.TrimPrefix(refs[0], "config:")
+			if exclude {
+				d.Config, _, err = configprovider.AddExclusion(d.Config, path)
+			} else {
+				d.Config, _, err = configprovider.RemoveExclusion(d.Config, path)
+			}
+			if err != nil {
+				return err
+			}
+			path, err = configprovider.NormalizeExclusionPath(path)
+			if err != nil {
+				return err
+			}
+			d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+			if err := profile.Save(opt.profileDir, d); err != nil {
+				return fmt.Errorf("save profile: %w", err)
+			}
+			action := "Included"
+			if exclude {
+				action = "Excluded"
+			}
+			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude}, fmt.Sprintf("%s config %s.\n", action, path))
+		}
 		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 			return err
 		}
