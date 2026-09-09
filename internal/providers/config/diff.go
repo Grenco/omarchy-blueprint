@@ -1,7 +1,10 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,10 +48,13 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 	return changes
 }
 
-// PlanOverlay restores sparse HOME-relative snapshots only where the target is
-// absent or still matches the captured Omarchy baseline. Tombstones remain
-// persisted desired state, but Slice A does not mutate live files for them.
-func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema int, from, to string) (model.RestorePlan, error) {
+type PlanOptions struct{ Force bool }
+
+// PlanOverlay restores sparse HOME-relative snapshots without replacing unknown
+// target changes. When the shipped baseline changed, it applies the captured
+// user delta with a three-way merge.
+func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema int, from, to string, options ...PlanOptions) (model.RestorePlan, error) {
+	force := len(options) > 0 && options[0].Force
 	if err := p.Check(saved); err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -60,35 +66,112 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 	var reloadDependencies []string
 	for _, file := range saved.Files {
 		candidate, ok := byPath[file.Path]
-		if !ok || candidate.Classification == ConfigUnsupported {
-			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "target config path unavailable"})
+		desired, err := p.resolveDesiredFile(file, candidate, ok)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		if desired.state == desiredSatisfied {
 			continue
 		}
-		if candidate.UserHash == file.Hash {
+		if desired.conflict {
+			if force {
+				op, err := p.forceFileWrite(file, "merge conflicted; captured user version will win")
+				if err != nil {
+					return model.RestorePlan{}, err
+				}
+				plan.Operations = append(plan.Operations, op)
+				if isHyprConfigPath(file.Path) {
+					reloadDependencies = append(reloadDependencies, op.ID)
+				}
+				continue
+			}
+			reason := "Omarchy baseline changed; merge conflict requires review"
+			if desired.mergeErr {
+				reason = "Omarchy baseline changed; configuration is not mergeable"
+			}
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: reason})
 			continue
 		}
-		if candidate.UserHash != "" && (file.BaselineHash == "" || candidate.UserHash != file.BaselineHash) {
+		if desired.state == desiredUnknown {
+			if force {
+				op, err := p.forceFileWrite(file, "replace unknown target")
+				if err != nil {
+					return model.RestorePlan{}, err
+				}
+				plan.Operations = append(plan.Operations, op)
+				if isHyprConfigPath(file.Path) {
+					reloadDependencies = append(reloadDependencies, op.ID)
+				}
+				continue
+			}
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "existing user configuration differs; overwrite disabled"})
-			continue
-		}
-		if file.BaselineHash != "" && candidate.BaselineHash != file.BaselineHash {
-			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "Omarchy baseline changed; migration required"})
 			continue
 		}
 		destination, err := p.absoluteUserPath(file.Path)
 		if err != nil {
 			return model.RestorePlan{}, err
 		}
-		source := p.overlaySnapshotPath("files", file.Path)
-		write := model.FileWrite{Source: source, Destination: destination, SourceHash: file.Hash, Backup: candidate.UserHash != "", RejectSymlinkParents: true}
-		if candidate.UserHash == "" {
+		write := model.FileWrite{Destination: destination, RejectSymlinkParents: true}
+		if mode, ok := configMode(file.Mode); ok {
+			write.Mode = &mode
+		}
+		if desired.state == desiredMissing {
 			write.ExpectedMissing = true
 		} else {
-			write.ExpectedHash = candidate.UserHash
+			precondition, err := p.configCandidatePrecondition(candidate)
+			if err != nil {
+				return model.RestorePlan{}, err
+			}
+			write.ReplaceExisting, write.ExpectedExisting, write.Backup = true, &precondition, true
+		}
+		write.SourceHash = desired.hash
+		if desired.content != nil {
+			write.Generated, write.Content = true, desired.content
+		} else {
+			write.Source = p.overlaySnapshotPath("files", file.Path)
 		}
 		id := "config.write." + configOperationID(file.Path)
-		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: model.RiskMedium, Reversible: true})
+		risk := model.RiskMedium
+		if file.BaselineHash == "" && desired.state == desiredMissing {
+			risk = model.RiskLow
+		}
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: risk, Reversible: true})
 		if isHyprConfigPath(file.Path) {
+			reloadDependencies = append(reloadDependencies, id)
+		}
+	}
+	for _, deletion := range saved.Deletes {
+		candidate, ok := byPath[deletion.Path]
+		desired := resolveDesiredDelete(deletion, candidate, ok)
+		if desired == desiredSatisfied {
+			continue
+		}
+		if desired == desiredUnknown {
+			if force {
+				op, err := p.forceDelete(deletion)
+				if err != nil {
+					return model.RestorePlan{}, err
+				}
+				plan.Operations = append(plan.Operations, op)
+				if isHyprConfigPath(deletion.Path) {
+					reloadDependencies = append(reloadDependencies, op.ID)
+				}
+				continue
+			}
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + deletion.Path, Reason: "existing user configuration differs; delete disabled"})
+			continue
+		}
+		destination, err := p.absoluteUserPath(deletion.Path)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		id := "config.delete." + configOperationID(deletion.Path)
+		precondition, err := p.configCandidatePrecondition(candidate)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "delete", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true})
+		if isHyprConfigPath(deletion.Path) {
 			reloadDependencies = append(reloadDependencies, id)
 		}
 	}
@@ -96,6 +179,246 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 		plan.Operations = append(plan.Operations, model.Operation{ID: "config.reload", Provider: "config", Action: "reload", Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"}, DependsOn: reloadDependencies, Risk: model.RiskLow})
 	}
 	return plan, nil
+}
+
+type desiredState uint8
+
+const (
+	desiredSatisfied desiredState = iota
+	desiredMissing
+	desiredDirect
+	desiredBaseline
+	desiredMerge
+	desiredUnknown
+)
+
+// desiredCandidate carries the effective desired state: B directly, or M after
+// applying A->B to C. Keeping it here makes Plan, Diff, and Verify agree.
+type desiredCandidate struct {
+	state    desiredState
+	hash     string
+	mode     string
+	content  []byte
+	conflict bool
+	mergeErr bool
+}
+
+func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists bool) (desiredCandidate, error) {
+	b, err := readExpectedRegularFile(p.overlaySnapshotPath("files", a.Path), a.Hash)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("read captured config %s: %w", a.Path, err)
+	}
+	direct := desiredCandidate{state: desiredDirect, hash: a.Hash, mode: a.Mode}
+	if !exists {
+		direct.state = desiredMissing
+		return direct, nil
+	}
+	if t.Classification == ConfigUnsupported {
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
+	if t.UserHash == "" {
+		if a.BaselineHash != "" {
+			return p.resolveChangedBaseline(a, b, t, direct)
+		}
+		direct.state = desiredMissing
+		return direct, nil
+	}
+	if a.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+			return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+		}
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
+	// The current baseline disappeared. Either the captured desired B or saved
+	// baseline A is known; any other target remains user-owned.
+	if t.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+			return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+		}
+		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+			return direct, nil
+		}
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
+	if baselineIdentity(t.BaselineHash, t.BaselineMode, a.BaselineHash, a.BaselineMode) {
+		if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+			return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
+		}
+		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+			return direct, nil
+		}
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
+	return p.resolveChangedBaseline(a, b, t, direct)
+}
+
+// resolveChangedBaseline calculates M before classifying T. A clean merge is
+// the desired result after an upstream baseline change, including for T=A/B.
+func (p Provider) resolveChangedBaseline(a profile.ConfigFile, b []byte, t Candidate, direct desiredCandidate) (desiredCandidate, error) {
+	if t.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+			return direct, nil
+		}
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
+	base, err := readExpectedRegularFile(p.overlaySnapshotPath("baseline", a.Path), a.BaselineHash)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("read captured baseline %s: %w", a.Path, err)
+	}
+	currentPath, err := p.absoluteBaselinePath(a.Path)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("resolve current baseline %s: %w", a.Path, err)
+	}
+	current, err := readExpectedRegularFile(currentPath, t.BaselineHash)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("read current baseline %s: %w", a.Path, err)
+	}
+	merged, err := MergeText3(base, b, current)
+	if err != nil || merged.Conflicts {
+		return desiredCandidate{state: desiredUnknown, conflict: true, mergeErr: err != nil}, nil
+	}
+	m := desiredCandidate{state: desiredMerge, hash: hashContent(merged.Content), mode: a.Mode, content: merged.Content}
+	if t.UserHash == "" {
+		m.state = desiredMissing
+		return m, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, m.hash, m.mode) {
+		m.state = desiredSatisfied
+		return m, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, t.BaselineHash, t.BaselineMode) {
+		return m, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+		return m, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+		return m, nil
+	}
+	return desiredCandidate{state: desiredUnknown}, nil
+}
+
+func matchesEffective(hash, mode, wantHash, wantMode string) bool {
+	return hash == wantHash && (wantMode == "" || mode == wantMode)
+}
+
+// baselineIdentity compares schema-8 baseline identities. Schema-7 records
+// have no mode, so their hash remains the compatible identity fallback.
+func baselineIdentity(hash, mode, wantHash, wantMode string) bool {
+	return hash == wantHash && (wantMode == "" || mode == wantMode)
+}
+func resolveDesiredDelete(a profile.ConfigDelete, m Candidate, exists bool) desiredState {
+	if !exists || m.Classification == ConfigDeletedBaseline {
+		return desiredSatisfied
+	}
+	if m.Classification == ConfigUnsupported {
+		return desiredUnknown
+	}
+	if matchesEffective(m.UserHash, m.UserMode, a.BaselineHash, a.BaselineMode) ||
+		matchesEffective(m.UserHash, m.UserMode, m.BaselineHash, m.BaselineMode) {
+		return desiredDirect
+	}
+	return desiredUnknown
+}
+func configMode(value string) (uint32, bool) {
+	var mode uint32
+	if _, err := fmt.Sscanf(value, "%o", &mode); err != nil || mode > 0o777 {
+		return 0, false
+	}
+	return mode, value != ""
+}
+func (p Provider) configCandidatePrecondition(c Candidate) (model.FilesystemPrecondition, error) {
+	path, err := p.absoluteUserPath(c.Path)
+	if err != nil {
+		return model.FilesystemPrecondition{}, err
+	}
+	if precondition, err := configFilesystemPrecondition(path); err == nil {
+		return precondition, nil
+	} else if !os.IsNotExist(err) {
+		return model.FilesystemPrecondition{}, err
+	}
+	// Some callers construct plans from a persisted scan after the target has
+	// disappeared. The executor still rejects a changed target at execution.
+	mode, ok := configMode(c.UserMode)
+	if !ok {
+		mode = 0o644
+	}
+	return model.FilesystemPrecondition{Type: "file", Hash: c.UserHash, Mode: mode}, nil
+}
+func readExpectedRegularFile(path, expected string) ([]byte, error) {
+	f, _, err := content.OpenRegularFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if hashContent(data) != expected {
+		return nil, fmt.Errorf("snapshot hash mismatch")
+	}
+	return data, nil
+}
+
+func (p Provider) forceFileWrite(file profile.ConfigFile, action string) (model.Operation, error) {
+	destination, err := p.absoluteUserPath(file.Path)
+	if err != nil {
+		return model.Operation{}, err
+	}
+	write := model.FileWrite{Source: p.overlaySnapshotPath("files", file.Path), Destination: destination, SourceHash: file.Hash, RejectSymlinkParents: true}
+	if mode, ok := configMode(file.Mode); ok {
+		write.Mode = &mode
+	}
+	precondition, err := configFilesystemPrecondition(destination)
+	if os.IsNotExist(err) {
+		write.ExpectedMissing = true
+		return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true}, nil
+	}
+	if err != nil {
+		return model.Operation{}, err
+	}
+	write.ReplaceExisting, write.ExpectedExisting, write.Backup = true, &precondition, true
+	return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true}, nil
+}
+
+func (p Provider) forceDelete(deletion profile.ConfigDelete) (model.Operation, error) {
+	destination, err := p.absoluteUserPath(deletion.Path)
+	if err != nil {
+		return model.Operation{}, err
+	}
+	precondition, err := configFilesystemPrecondition(destination)
+	if err != nil {
+		return model.Operation{}, err
+	}
+	return model.Operation{ID: "config.delete." + configOperationID(deletion.Path), Provider: "config", Action: "delete unknown target", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true}, nil
+}
+
+func configFilesystemPrecondition(path string) (model.FilesystemPrecondition, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return model.FilesystemPrecondition{}, err
+	}
+	precondition := model.FilesystemPrecondition{Mode: uint32(info.Mode().Perm())}
+	if info.Mode()&os.ModeSymlink != 0 {
+		precondition.Type = "symlink"
+		precondition.Target, err = os.Readlink(path)
+		return precondition, err
+	}
+	if info.IsDir() {
+		precondition.Type = "directory"
+	} else if info.Mode().IsRegular() {
+		precondition.Type = "file"
+	} else {
+		return precondition, fmt.Errorf("unsupported config target: %s", path)
+	}
+	precondition.Hash, err = content.HashFilesystemObject(path)
+	return precondition, err
+}
+
+func hashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 func isHyprConfigPath(path string) bool {
@@ -128,14 +451,15 @@ func Diff(saved profile.Configs, current any) []model.Change {
 	for _, c := range scan.Candidates {
 		if f, ok := files[c.Path]; ok {
 			delete(files, c.Path)
-			if c.UserHash != f.Hash {
+			if !matchesEffective(c.UserHash, c.UserMode, f.Hash, f.Mode) {
 				changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" differs"))
 			}
 			continue
 		}
 		if _, ok := deletes[c.Path]; ok {
+			d := deletes[c.Path]
 			delete(deletes, c.Path)
-			if c.Classification != ConfigDeletedBaseline {
+			if resolveDesiredDelete(d, c, true) != desiredSatisfied {
 				changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" deletion differs"))
 			}
 			continue
@@ -147,9 +471,7 @@ func Diff(saved profile.Configs, current any) []model.Change {
 	for path := range files {
 		changes = append(changes, configChange(model.ChangeRemove, path, "- config "+path+" missing"))
 	}
-	for path := range deletes {
-		changes = append(changes, configChange(model.ChangeRemove, path, "- config "+path+" tombstone missing"))
-	}
+	// A missing candidate is an already-applied tombstone.
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
 	return changes
 }
@@ -169,18 +491,78 @@ func Verify(saved profile.Configs, current any) model.VerificationResult {
 	missing := []string{}
 	for _, f := range saved.Files {
 		c, ok := byPath[f.Path]
-		if !ok || c.UserHash != f.Hash {
+		if !ok || !matchesEffective(c.UserHash, c.UserMode, f.Hash, f.Mode) {
 			missing = append(missing, "config:"+f.Path)
 		}
 	}
 	for _, d := range saved.Deletes {
 		c, ok := byPath[d.Path]
-		if !ok || c.Classification != ConfigDeletedBaseline {
+		if ok && resolveDesiredDelete(d, c, true) != desiredSatisfied {
 			missing = append(missing, "config:"+d.Path)
 		}
 	}
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+}
+
+// Diff evaluates overlay state using the same effective B/M candidate as Plan.
+func (p Provider) Diff(saved profile.Configs, scan ScanSummary) ([]model.Change, error) {
+	byPath := map[string]Candidate{}
+	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
+	}
+	changes := []model.Change{}
+	for _, f := range saved.Files {
+		c, ok := byPath[f.Path]
+		desired, err := p.resolveDesiredFile(f, c, ok)
+		if err != nil {
+			return nil, err
+		}
+		if desired.state != desiredSatisfied {
+			changes = append(changes, configChange(model.ChangeModify, f.Path, "~ config "+f.Path+" differs"))
+		}
+		delete(byPath, f.Path)
+	}
+	for _, d := range saved.Deletes {
+		c, ok := byPath[d.Path]
+		if ok && resolveDesiredDelete(d, c, true) != desiredSatisfied {
+			changes = append(changes, configChange(model.ChangeModify, d.Path, "~ config "+d.Path+" deletion differs"))
+		}
+		delete(byPath, d.Path)
+	}
+	for _, c := range byPath {
+		if c.Classification == ConfigAdded || c.Classification == ConfigModifiedBaseline {
+			changes = append(changes, configChange(model.ChangeAdd, c.Path, "+ config "+c.Path+" added"))
+		}
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
+	return changes, nil
+}
+
+// Verify evaluates overlay state using the same effective B/M candidate as Plan.
+func (p Provider) Verify(saved profile.Configs, scan ScanSummary) (model.VerificationResult, error) {
+	byPath := map[string]Candidate{}
+	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
+	}
+	missing := []string{}
+	for _, f := range saved.Files {
+		c, ok := byPath[f.Path]
+		desired, err := p.resolveDesiredFile(f, c, ok)
+		if err != nil {
+			return model.VerificationResult{}, err
+		}
+		if desired.state != desiredSatisfied {
+			missing = append(missing, "config:"+f.Path)
+		}
+	}
+	for _, d := range saved.Deletes {
+		if c, ok := byPath[d.Path]; ok && resolveDesiredDelete(d, c, true) != desiredSatisfied {
+			missing = append(missing, "config:"+d.Path)
+		}
+	}
+	sort.Strings(missing)
+	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}, nil
 }
 
 func (p Provider) Check(saved profile.Configs) error {

@@ -172,6 +172,118 @@ func TestFileWriteGeneratedContentPreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestFileWriteForceReplacementBacksUpObjectsAndRefusesChangedTarget(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		setup func(string)
+	}{
+		{"directory", func(destination string) {
+			if err := os.Mkdir(destination, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"symlink", func(destination string) {
+			if err := os.Symlink("target", destination); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+			if err := os.WriteFile(source, []byte("desired"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tt.setup(destination)
+			precondition := filesystemPreconditionForTest(t, destination)
+			journal, err := NewJournal(t.TempDir(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer journal.Close()
+			result, err := Execute(context.Background(), delayedRunner{}, model.RestorePlan{Operations: []model.Operation{{ID: "config.force", File: &model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}}}}, journal, time.Now, time.Second, nil)
+			if err != nil || len(result.Completed) != 1 || !result.Completed[0].Reversible {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if got, err := os.ReadFile(destination); err != nil || string(got) != "desired" {
+				t.Fatalf("destination=%q err=%v", got, err)
+			}
+			matches, err := filepath.Glob(filepath.Join(dir, ".destination.omarchy-blueprint-backup-*"))
+			if err != nil || len(matches) != 1 {
+				t.Fatalf("backups=%v err=%v", matches, err)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+	if err := os.WriteFile(source, []byte("desired"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("planned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	if err := os.WriteFile(destination, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	result, err := Execute(context.Background(), delayedRunner{}, model.RestorePlan{Operations: []model.Operation{{ID: "config.force.changed", File: &model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true}}}}, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "changed" {
+		t.Fatalf("destination=%q err=%v", got, err)
+	}
+}
+
+func TestReplacementOfSymlinkJournalsSiblingWithoutCopyingOrDereferencing(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	if err := os.WriteFile(external, []byte("external"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "destination")
+	if err := os.Symlink(external, destination); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source")
+	if err := os.WriteFile(source, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	action := model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, Backup: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "symlink", Target: target, Mode: uint32(info.Mode().Perm())}}
+	if err := writeFileAtomic("symlink.replace", action, journal, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(external); err != nil || string(got) != "external" {
+		t.Fatalf("external=%q err=%v", got, err)
+	}
+	if info, err := os.Lstat(destination); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("destination=%v err=%v", info, err)
+	}
+	entries, err := os.ReadFile(journal.Path)
+	if err != nil || strings.Contains(string(entries), ".backup") {
+		t.Fatalf("journal=%q err=%v", entries, err)
+	}
+}
+
 func TestFileWriteGeneratedContentRejectsInvalidSourcesAndHash(t *testing.T) {
 	cases := []model.FileWrite{
 		{Generated: true, Source: "unexpected", Content: []byte("x"), SourceHash: generatedHash([]byte("x")), ExpectedMissing: true},
@@ -190,6 +302,40 @@ func TestFileWriteGeneratedContentRejectsInvalidSourcesAndHash(t *testing.T) {
 		if err != nil || len(result.Failed) != 1 {
 			t.Fatalf("action=%#v result=%#v err=%v", action, result, err)
 		}
+	}
+}
+
+func TestReplacementInstallDoesNotOverwriteConcurrentNewWork(t *testing.T) {
+	dir := t.TempDir()
+	source, destination := filepath.Join(dir, "source"), filepath.Join(dir, "destination")
+	if err := os.WriteFile(source, []byte("desired"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	originalInstaller := fileWriteNoReplace
+	fileWriteNoReplace = func(old, new string) error {
+		if err := os.WriteFile(new, []byte("concurrent"), 0o600); err != nil {
+			return err
+		}
+		return renameNoReplace(old, new)
+	}
+	defer func() { fileWriteNoReplace = originalInstaller }()
+	err := executeModeFileWrite(t, model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true})
+	if err == nil {
+		t.Fatal("replacement unexpectedly succeeded")
+	}
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "concurrent" {
+		t.Fatalf("destination=%q err=%v", got, err)
+	}
+	backups, err := filepath.Glob(filepath.Join(dir, ".destination.omarchy-blueprint-backup-*"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups=%v err=%v", backups, err)
+	}
+	if got, err := os.ReadFile(backups[0]); err != nil || string(got) != "original" {
+		t.Fatalf("backup=%q err=%v", got, err)
 	}
 }
 
@@ -500,7 +646,7 @@ func TestExecuteRejectsOperationsWithMultipleActions(t *testing.T) {
 		ID: "invalid", Command: []string{"other"}, Copy: &model.Copy{Source: t.TempDir(), Destination: destination},
 	}}}
 	result, err := Execute(context.Background(), runner, plan, journal, time.Now, time.Second, nil)
-	if err != nil || len(result.Failed) != 1 || len(result.Completed) != 0 {
+	if err == nil || len(result.Failed) != 0 || len(result.Completed) != 0 {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	if len(runner.calls) != 0 {
@@ -529,8 +675,17 @@ func TestExecuteOperationActionExclusivityIncludesDirectoryAndSymlink(t *testing
 			want: true,
 		},
 		{
+			name: "delete only",
+			op:   model.Operation{ID: "delete", Delete: &model.FileDelete{Destination: filepath.Join(root, "missing"), ExpectedMissing: true}},
+			want: true,
+		},
+		{
 			name: "file and symlink",
 			op:   model.Operation{ID: "invalid", File: &model.FileWrite{}, Symlink: &model.SymlinkWrite{}},
+		},
+		{
+			name: "file and delete",
+			op:   model.Operation{ID: "invalid", File: &model.FileWrite{}, Delete: &model.FileDelete{}},
 		},
 		{
 			name: "copy and directory",
@@ -545,6 +700,213 @@ func TestExecuteOperationActionExclusivityIncludesDirectoryAndSymlink(t *testing
 			}
 		})
 	}
+}
+
+func TestExecuteFileDeleteBacksUpRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(destination, []byte("saved configuration\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "config.delete", Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}}}}
+	result, err := Execute(context.Background(), delayedRunner{}, plan, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Completed) != 1 || !result.Completed[0].Reversible {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination remains: %v", err)
+	}
+	backup := siblingBackupForTest(t, dir, filepath.Base(destination))
+	if content, err := os.ReadFile(backup); err != nil || string(content) != "saved configuration\n" {
+		t.Fatalf("backup=%q err=%v", content, err)
+	}
+	if info, err := os.Stat(backup); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode=%v err=%v", info.Mode(), err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadFile(journal.Path)
+	if err != nil || !strings.Contains(string(entries), "BACKUP_CREATED") || !strings.Contains(string(entries), backup) {
+		t.Fatalf("journal=%q err=%v", entries, err)
+	}
+}
+
+func TestExecuteFileDeletePreservesChangedDestination(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(destination, []byte("A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	if err := os.WriteFile(destination, []byte("B"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	result, err := Execute(context.Background(), delayedRunner{}, model.RestorePlan{Operations: []model.Operation{{ID: "config.delete", Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true}}}}, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if content, err := os.ReadFile(destination); err != nil || string(content) != "B" {
+		t.Fatalf("destination=%q err=%v", content, err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(destination)); err != nil || len(entries) != 1 {
+		t.Fatalf("unexpected backup: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestFileDeleteBacksUpDirectoriesAndSymlinksWithoutFollowing(t *testing.T) {
+	for _, setup := range []struct {
+		name  string
+		make  func(t *testing.T, destination string)
+		check func(t *testing.T, backup string)
+	}{
+		{"directory", func(t *testing.T, destination string) {
+			if err := os.Mkdir(destination, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(destination, "content"), []byte("saved"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, backup string) {
+			if content, err := os.ReadFile(filepath.Join(backup, "content")); err != nil || string(content) != "saved" {
+				t.Fatalf("backup content=%q err=%v", content, err)
+			}
+		}},
+		{"symlink", func(t *testing.T, destination string) {
+			if err := os.Symlink("external-target", destination); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, backup string) {
+			if target, err := os.Readlink(backup); err != nil || target != "external-target" {
+				t.Fatalf("backup target=%q err=%v", target, err)
+			}
+		}},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			dir, destination := t.TempDir(), ""
+			destination = filepath.Join(dir, "config")
+			setup.make(t, destination)
+			precondition := filesystemPreconditionForTest(t, destination)
+			journal, err := NewJournal(t.TempDir(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer journal.Close()
+			if err := executeFileDeleteWithJournal("config.delete", model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true}, journal, time.Now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatalf("destination remains: %v", err)
+			}
+			setup.check(t, siblingBackupForTest(t, dir, "config"))
+		})
+	}
+}
+
+func TestFileDeleteRejectsParentSymlinkWithoutMovingObject(t *testing.T) {
+	root, external := t.TempDir(), t.TempDir()
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(parent, "config")
+	if err := os.WriteFile(destination, []byte("approved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	movedParent := filepath.Join(root, "moved-parent")
+	if err := os.Rename(parent, movedParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeFileDeleteWithJournal("config.delete", model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, nil, time.Now); err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(movedParent, "config")); err != nil || string(content) != "approved" {
+		t.Fatalf("approved object=%q err=%v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "config")); !os.IsNotExist(err) {
+		t.Fatalf("external object was touched: %v", err)
+	}
+}
+
+func TestFileDeleteKeepsRecreatedDestinationWhenRollbackBlocked(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "config")
+	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precondition := filesystemPreconditionForTest(t, destination)
+	old := fileDeleteCompleter
+	defer func() { fileDeleteCompleter = old }()
+	fileDeleteCompleter = func() error {
+		if err := os.WriteFile(destination, []byte("new user work"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("completion failed")
+	}
+	err := executeFileDeleteWithJournal("config.delete", model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true}, nil, time.Now)
+	if err == nil || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("err=%v", err)
+	}
+	if content, err := os.ReadFile(destination); err != nil || string(content) != "new user work" {
+		t.Fatalf("destination=%q err=%v", content, err)
+	}
+	backup := siblingBackupForTest(t, dir, "config")
+	if content, err := os.ReadFile(backup); err != nil || string(content) != "original" {
+		t.Fatalf("backup=%q err=%v", content, err)
+	}
+}
+
+func filesystemPreconditionForTest(t *testing.T, path string) model.FilesystemPrecondition {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	precondition := model.FilesystemPrecondition{Mode: uint32(info.Mode().Perm())}
+	if info.Mode()&os.ModeSymlink != 0 {
+		precondition.Type = "symlink"
+		precondition.Target, err = os.Readlink(path)
+	} else if info.IsDir() {
+		precondition.Type = "directory"
+		precondition.Hash, err = content.HashFilesystemObject(path)
+	} else {
+		precondition.Type = "file"
+		precondition.Hash, err = content.HashFilesystemObject(path)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return precondition
+}
+
+func siblingBackupForTest(t *testing.T, dir, base string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "." + base + ".omarchy-blueprint-backup-"
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			return filepath.Join(dir, entry.Name())
+		}
+	}
+	t.Fatalf("backup with prefix %q not found", prefix)
+	return ""
 }
 
 func TestDirectoryCreateRejectsSymlinkParent(t *testing.T) {

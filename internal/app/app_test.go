@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -754,9 +755,30 @@ func TestConfigStatusDriftAndRestoreWithBackup(t *testing.T) {
 	if journalPath == "" {
 		t.Fatalf("restore output missing journal path = %q", out)
 	}
-	entries, err := os.ReadDir(strings.TrimSuffix(journalPath, ".jsonl") + ".backup")
-	if err != nil || len(entries) == 0 {
-		t.Fatalf("backup missing: %v entries=%d", err, len(entries))
+	journal, err := os.Open(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	var backup string
+	decoder := json.NewDecoder(journal)
+	for {
+		var event restore.Event
+		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatal(err)
+		}
+		if event.Type == "BACKUP_CREATED" {
+			backup = event.Message
+		}
+	}
+	if filepath.Dir(backup) != filepath.Join(userRoot, "hypr") {
+		t.Fatalf("backup path=%q", backup)
+	}
+	if b, err := os.ReadFile(backup); err != nil || string(b) != "default" {
+		t.Fatalf("backup=%q err=%v", b, err)
 	}
 }
 
@@ -1269,7 +1291,7 @@ func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model
 	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: desired.Hash, BaselineHash: capturedBaseline.Hash}}
 	plan := model.RestorePlan{Operations: []model.Operation{
 		{ID: "shell.write", Provider: "shell", Action: "write", File: &model.FileWrite{}},
-		{ID: "shell.restart", Provider: "shell", Action: "restart", DependsOn: []string{"shell.write"}},
+		{ID: "shell.restart", Provider: "shell", Action: "restart", Command: []string{"omarchy-restart-shell"}, DependsOn: []string{"shell.write"}},
 	}}
 	providers := []stateProvider{shellStateProvider{deps: deps, opt: opt}}
 	return deps, opt, data, plan, providers

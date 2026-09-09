@@ -34,5 +34,83 @@ func ValidatePlan(plan model.RestorePlan) error {
 		}
 		seen[op.ID] = i
 	}
+	for _, op := range plan.Operations {
+		if err := validateOperationAction(op); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOperationAction(op model.Operation) error {
+	actions := 0
+	if len(op.Command) > 0 {
+		actions++
+	}
+	if op.Copy != nil {
+		actions++
+	}
+	if op.File != nil {
+		actions++
+	}
+	if op.Delete != nil {
+		actions++
+	}
+	if op.Directory != nil {
+		actions++
+	}
+	if op.Symlink != nil {
+		actions++
+	}
+	if actions != 1 {
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, or symlink action", op.ID)
+	}
+	if op.Delete != nil {
+		return validateFileDelete(op.ID, *op.Delete)
+	}
+	if op.File != nil {
+		return validateFileWrite(op.ID, *op.File)
+	}
+	return nil
+}
+
+func validateFileWrite(operation string, action model.FileWrite) error {
+	if action.ReplaceExisting {
+		if action.ExpectedMissing || action.ExpectedExisting == nil || !action.Backup {
+			return fmt.Errorf("file replacement requires existing precondition and backup: %s", operation)
+		}
+		switch action.ExpectedExisting.Type {
+		case "file", "directory", "symlink":
+		default:
+			return fmt.Errorf("file replacement precondition has invalid type %q: %s", action.ExpectedExisting.Type, operation)
+		}
+		return nil
+	}
+	if action.ExpectedExisting != nil {
+		return fmt.Errorf("file write existing-object precondition requires replacement: %s", operation)
+	}
+	return nil
+}
+
+func validateFileDelete(operation string, action model.FileDelete) error {
+	if strings.TrimSpace(action.Destination) == "" {
+		return fmt.Errorf("file delete destination is required: %s", operation)
+	}
+	if action.ExpectedMissing && action.ExpectedExisting != nil {
+		return fmt.Errorf("file delete requires exactly one destination precondition: %s", operation)
+	}
+	if !action.ExpectedMissing && action.ExpectedExisting == nil {
+		return fmt.Errorf("file delete requires exactly one destination precondition: %s", operation)
+	}
+	if action.ExpectedMissing && action.Backup {
+		return fmt.Errorf("file delete cannot back up an expected-missing destination: %s", operation)
+	}
+	if action.ExpectedExisting != nil {
+		switch action.ExpectedExisting.Type {
+		case "file", "directory", "symlink":
+		default:
+			return fmt.Errorf("file delete precondition has invalid type %q: %s", action.ExpectedExisting.Type, operation)
+		}
+	}
 	return nil
 }

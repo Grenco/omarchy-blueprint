@@ -560,10 +560,10 @@ func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Ch
 	if err != nil {
 		return nil, err
 	}
-	return configprovider.Diff(d.Config, current), nil
+	return provider.Diff(d.Config, current)
 }
 
-func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -572,7 +572,7 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, configprovider.PlanOptions{Force: options.Force})
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -588,7 +588,7 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.Ve
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return configprovider.Verify(d.Config, current), nil
+	return provider.Verify(d.Config, current)
 }
 
 func (p configStateProvider) Check(_ context.Context, d profile.Data) error {

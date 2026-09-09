@@ -77,3 +77,18 @@ func TestScanExcludesBothUserAndBaselineEntries(t *testing.T) {
 		t.Fatalf("excluded candidates=%#v", scan.Candidates)
 	}
 }
+
+func TestScanIgnoresBlueprintBackupFilesAndDirectories(t *testing.T) {
+	user, baseline := t.TempDir(), t.TempDir()
+	for _, root := range []string{user, baseline} {
+		writeFile(t, filepath.Join(root, ".config.omarchy-blueprint-backup-1"), "backup")
+		writeFile(t, filepath.Join(root, ".anything.omarchy-blueprint-backup-2", "nested"), "backup")
+	}
+	scan, err := (Provider{UserRoot: user, BaselineRoot: baseline}).Scan(profile.Configs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Candidates) != 0 {
+		t.Fatalf("backup candidates=%#v", scan.Candidates)
+	}
+}

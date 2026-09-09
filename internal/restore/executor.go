@@ -137,7 +137,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			return execution, err
 		}
 		completed := op
-		if (completed.File != nil && completed.File.Backup) || (completed.Symlink != nil && completed.Symlink.Backup) {
+		if (completed.File != nil && completed.File.Backup) || (completed.Delete != nil && completed.Delete.Backup) || (completed.Symlink != nil && completed.Symlink.Backup) {
 			completed.Reversible = true
 		}
 		execution.Completed = append(execution.Completed, completed)
@@ -160,6 +160,9 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.File != nil {
 		actions++
 	}
+	if op.Delete != nil {
+		actions++
+	}
 	if op.Directory != nil {
 		actions++
 	}
@@ -167,13 +170,16 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 		actions++
 	}
 	if actions != 1 {
-		return fmt.Errorf("operation %s must contain exactly one command, copy, file, directory, or symlink action", op.ID)
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, or symlink action", op.ID)
 	}
 	if op.Copy != nil {
 		return copyTreeExclusive(*op.Copy)
 	}
 	if op.File != nil {
 		return writeFileAtomic(op.ID, *op.File, journal, now)
+	}
+	if op.Delete != nil {
+		return executeFileDeleteWithJournal(op.ID, *op.Delete, journal, now)
 	}
 	if op.Directory != nil {
 		return executeDirectoryCreate(*op.Directory)
@@ -185,6 +191,71 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	return err
 }
 
+func executeFileDeleteWithJournal(operation string, action model.FileDelete, journal *Journal, now func() time.Time) error {
+	if err := validateFileDelete(operation, action); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if action.ExpectedMissing {
+		if _, err := os.Lstat(action.Destination); err == nil {
+			return fmt.Errorf("file delete destination already exists: %s", action.Destination)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+		return err
+	}
+	if !action.Backup {
+		if action.RejectSymlinkParents {
+			if err := validateSymlinkParents(action.Destination); err != nil {
+				return err
+			}
+		}
+		if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+			return err
+		}
+		return os.Remove(action.Destination)
+	}
+	backup, err := reserveSiblingBackupPath(action.Destination)
+	if err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+		return err
+	}
+	if err := renameNoReplace(action.Destination, backup); err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		if err := renameNoReplace(backup, action.Destination); err != nil {
+			return fmt.Errorf("%v; rollback failed: %w", cause, err)
+		}
+		return cause
+	}
+	if journal != nil {
+		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+			return rollback(err)
+		}
+	}
+	if err := fileDeleteCompleter(); err != nil {
+		return rollback(err)
+	}
+	return nil
+}
+
+var fileDeleteCompleter = func() error { return nil }
+
 func writeFileAtomic(operation string, action model.FileWrite, journal *Journal, now func() time.Time) error {
 	if action.SourceHash == "" {
 		return fmt.Errorf("file write source hash is required: %s", operation)
@@ -195,7 +266,11 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	if action.ExpectedMode != nil && *action.ExpectedMode > 0o777 {
 		return fmt.Errorf("file write expected mode is invalid: %04o", *action.ExpectedMode)
 	}
-	if action.ExpectedMissing == (action.ExpectedHash != "") {
+	if action.ReplaceExisting {
+		if action.ExpectedMissing || action.ExpectedExisting == nil || !action.Backup {
+			return fmt.Errorf("file replacement requires existing precondition and backup: %s", operation)
+		}
+	} else if action.ExpectedMissing == (action.ExpectedHash != "") {
 		return fmt.Errorf("file write requires exactly one destination precondition: %s", operation)
 	}
 	if action.ExpectedMissing && action.ExpectedMode != nil {
@@ -218,6 +293,9 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	if _, err := source.Reader.Seek(0, io.SeekStart); err != nil {
 		return err
+	}
+	if action.ReplaceExisting {
+		return replaceFileWriteWithJournal(operation, action, journal, now)
 	}
 
 	destinationInfo, err := validateDestination(action)
@@ -286,7 +364,11 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 			return err
 		}
 	}
-	if err := os.Rename(tempPath, action.Destination); err != nil {
+	if action.ExpectedMissing {
+		if err := fileWriteNoReplace(tempPath, action.Destination); err != nil {
+			return err
+		}
+	} else if err := os.Rename(tempPath, action.Destination); err != nil {
 		return err
 	}
 	directory, err := os.Open(parent)
@@ -295,6 +377,60 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+// fileWriteNoReplace is a test seam for the final expected-missing install.
+var fileWriteNoReplace = renameNoReplace
+
+func replaceFileWriteWithJournal(operation string, action model.FileWrite, journal *Journal, now func() time.Time) error {
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+		return err
+	}
+	backup, err := reserveSiblingBackupPath(action.Destination)
+	if err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+		return err
+	}
+	if err := renameNoReplace(action.Destination, backup); err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		if err := renameNoReplace(backup, action.Destination); err != nil {
+			return fmt.Errorf("%v; rollback failed: %w", cause, err)
+		}
+		return cause
+	}
+	if journal != nil {
+		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+			return rollback(err)
+		}
+	}
+	install := action
+	install.ReplaceExisting = false
+	install.ExpectedExisting = nil
+	install.ExpectedHash = ""
+	install.ExpectedMode = nil
+	install.ExpectedMissing = true
+	install.Backup = false
+	if err := writeFileAtomic(operation, install, journal, now); err != nil {
+		if _, statErr := os.Lstat(action.Destination); os.IsNotExist(statErr) {
+			return rollback(err)
+		}
+		return fmt.Errorf("%v; backup retained at %s", err, backup)
+	}
+	return nil
 }
 
 func validateSymlinkParents(destination string) error {
@@ -522,7 +658,7 @@ func renameNoReplace(old, new string) error {
 func validateFilesystemPrecondition(path string, expected model.FilesystemPrecondition) error {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return fmt.Errorf("symlink replacement precondition failed: %w", err)
+		return fmt.Errorf("filesystem precondition failed: %w", err)
 	}
 	actual := model.FilesystemPrecondition{Mode: uint32(info.Mode().Perm())}
 	if info.Mode()&os.ModeSymlink != 0 {
@@ -535,10 +671,10 @@ func validateFilesystemPrecondition(path string, expected model.FilesystemPrecon
 		actual.Type = "file"
 		actual.Hash, err = content.HashFilesystemObject(path)
 	} else {
-		return fmt.Errorf("symlink replacement precondition failed: unsupported object")
+		return fmt.Errorf("filesystem precondition failed: unsupported object")
 	}
 	if err != nil || actual != expected {
-		return fmt.Errorf("symlink replacement precondition failed: destination changed")
+		return fmt.Errorf("filesystem precondition failed: destination changed")
 	}
 	return nil
 }

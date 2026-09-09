@@ -60,3 +60,40 @@ func TestValidatePlanRejectsBlankDependency(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestValidatePlanAcceptsFileDeleteAsOnlyAction(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		ID:     "config.delete",
+		Delete: &model.FileDelete{Destination: "/tmp/config", ExpectedExisting: &model.FilesystemPrecondition{Type: "file"}},
+	}}}
+	if err := ValidatePlan(plan); err != nil {
+		t.Fatalf("valid delete rejected: %v", err)
+	}
+}
+
+func TestValidatePlanRejectsMultipleActionsIncludingFileDelete(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		ID:     "config.delete",
+		File:   &model.FileWrite{},
+		Delete: &model.FileDelete{Destination: "/tmp/config", ExpectedExisting: &model.FilesystemPrecondition{Type: "file"}},
+	}}}
+	if err := ValidatePlan(plan); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestValidatePlanRejectsInvalidFileDelete(t *testing.T) {
+	cases := []model.FileDelete{
+		{},
+		{Destination: "/tmp/config", ExpectedMissing: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "file"}},
+		{Destination: "/tmp/config"},
+		{Destination: "/tmp/config", ExpectedExisting: &model.FilesystemPrecondition{Type: "other"}},
+		{Destination: "/tmp/config", ExpectedMissing: true, Backup: true},
+	}
+	for _, action := range cases {
+		plan := model.RestorePlan{Operations: []model.Operation{{ID: "config.delete", Delete: &action}}}
+		if err := ValidatePlan(plan); err == nil {
+			t.Fatalf("invalid delete accepted: %#v", action)
+		}
+	}
+}

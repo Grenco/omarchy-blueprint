@@ -40,6 +40,18 @@ func IsOmarchySetupBackupName(name string) bool {
 	i := strings.Index(name, ".backup-")
 	return i > 0 && i+len(".backup-") < len(name)
 }
+func IsBlueprintBackupName(name string) bool {
+	i := strings.LastIndex(name, ".omarchy-blueprint-backup-")
+	if !strings.HasPrefix(name, ".") || i <= 1 || i+len(".omarchy-blueprint-backup-") == len(name) {
+		return false
+	}
+	for _, r := range name[i+len(".omarchy-blueprint-backup-"):] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
 func IsExcludedConfigPath(path string, excluded []string) bool {
 	path, err := profile.NormalizeConfigPath(path)
 	if err != nil {
@@ -59,7 +71,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyExcluded}
 	}
 	name := filepath.Base(path)
-	if IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name) {
+	if IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name) || IsBlueprintBackupName(name) {
 		return PolicyDecision{PolicyOmarchyUpdateBackup}
 	}
 	if IsExcludedConfigPath(path, excluded) {
