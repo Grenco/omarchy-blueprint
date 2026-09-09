@@ -74,6 +74,23 @@ func TestDiscoverLinksFindsDirectHomeAndLocalBin(t *testing.T) {
 	}
 }
 
+func TestDiscoverLinksSkipsDirectHomeBackupSymlink(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "dotfiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "dotfiles", "zshrc"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("dotfiles/zshrc", filepath.Join(home, ".zshrc.omarchy-blueprint-backup-0")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverLinks(home, DefaultLinkSearchRoots(home), []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}}, ownership.Index{}, nil)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("links=%#v err=%v", got, err)
+	}
+}
+
 func TestDiscoverLinksDoesNotFollowSymlinkDirectoriesAndRespectsOwnership(t *testing.T) {
 	home := t.TempDir()
 	target := filepath.Join(home, "dotfiles", "target")

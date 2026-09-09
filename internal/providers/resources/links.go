@@ -122,6 +122,9 @@ func linkEntries(root LinkSearchRoot) ([]string, error) {
 		}
 		var paths []string
 		for _, entry := range entries {
+			if isBlueprintBackupName(entry.Name()) {
+				continue
+			}
 			if entry.Type()&os.ModeSymlink != 0 {
 				paths = append(paths, filepath.Join(root.Path, entry.Name()))
 			}

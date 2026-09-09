@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -100,13 +101,21 @@ func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
 	}
 	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
 	if _, user, err := p.deps.ConfigDirs(); err == nil {
-		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "config", Path: user, Recursive: true})
+		for _, spec := range configprovider.DefaultSpecs {
+			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "config", Path: filepath.Join(user, spec.Path)})
+		}
 	}
 	if _, user, err := p.deps.ShellPaths(); err == nil {
 		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "shell", Path: user})
 	}
 	if hooks, err := p.deps.HooksDir(); err == nil {
 		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "hooks", Path: hooks, Recursive: true, DelegateSymlinks: true})
+	}
+	if _, themes, err := p.deps.ThemeDirs(); err == nil {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "themes", Path: themes, Recursive: true})
+	}
+	if plugins, err := p.deps.PluginDir(); err == nil {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "plugins", Path: plugins, Recursive: true})
 	}
 	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: p.opt.profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims}, nil
 }
