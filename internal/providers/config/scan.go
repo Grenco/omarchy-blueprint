@@ -53,7 +53,7 @@ func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
 		if root == "" {
 			continue
 		}
-		if err := p.walkRoot(root, side, saved.Excluded, entries); err != nil {
+		if err := p.walkRoot(root, p.configRootPrefix(), side, saved.Excluded, entries); err != nil {
 			return ScanSummary{}, err
 		}
 	}
@@ -91,7 +91,7 @@ func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
 	return result, nil
 }
 
-func (p Provider) walkRoot(root string, user bool, excluded []string, entries map[string]map[bool]treeEntry) error {
+func (p Provider) walkRoot(root, prefix string, user bool, excluded []string, entries map[string]map[bool]treeEntry) error {
 	if _, err := os.Lstat(root); os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
@@ -109,8 +109,8 @@ func (p Provider) walkRoot(root string, user bool, excluded []string, entries ma
 			return err
 		}
 		logical := filepath.ToSlash(rel)
-		if p.hasHomeNamespace() && filepath.Base(filepath.Clean(root)) == ".config" {
-			logical = ".config/" + logical
+		if prefix != "" {
+			logical = prefix + "/" + logical
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
@@ -224,6 +224,12 @@ func (p Provider) homeDir() string {
 }
 func (p Provider) hasHomeNamespace() bool {
 	return p.HomeDir != "" && filepath.Clean(filepath.Join(p.HomeDir, ".config")) == filepath.Clean(p.UserRoot)
+}
+func (p Provider) configRootPrefix() string {
+	if p.hasHomeNamespace() {
+		return ".config"
+	}
+	return ""
 }
 func (p Provider) absoluteUserPath(logical string) (string, error) {
 	if logical == "" {

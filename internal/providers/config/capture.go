@@ -18,6 +18,9 @@ type CaptureResult struct {
 	Changes []model.Change
 }
 
+// beforeStage is used by package tests to model a source changing after scan.
+var beforeStage func()
+
 // Capture writes both sparse snapshot trees from one staged payload. Snapshots
 // are re-hashed after copying, so metadata always describes persisted bytes.
 func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
@@ -28,6 +31,9 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if err != nil {
 		return CaptureResult{}, err
 	}
+	if beforeStage != nil {
+		beforeStage()
+	}
 	parent := filepath.Join(p.ProfileDir, "config")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return CaptureResult{}, err
@@ -37,7 +43,11 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 		return CaptureResult{}, err
 	}
 	defer os.RemoveAll(stage)
-	state := profile.Configs{Excluded: append([]string(nil), saved.Excluded...)}
+	excluded, err := normalizeExclusions(saved.Excluded)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	state := profile.Configs{Excluded: excluded}
 	for _, c := range scan.Candidates {
 		switch c.Classification {
 		case ConfigAdded, ConfigModifiedBaseline:
@@ -49,6 +59,9 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 			if err != nil {
 				return CaptureResult{}, fmt.Errorf("capture %s: %w", c.Path, err)
 			}
+			if hash != c.UserHash || mode != c.UserMode {
+				return CaptureResult{}, fmt.Errorf("capture %s: source changed since scan", c.Path)
+			}
 			file := profile.ConfigFile{Path: c.Path, Hash: hash, Mode: mode}
 			if c.Classification == ConfigModifiedBaseline {
 				base, err := p.absoluteBaselinePath(c.Path)
@@ -58,6 +71,9 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 				baseHash, baseMode, err := copySnapshot(stage, "baseline", c.Path, base)
 				if err != nil {
 					return CaptureResult{}, fmt.Errorf("capture baseline %s: %w", c.Path, err)
+				}
+				if baseHash != c.BaselineHash || baseMode != c.BaselineMode {
+					return CaptureResult{}, fmt.Errorf("capture baseline %s: source changed since scan", c.Path)
 				}
 				file.BaselineHash, file.BaselineMode = baseHash, baseMode
 			}
@@ -71,6 +87,9 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 			if err != nil {
 				return CaptureResult{}, fmt.Errorf("capture baseline %s: %w", c.Path, err)
 			}
+			if hash != c.BaselineHash || mode != c.BaselineMode {
+				return CaptureResult{}, fmt.Errorf("capture baseline %s: source changed since scan", c.Path)
+			}
 			state.Deletes = append(state.Deletes, profile.ConfigDelete{Path: c.Path, BaselineHash: hash, BaselineMode: mode})
 		}
 	}
@@ -83,6 +102,13 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 }
 
 func copySnapshot(stage, tree, logical, source string) (string, string, error) {
+	sensitive, err := hasSensitiveContent(source)
+	if err != nil {
+		return "", "", err
+	}
+	if sensitive {
+		return "", "", fmt.Errorf("sensitive content")
+	}
 	f, info, err := content.OpenRegularFile(source)
 	if err != nil {
 		return "", "", err
@@ -106,11 +132,38 @@ func copySnapshot(stage, tree, logical, source string) (string, string, error) {
 	if err := os.Chmod(target, info.Mode().Perm()); err != nil {
 		return "", "", err
 	}
+	sensitive, err = hasSensitiveContent(target)
+	if err != nil {
+		return "", "", err
+	}
+	if sensitive {
+		return "", "", fmt.Errorf("sensitive content")
+	}
 	hash, err := content.HashRegularFile(target)
 	if err != nil {
 		return "", "", err
 	}
 	return hash, fmt.Sprintf("%04o", info.Mode().Perm()), nil
+}
+
+func normalizeExclusions(exclusions []string) ([]string, error) {
+	if len(exclusions) == 0 {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(exclusions))
+	for _, exclusion := range exclusions {
+		path, err := profile.NormalizeConfigPath(exclusion)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[path] {
+			seen[path] = true
+			result = append(result, path)
+		}
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func swapCaptureTrees(stage, parent string) error {

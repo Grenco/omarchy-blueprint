@@ -20,6 +20,32 @@ func TestVerifyAcceptsTargetOnlyConfigAndRequiresTombstone(t *testing.T) {
 	}
 }
 
+func TestPlanOverlayDefersTombstoneRestore(t *testing.T) {
+	root, profileDir := t.TempDir(), t.TempDir()
+	path := ".config/example/default.conf"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base")
+	baseHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	p := Provider{UserRoot: root, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+	plan, err := p.PlanOverlay(profile.Configs{Deletes: []profile.ConfigDelete{{Path: path, BaselineHash: baseHash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: baseHash, BaselineHash: baseHash}}}, 8, "old", "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 {
+		t.Fatalf("tombstone created operations=%#v", plan.Operations)
+	}
+}
+
+func TestCheckRejectsSensitiveDesiredSnapshot(t *testing.T) {
+	root, profileDir := t.TempDir(), t.TempDir()
+	path := "safe.conf"
+	snapshot := filepath.Join(profileDir, "config", "files", path)
+	writeFile(t, snapshot, "api_token: abcdefghijklmnopqrstuvwxyz\n")
+	p := Provider{UserRoot: root, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+	if err := p.Check(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: hashOf(t, snapshot)}}}); err == nil {
+		t.Fatal("sensitive desired snapshot accepted")
+	}
+}
+
 func TestCheckRejectsStrongerOwnership(t *testing.T) {
 	root := t.TempDir()
 	profileDir := t.TempDir()

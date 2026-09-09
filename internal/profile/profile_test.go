@@ -189,7 +189,6 @@ func TestSaveRejectsNonCanonicalAndOverlappingConfigState(t *testing.T) {
 	for _, configs := range []Configs{
 		{Files: []ConfigFile{{Path: "a/../b", Hash: "x"}}},
 		{Files: []ConfigFile{{Path: ".config/a", Hash: "x"}}, Deletes: []ConfigDelete{{Path: ".config/a", BaselineHash: "x"}}},
-		{Excluded: []string{".config/a", ".config/a"}},
 	} {
 		d := New("test", time.Unix(0, 0))
 		d.Config = configs
@@ -208,7 +207,11 @@ func TestLoadSchema7MigratesLegacyConfigPaths(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config", "config.toml"), []byte("[[file]]\npath = 'hypr/bindings.lua'\nhash = 'x'\n"), 0o644); err != nil {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schema7-config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "config.toml"), fixture, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Load(dir)

@@ -35,3 +35,47 @@ func TestCaptureStoresAddedModifiedAndTombstoneSparsely(t *testing.T) {
 		t.Fatal("unchanged snapshot persisted")
 	}
 }
+
+func TestCaptureDoesNotPersistSensitiveContent(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(user, "harmless.conf"), "token = 'abcdefghijklmnopqrstuvwxyz'\n")
+	_, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{})
+	if err == nil {
+		t.Fatal("sensitive content captured")
+	}
+}
+
+func TestCaptureAbortsWhenSourceChangesAfterScan(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	path := filepath.Join(user, "settings.conf")
+	writeFile(t, path, "before")
+	beforeStage = func() { writeFile(t, path, "after") }
+	t.Cleanup(func() { beforeStage = nil })
+	_, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{})
+	if err == nil {
+		t.Fatal("changed source captured")
+	}
+}
+
+func TestCaptureDeduplicatesExclusions(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{Excluded: []string{"discord", "discord"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Excluded) != 1 || result.State.Excluded[0] != "discord" {
+		t.Fatalf("excluded=%#v", result.State.Excluded)
+	}
+}
+
+func TestCaptureDoesNotTombstoneBaselineBackup(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "settings.conf.bak.20260909"), "backup")
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Deletes) != 0 {
+		t.Fatalf("backup recorded as tombstone=%#v", result.State.Deletes)
+	}
+}

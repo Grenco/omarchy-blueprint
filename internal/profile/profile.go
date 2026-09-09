@@ -444,6 +444,11 @@ func Validate(d Data) error {
 			return err
 		}
 	}
+	for _, excluded := range d.Config.Excluded {
+		if err := ValidateConfigPath(excluded); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -550,11 +555,10 @@ func normalizeConfigs(config *Configs) error {
 		if err != nil {
 			return err
 		}
-		if seenExcluded[path] {
-			return fmt.Errorf("duplicate config exclusion %q", path)
+		if !seenExcluded[path] {
+			seenExcluded[path] = true
+			excluded = append(excluded, path)
 		}
-		seenExcluded[path] = true
-		excluded = append(excluded, path)
 	}
 	sort.Strings(excluded)
 	config.Excluded = excluded

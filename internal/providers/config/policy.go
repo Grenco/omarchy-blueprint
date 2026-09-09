@@ -3,9 +3,15 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+)
+
+var (
+	pemPrivateKey   = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
+	structuredToken = regexp.MustCompile(`(?im)^\s*["']?(?:api_token|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
 )
 
 const MaxAutomaticConfigFileSize int64 = 16 << 20
@@ -83,4 +89,15 @@ func sensitiveConfigPath(path string) bool {
 		}
 	}
 	return strings.HasPrefix(path, ".config/gcloud/")
+}
+
+// hasSensitiveContent rejects high-confidence credential material before it is
+// persisted in a profile, even when its filename looks harmless.
+func hasSensitiveContent(path string) (bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	content := string(b)
+	return pemPrivateKey.MatchString(content) || structuredToken.MatchString(content), nil
 }

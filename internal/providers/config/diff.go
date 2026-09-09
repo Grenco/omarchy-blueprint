@@ -46,8 +46,8 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 }
 
 // PlanOverlay restores sparse HOME-relative snapshots only where the target is
-// absent or still matches the captured Omarchy baseline. Tombstones use the
-// same proof before removing a baseline file.
+// absent or still matches the captured Omarchy baseline. Tombstones remain
+// persisted desired state, but Slice A does not mutate live files for them.
 func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema int, from, to string) (model.RestorePlan, error) {
 	if err := p.Check(saved); err != nil {
 		return model.RestorePlan{}, err
@@ -89,29 +89,6 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 		id := "config.write." + configOperationID(file.Path)
 		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: model.RiskMedium, Reversible: true})
 		if isHyprConfigPath(file.Path) {
-			reloadDependencies = append(reloadDependencies, id)
-		}
-	}
-	for _, deleted := range saved.Deletes {
-		candidate, ok := byPath[deleted.Path]
-		if !ok || candidate.UserHash == "" {
-			continue
-		}
-		if candidate.Classification != ConfigUnchangedBaseline || candidate.BaselineHash != deleted.BaselineHash {
-			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + deleted.Path, Reason: "existing user configuration differs; deletion disabled"})
-			continue
-		}
-		destination, err := p.absoluteUserPath(deleted.Path)
-		if err != nil {
-			return model.RestorePlan{}, err
-		}
-		mode := uint32(0)
-		if candidate.UserMode != "" {
-			fmt.Sscanf(candidate.UserMode, "%o", &mode)
-		}
-		id := "config.delete." + configOperationID(deleted.Path)
-		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "delete", Resource: "config:" + deleted.Path, Delete: &model.FileDelete{Destination: destination, ExpectedHash: candidate.UserHash, ExpectedMode: &mode, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true})
-		if isHyprConfigPath(deleted.Path) {
 			reloadDependencies = append(reloadDependencies, id)
 		}
 	}
@@ -224,6 +201,11 @@ func (p Provider) Check(saved profile.Configs) error {
 		}
 		if err := p.checkOverlaySnapshot("files", f.Path, f.Hash); err != nil {
 			return err
+		}
+		if sensitive, err := hasSensitiveContent(p.overlaySnapshotPath("files", f.Path)); err != nil {
+			return fmt.Errorf("config %s desired snapshot: %w", f.Path, err)
+		} else if sensitive {
+			return fmt.Errorf("config %s desired snapshot contains sensitive content", f.Path)
 		}
 		if f.BaselineHash != "" {
 			if err := p.checkOverlaySnapshot("baseline", f.Path, f.BaselineHash); err != nil {

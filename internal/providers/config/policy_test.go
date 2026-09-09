@@ -34,6 +34,17 @@ func TestConfigPolicyDeniesKnownSensitivePaths(t *testing.T) {
 	}
 }
 
+func TestSensitiveContentDetector(t *testing.T) {
+	path := t.TempDir() + "/innocuous.conf"
+	if err := os.WriteFile(path, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sensitive, err := hasSensitiveContent(path)
+	if err != nil || !sensitive {
+		t.Fatalf("sensitive=%v err=%v", sensitive, err)
+	}
+}
+
 type fakeInfo struct{ size int64 }
 
 func (f fakeInfo) Name() string       { return "x" }
