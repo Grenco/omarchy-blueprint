@@ -148,17 +148,19 @@ func TestCaptureStoresOnlyCustomizedFilesWithBaselineAndMetadata(t *testing.T) {
 	writeFile(t, filepath.Join(base, "hypr/bindings.lua"), "bindings default")
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "bindings custom")
 	p := testProvider(user, base, profileDir)
-	configs, err := p.Capture()
+	result, err := p.Capture(profile.Configs{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := profile.Configs{Files: []profile.ConfigFile{{
-		ID: "hypr.bindings", Path: "hypr/bindings.lua",
+		Path:         "hypr/bindings.lua",
 		Hash:         hashOf(t, filepath.Join(user, "hypr/bindings.lua")),
+		Mode:         "0644",
 		BaselineHash: hashOf(t, filepath.Join(base, "hypr/bindings.lua")),
+		BaselineMode: "0644",
 	}}}
-	if !reflect.DeepEqual(configs, want) {
-		t.Fatalf("configs = %+v want %+v", configs, want)
+	if !reflect.DeepEqual(result.State, want) {
+		t.Fatalf("configs = %+v want %+v", result.State, want)
 	}
 	assertFile(t, filepath.Join(profileDir, "config/files/hypr/bindings.lua"), "bindings custom")
 	assertFile(t, filepath.Join(profileDir, "config/baseline/hypr/bindings.lua"), "bindings default")
@@ -172,16 +174,16 @@ func TestCaptureRemovesStaleCapturedFileWhenResetToBaseline(t *testing.T) {
 	writeFile(t, filepath.Join(base, "hypr/bindings.lua"), "bindings default")
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "custom")
 	p := testProvider(user, base, profileDir)
-	if _, err := p.Capture(); err != nil {
+	if _, err := p.Capture(profile.Configs{}); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "bindings default")
-	configs, err := p.Capture()
+	result, err := p.Capture(profile.Configs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(configs.Files) != 0 {
-		t.Fatalf("stale metadata kept: %+v", configs)
+	if len(result.State.Files) != 0 {
+		t.Fatalf("stale metadata kept: %+v", result.State)
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, "config/files/hypr/bindings.lua")); !os.IsNotExist(err) {
 		t.Fatal("stale captured file kept")
@@ -205,21 +207,21 @@ func TestCaptureSortsMetadataDeterministically(t *testing.T) {
 		{ID: "hypr.autostart", Path: "hypr/hyprland.lua"},
 		{ID: "hypr.bindings", Path: "hypr/bindings.lua"},
 	}
-	configs, err := p.Capture()
+	result, err := p.Capture(profile.Configs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := make([]string, 0, len(configs.Files))
-	for _, f := range configs.Files {
-		got = append(got, f.ID)
+	got := make([]string, 0, len(result.State.Files))
+	for _, f := range result.State.Files {
+		got = append(got, f.Path)
 	}
-	want := []string{"hypr.autostart", "hypr.bindings", "hypr.looknfeel"}
+	want := []string{"hypr/autostart.lua", "hypr/bindings.lua", "hypr/hyprland.lua"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ids = %v want %v", got, want)
 	}
 }
 
-func TestCaptureRejectsUserSymlink(t *testing.T) {
+func TestCaptureReportsUserSymlinkWithoutFollowingIt(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
 	writeFile(t, filepath.Join(base, "hypr/bindings.lua"), "default")
 	writeFile(t, filepath.Join(user, "hypr/real.lua"), "custom")
@@ -227,11 +229,12 @@ func TestCaptureRejectsUserSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := testProvider(user, base, profileDir)
-	if _, err := p.Capture(); err == nil {
-		t.Fatal("expected capture to reject symlink")
+	result, err := p.Capture(profile.Configs{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(profileDir, "config/files")); !os.IsNotExist(err) {
-		t.Fatal("failed capture must not leave partial profile files")
+	if len(result.State.Files) != 1 || len(result.Scan.Candidates) != 2 || result.Scan.Candidates[0].Classification != ConfigUnmanagedSymlink {
+		t.Fatalf("capture result = %#v", result)
 	}
 }
 

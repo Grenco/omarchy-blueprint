@@ -9,6 +9,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -41,6 +42,7 @@ type Provider struct {
 	UserRoot     string
 	BaselineRoot string
 	ProfileDir   string
+	Ownership    ownership.Index
 	Specs        []Spec
 }
 
@@ -132,10 +134,10 @@ func rejectSpecial(info os.FileInfo, path string) error {
 	return nil
 }
 
-// Capture copies customized files (plus their baselines) into the profile
+// captureLegacy copies customized files (plus their baselines) into the profile
 // via a staged directory swap per tree. The two swaps and the later profile
 // metadata write are separate boundaries, not a single transaction.
-func (p Provider) Capture() (profile.Configs, error) {
+func (p Provider) captureLegacy() (profile.Configs, error) {
 	state, err := p.Detect()
 	if err != nil {
 		return profile.Configs{}, err
@@ -172,7 +174,7 @@ func (p Provider) Capture() (profile.Configs, error) {
 			BaselineHash: detected.BaselineHash,
 		})
 	}
-	sortConfigFiles(configs.Files)
+	sortLegacyConfigFiles(configs.Files)
 	if err := swapDir(staging, filepath.Join(parent, "files")); err != nil {
 		return profile.Configs{}, err
 	}
@@ -224,12 +226,12 @@ func swapDir(staging, dir string) error {
 	return os.RemoveAll(old)
 }
 
-func sortConfigFiles(files []profile.ConfigFile) {
+func sortLegacyConfigFiles(files []profile.ConfigFile) {
 	sort.Slice(files, func(i, j int) bool { return files[i].ID < files[j].ID })
 }
 
-// DiffConfigs compares the previous captured configuration with a new capture.
-func DiffConfigs(previous, next profile.Configs) []model.Change {
+// diffLegacyConfigs compares the previous captured configuration with a new capture.
+func diffLegacyConfigs(previous, next profile.Configs) []model.Change {
 	prevMap := map[string]profile.ConfigFile{}
 	for _, f := range previous.Files {
 		prevMap[f.Path] = f
@@ -252,8 +254,8 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 	return changes
 }
 
-// Diff compares the saved profile configuration with the live machine state.
-func Diff(saved profile.Configs, current State) []model.Change {
+// diffLegacy compares the saved profile configuration with the live machine state.
+func diffLegacy(saved profile.Configs, current State) []model.Change {
 	savedMap := map[string]profile.ConfigFile{}
 	for _, f := range saved.Files {
 		savedMap[f.Path] = f
@@ -284,9 +286,9 @@ func Diff(saved profile.Configs, current State) []model.Change {
 	return changes
 }
 
-// Verify checks that every saved customization exists with the desired hash.
+// verifyLegacy checks that every saved customization exists with the desired hash.
 // Extra customization on the machine is drift, not verification failure.
-func Verify(saved profile.Configs, current State) model.VerificationResult {
+func verifyLegacy(saved profile.Configs, current State) model.VerificationResult {
 	currentMap := map[string]DetectedFile{}
 	for _, f := range current.Files {
 		currentMap[f.Path] = f
@@ -336,10 +338,10 @@ func Validate(files []profile.ConfigFile, specs []Spec) error {
 	return nil
 }
 
-// Check validates the profile's config state: known ID/path pairs, regular
+// checkLegacy validates the profile's config state: known ID/path pairs, regular
 // non-symlink snapshots, and content hashes matching the recorded metadata.
 
-func (p Provider) Check(saved profile.Configs) error {
+func (p Provider) checkLegacy(saved profile.Configs) error {
 	if err := Validate(saved.Files, p.specs()); err != nil {
 		return err
 	}

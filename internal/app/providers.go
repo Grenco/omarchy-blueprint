@@ -538,14 +538,13 @@ func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, [
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := provider.Capture()
+	result, err := provider.Capture(d.Config)
 	if err != nil {
 		return nil, nil, err
 	}
-	changes := configprovider.DiffConfigs(d.Config, current)
-	d.Config = current
+	d.Config = result.State
 	d.Manifest.Capture.Config = true
-	return current, changes, nil
+	return result.State, result.Changes, nil
 }
 
 func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
@@ -553,7 +552,7 @@ func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Ch
 	if err != nil {
 		return nil, err
 	}
-	current, err := provider.Detect()
+	current, err := provider.Scan(d.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -581,7 +580,7 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.Ve
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	current, err := provider.Detect()
+	current, err := provider.Scan(d.Config)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}

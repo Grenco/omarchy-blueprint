@@ -57,7 +57,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 	if IsExcludedConfigPath(path, excluded) {
 		return PolicyDecision{PolicyExcluded}
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	if !info.IsDir() && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
 		return PolicyDecision{PolicyVolatile}
 	}
 	lower := strings.ToLower(path)
