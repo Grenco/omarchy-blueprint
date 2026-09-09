@@ -1,0 +1,74 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+)
+
+const MaxAutomaticConfigFileSize int64 = 16 << 20
+const MaxMergeableTextSize int64 = 4 << 20
+
+type PolicyReason string
+
+const (
+	PolicyAllowed             PolicyReason = "allowed"
+	PolicyExcluded            PolicyReason = "excluded"
+	PolicyOmarchyUpdateBackup PolicyReason = "omarchy-update-backup"
+	PolicyVolatile            PolicyReason = "volatile"
+	PolicySensitive           PolicyReason = "sensitive"
+	PolicyOversized           PolicyReason = "oversized"
+)
+
+type PolicyDecision struct{ Reason PolicyReason }
+
+func IsOmarchyUpdateBackupName(name string) bool {
+	i := strings.Index(name, ".bak.")
+	return i > 0 && i+len(".bak.") < len(name)
+}
+func IsOmarchySetupBackupName(name string) bool {
+	i := strings.Index(name, ".backup-")
+	return i > 0 && i+len(".backup-") < len(name)
+}
+func IsExcludedConfigPath(path string, excluded []string) bool {
+	path, err := profile.NormalizeConfigPath(path)
+	if err != nil {
+		return false
+	}
+	for _, item := range excluded {
+		item, err = profile.NormalizeConfigPath(item)
+		if err == nil && (path == item || strings.HasPrefix(path, item+"/")) {
+			return true
+		}
+	}
+	return false
+}
+func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) PolicyDecision {
+	path, err := profile.NormalizeConfigPath(path)
+	if err != nil {
+		return PolicyDecision{PolicyExcluded}
+	}
+	name := filepath.Base(path)
+	if IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name) {
+		return PolicyDecision{PolicyOmarchyUpdateBackup}
+	}
+	if IsExcludedConfigPath(path, excluded) {
+		return PolicyDecision{PolicyExcluded}
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return PolicyDecision{PolicyVolatile}
+	}
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, "cache/") || strings.Contains(lower, "code cache/") || strings.Contains(lower, "session storage/") || strings.Contains(lower, "service worker/") || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, "singletonlock") {
+		return PolicyDecision{PolicyVolatile}
+	}
+	if strings.Contains(lower, "credential") || strings.Contains(lower, "private_key") || strings.Contains(lower, "secret") {
+		return PolicyDecision{PolicySensitive}
+	}
+	if info.Size() > MaxAutomaticConfigFileSize {
+		return PolicyDecision{PolicyOversized}
+	}
+	return PolicyDecision{PolicyAllowed}
+}
