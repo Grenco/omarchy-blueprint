@@ -530,7 +530,11 @@ func (configStateProvider) Empty(state any) bool {
 
 func (p configStateProvider) provider() (configprovider.Provider, error) {
 	baseline, user, err := p.deps.ConfigDirs()
-	return configprovider.Provider{UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
+	if err != nil {
+		return configprovider.Provider{}, err
+	}
+	home, err := p.deps.HomeDir()
+	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
 }
 
 func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -538,14 +542,13 @@ func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, [
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := provider.Capture()
+	result, err := provider.Capture(d.Config)
 	if err != nil {
 		return nil, nil, err
 	}
-	changes := configprovider.DiffConfigs(d.Config, current)
-	d.Config = current
+	d.Config = result.State
 	d.Manifest.Capture.Config = true
-	return current, changes, nil
+	return result.State, result.Changes, nil
 }
 
 func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
@@ -553,7 +556,7 @@ func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Ch
 	if err != nil {
 		return nil, err
 	}
-	current, err := provider.Detect()
+	current, err := provider.Scan(d.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -565,11 +568,11 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	current, err := provider.Detect()
+	current, err := provider.Scan(d.Config)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.Plan(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -581,7 +584,7 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.Ve
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	current, err := provider.Detect()
+	current, err := provider.Scan(d.Config)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}

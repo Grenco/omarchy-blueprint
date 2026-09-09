@@ -698,7 +698,7 @@ func TestConfigVerticalSlice(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "config hypr/bindings.lua customized") {
+	if !strings.Contains(out, "config hypr/bindings.lua captured") {
 		t.Fatalf("capture output = %q", out)
 	}
 	// Reset to baseline removes the stale snapshot.
@@ -867,7 +867,7 @@ func TestAggregateCaptureMarksConfigBeforeCustomization(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "customized") {
+	if code != 2 || !strings.Contains(out, "deletion differs") {
 		t.Fatalf("later customization must surface as drift, code=%d out=%q", code, out)
 	}
 }
@@ -888,7 +888,7 @@ func TestCheckValidatesConfigSnapshotIntegrity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"), []byte("tampered"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := configRun(t, deps, profileDir, "check"); code != 1 || !strings.Contains(out, "desired snapshot") {
+	if code, out := configRun(t, deps, profileDir, "check"); code != 1 || !strings.Contains(out, "snapshot hash mismatch") {
 		t.Fatalf("check with tampered snapshot code=%d out=%q", code, out)
 	}
 }

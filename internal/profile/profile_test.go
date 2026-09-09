@@ -14,8 +14,8 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	d := New("main", now)
-	if d.Manifest.Schema != 7 {
-		t.Fatalf("new profile schema = %d, want 7", d.Manifest.Schema)
+	if d.Manifest.Schema != 8 {
+		t.Fatalf("new profile schema = %d, want 8", d.Manifest.Schema)
 	}
 	d.Manifest.Capture.Packages = true
 	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
@@ -92,8 +92,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 7 {
-		t.Fatalf("schema = %d, want 7", got.Manifest.Schema)
+	if got.Manifest.Schema != 8 {
+		t.Fatalf("schema = %d, want 8", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Config || len(got.Config.Files) != 0 {
 		t.Fatalf("config state = %#v, want empty uncaptured config", got.Config)
@@ -114,8 +114,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 7\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 7", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 8\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 8", savedManifest)
 	}
 }
 
@@ -138,8 +138,8 @@ func TestSaveLoadRoundTripConfigMetadataInStableOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantFiles := []ConfigFile{
-		{ID: "hypr.bindings", Path: "hypr/bindings.lua", Hash: "bind", BaselineHash: "base-bind"},
-		{ID: "hypr.looknfeel", Path: "hypr/looknfeel.lua", Hash: "look", BaselineHash: "base-look"},
+		{Path: "hypr/bindings.lua", Hash: "bind", BaselineHash: "base-bind"},
+		{Path: "hypr/looknfeel.lua", Hash: "look", BaselineHash: "base-look"},
 	}
 	if !reflect.DeepEqual(got.Config.Files, wantFiles) {
 		t.Fatalf("config files = %#v, want %#v", got.Config.Files, wantFiles)
@@ -154,9 +154,72 @@ func TestSaveLoadRoundTripConfigMetadataInStableOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantTOML := "[[file]]\nid = 'hypr.bindings'\npath = 'hypr/bindings.lua'\nhash = 'bind'\nbaseline_hash = 'base-bind'\n\n[[file]]\nid = 'hypr.looknfeel'\npath = 'hypr/looknfeel.lua'\nhash = 'look'\nbaseline_hash = 'base-look'\n"
+	wantTOML := "[[file]]\npath = 'hypr/bindings.lua'\nhash = 'bind'\nbaseline_hash = 'base-bind'\n\n[[file]]\npath = 'hypr/looknfeel.lua'\nhash = 'look'\nbaseline_hash = 'base-look'\n"
 	if string(configTOML) != wantTOML {
 		t.Fatalf("config/config.toml = %q, want %q", configTOML, wantTOML)
+	}
+}
+
+func TestSchema8ConfigOverlayRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	d := New("overlay", time.Unix(0, 0))
+	d.Manifest.Capture.Config = true
+	d.Config = Configs{Files: []ConfigFile{{ID: "legacy", Path: ".config/hypr/bindings.lua", Hash: strings.Repeat("a", 64), Mode: "0644", BaselineHash: strings.Repeat("b", 64), BaselineMode: "0644"}, {Path: ".config/ghostty/config", Hash: strings.Repeat("c", 64), Mode: "0600"}}, Deletes: []ConfigDelete{{Path: ".config/example/default.conf", BaselineHash: strings.Repeat("d", 64), BaselineMode: "0644"}}, Excluded: []string{".config/google-chrome", ".config/discord"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Configs{Files: []ConfigFile{{Path: ".config/ghostty/config", Hash: strings.Repeat("c", 64), Mode: "0600"}, {Path: ".config/hypr/bindings.lua", Hash: strings.Repeat("a", 64), Mode: "0644", BaselineHash: strings.Repeat("b", 64), BaselineMode: "0644"}}, Deletes: []ConfigDelete{{Path: ".config/example/default.conf", BaselineHash: strings.Repeat("d", 64), BaselineMode: "0644"}}, Excluded: []string{".config/discord", ".config/google-chrome"}}
+	if got.Manifest.Schema != 8 || !reflect.DeepEqual(got.Config, want) {
+		t.Fatalf("config=%#v want=%#v", got.Config, want)
+	}
+	contents, err := os.ReadFile(filepath.Join(dir, "config", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Index(string(contents), "ghostty/config") > strings.Index(string(contents), "hypr/bindings.lua") {
+		t.Fatalf("config is not path sorted: %s", contents)
+	}
+}
+
+func TestSaveRejectsNonCanonicalAndOverlappingConfigState(t *testing.T) {
+	for _, configs := range []Configs{
+		{Files: []ConfigFile{{Path: "a/../b", Hash: "x"}}},
+		{Files: []ConfigFile{{Path: ".config/a", Hash: "x"}}, Deletes: []ConfigDelete{{Path: ".config/a", BaselineHash: "x"}}},
+	} {
+		d := New("test", time.Unix(0, 0))
+		d.Config = configs
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("invalid configs accepted: %#v", configs)
+		}
+	}
+}
+
+func TestLoadSchema7MigratesLegacyConfigPaths(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 7\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-09T00:00:00Z\nupdated_at = 2026-09-09T00:00:00Z\n\n[capture]\nconfig = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schema7-config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config", "config.toml"), fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Files[0].Path != ".config/hypr/bindings.lua" {
+		t.Fatalf("config=%#v", got.Config)
 	}
 }
 
@@ -186,8 +249,8 @@ defaults = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 7 {
-		t.Fatalf("schema = %d, want 7", got.Manifest.Schema)
+	if got.Manifest.Schema != 8 {
+		t.Fatalf("schema = %d, want 8", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Shell {
 		t.Fatal("schema-3 profile must upgrade with shell uncaptured")
@@ -258,8 +321,8 @@ config = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 7 {
-		t.Fatalf("schema = %d, want 7", got.Manifest.Schema)
+	if got.Manifest.Schema != 8 {
+		t.Fatalf("schema = %d, want 8", got.Manifest.Schema)
 	}
 	if !got.Manifest.Capture.Config || len(got.Config.Files) != 1 {
 		t.Fatalf("config state = %#v, want retained schema-2 config", got.Config)
@@ -312,13 +375,13 @@ func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
 	// bumps do not silently drop existing provider state.
-	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 {
+	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 || configOverlaySchema != 8 {
 		t.Fatalf(
 			"introduction versions = config:%d defaults:%d shell:%d hooks:%d mise:%d resources:%d",
 			configSchema, defaultsSchema, shellSchema, hooksSchema, misePackagesSchema, resourcesSchema,
 		)
 	}
-	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema {
+	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema || configOverlaySchema > Schema {
 		t.Fatalf(
 			"introduction versions must not exceed current schema %d",
 			Schema,
@@ -342,7 +405,7 @@ updated_at = 2026-09-03T12:00:00Z
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 7 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
+	if got.Manifest.Schema != 8 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
 		t.Fatalf("schema-4 migration = %#v", got)
 	}
 }
@@ -434,7 +497,7 @@ func TestSchema5LoadsAsSchema6WithMiseEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 7 || len(got.Packages.Mise) != 0 {
+	if got.Manifest.Schema != 8 || len(got.Packages.Mise) != 0 {
 		t.Fatalf("migration = %#v", got)
 	}
 }
@@ -484,8 +547,8 @@ func TestSchema6LoadsAsSchema7WithResourcesEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 7 {
-		t.Fatalf("schema=%d want=7", got.Manifest.Schema)
+	if got.Manifest.Schema != 8 {
+		t.Fatalf("schema=%d want=8", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Resources {
 		t.Fatal("schema-6 profile unexpectedly captured resources")
