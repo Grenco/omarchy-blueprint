@@ -13,9 +13,9 @@ import (
 )
 
 type CaptureResult struct {
-	State   profile.Configs
-	Scan    ScanSummary
-	Changes []model.Change
+	State   profile.Configs `json:"state"`
+	Scan    ScanSummary     `json:"scan"`
+	Changes []model.Change  `json:"-"`
 }
 
 // beforeStage is used by package tests to model a source changing after scan.

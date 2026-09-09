@@ -16,6 +16,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
@@ -269,6 +270,90 @@ func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"))
 	if err != nil || string(b) != "custom" {
 		t.Fatalf("captured file = %q err=%v", b, err)
+	}
+}
+
+func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
+	profileDir, home, baseline := t.TempDir(), t.TempDir(), t.TempDir()
+	userRoot := filepath.Join(home, ".config")
+	for _, dir := range []string{"omarchy/themes", "omarchy/plugins", "omarchy/hooks", "nvim", "wezterm", "alacritty"} {
+		if err := os.MkdirAll(filepath.Join(userRoot, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "nvim", "init.lua"), []byte("resource"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "wezterm", "wezterm.lua"), []byte("config"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "alacritty.toml"), filepath.Join(userRoot, "alacritty", "alacritty.toml")); err != nil {
+		t.Fatal(err)
+	}
+	deps := Dependencies{
+		ConfigDirs: func() (string, string, error) { return baseline, userRoot, nil },
+		HomeDir:    func() (string, error) { return home, nil },
+		ThemeDirs:  func() (string, string, error) { return "", filepath.Join(userRoot, "omarchy", "themes"), nil },
+		PluginDir:  func() (string, error) { return filepath.Join(userRoot, "omarchy", "plugins"), nil },
+		HooksDir:   func() (string, error) { return filepath.Join(userRoot, "omarchy", "hooks"), nil },
+		ShellPaths: func() (string, string, error) { return "", filepath.Join(userRoot, "omarchy", "shell.json"), nil },
+	}
+	d := profile.Data{
+		Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/nvim/init.lua"}}},
+		Resources: profile.Resources{
+			Items: []profile.Resource{{ID: "dotfiles", Path: "~/.config/nvim", Kind: "directory", Strategy: "copy"}},
+			Links: []profile.ResourceLink{{Source: "~/.config/alacritty/alacritty.toml", Origin: "inbound", TargetResource: "dotfiles"}},
+		},
+	}
+	provider := configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}
+	configProvider, err := provider.provider(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(userRoot, "nvim", "init.lua"), filepath.Join(userRoot, "alacritty", "alacritty.toml")} {
+		claims := configProvider.Ownership.TrackConflict(path)
+		if len(claims) != 1 || claims[0].Provider != "resources" {
+			t.Fatalf("resource ownership for %s = %#v", path, claims)
+		}
+	}
+	state, _, err := provider.Capture(context.Background(), &d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := state.(configprovider.CaptureResult)
+	if len(result.State.Files) != 1 || result.State.Files[0].Path != ".config/wezterm/wezterm.lua" {
+		t.Fatalf("captured config = %#v", result.State.Files)
+	}
+	if len(d.Resources.Items) != 1 || d.Resources.Items[0].ID != "dotfiles" {
+		t.Fatalf("resources lost ownership: %#v", d.Resources)
+	}
+}
+
+func TestConfigCaptureJSONIncludesScanSummary(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "--json", "capture", "config")
+	if code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	var envelope struct {
+		Data struct {
+			Config struct {
+				Files []profile.ConfigFile `json:"files"`
+				Scan  struct {
+					Counts map[configprovider.Classification]int `json:"counts"`
+				} `json:"scan"`
+			} `json:"config"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Config.Files) != 1 || envelope.Data.Config.Scan.Counts[configprovider.ConfigModifiedBaseline] != 1 {
+		t.Fatalf("config scan output = %#v", envelope.Data.Config)
 	}
 }
 
@@ -814,6 +899,28 @@ func TestConfigDryRunShowsSkipsAndReloadFailureBlocks(t *testing.T) {
 	}
 	if !strings.Contains(out, "failed operation(s)") {
 		t.Fatalf("failure output = %q", out)
+	}
+}
+
+func TestConfigForceDryRunReplacesUnknownTarget(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("captured"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("target-only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run")
+	if code != 0 || !strings.Contains(out, "overwrite disabled") {
+		t.Fatalf("safe dry-run code=%d out=%q", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "restore", "config", "--force", "--dry-run")
+	if code != 0 || !strings.Contains(out, "replace unknown target") {
+		t.Fatalf("force dry-run code=%d out=%q", code, out)
 	}
 }
 

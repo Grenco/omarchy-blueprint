@@ -39,6 +39,16 @@ type Candidate struct {
 type ScanSummary struct {
 	Candidates []Candidate `json:"candidates"`
 }
+
+// Counts groups candidates by classification for concise capture output.
+func (s ScanSummary) Counts() map[Classification]int {
+	counts := make(map[Classification]int)
+	for _, candidate := range s.Candidates {
+		counts[candidate.Classification]++
+	}
+	return counts
+}
+
 type treeEntry struct {
 	abs  string
 	info os.FileInfo

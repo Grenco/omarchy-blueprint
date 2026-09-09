@@ -19,6 +19,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
@@ -482,7 +483,11 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 		captured = append(captured, provider.ID())
 		if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
-			data[provider.ID()] = state
+			if result, ok := state.(configprovider.CaptureResult); ok {
+				data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates}}
+			} else {
+				data[provider.ID()] = state
+			}
 		}
 		changes = append(changes, providerChanges...)
 	}
@@ -494,7 +499,52 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return fmt.Errorf("save profile: %w", err)
 		}
 	}
-	return emit(deps.Out, opt.json, "capture", true, data, renderChanges("Captured "+providerStateLabel(captured)+" state", changes))
+	human := renderChanges("Captured "+providerStateLabel(captured)+" state", changes)
+	for _, provider := range providers {
+		if provider.ID() != "config" {
+			continue
+		}
+		// Capture output summarizes recursive scan results rather than listing defaults.
+		if result, ok := data["config"].(configCaptureOutput); ok {
+			human += renderConfigScan(result.Scan)
+		}
+	}
+	return emit(deps.Out, opt.json, "capture", true, data, human)
+}
+
+type configCaptureOutput struct {
+	profile.Configs
+	Scan configScanOutput `json:"scan"`
+}
+
+type configScanOutput struct {
+	Counts     map[configprovider.Classification]int `json:"counts"`
+	Candidates []configprovider.Candidate            `json:"candidates"`
+}
+
+func renderConfigScan(scan configScanOutput) string {
+	var b strings.Builder
+	groups := []struct {
+		title string
+		items []configprovider.Classification
+	}{
+		{"Modified", []configprovider.Classification{configprovider.ConfigModifiedBaseline}},
+		{"Added", []configprovider.Classification{configprovider.ConfigAdded}},
+		{"Deleted", []configprovider.Classification{configprovider.ConfigDeletedBaseline}},
+		{"Ignored", []configprovider.Classification{configprovider.ConfigUnchangedBaseline, configprovider.ConfigDelegated, configprovider.ConfigExcluded, configprovider.ConfigVolatile}},
+		{"Skipped", []configprovider.Classification{configprovider.ConfigSensitive, configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized}},
+	}
+	for _, group := range groups {
+		count := 0
+		for _, classification := range group.items {
+			count += scan.Counts[classification]
+		}
+		if count == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\nConfig %s: %d\n", group.title, count)
+	}
+	return b.String()
 }
 
 func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
