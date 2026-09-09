@@ -38,10 +38,10 @@ func TestCaptureStoresAddedModifiedAndTombstoneSparsely(t *testing.T) {
 
 func TestCaptureDoesNotPersistSensitiveContent(t *testing.T) {
 	base, user, _, profileDir := sandbox(t)
-	writeFile(t, filepath.Join(user, "harmless.conf"), "token = 'abcdefghijklmnopqrstuvwxyz'\n")
-	_, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{})
-	if err == nil {
-		t.Fatal("sensitive content captured")
+	writeFile(t, filepath.Join(user, "harmless.conf"), "api_token = 'abcdefghijklmnopqrstuvwxyz'\n")
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{})
+	if err != nil || len(result.State.Files) != 0 || result.Scan.Candidates[0].Classification != ConfigSensitive {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
 
@@ -54,6 +54,24 @@ func TestCaptureAbortsWhenSourceChangesAfterScan(t *testing.T) {
 	_, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{})
 	if err == nil {
 		t.Fatal("changed source captured")
+	}
+}
+
+func TestCaptureRejectsSymlinkCreatedAfterScan(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	path := filepath.Join(user, "settings.conf")
+	writeFile(t, path, "before")
+	external := filepath.Join(t.TempDir(), "secret")
+	writeFile(t, external, "api_token = 'abcdefghijklmnopqrstuvwxyz'")
+	beforeStage = func() {
+		_ = os.Remove(path)
+		if err := os.Symlink(external, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { beforeStage = nil })
+	if _, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{}); err == nil {
+		t.Fatal("symlink created after scan was accepted")
 	}
 }
 

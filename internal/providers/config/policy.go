@@ -1,17 +1,19 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 var (
 	pemPrivateKey   = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
-	structuredToken = regexp.MustCompile(`(?im)^\s*["']?(?:api_token|token)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
+	structuredToken = regexp.MustCompile(`(?i)["']?(?:api_token|access_token|auth_token|refresh_token|client_secret)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
 )
 
 const MaxAutomaticConfigFileSize int64 = 16 << 20
@@ -94,7 +96,12 @@ func sensitiveConfigPath(path string) bool {
 // hasSensitiveContent rejects high-confidence credential material before it is
 // persisted in a profile, even when its filename looks harmless.
 func hasSensitiveContent(path string) (bool, error) {
-	b, err := os.ReadFile(path)
+	f, _, err := content.OpenRegularFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, MaxAutomaticConfigFileSize+1))
 	if err != nil {
 		return false, err
 	}

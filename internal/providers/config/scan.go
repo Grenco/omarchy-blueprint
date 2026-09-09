@@ -169,6 +169,15 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 			c.Classification = ConfigUnsupported
 			return c, nil
 		}
+		sensitive, err := hasSensitiveContent(user.abs)
+		if err != nil {
+			return c, err
+		}
+		if sensitive {
+			c.Classification = ConfigSensitive
+			c.Reason = string(PolicySensitive)
+			return c, nil
+		}
 		hash, err := content.HashRegularFile(user.abs)
 		if err != nil {
 			return c, err

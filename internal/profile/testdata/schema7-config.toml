@@ -1,4 +1,5 @@
 [[file]]
+id = "hypr.bindings"
 path = "hypr/bindings.lua"
 hash = "legacy-user"
 baseline_hash = "legacy-baseline"
