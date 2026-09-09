@@ -793,13 +793,21 @@ func TestExecuteWaitsForInFlightOperationBeforeReturning(t *testing.T) {
 		ID: "validate.slow", Command: []string{"slow"},
 	}}}
 	ctx, cancel := context.WithCancel(context.Background())
-	started := time.Now()
+	started := make(chan struct{})
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		result, err := Execute(ctx, delayedStartedRunner{started: started, delay: 200 * time.Millisecond}, plan, journal, time.Now, 10*time.Millisecond, nil)
+		done <- outcome{result, err}
 	}()
-	_, err = Execute(ctx, delayedRunner{delay: 200 * time.Millisecond}, plan, journal, time.Now, 10*time.Millisecond, nil)
-	elapsed := time.Since(started)
+	<-started
+	startedAt := time.Now()
+	cancel()
+	_, err = func() (Result, error) { received := <-done; return received.result, received.err }()
+	elapsed := time.Since(startedAt)
 	if err != context.Canceled {
 		t.Fatalf("err = %v want context.Canceled", err)
 	}
@@ -808,9 +816,21 @@ func TestExecuteWaitsForInFlightOperationBeforeReturning(t *testing.T) {
 	}
 }
 
-type contextAwareRunner struct{}
+type delayedStartedRunner struct {
+	started chan<- struct{}
+	delay   time.Duration
+}
 
-func (contextAwareRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
+func (r delayedStartedRunner) Run(_ context.Context, _ string, _ ...string) (string, error) {
+	r.started <- struct{}{}
+	time.Sleep(r.delay)
+	return "", nil
+}
+
+type contextAwareRunner struct{ started chan<- struct{} }
+
+func (r contextAwareRunner) Run(ctx context.Context, _ string, _ ...string) (string, error) {
+	r.started <- struct{}{}
 	<-ctx.Done()
 	// Give the executor's wait loop a moment to observe the cancellation
 	// before the result races with the Done channel.
@@ -902,11 +922,22 @@ func TestExecuteJournalsCancelledCommand(t *testing.T) {
 		ID: "slow.command", Command: []string{"slow"},
 	}}}
 	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan struct {
+		result Result
+		err    error
+	}, 1)
 	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
+		result, err := Execute(ctx, contextAwareRunner{started: started}, plan, journal, time.Now, 10*time.Millisecond, nil)
+		done <- struct {
+			result Result
+			err    error
+		}{result, err}
 	}()
-	result, err := Execute(ctx, contextAwareRunner{}, plan, journal, time.Now, 10*time.Millisecond, nil)
+	<-started
+	cancel()
+	received := <-done
+	result, err := received.result, received.err
 	if err != context.Canceled {
 		t.Fatalf("err = %v want context.Canceled", err)
 	}
