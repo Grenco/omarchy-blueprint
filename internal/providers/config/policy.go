@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -15,12 +16,25 @@ import (
 )
 
 var (
-	pemPrivateKey   = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
-	structuredToken = regexp.MustCompile(`(?i)["']?(?:api_token|access_token|auth_token|refresh_token|client_secret)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
+	pemPrivateKey              = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
+	structuredToken            = regexp.MustCompile(`(?i)["']?(?:api_token|access_token|auth_token|refresh_token|client_secret)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
+	sensitiveContentInspection func()
+	sensitiveContentRegexCheck func()
 )
 
 const MaxAutomaticConfigFileSize int64 = 16 << 20
 const MaxMergeableTextSize int64 = 4 << 20
+
+const sensitiveContentChunkSize = 32 << 10
+const sensitiveContentOverlap = 4 << 10
+
+var sensitiveTokenKeys = [][]byte{
+	[]byte("api_token"),
+	[]byte("access_token"),
+	[]byte("auth_token"),
+	[]byte("refresh_token"),
+	[]byte("client_secret"),
+}
 
 type PolicyReason string
 
@@ -202,7 +216,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyVolatile}
 	}
 	lower := strings.ToLower(path)
-	if strings.Contains(lower, "cache/") || strings.Contains(lower, "code cache/") || strings.Contains(lower, "session storage/") || strings.Contains(lower, "service worker/") || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, "singletonlock") {
+	if runtimeConfigPath(lower) || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, "singletonlock") {
 		return PolicyDecision{PolicyVolatile}
 	}
 	if strings.Contains(lower, "credential") || strings.Contains(lower, "private_key") || strings.Contains(lower, "secret") {
@@ -212,6 +226,16 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyOversized}
 	}
 	return PolicyDecision{PolicyAllowed}
+}
+
+func runtimeConfigPath(path string) bool {
+	for _, part := range strings.Split(path, "/") {
+		switch part {
+		case "indexeddb", "local storage", "webstorage", "session storage", "service worker", "code cache", "gpucache", "cache", "dawncache", "blob_storage", "file system":
+			return true
+		}
+	}
+	return false
 }
 
 func sensitiveConfigPath(path string) bool {
@@ -231,10 +255,70 @@ func hasSensitiveContent(path string) (bool, error) {
 		return false, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, MaxAutomaticConfigFileSize+1))
-	if err != nil {
-		return false, err
+	if sensitiveContentInspection != nil {
+		sensitiveContentInspection()
 	}
-	content := string(b)
-	return pemPrivateKey.MatchString(content) || structuredToken.MatchString(content), nil
+
+	chunk := make([]byte, sensitiveContentChunkSize)
+	var previous []byte
+	reader := io.LimitReader(f, MaxAutomaticConfigFileSize+1)
+	for {
+		n, err := reader.Read(chunk)
+		if n > 0 {
+			window := append(append([]byte{}, previous...), chunk[:n]...)
+			if sensitiveContentWindow(window) {
+				return true, nil
+			}
+			if len(window) > sensitiveContentOverlap {
+				previous = append(previous[:0], window[len(window)-sensitiveContentOverlap:]...)
+			} else {
+				previous = append(previous[:0], window...)
+			}
+		}
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+}
+
+func sensitiveContentWindow(window []byte) bool {
+	for start := 0; ; {
+		i := bytes.Index(window[start:], []byte("-----BEGIN "))
+		if i < 0 {
+			break
+		}
+		i += start
+		if i == 0 || window[i-1] == '\n' {
+			if sensitiveContentRegexCheck != nil {
+				sensitiveContentRegexCheck()
+			}
+			if pemPrivateKey.Match(window[i:]) {
+				return true
+			}
+		}
+		start = i + 1
+	}
+	for _, key := range sensitiveTokenKeys {
+		if containsASCIIFold(window, key) {
+			if sensitiveContentRegexCheck != nil {
+				sensitiveContentRegexCheck()
+			}
+			if structuredToken.Match(window) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsASCIIFold(b, want []byte) bool {
+	for i := 0; i+len(want) <= len(b); i++ {
+		if bytes.EqualFold(b[i:i+len(want)], want) {
+			return true
+		}
+	}
+	return false
 }

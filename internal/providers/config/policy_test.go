@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"reflect"
 	"testing"
@@ -58,6 +59,14 @@ func TestConfigPolicyVolatileAndSize(t *testing.T) {
 	}
 }
 
+func TestConfigPolicySkipsRuntimeDirectories(t *testing.T) {
+	for _, name := range []string{"IndexedDB", "Local Storage", "WebStorage", "Session Storage", "Service Worker", "Code Cache", "GPUCache", "Cache", "DawnCache", "blob_storage", "File System"} {
+		if got := ClassifyConfigPolicy(".config/browser/"+name, fakeInfo{dir: true}, nil).Reason; got != PolicyVolatile {
+			t.Fatalf("%s policy=%s", name, got)
+		}
+	}
+}
+
 func TestConfigPolicyDeniesKnownSensitivePaths(t *testing.T) {
 	for _, path := range []string{".config/gh/hosts.yml", ".config/gcloud/configurations/config_default", ".config/rclone/rclone.conf", ".config/sops/age/keys.txt", ".config/containers/auth.json"} {
 		if got := ClassifyConfigPolicy(path, fakeInfo{}, nil).Reason; got != PolicySensitive {
@@ -77,11 +86,47 @@ func TestSensitiveContentDetector(t *testing.T) {
 	}
 }
 
-type fakeInfo struct{ size int64 }
+func TestSensitiveContentDetectorAvoidsRegexForLargeOrdinaryConfig(t *testing.T) {
+	path := t.TempDir() + "/ordinary.conf"
+	if err := os.WriteFile(path, bytes.Repeat([]byte("setting = ordinary-value\n"), 200000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	regexChecks := 0
+	sensitiveContentRegexCheck = func() { regexChecks++ }
+	t.Cleanup(func() { sensitiveContentRegexCheck = nil })
+	sensitive, err := hasSensitiveContent(path)
+	if err != nil || sensitive || regexChecks != 0 {
+		t.Fatalf("sensitive=%v regexChecks=%d err=%v", sensitive, regexChecks, err)
+	}
+}
+
+func TestSensitiveContentDetectorFindsLargeTokenAndPEM(t *testing.T) {
+	for name, suffix := range map[string]string{
+		"token": "api_token = abcdefghijklmnopqrstuvwxyz\n",
+		"pem":   "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := t.TempDir() + "/large.conf"
+			body := append(bytes.Repeat([]byte("setting = ordinary-value\n"), 100000), suffix...)
+			if err := os.WriteFile(path, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sensitive, err := hasSensitiveContent(path)
+			if err != nil || !sensitive {
+				t.Fatalf("sensitive=%v err=%v", sensitive, err)
+			}
+		})
+	}
+}
+
+type fakeInfo struct {
+	size int64
+	dir  bool
+}
 
 func (f fakeInfo) Name() string       { return "x" }
 func (f fakeInfo) Size() int64        { return f.size }
 func (f fakeInfo) Mode() os.FileMode  { return 0o644 }
 func (f fakeInfo) ModTime() time.Time { return time.Time{} }
-func (f fakeInfo) IsDir() bool        { return false }
+func (f fakeInfo) IsDir() bool        { return f.dir }
 func (f fakeInfo) Sys() any           { return nil }

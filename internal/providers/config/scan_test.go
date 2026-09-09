@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,5 +91,26 @@ func TestScanIgnoresBlueprintBackupFilesAndDirectories(t *testing.T) {
 	}
 	if len(scan.Candidates) != 0 {
 		t.Fatalf("backup candidates=%#v", scan.Candidates)
+	}
+}
+
+func TestScanSkipsRuntimeSubtreeBeforeSensitiveInspection(t *testing.T) {
+	user := t.TempDir()
+	for i := range 10000 {
+		writeFile(t, filepath.Join(user, "browser", "IndexedDB", "entries", fmt.Sprintf("%05d", i)), "api_token = abcdefghijklmnopqrstuvwxyz\n")
+	}
+	writeFile(t, filepath.Join(user, "normal", "config"), "setting = captured\n")
+	inspections := 0
+	sensitiveContentInspection = func() { inspections++ }
+	t.Cleanup(func() { sensitiveContentInspection = nil })
+	scan, err := (Provider{UserRoot: user}).Scan(profile.Configs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspections != 1 {
+		t.Fatalf("sensitive inspections=%d", inspections)
+	}
+	if len(scan.Candidates) != 1 || scan.Candidates[0].Path != "normal/config" || scan.Candidates[0].Classification != ConfigAdded {
+		t.Fatalf("scan=%#v", scan)
 	}
 }
