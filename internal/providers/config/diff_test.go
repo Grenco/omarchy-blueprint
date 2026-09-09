@@ -2,8 +2,10 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -20,18 +22,94 @@ func TestVerifyAcceptsTargetOnlyConfigAndRequiresTombstone(t *testing.T) {
 	}
 }
 
-func TestPlanOverlayDefersTombstoneRestore(t *testing.T) {
+func TestPlanOverlayRestoresAddedFileWithoutOverwritingTarget(t *testing.T) {
 	root, profileDir := t.TempDir(), t.TempDir()
-	path := ".config/example/default.conf"
-	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base")
-	baseHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	path := ".config/ghostty/config"
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "wanted")
+	hash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
 	p := Provider{UserRoot: root, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
-	plan, err := p.PlanOverlay(profile.Configs{Deletes: []profile.ConfigDelete{{Path: path, BaselineHash: baseHash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: baseHash, BaselineHash: baseHash}}}, 8, "old", "new")
+	plan, err := p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: hash}}}, ScanSummary{}, 8, "old", "new")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Operations) != 0 {
-		t.Fatalf("tombstone created operations=%#v", plan.Operations)
+	if len(plan.Operations) != 1 || !plan.Operations[0].File.ExpectedMissing {
+		t.Fatalf("operations=%#v", plan.Operations)
+	}
+	plan, err = p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: hash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigAdded, UserHash: "unknown"}}}, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestPlanOverlayWritesUnchangedBaselineAndMergesNewBaseline(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := ".config/hypr/bindings.conf"
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "base\nuser\n")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base\nold\n")
+	writeFile(t, filepath.Join(base, "hypr", "bindings.conf"), "base\nold\n")
+	baseHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	desiredHash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	p := Provider{HomeDir: root, UserRoot: filepath.Join(root, ".config"), BaselineRoot: base, ProfileDir: profileDir}
+	plan, err := p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: desiredHash, BaselineHash: baseHash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: baseHash, BaselineHash: baseHash}}}, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 2 || plan.Operations[0].File.Generated {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	writeFile(t, filepath.Join(base, "hypr", "bindings.conf"), "upstream\nold\n")
+	newHash := hashOf(t, filepath.Join(base, "hypr", "bindings.conf"))
+	plan, err = p.PlanOverlay(profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: desiredHash, BaselineHash: baseHash}}}, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: newHash, BaselineHash: newHash}}}, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 2 || !plan.Operations[0].File.Generated || string(plan.Operations[0].File.Content) != "upstream\nuser\n" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	if !reflect.DeepEqual(plan.Operations[1].DependsOn, []string{plan.Operations[0].ID}) {
+		t.Fatalf("reload=%#v", plan.Operations[1])
+	}
+}
+
+func TestPlanOverlaySkipsConflictingNonmergeableAndDisappearedBaselines(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "value=user\n")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "value=old\n")
+	writeFile(t, filepath.Join(base, path), "value=new\n")
+	baseHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	desiredHash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	saved := profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: desiredHash, BaselineHash: baseHash}}}
+	plan, err := p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: "new", BaselineHash: "new"}}}, 8, "old", "new")
+	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; merge required" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "\x00")
+	saved.Files[0].Hash = hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	plan, err = p.PlanOverlay(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: "new", BaselineHash: "new"}}}, 8, "old", "new")
+	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline changed; merge required" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	plan, err = p.PlanOverlay(saved, ScanSummary{}, 8, "old", "new")
+	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "Omarchy baseline disappeared; migration required" {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestPlanOverlayRestoresTombstoneAndReloadsOnlyHypr(t *testing.T) {
+	root, profileDir := t.TempDir(), t.TempDir()
+	hypr, other := ".config/hypr/removed.conf", ".config/app/removed.conf"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", hypr), "hypr")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", other), "other")
+	hyprHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", hypr))
+	otherHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", other))
+	p := Provider{HomeDir: root, UserRoot: filepath.Join(root, ".config"), BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+	saved := profile.Configs{Deletes: []profile.ConfigDelete{{Path: hypr, BaselineHash: hyprHash}, {Path: other, BaselineHash: otherHash}}}
+	scan := ScanSummary{Candidates: []Candidate{{Path: hypr, Classification: ConfigUnchangedBaseline, UserHash: hyprHash, BaselineHash: hyprHash}, {Path: other, Classification: ConfigUnchangedBaseline, UserHash: otherHash, BaselineHash: otherHash}}}
+	plan, err := p.PlanOverlay(saved, scan, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 3 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	if plan.Operations[0].Delete == nil || plan.Operations[0].Delete.ExpectedExisting.Type != "file" || plan.Operations[0].Delete.ExpectedExisting.Hash != hyprHash || plan.Operations[1].Delete == nil {
+		t.Fatalf("deletes=%#v", plan.Operations)
+	}
+	if !reflect.DeepEqual(plan.Operations[2].DependsOn, []string{"config.delete.hypr.removed.conf"}) || plan.Operations[2].Risk != model.RiskLow {
+		t.Fatalf("reload=%#v", plan.Operations[2])
 	}
 }
 

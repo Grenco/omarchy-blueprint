@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,9 +47,9 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 	return changes
 }
 
-// PlanOverlay restores sparse HOME-relative snapshots only where the target is
-// absent or still matches the captured Omarchy baseline. Tombstones remain
-// persisted desired state, but Slice A does not mutate live files for them.
+// PlanOverlay restores sparse HOME-relative snapshots without replacing unknown
+// target changes. When the shipped baseline changed, it applies the captured
+// user delta with a three-way merge.
 func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema int, from, to string) (model.RestorePlan, error) {
 	if err := p.Check(saved); err != nil {
 		return model.RestorePlan{}, err
@@ -60,31 +62,58 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 	var reloadDependencies []string
 	for _, file := range saved.Files {
 		candidate, ok := byPath[file.Path]
-		if !ok || candidate.Classification == ConfigUnsupported {
+		if ok && candidate.UserHash == file.Hash {
+			continue
+		}
+		if ok && (candidate.Classification == ConfigUnsupported || candidate.Classification == ConfigUnmanagedSymlink) {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "target config path unavailable"})
 			continue
 		}
-		if candidate.UserHash == file.Hash {
-			continue
-		}
-		if candidate.UserHash != "" && (file.BaselineHash == "" || candidate.UserHash != file.BaselineHash) {
+		if ok && candidate.UserHash != "" && candidate.UserHash != candidate.BaselineHash {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "existing user configuration differs; overwrite disabled"})
 			continue
 		}
-		if file.BaselineHash != "" && candidate.BaselineHash != file.BaselineHash {
-			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "Omarchy baseline changed; migration required"})
+		if file.BaselineHash != "" && (!ok || candidate.BaselineHash == "") {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "Omarchy baseline disappeared; migration required"})
 			continue
 		}
 		destination, err := p.absoluteUserPath(file.Path)
 		if err != nil {
 			return model.RestorePlan{}, err
 		}
-		source := p.overlaySnapshotPath("files", file.Path)
-		write := model.FileWrite{Source: source, Destination: destination, SourceHash: file.Hash, Backup: candidate.UserHash != "", RejectSymlinkParents: true}
-		if candidate.UserHash == "" {
+		write := model.FileWrite{Destination: destination, Backup: ok && candidate.UserHash != "", RejectSymlinkParents: true}
+		if !ok || candidate.UserHash == "" {
 			write.ExpectedMissing = true
 		} else {
 			write.ExpectedHash = candidate.UserHash
+		}
+		if file.BaselineHash == "" || candidate.BaselineHash == file.BaselineHash {
+			write.Source = p.overlaySnapshotPath("files", file.Path)
+			write.SourceHash = file.Hash
+		} else {
+			base, err := os.ReadFile(p.overlaySnapshotPath("baseline", file.Path))
+			if err != nil {
+				return model.RestorePlan{}, fmt.Errorf("read captured baseline %s: %w", file.Path, err)
+			}
+			desired, err := os.ReadFile(p.overlaySnapshotPath("files", file.Path))
+			if err != nil {
+				return model.RestorePlan{}, fmt.Errorf("read captured config %s: %w", file.Path, err)
+			}
+			currentPath, err := p.absoluteBaselinePath(file.Path)
+			if err != nil {
+				return model.RestorePlan{}, fmt.Errorf("resolve current baseline %s: %w", file.Path, err)
+			}
+			current, err := os.ReadFile(currentPath)
+			if err != nil {
+				return model.RestorePlan{}, fmt.Errorf("read current baseline %s: %w", file.Path, err)
+			}
+			merged, err := MergeText3(base, desired, current)
+			if err != nil || merged.Conflicts {
+				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: "Omarchy baseline changed; merge required"})
+				continue
+			}
+			write.Generated, write.Content = true, merged.Content
+			write.SourceHash = hashContent(merged.Content)
 		}
 		id := "config.write." + configOperationID(file.Path)
 		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: model.RiskMedium, Reversible: true})
@@ -92,10 +121,34 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 			reloadDependencies = append(reloadDependencies, id)
 		}
 	}
+	for _, deletion := range saved.Deletes {
+		candidate, ok := byPath[deletion.Path]
+		if !ok || candidate.Classification == ConfigDeletedBaseline {
+			continue
+		}
+		if candidate.Classification != ConfigUnchangedBaseline || candidate.BaselineHash != deletion.BaselineHash {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + deletion.Path, Reason: "existing user configuration differs; delete disabled"})
+			continue
+		}
+		destination, err := p.absoluteUserPath(deletion.Path)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		id := "config.delete." + configOperationID(deletion.Path)
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "delete", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &model.FilesystemPrecondition{Type: "file", Hash: candidate.UserHash}, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskMedium, Reversible: true})
+		if isHyprConfigPath(deletion.Path) {
+			reloadDependencies = append(reloadDependencies, id)
+		}
+	}
 	if len(reloadDependencies) > 0 {
 		plan.Operations = append(plan.Operations, model.Operation{ID: "config.reload", Provider: "config", Action: "reload", Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"}, DependsOn: reloadDependencies, Risk: model.RiskLow})
 	}
 	return plan, nil
+}
+
+func hashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 func isHyprConfigPath(path string) bool {
