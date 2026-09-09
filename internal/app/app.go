@@ -21,23 +21,26 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
+	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 type Dependencies struct {
-	Runner           command.Runner
-	In               io.Reader
-	Out              io.Writer
-	Err              io.Writer
-	Now              func() time.Time
-	StateHome        func() (string, error)
-	ThemeDirs        func() (builtin, user string, err error)
-	PluginDir        func() (string, error)
-	ConfigDirs       func() (baseline, user string, err error)
-	ShellPaths       func() (baseline, user string, err error)
-	HooksDir         func() (string, error)
-	MiseGlobalConfig func() (string, error)
+	Runner            command.Runner
+	In                io.Reader
+	Out               io.Writer
+	Err               io.Writer
+	Now               func() time.Time
+	StateHome         func() (string, error)
+	ThemeDirs         func() (builtin, user string, err error)
+	PluginDir         func() (string, error)
+	ConfigDirs        func() (baseline, user string, err error)
+	ShellPaths        func() (baseline, user string, err error)
+	HooksDir          func() (string, error)
+	MiseGlobalConfig  func() (string, error)
+	HomeDir           func() (string, error)
+	ResourceLinkRoots func(string) []resourcesprovider.LinkSearchRoot
 }
 
 type options struct {
@@ -86,6 +89,12 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	if deps.MiseGlobalConfig == nil {
 		deps.MiseGlobalConfig = packagesprovider.ResolveMiseGlobalConfigPath
 	}
+	if deps.HomeDir == nil {
+		deps.HomeDir = os.UserHomeDir
+	}
+	if deps.ResourceLinkRoots == nil {
+		deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
+	}
 	root := newRoot(deps)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
@@ -105,8 +114,92 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
-	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false))
+	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false))
 	return root
+}
+
+func trackCommand(deps Dependencies, opt *options) *cobra.Command {
+	var id string
+	cmd := &cobra.Command{Use: "track <path|link:...>", Args: cobra.ExactArgs(1), Short: "Track a portable user resource", RunE: func(cmd *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		adapter := resourcesStateProvider{deps: deps, opt: opt}
+		provider, err := adapter.provider()
+		if err != nil {
+			return err
+		}
+		var changes []model.Change
+		if strings.HasPrefix(args[0], "link:") {
+			d.Resources, err = provider.EnableLink(d.Resources, strings.TrimPrefix(args[0], "link:"))
+			if err == nil {
+				changes = []model.Change{{Type: model.ChangeAdd, Provider: "resources", Kind: "link", Name: strings.TrimPrefix(args[0], "link:"), Summary: "+ link " + strings.TrimPrefix(args[0], "link:")}}
+			}
+		} else {
+			d.Resources, changes, err = provider.Track(cmd.Context(), d.Resources, args[0], id)
+		}
+		if err != nil {
+			return err
+		}
+		d.Manifest.Capture.Resources = true
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return err
+		}
+		return emit(deps.Out, opt.json, "track", true, map[string]any{"resources": d.Resources, "changes": changes}, renderChanges("Tracked portable resource", changes))
+	}}
+	cmd.Flags().StringVar(&id, "id", "", "stable resource ID")
+	return cmd
+}
+
+func untrackCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "untrack <resource-ref|link-ref>", Args: cobra.ExactArgs(1), Short: "Stop tracking a portable resource", RunE: func(cmd *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		ref := args[0]
+		if !strings.HasPrefix(ref, "resource:") && !strings.HasPrefix(ref, "link:") {
+			ref = "resource:" + ref
+		}
+		provider, err := (resourcesStateProvider{deps: deps, opt: opt}).provider()
+		if err != nil {
+			return err
+		}
+		updated, changed, err := provider.Untrack(d.Resources, ref)
+		if err != nil {
+			return err
+		}
+		d.Resources = updated
+		d.Manifest.Capture.Resources = true
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return err
+		}
+		return emit(deps.Out, opt.json, "untrack", true, map[string]any{"resources": d.Resources, "removed": changed}, "Untracked "+strings.Join(changed, ", ")+"\n")
+	}}
+}
+
+func trackedCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "tracked", Args: cobra.NoArgs, Short: "List tracked portable resources", RunE: func(_ *cobra.Command, _ []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		var b strings.Builder
+		b.WriteString("Portable resources\n\n")
+		for _, item := range d.Resources.Items {
+			fmt.Fprintf(&b, "%s\n  %s\n  %s\n", item.ID, item.Path, item.Strategy)
+		}
+		if len(d.Resources.IgnoredLinks) > 0 {
+			b.WriteString("Ignored links\n")
+			for _, link := range d.Resources.IgnoredLinks {
+				fmt.Fprintf(&b, "  %s\n", link)
+			}
+		}
+		return emit(deps.Out, opt.json, "tracked", true, map[string]any{"resources": d.Resources}, b.String())
+	}}
 }
 
 func initCommand(deps Dependencies, opt *options) *cobra.Command {
@@ -144,7 +237,7 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	return &cobra.Command{Use: "capture [packages|themes|plugins|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "capture [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -162,9 +255,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 	providers := stateProviders(deps, opt)
-	use, short := "status [packages|themes|plugins|config|defaults|shell|hooks]", "Show profile drift"
+	use, short := "status [packages|themes|plugins|resources|config|defaults|shell|hooks]", "Show profile drift"
 	if diff {
-		use, short = "diff [packages|themes|plugins|config|defaults|shell|hooks]", "Show semantic differences"
+		use, short = "diff [packages|themes|plugins|resources|config|defaults|shell|hooks]", "Show semantic differences"
 	}
 	return &cobra.Command{Use: use, Args: supportedCategory(providers), Short: short, RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
@@ -188,7 +281,7 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes, force bool
 	providers := stateProviders(deps, opt)
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -207,7 +300,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the restore plan without changing the machine")
 	cmd.Flags().BoolVar(&yes, "yes", false, "approve the restore non-interactively")
-	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile (currently Shell)")
+	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile")
 	return cmd
 }
 
@@ -677,6 +770,29 @@ func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlan
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Operation.Provider == "resources" {
+		name := strings.TrimPrefix(event.Operation.Resource, "resource:")
+		verb, past := "Restoring resource", "Restored resource"
+		switch event.Operation.Action {
+		case "git clone":
+			verb, past = "Cloning resource", "Cloned resource"
+		case "git checkout":
+			verb, past = "Checking out", "Checked out"
+		case "symlink":
+			name, verb, past = strings.TrimPrefix(event.Operation.Resource, "link:"), "Creating link", "Created link"
+		}
+		switch event.Type {
+		case restore.ProgressStarted:
+			fmt.Fprintf(w, "%s %s...\n", verb, name)
+		case restore.ProgressCompleted:
+			fmt.Fprintf(w, "✓ %s %s (%s)\n", past, name, event.Elapsed)
+		case restore.ProgressHeartbeat:
+			fmt.Fprintf(w, "  Still %s %s (%s elapsed)...\n", strings.ToLower(verb), name, event.Elapsed)
+		case restore.ProgressFailed:
+			fmt.Fprintf(w, "✗ Failed %s %s after %s\n", strings.ToLower(verb), name, event.Elapsed)
+		}
+		return
+	}
 	if event.Operation.Provider == "hooks" {
 		path := strings.TrimPrefix(event.Operation.Resource, "hook:")
 		switch event.Type {
@@ -802,6 +918,12 @@ func renderRestoreFailures(w io.Writer, execution restore.Result, verification m
 	fmt.Fprintf(w, "\nRestore completed with %d successful and %d failed operation(s).\n", len(execution.Completed), len(execution.Failed))
 	for _, failure := range execution.Failed {
 		fmt.Fprintf(w, "✗ %s: %s\n", failure.Operation.Resource, failure.Error)
+	}
+	if len(execution.Blocked) > 0 {
+		fmt.Fprintf(w, "%d dependent operation(s) skipped.\n", len(execution.Blocked))
+		for _, blocked := range execution.Blocked {
+			fmt.Fprintf(w, "↷ %s (dependency %s failed)\n", blocked.Operation.Resource, blocked.Dependency)
+		}
 	}
 	if len(verification.Missing) > 0 {
 		fmt.Fprintf(w, "Still missing: %s\n", strings.Join(verification.Missing, ", "))

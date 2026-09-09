@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -64,11 +66,19 @@ func TestExecuteBlocksDependentOperationsButContinuesIndependentOnes(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Failed) != 2 || len(result.Completed) != 1 {
+	if len(result.Failed) != 1 || len(result.Blocked) != 1 || len(result.Completed) != 1 || result.Blocked[0].Dependency != "validate" {
 		t.Fatalf("result=%#v", result)
 	}
 	if !reflect.DeepEqual(runner.calls, []string{"validate", "other"}) {
 		t.Fatalf("calls=%#v", runner.calls)
+	}
+}
+
+func TestSummarizeErrorRetainsUsefulCommandContext(t *testing.T) {
+	err := fmt.Errorf("git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.")
+	got := summarizeError(err)
+	if !strings.Contains(got, "Permission denied (publickey)") || !strings.Contains(got, "Could not read from remote repository") {
+		t.Fatalf("summary=%q", got)
 	}
 }
 
@@ -470,7 +480,7 @@ func TestExecuteFileWriteFailureBlocksDependentsButNotIndependentOperations(t *t
 		{ID: "independent", Command: []string{"other"}},
 	}}
 	result, err := Execute(context.Background(), runner, plan, journal, time.Now, time.Second, nil)
-	if err != nil || len(result.Failed) != 2 || len(result.Completed) != 1 {
+	if err != nil || len(result.Failed) != 1 || len(result.Blocked) != 1 || len(result.Completed) != 1 {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	if !reflect.DeepEqual(runner.calls, []string{"other"}) {
@@ -498,6 +508,242 @@ func TestExecuteRejectsOperationsWithMultipleActions(t *testing.T) {
 	}
 	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
 		t.Fatalf("copy action ran for invalid operation: %v", err)
+	}
+}
+
+func TestExecuteOperationActionExclusivityIncludesDirectoryAndSymlink(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		name string
+		op   model.Operation
+		want bool
+	}{
+		{
+			name: "directory only",
+			op:   model.Operation{ID: "directory", Directory: &model.DirectoryCreate{Path: filepath.Join(root, "directory"), Mode: 0o755}},
+			want: true,
+		},
+		{
+			name: "symlink only",
+			op:   model.Operation{ID: "symlink", Symlink: &model.SymlinkWrite{Destination: filepath.Join(root, "symlink"), Target: "target", ExpectedMissing: true}},
+			want: true,
+		},
+		{
+			name: "file and symlink",
+			op:   model.Operation{ID: "invalid", File: &model.FileWrite{}, Symlink: &model.SymlinkWrite{}},
+		},
+		{
+			name: "copy and directory",
+			op:   model.Operation{ID: "invalid", Copy: &model.Copy{}, Directory: &model.DirectoryCreate{}},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := executeOperation(context.Background(), delayedRunner{}, tt.op, nil, time.Now)
+			if (err == nil) != tt.want {
+				t.Fatalf("err=%v want success=%t", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDirectoryCreateRejectsSymlinkParent(t *testing.T) {
+	external := t.TempDir()
+	root := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	action := model.DirectoryCreate{Path: filepath.Join(root, "linked", "Projects"), Mode: 0o755, RejectSymlinkParents: true}
+	err := executeDirectoryCreate(action)
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "Projects")); !os.IsNotExist(err) {
+		t.Fatalf("external directory was created: %v", err)
+	}
+}
+
+func TestDirectoryCreateIsIdempotentForRealDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Projects")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeDirectoryCreate(model.DirectoryCreate{Path: path, Mode: 0o755, RejectSymlinkParents: true}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("info=%v err=%v", info, err)
+	}
+}
+
+func TestSymlinkWriteCreatesOnlyMissingDestination(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, ".config", "nvim")
+	action := model.SymlinkWrite{Destination: destination, Target: "../../dotfiles/nvim", ExpectedMissing: true, RejectSymlinkParents: true}
+	if err := executeSymlinkWrite(action); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(destination); err != nil || target != action.Target {
+		t.Fatalf("target=%q err=%v", target, err)
+	}
+	for _, setup := range []func(string) error{
+		func(path string) error { return os.WriteFile(path, []byte("existing"), 0o644) },
+		func(path string) error { return os.Symlink("different", path) },
+	} {
+		path := filepath.Join(t.TempDir(), "destination")
+		if err := setup(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := executeSymlinkWrite(model.SymlinkWrite{Destination: path, Target: "target", ExpectedMissing: true}); err == nil {
+			t.Fatal("existing destination unexpectedly replaced")
+		}
+	}
+}
+
+func TestSymlinkWriteRejectsSymlinkParent(t *testing.T) {
+	external := t.TempDir()
+	root := t.TempDir()
+	parent := filepath.Join(root, "linked")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(parent, "config")
+	action := model.SymlinkWrite{Destination: destination, Target: "target", ExpectedMissing: true, RejectSymlinkParents: true}
+	// Model the parent changing after planning but before execution.
+	if err := os.Remove(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, parent); err != nil {
+		t.Fatal(err)
+	}
+	err := executeSymlinkWrite(action)
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "config")); !os.IsNotExist(err) {
+		t.Fatalf("external destination was written: %v", err)
+	}
+}
+
+func TestForcedSymlinkWriteRejectsChangedDestination(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "nvim")
+	if err := os.WriteFile(destination, []byte("A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Lstat(destination)
+	hash, _ := content.HashFilesystemObject(destination)
+	action := model.SymlinkWrite{Destination: destination, Target: "dotfiles/nvim", ReplaceExisting: true, Backup: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "file", Mode: uint32(info.Mode().Perm()), Hash: hash}}
+	if err := os.WriteFile(destination, []byte("B"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeSymlinkWrite(action); err == nil {
+		t.Fatal("changed destination was replaced")
+	}
+	got, _ := os.ReadFile(destination)
+	if string(got) != "B" {
+		t.Fatalf("destination=%q", got)
+	}
+}
+
+func TestForcedSymlinkWriteKeepsRecreatedDestinationWhenRollbackBlocked(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "nvim")
+	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Lstat(destination)
+	hash, _ := content.HashFilesystemObject(destination)
+	action := model.SymlinkWrite{Destination: destination, Target: "dotfiles/nvim", ReplaceExisting: true, Backup: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "file", Mode: uint32(info.Mode().Perm()), Hash: hash}}
+	old := symlinkInstaller
+	defer func() { symlinkInstaller = old }()
+	symlinkInstaller = func(model.SymlinkWrite) error {
+		if err := os.WriteFile(destination, []byte("new user work"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("install failed")
+	}
+	if err := executeSymlinkWrite(action); err == nil || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(destination)
+	if string(got) != "new user work" {
+		t.Fatalf("destination=%q", got)
+	}
+	entries, _ := os.ReadDir(root)
+	if len(entries) != 2 {
+		t.Fatalf("entries=%v", entries)
+	}
+}
+
+func TestCopySourceHashRejectsMutationBeforeDestinationCreation(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "content"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := content.HashRegularTree(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "copy")
+	if err := os.WriteFile(filepath.Join(source, "content"), []byte("mutated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = copyTreeExclusive(model.Copy{Source: source, Destination: destination, SourceHash: hash})
+	if err == nil || !strings.Contains(err.Error(), "source hash mismatch") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination was created: %v", err)
+	}
+}
+
+func TestCopyRejectsSymlinkParent(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "content"), []byte("snapshot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	root := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "linked", "copy")
+	err := copyTreeExclusive(model.Copy{Source: source, Destination: destination, RejectSymlinkParents: true})
+	if err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, "copy")); !os.IsNotExist(err) {
+		t.Fatalf("external destination was created: %v", err)
+	}
+}
+
+func TestCopyTreePreservesModesDespiteUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	source := t.TempDir()
+	if err := os.Chmod(source, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{"file": 0o664, "script": 0o775} {
+		full := filepath.Join(source, path)
+		if err := os.WriteFile(full, []byte(path), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(full, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination := filepath.Join(t.TempDir(), "copy")
+	if err := copyTreeExclusive(model.Copy{Source: source, Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{destination: 0o775, filepath.Join(destination, "file"): 0o664, filepath.Join(destination, "script"): 0o775} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("path=%s mode=%o err=%v", path, info.Mode().Perm(), err)
+		}
 	}
 }
 

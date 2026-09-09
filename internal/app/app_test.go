@@ -168,7 +168,7 @@ func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
 	for _, provider := range providers {
 		got = append(got, provider.ID())
 	}
-	if want := []string{"packages", "themes", "plugins", "config", "defaults", "shell", "hooks"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if want := []string{"packages", "themes", "plugins", "resources", "config", "defaults", "shell", "hooks"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("provider order = %v, want %v", got, want)
 	}
 }
@@ -1504,6 +1504,78 @@ func TestPackagesMiseThreeSourceRestore(t *testing.T) {
 	}
 	if code, out := configRun(t, deps, profileDir, "status", "packages"); code != 2 || !strings.Contains(out, "mise package bun") {
 		t.Fatalf("status code=%d out=%s", code, out)
+	}
+}
+
+func TestTrackTrackedAndUntrackResources(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return home, nil }
+	source := filepath.Join(home, "dotfiles", "deploy")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("echo deploy\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".config", "deploy")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../dotfiles/deploy", link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", source); code != 0 || !strings.Contains(out, "resource deploy") {
+		t.Fatalf("track code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || !d.Manifest.Capture.Resources || len(d.Resources.Items) != 1 || len(d.Resources.Links) != 1 {
+		t.Fatalf("resources=%#v err=%v", d.Resources, err)
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "resources", "--yes"); code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+	if _, err := os.Lstat(source); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.Readlink(link); err != nil || filepath.IsAbs(raw) {
+		t.Fatalf("link=%q err=%v", raw, err)
+	}
+	if code, out := configRun(t, deps, profileDir, "tracked"); code != 0 || !strings.Contains(out, "deploy") || !strings.Contains(out, "copy") {
+		t.Fatalf("tracked code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "untrack", "deploy"); code != 0 || !strings.Contains(out, "resource:deploy") {
+		t.Fatalf("untrack code=%d out=%s", code, out)
+	}
+	if _, err := os.Lstat(source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", link); code != 1 || !strings.Contains(out, "is a symlink") {
+		t.Fatalf("symlink track code=%d out=%s", code, out)
+	}
+}
+
+func TestRenderResourceProgressUsesResourceLabels(t *testing.T) {
+	var out bytes.Buffer
+	for _, op := range []model.Operation{{Provider: "resources", Action: "git clone", Resource: "resource:dotfiles"}, {Provider: "resources", Action: "git checkout", Resource: "resource:dotfiles"}, {Provider: "resources", Action: "copy", Resource: "resource:scripts"}, {Provider: "resources", Action: "symlink", Resource: "link:~/.config/nvim"}} {
+		renderProgress(&out, restore.Progress{Type: restore.ProgressStarted, Operation: op})
+		renderProgress(&out, restore.Progress{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: time.Second})
+	}
+	got := out.String()
+	if strings.Contains(got, "package") || strings.Contains(got, "installing 0") || !strings.Contains(got, "Cloning resource dotfiles") || !strings.Contains(got, "Checking out dotfiles") || !strings.Contains(got, "Restoring resource scripts") || !strings.Contains(got, "Creating link ~/.config/nvim") {
+		t.Fatalf("progress=%q", got)
 	}
 }
 

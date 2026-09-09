@@ -13,7 +13,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 6
+const Schema = 7
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -24,6 +24,7 @@ const (
 	shellSchema        = 4
 	hooksSchema        = 5
 	misePackagesSchema = 6
+	resourcesSchema    = 7
 )
 
 type Manifest struct {
@@ -45,13 +46,14 @@ type OmarchyMeta struct {
 }
 
 type CaptureMeta struct {
-	Packages bool `toml:"packages"`
-	Themes   bool `toml:"themes"`
-	Plugins  bool `toml:"plugins"`
-	Config   bool `toml:"config"`
-	Defaults bool `toml:"defaults"`
-	Shell    bool `toml:"shell"`
-	Hooks    bool `toml:"hooks"`
+	Packages  bool `toml:"packages"`
+	Themes    bool `toml:"themes"`
+	Plugins   bool `toml:"plugins"`
+	Config    bool `toml:"config"`
+	Defaults  bool `toml:"defaults"`
+	Shell     bool `toml:"shell"`
+	Hooks     bool `toml:"hooks"`
+	Resources bool `toml:"resources"`
 }
 
 type Packages struct {
@@ -125,6 +127,33 @@ type Hooks struct {
 	Items []Hook `json:"hooks" toml:"hook"`
 }
 
+type Resources struct {
+	Items        []Resource     `json:"resources" toml:"resource"`
+	Links        []ResourceLink `json:"links" toml:"link"`
+	IgnoredLinks []string       `json:"ignored_links,omitempty" toml:"ignored_links,omitempty"`
+}
+
+type Resource struct {
+	ID       string `json:"id" toml:"id"`
+	Path     string `json:"path" toml:"path"`
+	Kind     string `json:"kind" toml:"kind"`
+	Strategy string `json:"strategy" toml:"strategy"`
+	Hash     string `json:"hash,omitempty" toml:"hash,omitempty"`
+	Mode     string `json:"mode,omitempty" toml:"mode,omitempty"`
+	Remote   string `json:"remote,omitempty" toml:"remote,omitempty"`
+	Branch   string `json:"branch,omitempty" toml:"branch,omitempty"`
+	Revision string `json:"revision,omitempty" toml:"revision,omitempty"`
+	Dirty    bool   `json:"-" toml:"-"`
+}
+
+type ResourceLink struct {
+	SourceResource string `json:"source_resource,omitempty" toml:"source_resource,omitempty"`
+	Source         string `json:"source" toml:"source"`
+	TargetResource string `json:"target_resource" toml:"target_resource"`
+	Target         string `json:"target" toml:"target"`
+	Origin         string `json:"origin" toml:"origin"`
+}
+
 type Hook struct {
 	Path string `json:"path" toml:"path"`
 	Hash string `json:"hash" toml:"hash"`
@@ -142,14 +171,15 @@ type Plugin struct {
 }
 
 type Data struct {
-	Manifest Manifest `json:"manifest"`
-	Packages Packages `json:"packages"`
-	Themes   Themes   `json:"themes"`
-	Plugins  Plugins  `json:"plugins"`
-	Config   Configs  `json:"config"`
-	Defaults Defaults `json:"defaults"`
-	Shell    Shell    `json:"shell"`
-	Hooks    Hooks    `json:"hooks"`
+	Manifest  Manifest  `json:"manifest"`
+	Packages  Packages  `json:"packages"`
+	Themes    Themes    `json:"themes"`
+	Plugins   Plugins   `json:"plugins"`
+	Resources Resources `json:"resources"`
+	Config    Configs   `json:"config"`
+	Defaults  Defaults  `json:"defaults"`
+	Shell     Shell     `json:"shell"`
+	Hooks     Hooks     `json:"hooks"`
 }
 
 func New(name string, now time.Time) Data {
@@ -268,6 +298,19 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	if loadedSchema >= resourcesSchema {
+		resources, err := os.ReadFile(filepath.Join(dir, "resources", "resources.toml"))
+		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Resources {
+			return d, errors.New("resources state marked captured but resources/resources.toml is missing")
+		}
+		if err == nil {
+			if err := toml.Unmarshal(resources, &d.Resources); err != nil {
+				return d, fmt.Errorf("parse resources/resources.toml: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
 	return d, nil
 }
 
@@ -279,6 +322,7 @@ func Save(dir string, d Data) error {
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
 	sortConfigFiles(d.Config.Files)
 	sortHooks(d.Hooks.Items)
+	sortResources(&d.Resources)
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
@@ -298,6 +342,9 @@ func Save(dir string, d Data) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "resources"), 0o755); err != nil {
 		return err
 	}
 	b, err := toml.Marshal(d.Manifest)
@@ -332,6 +379,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	resources, err := toml.Marshal(d.Resources)
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -348,6 +399,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "defaults", "defaults.toml"), defaults},
 		{filepath.Join(dir, "shell", "shell.toml"), shellState},
 		{filepath.Join(dir, "hooks", "hooks.toml"), hooks},
+		{filepath.Join(dir, "resources", "resources.toml"), resources},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {
@@ -432,6 +484,17 @@ func sortConfigFiles(files []ConfigFile) {
 
 func sortHooks(items []Hook) {
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+}
+
+func sortResources(resources *Resources) {
+	sort.Slice(resources.Items, func(i, j int) bool { return resources.Items[i].ID < resources.Items[j].ID })
+	sort.Slice(resources.Links, func(i, j int) bool {
+		if resources.Links[i].SourceResource == resources.Links[j].SourceResource {
+			return resources.Links[i].Source < resources.Links[j].Source
+		}
+		return resources.Links[i].SourceResource < resources.Links[j].SourceResource
+	})
+	resources.IgnoredLinks = normalize(resources.IgnoredLinks)
 }
 
 func joinList(items []string) string {

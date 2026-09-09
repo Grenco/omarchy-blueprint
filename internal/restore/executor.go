@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/content"
@@ -42,6 +44,12 @@ type Failure struct {
 type Result struct {
 	Completed []model.Operation `json:"completed"`
 	Failed    []Failure         `json:"failed"`
+	Blocked   []Blocked         `json:"blocked,omitempty"`
+}
+
+type Blocked struct {
+	Operation  model.Operation `json:"operation"`
+	Dependency string          `json:"dependency"`
 }
 
 func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan, journal *Journal, now func() time.Time, heartbeat time.Duration, progress ProgressFunc) (Result, error) {
@@ -66,8 +74,8 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 		}
 		if blocked != "" {
 			message := "dependency failed: " + blocked
-			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_FAILED", Operation: op.ID, Message: message})
-			execution.Failed = append(execution.Failed, Failure{Operation: op, Error: message})
+			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_BLOCKED", Operation: op.ID, Message: message})
+			execution.Blocked = append(execution.Blocked, Blocked{Operation: op, Dependency: blocked})
 			failed[op.ID] = true
 			continue
 		}
@@ -129,7 +137,7 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			return execution, err
 		}
 		completed := op
-		if completed.File != nil && completed.File.Backup {
+		if (completed.File != nil && completed.File.Backup) || (completed.Symlink != nil && completed.Symlink.Backup) {
 			completed.Reversible = true
 		}
 		execution.Completed = append(execution.Completed, completed)
@@ -152,14 +160,26 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.File != nil {
 		actions++
 	}
+	if op.Directory != nil {
+		actions++
+	}
+	if op.Symlink != nil {
+		actions++
+	}
 	if actions != 1 {
-		return fmt.Errorf("operation %s must contain exactly one command, copy, or file action", op.ID)
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, directory, or symlink action", op.ID)
 	}
 	if op.Copy != nil {
-		return copyTreeExclusive(op.Copy.Source, op.Copy.Destination)
+		return copyTreeExclusive(*op.Copy)
 	}
 	if op.File != nil {
 		return writeFileAtomic(op.ID, *op.File, journal, now)
+	}
+	if op.Directory != nil {
+		return executeDirectoryCreate(*op.Directory)
+	}
+	if op.Symlink != nil {
+		return executeSymlinkWriteWithJournal(op.ID, *op.Symlink, journal, now)
 	}
 	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
 	return err
@@ -191,7 +211,10 @@ func writeFileAtomic(operation string, action model.FileWrite, journal *Journal,
 		return fmt.Errorf("hash file write source: %w", err)
 	}
 	if sourceHash != action.SourceHash {
-		return fmt.Errorf("file write source hash mismatch: %s", action.Source)
+		canonical, err := content.HashRegularTree(action.Source)
+		if err != nil || canonical != action.SourceHash {
+			return fmt.Errorf("file write source hash mismatch: %s", action.Source)
+		}
 	}
 	if _, err := source.Reader.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -371,14 +394,225 @@ func validateDestination(action model.FileWrite) (os.FileInfo, error) {
 	return info, nil
 }
 
-func copyTreeExclusive(source, destination string) error {
-	if _, err := os.Lstat(destination); err == nil {
-		return fmt.Errorf("destination already exists: %s", destination)
+func executeDirectoryCreate(action model.DirectoryCreate) error {
+	if action.Mode > 0o777 {
+		return fmt.Errorf("directory create mode is invalid: %04o", action.Mode)
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Path); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(action.Path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("directory create destination is not a directory: %s", action.Path)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(action.Path, os.FileMode(action.Mode)); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Path); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(action.Path, os.FileMode(action.Mode))
+}
+
+func executeSymlinkWrite(action model.SymlinkWrite) error {
+	return executeSymlinkWriteWithJournal("", action, nil, time.Now)
+}
+
+func executeSymlinkWriteWithJournal(operation string, action model.SymlinkWrite, journal *Journal, now func() time.Time) error {
+	if action.Target == "" {
+		return fmt.Errorf("symlink target is required")
+	}
+	if action.ExpectedMissing == action.ReplaceExisting {
+		return fmt.Errorf("symlink write requires exactly one destination precondition: %s", action.Destination)
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if action.ReplaceExisting {
+		if action.ExpectedExisting == nil {
+			return fmt.Errorf("symlink replacement requires existing precondition: %s", action.Destination)
+		}
+		if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+			return err
+		}
+		backup, err := reserveSiblingBackupPath(action.Destination)
+		if err != nil {
+			return err
+		}
+		if action.RejectSymlinkParents {
+			if err := validateSymlinkParents(action.Destination); err != nil {
+				return err
+			}
+		}
+		if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
+			return err
+		}
+		if err := renameNoReplace(action.Destination, backup); err != nil {
+			return err
+		}
+		if journal != nil {
+			if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
+				if rollback := renameNoReplace(backup, action.Destination); rollback != nil {
+					return fmt.Errorf("%v; rollback failed: %w", err, rollback)
+				}
+				return err
+			}
+		}
+		if err := symlinkInstaller(action); err != nil {
+			if rollback := renameNoReplace(backup, action.Destination); rollback != nil {
+				return fmt.Errorf("%v; rollback failed: %w", err, rollback)
+			}
+			return err
+		}
+		return nil
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("symlink destination already exists: %s", action.Destination)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	parent := filepath.Dir(destination)
+	parent := filepath.Dir(action.Destination)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("symlink destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(action.Target, action.Destination)
+}
+
+var symlinkInstaller = installSymlinkAtomic
+
+func renameNoReplace(old, new string) error {
+	oldp, err := syscall.BytePtrFromString(old)
+	if err != nil {
+		return err
+	}
+	newp, err := syscall.BytePtrFromString(new)
+	if err != nil {
+		return err
+	}
+	// renameat2 is syscall 316 on Linux amd64; Omarchy only supports Linux.
+	_, _, errno := syscall.Syscall6(316, uintptr(^uint(99)), uintptr(unsafe.Pointer(oldp)), uintptr(^uint(99)), uintptr(unsafe.Pointer(newp)), 1, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func validateFilesystemPrecondition(path string, expected model.FilesystemPrecondition) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("symlink replacement precondition failed: %w", err)
+	}
+	actual := model.FilesystemPrecondition{Mode: uint32(info.Mode().Perm())}
+	if info.Mode()&os.ModeSymlink != 0 {
+		actual.Type = "symlink"
+		actual.Target, err = os.Readlink(path)
+	} else if info.IsDir() {
+		actual.Type = "directory"
+		actual.Hash, err = content.HashFilesystemObject(path)
+	} else if info.Mode().IsRegular() {
+		actual.Type = "file"
+		actual.Hash, err = content.HashFilesystemObject(path)
+	} else {
+		return fmt.Errorf("symlink replacement precondition failed: unsupported object")
+	}
+	if err != nil || actual != expected {
+		return fmt.Errorf("symlink replacement precondition failed: destination changed")
+	}
+	return nil
+}
+
+func reserveSiblingBackupPath(destination string) (string, error) {
+	dir, base := filepath.Dir(destination), filepath.Base(destination)
+	for n := 0; n < 10000; n++ {
+		candidate := filepath.Join(dir, fmt.Sprintf(".%s.omarchy-blueprint-backup-%d", base, n))
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("unable to reserve backup path for %s", destination)
+}
+
+func installSymlinkAtomic(action model.SymlinkWrite) error {
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	temp, err := reserveSiblingBackupPath(action.Destination + ".tmp")
+	if err != nil {
+		return err
+	}
+	if err := os.Symlink(action.Target, temp); err != nil {
+		return err
+	}
+	defer os.Remove(temp)
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); !os.IsNotExist(err) {
+		return fmt.Errorf("symlink destination changed during replacement: %s", action.Destination)
+	}
+	return os.Rename(temp, action.Destination)
+}
+
+func copyTreeExclusive(action model.Copy) error {
+	if action.SourceHash != "" {
+		hash, err := content.HashRegularTree(action.Source)
+		if err != nil {
+			return fmt.Errorf("validate copy source: %w", err)
+		}
+		if hash != action.SourceHash {
+			return fmt.Errorf("copy source hash mismatch: %s", action.Source)
+		}
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	parent := filepath.Dir(action.Destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	temp, err := os.MkdirTemp(parent, ".omarchy-blueprint-copy-*")
@@ -386,10 +620,29 @@ func copyTreeExclusive(source, destination string) error {
 		return err
 	}
 	defer os.RemoveAll(temp)
-	if err := copyTreeContents(source, temp); err != nil {
+	info, err := os.Lstat(action.Source)
+	if err != nil {
 		return err
 	}
-	return os.Rename(temp, destination)
+	if info.IsDir() {
+		if err := os.Chmod(temp, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	if err := copyTreeContents(action.Source, temp); err != nil {
+		return err
+	}
+	if action.RejectSymlinkParents {
+		if err := validateSymlinkParents(action.Destination); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Lstat(action.Destination); err == nil {
+		return fmt.Errorf("destination already exists: %s", action.Destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(temp, action.Destination)
 }
 
 func copyTreeContents(source, destination string) error {
@@ -410,7 +663,10 @@ func copyTreeContents(source, destination string) error {
 			return err
 		}
 		if entry.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(target, info.Mode().Perm())
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("snapshot contains unsupported file: %s", relative)
@@ -422,6 +678,11 @@ func copyTreeContents(source, destination string) error {
 		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
 		if err != nil {
 			in.Close()
+			return err
+		}
+		if err := out.Chmod(info.Mode().Perm()); err != nil {
+			in.Close()
+			out.Close()
 			return err
 		}
 		_, copyErr := io.Copy(out, in)
@@ -444,10 +705,18 @@ func notify(progress ProgressFunc, event Progress) {
 }
 
 func summarizeError(err error) string {
-	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
-	message := strings.TrimSpace(lines[len(lines)-1])
-	if len(message) > 300 {
-		message = message[:297] + "..."
+	var lines []string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 4 {
+		lines = lines[len(lines)-4:]
+	}
+	message := strings.Join(lines, "\n")
+	if len(message) > 600 {
+		return message[len(message)-597:] + "..."
 	}
 	return message
 }
