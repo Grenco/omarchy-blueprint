@@ -109,6 +109,10 @@ func (p Provider) walkRoot(root, prefix string, user bool, excluded []string, en
 			return err
 		}
 		logical := filepath.ToSlash(rel)
+		if strings.HasPrefix(filepath.Base(logical), ".config.omarchy-blueprint-backup-") {
+			// Restore keeps replacement backups as siblings for rollback and journaling.
+			return nil
+		}
 		if prefix != "" {
 			logical = prefix + "/" + logical
 		}

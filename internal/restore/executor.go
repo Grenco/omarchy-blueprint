@@ -391,17 +391,6 @@ func replaceFileWriteWithJournal(operation string, action model.FileWrite, journ
 	if err := validateFilesystemPrecondition(action.Destination, *action.ExpectedExisting); err != nil {
 		return err
 	}
-	if journal != nil && action.ExpectedExisting.Type == "file" {
-		// Preserve the journal backup contract as well as the sibling backup
-		// used for an atomic rollback-safe replacement below.
-		backupCopy, err := journal.CreateBackup(operation, action.Destination)
-		if err != nil {
-			return fmt.Errorf("create file backup: %w", err)
-		}
-		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backupCopy}); err != nil {
-			return err
-		}
-	}
 	backup, err := reserveSiblingBackupPath(action.Destination)
 	if err != nil {
 		return err
@@ -423,7 +412,7 @@ func replaceFileWriteWithJournal(operation string, action model.FileWrite, journ
 		}
 		return cause
 	}
-	if journal != nil && action.ExpectedExisting.Type != "file" {
+	if journal != nil {
 		if err := journal.Write(Event{Time: now().UTC(), Type: "BACKUP_CREATED", Operation: operation, Message: backup}); err != nil {
 			return rollback(err)
 		}

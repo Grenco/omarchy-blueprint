@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -754,9 +755,30 @@ func TestConfigStatusDriftAndRestoreWithBackup(t *testing.T) {
 	if journalPath == "" {
 		t.Fatalf("restore output missing journal path = %q", out)
 	}
-	entries, err := os.ReadDir(strings.TrimSuffix(journalPath, ".jsonl") + ".backup")
-	if err != nil || len(entries) == 0 {
-		t.Fatalf("backup missing: %v entries=%d", err, len(entries))
+	journal, err := os.Open(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	var backup string
+	decoder := json.NewDecoder(journal)
+	for {
+		var event restore.Event
+		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatal(err)
+		}
+		if event.Type == "BACKUP_CREATED" {
+			backup = event.Message
+		}
+	}
+	if filepath.Dir(backup) != filepath.Join(userRoot, "hypr") {
+		t.Fatalf("backup path=%q", backup)
+	}
+	if b, err := os.ReadFile(backup); err != nil || string(b) != "default" {
+		t.Fatalf("backup=%q err=%v", b, err)
 	}
 }
 

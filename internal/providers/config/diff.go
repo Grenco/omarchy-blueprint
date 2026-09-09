@@ -66,8 +66,30 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 	var reloadDependencies []string
 	for _, file := range saved.Files {
 		candidate, ok := byPath[file.Path]
-		desired := resolveDesiredFile(file, candidate, ok)
+		desired, err := p.resolveDesiredFile(file, candidate, ok)
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
 		if desired.state == desiredSatisfied {
+			continue
+		}
+		if desired.conflict {
+			if force {
+				op, err := p.forceFileWrite(file, "merge conflicted; captured user version will win")
+				if err != nil {
+					return model.RestorePlan{}, err
+				}
+				plan.Operations = append(plan.Operations, op)
+				if isHyprConfigPath(file.Path) {
+					reloadDependencies = append(reloadDependencies, op.ID)
+				}
+				continue
+			}
+			reason := "Omarchy baseline changed; merge conflict requires review"
+			if desired.mergeErr {
+				reason = "Omarchy baseline changed; configuration is not mergeable"
+			}
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: reason})
 			continue
 		}
 		if desired.state == desiredUnknown {
@@ -93,7 +115,7 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 		if mode, ok := configMode(file.Mode); ok {
 			write.Mode = &mode
 		}
-		if desired.state == desiredMissing || candidate.UserHash == "" {
+		if desired.state == desiredMissing {
 			write.ExpectedMissing = true
 		} else {
 			precondition, err := p.configCandidatePrecondition(candidate)
@@ -102,51 +124,11 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 			}
 			write.ReplaceExisting, write.ExpectedExisting, write.Backup = true, &precondition, true
 		}
-		switch desired.state {
-		case desiredDirect:
+		write.SourceHash = desired.hash
+		if desired.content != nil {
+			write.Generated, write.Content = true, desired.content
+		} else {
 			write.Source = p.overlaySnapshotPath("files", file.Path)
-			write.SourceHash = file.Hash
-		case desiredBaseline:
-			write.Source, write.SourceHash = p.overlaySnapshotPath("baseline", file.Path), file.BaselineHash
-		case desiredMerge:
-			base, err := readExpectedRegularFile(p.overlaySnapshotPath("baseline", file.Path), file.BaselineHash)
-			if err != nil {
-				return model.RestorePlan{}, fmt.Errorf("read captured baseline %s: %w", file.Path, err)
-			}
-			captured, err := readExpectedRegularFile(p.overlaySnapshotPath("files", file.Path), file.Hash)
-			if err != nil {
-				return model.RestorePlan{}, fmt.Errorf("read captured config %s: %w", file.Path, err)
-			}
-			currentPath, err := p.absoluteBaselinePath(file.Path)
-			if err != nil {
-				return model.RestorePlan{}, fmt.Errorf("resolve current baseline %s: %w", file.Path, err)
-			}
-			current, err := readExpectedRegularFile(currentPath, candidate.BaselineHash)
-			if err != nil {
-				return model.RestorePlan{}, fmt.Errorf("read current baseline %s: %w", file.Path, err)
-			}
-			merged, mergeErr := MergeText3(base, captured, current)
-			if mergeErr != nil || merged.Conflicts {
-				if force {
-					op, err := p.forceFileWrite(file, "merge conflicted; captured user version will win")
-					if err != nil {
-						return model.RestorePlan{}, err
-					}
-					plan.Operations = append(plan.Operations, op)
-					if isHyprConfigPath(file.Path) {
-						reloadDependencies = append(reloadDependencies, op.ID)
-					}
-					continue
-				}
-				reason := "Omarchy baseline changed; merge conflict requires review"
-				if mergeErr != nil {
-					reason = "Omarchy baseline changed; configuration is not mergeable"
-				}
-				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "config", Resource: "config:" + file.Path, Reason: reason})
-				continue
-			}
-			write.Generated, write.Content = true, merged.Content
-			write.SourceHash = hashContent(merged.Content)
 		}
 		id := "config.write." + configOperationID(file.Path)
 		risk := model.RiskMedium
@@ -210,40 +192,81 @@ const (
 	desiredUnknown
 )
 
-type desiredCandidate struct{ state desiredState }
+// desiredCandidate carries the effective desired state: B directly, or M after
+// applying A->B to C. Keeping it here makes Plan, Diff, and Verify agree.
+type desiredCandidate struct {
+	state    desiredState
+	hash     string
+	mode     string
+	content  []byte
+	conflict bool
+	mergeErr bool
+}
 
-// resolveDesiredFile is the single A (saved), B (captured baseline), C (current
-// baseline), M (machine) policy. Check A first so an already-restored target is
-// never disturbed by a later baseline upgrade.
-func resolveDesiredFile(a profile.ConfigFile, m Candidate, exists bool) desiredCandidate {
-	if exists && m.UserHash == a.Hash {
-		return desiredCandidate{desiredSatisfied}
+func (p Provider) resolveDesiredFile(a profile.ConfigFile, t Candidate, exists bool) (desiredCandidate, error) {
+	b, err := readExpectedRegularFile(p.overlaySnapshotPath("files", a.Path), a.Hash)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("read captured config %s: %w", a.Path, err)
+	}
+	direct := desiredCandidate{state: desiredDirect, hash: a.Hash, mode: a.Mode}
+	if !exists || t.UserHash == "" {
+		direct.state = desiredMissing
+		return direct, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, a.Hash, a.Mode) {
+		return desiredCandidate{state: desiredSatisfied, hash: a.Hash, mode: a.Mode}, nil
 	}
 	if a.BaselineHash == "" {
-		if !exists || m.UserHash == "" {
-			return desiredCandidate{desiredMissing}
-		}
-		return desiredCandidate{desiredUnknown}
+		return desiredCandidate{state: desiredUnknown}, nil
 	}
-	if !exists || m.BaselineHash == "" {
-		if !exists || m.UserHash == "" {
-			return desiredCandidate{desiredBaseline}
+	// The current baseline disappeared. A is still a known safe target, but any
+	// other target is user-owned and must be preserved unless force is requested.
+	if t.BaselineHash == "" {
+		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+			return direct, nil
 		}
-		if m.UserHash == a.BaselineHash {
-			return desiredCandidate{desiredSatisfied}
+		return desiredCandidate{state: desiredUnknown}, nil
+	}
+	if t.BaselineHash == a.BaselineHash {
+		if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+			return direct, nil
 		}
-		return desiredCandidate{desiredUnknown}
+		return desiredCandidate{state: desiredUnknown}, nil
 	}
-	if m.BaselineHash == a.BaselineHash {
-		if m.UserHash == "" || m.UserHash == m.BaselineHash {
-			return desiredCandidate{desiredDirect}
-		}
-		return desiredCandidate{desiredUnknown}
+	// A changed C can safely receive M only when T is C. Calculate M even when
+	// T may already be M so verification and diff recognize an executed merge.
+	base, err := readExpectedRegularFile(p.overlaySnapshotPath("baseline", a.Path), a.BaselineHash)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("read captured baseline %s: %w", a.Path, err)
 	}
-	if m.UserHash == m.BaselineHash {
-		return desiredCandidate{desiredMerge}
+	currentPath, err := p.absoluteBaselinePath(a.Path)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("resolve current baseline %s: %w", a.Path, err)
 	}
-	return desiredCandidate{desiredUnknown}
+	current, err := readExpectedRegularFile(currentPath, t.BaselineHash)
+	if err != nil {
+		return desiredCandidate{}, fmt.Errorf("read current baseline %s: %w", a.Path, err)
+	}
+	merged, err := MergeText3(base, b, current)
+	if err != nil || merged.Conflicts {
+		return desiredCandidate{state: desiredUnknown, conflict: true, mergeErr: err != nil}, nil
+	}
+	m := desiredCandidate{state: desiredMerge, hash: hashContent(merged.Content), mode: a.Mode, content: merged.Content}
+	if matchesEffective(t.UserHash, t.UserMode, m.hash, m.mode) {
+		m.state = desiredSatisfied
+		return m, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, t.BaselineHash, t.BaselineMode) {
+		return m, nil
+	}
+	if matchesEffective(t.UserHash, t.UserMode, a.BaselineHash, a.BaselineMode) {
+		return direct, nil
+	}
+	return desiredCandidate{state: desiredUnknown}, nil
+}
+
+func matchesEffective(hash, mode, wantHash, wantMode string) bool {
+	return hash == wantHash && (wantMode == "" || mode == wantMode)
 }
 func resolveDesiredDelete(a profile.ConfigDelete, m Candidate, exists bool) desiredState {
 	if !exists || m.Classification == ConfigDeletedBaseline {
@@ -376,7 +399,7 @@ func Diff(saved profile.Configs, current any) []model.Change {
 	for _, c := range scan.Candidates {
 		if f, ok := files[c.Path]; ok {
 			delete(files, c.Path)
-			if resolveDesiredFile(f, c, true).state != desiredSatisfied {
+			if !matchesEffective(c.UserHash, c.UserMode, f.Hash, f.Mode) {
 				changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" differs"))
 			}
 			continue
@@ -396,9 +419,7 @@ func Diff(saved profile.Configs, current any) []model.Change {
 	for path := range files {
 		changes = append(changes, configChange(model.ChangeRemove, path, "- config "+path+" missing"))
 	}
-	for path := range deletes {
-		changes = append(changes, configChange(model.ChangeRemove, path, "- config "+path+" tombstone missing"))
-	}
+	// A missing candidate is an already-applied tombstone.
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
 	return changes
 }
@@ -418,18 +439,78 @@ func Verify(saved profile.Configs, current any) model.VerificationResult {
 	missing := []string{}
 	for _, f := range saved.Files {
 		c, ok := byPath[f.Path]
-		if !ok || resolveDesiredFile(f, c, true).state != desiredSatisfied {
+		if !ok || !matchesEffective(c.UserHash, c.UserMode, f.Hash, f.Mode) {
 			missing = append(missing, "config:"+f.Path)
 		}
 	}
 	for _, d := range saved.Deletes {
 		c, ok := byPath[d.Path]
-		if !ok || resolveDesiredDelete(d, c, true) != desiredSatisfied {
+		if ok && resolveDesiredDelete(d, c, true) != desiredSatisfied {
 			missing = append(missing, "config:"+d.Path)
 		}
 	}
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+}
+
+// Diff evaluates overlay state using the same effective B/M candidate as Plan.
+func (p Provider) Diff(saved profile.Configs, scan ScanSummary) ([]model.Change, error) {
+	byPath := map[string]Candidate{}
+	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
+	}
+	changes := []model.Change{}
+	for _, f := range saved.Files {
+		c, ok := byPath[f.Path]
+		desired, err := p.resolveDesiredFile(f, c, ok)
+		if err != nil {
+			return nil, err
+		}
+		if desired.state != desiredSatisfied {
+			changes = append(changes, configChange(model.ChangeModify, f.Path, "~ config "+f.Path+" differs"))
+		}
+		delete(byPath, f.Path)
+	}
+	for _, d := range saved.Deletes {
+		c, ok := byPath[d.Path]
+		if ok && resolveDesiredDelete(d, c, true) != desiredSatisfied {
+			changes = append(changes, configChange(model.ChangeModify, d.Path, "~ config "+d.Path+" deletion differs"))
+		}
+		delete(byPath, d.Path)
+	}
+	for _, c := range byPath {
+		if c.Classification == ConfigAdded || c.Classification == ConfigModifiedBaseline {
+			changes = append(changes, configChange(model.ChangeAdd, c.Path, "+ config "+c.Path+" added"))
+		}
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
+	return changes, nil
+}
+
+// Verify evaluates overlay state using the same effective B/M candidate as Plan.
+func (p Provider) Verify(saved profile.Configs, scan ScanSummary) (model.VerificationResult, error) {
+	byPath := map[string]Candidate{}
+	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
+	}
+	missing := []string{}
+	for _, f := range saved.Files {
+		c, ok := byPath[f.Path]
+		desired, err := p.resolveDesiredFile(f, c, ok)
+		if err != nil {
+			return model.VerificationResult{}, err
+		}
+		if desired.state != desiredSatisfied {
+			missing = append(missing, "config:"+f.Path)
+		}
+	}
+	for _, d := range saved.Deletes {
+		if c, ok := byPath[d.Path]; ok && resolveDesiredDelete(d, c, true) != desiredSatisfied {
+			missing = append(missing, "config:"+d.Path)
+		}
+	}
+	sort.Strings(missing)
+	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}, nil
 }
 
 func (p Provider) Check(saved profile.Configs) error {

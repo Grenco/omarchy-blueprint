@@ -1,15 +1,18 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 func TestPlanOverlayForceReplacesUnknownTargets(t *testing.T) {
@@ -157,10 +160,113 @@ func TestPlanOverlaySkipsConflictingNonmergeableAndDisappearedBaselines(t *testi
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 	plan, err = p.PlanOverlay(saved, ScanSummary{}, 8, "old", "new")
-	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || plan.Operations[0].File.SourceHash != baseHash {
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || plan.Operations[0].File.SourceHash != saved.Files[0].Hash {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 }
+
+func TestDesiredCandidateSafelyHandlesMissingA_CAndM(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base\nold\n")
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "base\nuser\n")
+	writeFile(t, filepath.Join(base, path), "upstream\nold\n")
+	a := hashOf(t, filepath.Join(profileDir, "config", "baseline", path))
+	b := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	c := hashOf(t, filepath.Join(base, path))
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	f := profile.ConfigFile{Path: path, Hash: b, Mode: "0644", BaselineHash: a, BaselineMode: "0644"}
+	merged, err := p.resolveDesiredFile(f, Candidate{Path: path, UserHash: c, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true)
+	if err != nil || merged.state != desiredMerge || string(merged.content) != "upstream\nuser\n" {
+		t.Fatalf("merged=%#v err=%v", merged, err)
+	}
+	m := hashContent(merged.content)
+	for _, test := range []struct {
+		name      string
+		candidate Candidate
+		exists    bool
+		want      desiredState
+	}{
+		{"missing", Candidate{}, false, desiredMissing},
+		{"A", Candidate{UserHash: a, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredDirect},
+		{"C", Candidate{UserHash: c, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredMerge},
+		{"M", Candidate{UserHash: m, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredSatisfied},
+		{"unknown", Candidate{UserHash: "unknown", UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}, true, desiredUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := p.resolveDesiredFile(f, test.candidate, test.exists)
+			if err != nil || got.state != test.want {
+				t.Fatalf("got=%#v err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestOverlayMergedExecutionSatisfiesVerifyAndDiff(t *testing.T) {
+	root, base, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", path), "base\nold\n")
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "base\nuser\n")
+	writeFile(t, filepath.Join(base, path), "upstream\nold\n")
+	writeFile(t, filepath.Join(root, path), "upstream\nold\n")
+	a, b, c := hashOf(t, filepath.Join(profileDir, "config", "baseline", path)), hashOf(t, filepath.Join(profileDir, "config", "files", path)), hashOf(t, filepath.Join(base, path))
+	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
+	saved := profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: b, Mode: "0644", BaselineHash: a, BaselineMode: "0644"}}}
+	scan := ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigUnchangedBaseline, UserHash: c, UserMode: "0644", BaselineHash: c, BaselineMode: "0644"}}}
+	plan, err := p.PlanOverlay(saved, scan, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 1 || !plan.Operations[0].File.Generated {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	journal, err := restore.NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	if _, err := restore.Execute(context.Background(), noopRunner{}, plan, journal, time.Now, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := p.Scan(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := p.Verify(saved, updated)
+	if err != nil || !verified.OK {
+		t.Fatalf("verify=%#v err=%v", verified, err)
+	}
+	changes, err := p.Diff(saved, updated)
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}
+
+func TestPlanOverlayTreatsModeDriftAsUnknownAndAbsentTombstoneAsSatisfied(t *testing.T) {
+	root, profileDir := t.TempDir(), t.TempDir()
+	path := "app/config"
+	writeFile(t, filepath.Join(profileDir, "config", "files", path), "wanted")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", "gone"), "base")
+	writeFile(t, filepath.Join(root, path), "wanted")
+	hash := hashOf(t, filepath.Join(profileDir, "config", "files", path))
+	goneHash := hashOf(t, filepath.Join(profileDir, "config", "baseline", "gone"))
+	p := Provider{UserRoot: root, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+	saved := profile.Configs{Files: []profile.ConfigFile{{Path: path, Hash: hash, Mode: "0600"}}, Deletes: []profile.ConfigDelete{{Path: "gone", BaselineHash: goneHash}}}
+	scan := ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigAdded, UserHash: hash, UserMode: "0644"}}}
+	plan, err := p.PlanOverlay(saved, scan, 8, "old", "new")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	verified, err := p.Verify(saved, scan)
+	if err != nil || verified.OK {
+		t.Fatalf("verify=%#v err=%v", verified, err)
+	}
+	changes, err := p.Diff(saved, scan)
+	if err != nil || len(changes) != 1 {
+		t.Fatalf("changes=%#v err=%v", changes, err)
+	}
+}
+
+type noopRunner struct{}
+
+func (noopRunner) Run(context.Context, string, ...string) (string, error) { return "", nil }
 
 func TestPlanOverlayRestoresTombstoneAndReloadsOnlyHypr(t *testing.T) {
 	root, profileDir := t.TempDir(), t.TempDir()

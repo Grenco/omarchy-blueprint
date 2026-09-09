@@ -241,6 +241,49 @@ func TestFileWriteForceReplacementBacksUpObjectsAndRefusesChangedTarget(t *testi
 	}
 }
 
+func TestReplacementOfSymlinkJournalsSiblingWithoutCopyingOrDereferencing(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	if err := os.WriteFile(external, []byte("external"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "destination")
+	if err := os.Symlink(external, destination); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source")
+	if err := os.WriteFile(source, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	action := model.FileWrite{Source: source, Destination: destination, SourceHash: hashFile(t, source), ReplaceExisting: true, Backup: true, ExpectedExisting: &model.FilesystemPrecondition{Type: "symlink", Target: target, Mode: uint32(info.Mode().Perm())}}
+	if err := writeFileAtomic("symlink.replace", action, journal, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(external); err != nil || string(got) != "external" {
+		t.Fatalf("external=%q err=%v", got, err)
+	}
+	if info, err := os.Lstat(destination); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("destination=%v err=%v", info, err)
+	}
+	entries, err := os.ReadFile(journal.Path)
+	if err != nil || strings.Contains(string(entries), ".backup") {
+		t.Fatalf("journal=%q err=%v", entries, err)
+	}
+}
+
 func TestFileWriteGeneratedContentRejectsInvalidSourcesAndHash(t *testing.T) {
 	cases := []model.FileWrite{
 		{Generated: true, Source: "unexpected", Content: []byte("x"), SourceHash: generatedHash([]byte("x")), ExpectedMissing: true},
