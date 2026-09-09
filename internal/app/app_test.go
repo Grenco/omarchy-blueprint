@@ -1269,7 +1269,7 @@ func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model
 	data := profile.Data{Plugins: plugins, Shell: profile.Shell{Version: 1, Hash: desired.Hash, BaselineHash: capturedBaseline.Hash}}
 	plan := model.RestorePlan{Operations: []model.Operation{
 		{ID: "shell.write", Provider: "shell", Action: "write", File: &model.FileWrite{}},
-		{ID: "shell.restart", Provider: "shell", Action: "restart", DependsOn: []string{"shell.write"}},
+		{ID: "shell.restart", Provider: "shell", Action: "restart", Command: []string{"omarchy-restart-shell"}, DependsOn: []string{"shell.write"}},
 	}}
 	providers := []stateProvider{shellStateProvider{deps: deps, opt: opt}}
 	return deps, opt, data, plan, providers

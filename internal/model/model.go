@@ -34,6 +34,7 @@ type Operation struct {
 	Command    []string         `json:"command"`
 	Copy       *Copy            `json:"copy,omitempty"`
 	File       *FileWrite       `json:"file,omitempty"`
+	Delete     *FileDelete      `json:"delete,omitempty"`
 	Directory  *DirectoryCreate `json:"directory,omitempty"`
 	Symlink    *SymlinkWrite    `json:"symlink,omitempty"`
 	DependsOn  []string         `json:"depends_on,omitempty"`
@@ -83,6 +84,14 @@ type FileWrite struct {
 	Mode                 *uint32 `json:"mode,omitempty"`
 	ExpectedMode         *uint32 `json:"expected_mode,omitempty"`
 	RejectSymlinkParents bool    `json:"reject_symlink_parents,omitempty"`
+}
+
+type FileDelete struct {
+	Destination          string                  `json:"destination"`
+	ExpectedExisting     *FilesystemPrecondition `json:"expected_existing,omitempty"`
+	ExpectedMissing      bool                    `json:"expected_missing,omitempty"`
+	Backup               bool                    `json:"backup,omitempty"`
+	RejectSymlinkParents bool                    `json:"reject_symlink_parents,omitempty"`
 }
 
 type RestorePlan struct {
