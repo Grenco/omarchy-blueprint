@@ -366,7 +366,7 @@ func TestForceMergeConflictAtMissingTargetWritesExpectedMissing(t *testing.T) {
 	writeFile(t, filepath.Join(profileDir, "config", "files", path), "value=user\n")
 	writeFile(t, filepath.Join(base, path), "value=upstream\n")
 	saved := profile.Configs{Files: []profile.ConfigFile{{
-		Path: path, Hash: hashOf(t, filepath.Join(profileDir, "config", "files", path)), Mode: "0644",
+		Path: path, Hash: hashOf(t, filepath.Join(profileDir, "config", "files", path)), Mode: "0600",
 		BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", path)), BaselineMode: "0644",
 	}}}
 	p := Provider{UserRoot: root, BaselineRoot: base, ProfileDir: profileDir}
@@ -375,7 +375,7 @@ func TestForceMergeConflictAtMissingTargetWritesExpectedMissing(t *testing.T) {
 		t.Fatalf("scan=%#v err=%v", scan, err)
 	}
 	plan, err := p.PlanOverlay(saved, scan, 8, "old", "new", PlanOptions{Force: true})
-	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || !plan.Operations[0].File.ExpectedMissing || plan.Operations[0].File.Backup || plan.Operations[0].File.ExpectedExisting != nil {
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].File == nil || !plan.Operations[0].File.ExpectedMissing || plan.Operations[0].File.Backup || plan.Operations[0].File.ExpectedExisting != nil || plan.Operations[0].File.Mode == nil || *plan.Operations[0].File.Mode != 0o600 {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 }

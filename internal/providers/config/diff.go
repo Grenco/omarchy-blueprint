@@ -366,14 +366,20 @@ func (p Provider) forceFileWrite(file profile.ConfigFile, action string) (model.
 	if err != nil {
 		return model.Operation{}, err
 	}
+	write := model.FileWrite{Source: p.overlaySnapshotPath("files", file.Path), Destination: destination, SourceHash: file.Hash, RejectSymlinkParents: true}
+	if mode, ok := configMode(file.Mode); ok {
+		write.Mode = &mode
+	}
 	precondition, err := configFilesystemPrecondition(destination)
 	if os.IsNotExist(err) {
-		return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &model.FileWrite{Source: p.overlaySnapshotPath("files", file.Path), Destination: destination, SourceHash: file.Hash, ExpectedMissing: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true}, nil
+		write.ExpectedMissing = true
+		return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true}, nil
 	}
 	if err != nil {
 		return model.Operation{}, err
 	}
-	return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &model.FileWrite{Source: p.overlaySnapshotPath("files", file.Path), Destination: destination, SourceHash: file.Hash, ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true}, nil
+	write.ReplaceExisting, write.ExpectedExisting, write.Backup = true, &precondition, true
+	return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true}, nil
 }
 
 func (p Provider) forceDelete(deletion profile.ConfigDelete) (model.Operation, error) {
