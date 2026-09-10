@@ -1023,6 +1023,133 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 	}
 }
 
+func TestExecuteConfigHomeIncludeNormalizesAndReplacesExclusion(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	for _, input := range []string{"config:.zshrc", "config:~/.zshrc"} {
+		if code, out := configRun(t, deps, profileDir, "include", input); code != 0 {
+			t.Fatalf("include %s: %d %s", input, code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil || !reflect.DeepEqual(d.Config.Included, []string{".zshrc"}) {
+			t.Fatalf("state=%#v err=%v", d.Config, err)
+		}
+	}
+	if code, out := configRun(t, deps, profileDir, "exclude", "config:.zshrc"); code != 0 {
+		t.Fatalf("exclude: %d %s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "include", "config:.zshrc"); code != 0 {
+		t.Fatalf("include: %d %s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Config.Excluded) != 0 || !reflect.DeepEqual(d.Config.Included, []string{".zshrc"}) {
+		t.Fatalf("final state=%#v err=%v", d.Config, err)
+	}
+}
+
+func TestExecuteConfigIncludeResolvesAmbiguousBaselineAndDeletion(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	base, user, _ := deps.ConfigDirs()
+	deps.HomeDir = func() (string, error) { return filepath.Dir(user), nil }
+	path := "example/settings.conf"
+	if err := os.MkdirAll(filepath.Join(base, "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(user, "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, path), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, path), []byte("B"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatal("ambiguous capture failed")
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Config.Files) != 0 {
+		t.Fatalf("ambiguous saved: %#v %v", d.Config, err)
+	}
+	if code, out := configRun(t, deps, profileDir, "diff", "config"); code != 0 || !strings.Contains(out, "differs   .config/example/settings.conf") {
+		t.Fatalf("diff %d: %s", code, out)
+	}
+	if code, _ := configRun(t, deps, profileDir, "include", "config:.config/example/settings.conf"); code != 0 {
+		t.Fatal("include failed")
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture included: %s", out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || len(d.Config.Files) != 1 || !reflect.DeepEqual(d.Config.Included, []string{".config/example/settings.conf"}) {
+		t.Fatalf("captured=%#v err=%v", d.Config, err)
+	}
+	if err := os.WriteFile(filepath.Join(user, path), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+		t.Fatalf("restore: %s", out)
+	}
+	b, err := os.ReadFile(filepath.Join(user, path))
+	if err != nil || string(b) != "B" {
+		t.Fatalf("restored=%q err=%v", b, err)
+	}
+	if err := os.Remove(filepath.Join(user, path)); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatal("deletion ambiguity capture failed")
+	}
+	if code, _ := configRun(t, deps, profileDir, "include", "config:.config/example/settings.conf"); code != 0 {
+		t.Fatal("deletion include failed")
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("tombstone capture: %s", out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || len(d.Config.Deletes) != 1 {
+		t.Fatalf("tombstone=%#v err=%v", d.Config, err)
+	}
+}
+
+func TestConfigDelegatesDefaultsGeneratedOutputs(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, user, _ := deps.ConfigDirs()
+	home := filepath.Dir(user)
+	deps.HomeDir = func() (string, error) { return home, nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	for _, path := range []string{"xdg-terminals.list", "brave-flags.conf", "environment.d/omarchy-firefox-wayland.conf", "nvim/init.lua"} {
+		full := filepath.Join(user, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("value"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).provider(profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan, err := p.Scan(profile.Configs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]configprovider.Classification{}
+	for _, candidate := range scan.Candidates {
+		got[candidate.Path] = candidate.Classification
+	}
+	for _, path := range []string{".config/xdg-terminals.list", ".config/brave-flags.conf", ".config/environment.d/omarchy-firefox-wayland.conf"} {
+		if _, exists := got[path]; exists {
+			t.Fatalf("Defaults-generated path escaped delegation: %s=%s", path, got[path])
+		}
+	}
+	if got[".config/nvim/init.lua"] != configprovider.ConfigAdded {
+		t.Fatalf("unrelated config classification=%s", got[".config/nvim/init.lua"])
+	}
+}
+
 func TestPackageExcludeHintsRelatedConfigWithoutExcludingIt(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	_, userRoot, _ := deps.ConfigDirs()
