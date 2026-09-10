@@ -562,6 +562,9 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 	if _, shell, err := p.deps.ShellPaths(); err == nil {
 		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "shell", Path: shell})
 	}
+	for _, path := range defaultsprovider.GeneratedOutputPaths(home) {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "defaults", Path: path})
+	}
 	for _, resource := range d.Resources.Items {
 		path, err := resourcesprovider.ExpandHomePath(home, resource.Path)
 		if err != nil {

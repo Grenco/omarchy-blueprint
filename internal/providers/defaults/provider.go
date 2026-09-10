@@ -13,6 +13,16 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// GeneratedOutputPaths are written by Omarchy default/browser setup operations.
+// They are semantic Defaults outputs, not generic user-authored Config state.
+func GeneratedOutputPaths(home string) []string {
+	return []string{
+		filepath.Join(home, ".config", "xdg-terminals.list"),
+		filepath.Join(home, ".config", "brave-flags.conf"),
+		filepath.Join(home, ".config", "environment.d", "omarchy-firefox-wayland.conf"),
+	}
+}
+
 // kinds are the Omarchy-managed default applications in stable order.
 var kinds = []string{"terminal", "browser", "editor", "agent"}
 
