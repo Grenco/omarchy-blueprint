@@ -561,6 +561,69 @@ func TestConfigCaptureJSONIncludesScanSummary(t *testing.T) {
 	}
 }
 
+func TestConfigStatusAndDiffReportSkippedSurfaceOnceWithScanJSON(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	browser := filepath.Join(userRoot, "arbitrary-browser")
+	for _, path := range []string{"Local State", "Default/Preferences", "Default/History", "Default/Cookies"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(browser, path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(browser, path), []byte("state"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 1000; i++ {
+		path := filepath.Join(browser, "zzz-descendants", fmt.Sprintf("descendant-%04d", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("state"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	code, out := configRun(t, deps, profileDir, "status", "config")
+	if code != 0 || strings.Count(out, "arbitrary-browser") != 1 || strings.Contains(out, "descendant-0000") {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "diff", "config")
+	if code != 0 || strings.Count(out, "arbitrary-browser") != 1 || strings.Contains(out, "descendant-0000") {
+		t.Fatalf("diff code=%d out=%s", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "--json", "status", "config")
+	if code != 0 {
+		t.Fatalf("json status code=%d out=%s", code, out)
+	}
+	var envelope struct {
+		Data struct {
+			Config struct {
+				Scan struct {
+					Candidates []configprovider.Candidate      `json:"candidates"`
+					Surfaces   []configprovider.SurfaceSummary `json:"surfaces"`
+				} `json:"scan"`
+			} `json:"config"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Config.Scan.Surfaces) != 2 || envelope.Data.Config.Scan.Surfaces[0].Path != ".config/arbitrary-browser" || envelope.Data.Config.Scan.Surfaces[0].Classification != configprovider.SurfaceStateHeavy {
+		t.Fatalf("config scan = %#v", envelope.Data.Config.Scan)
+	}
+	for _, candidate := range envelope.Data.Config.Scan.Candidates {
+		if strings.Contains(candidate.Path, "arbitrary-browser") {
+			t.Fatalf("skipped descendant candidate = %#v", candidate)
+		}
+	}
+}
+
 func TestExplicitThemeCaptureDoesNotDispatchPackages(t *testing.T) {
 	profileDir, builtin, user := t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
@@ -870,7 +933,7 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 			Excluded bool   `json:"excluded"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(out), &envelope); err != nil || envelope.Data.Kind != "config" || envelope.Data.Path != "ghostty" || !envelope.Data.Excluded {
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil || envelope.Data.Kind != "config" || envelope.Data.Path != ".config/ghostty" || !envelope.Data.Excluded {
 		t.Fatalf("json=%s err=%v", out, err)
 	}
 	for range 2 {
@@ -882,7 +945,7 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(d.Config.Excluded, []string{"ghostty"}) || len(d.Config.Files) != 0 {
+	if !reflect.DeepEqual(d.Config.Excluded, []string{".config/ghostty"}) || len(d.Config.Files) != 0 {
 		t.Fatalf("config=%#v", d.Config)
 	}
 	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code == 0 || !strings.Contains(out, "excluded path") {
@@ -1059,7 +1122,7 @@ func TestConfigVerticalSlice(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "config hypr/bindings.lua captured") {
+	if !strings.Contains(out, "add       hypr") {
 		t.Fatalf("capture output = %q", out)
 	}
 	// Reset to baseline removes the stale snapshot.
@@ -1088,7 +1151,7 @@ func TestConfigStatusDriftAndRestoreWithBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "differs") {
+	if code != 2 || !strings.Contains(out, "modify    hypr") {
 		t.Fatalf("status code=%d out=%q", code, out)
 	}
 	// Resetting the target to the Omarchy baseline makes replacement safe;
@@ -1271,7 +1334,7 @@ func TestAggregateCaptureMarksConfigBeforeCustomization(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "deletion differs") {
+	if code != 2 || !strings.Contains(out, "modify    hypr") {
 		t.Fatalf("later customization must surface as drift, code=%d out=%q", code, out)
 	}
 }

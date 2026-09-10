@@ -49,15 +49,15 @@ const (
 
 type PolicyDecision struct{ Reason PolicyReason }
 
-// NormalizeExclusionPath converts a config policy argument to the logical path
-// used by the .config provider.
-func NormalizeExclusionPath(input string) (string, error) {
+// NormalizeConfigPolicyPath converts ergonomic Config policy input into the
+// canonical HOME-relative namespace used by ConfigFile.Path.
+func NormalizeConfigPolicyPath(input string) (string, error) {
 	input = strings.TrimSpace(strings.ReplaceAll(input, "\\", "/"))
-	input = strings.TrimPrefix(input, "~/.config/")
-	input = strings.TrimPrefix(input, ".config/")
 	if input == "~/.config" || input == ".config" {
 		return "", fmt.Errorf("config exclusion path must name an entry below ~/.config")
 	}
+	input = strings.TrimPrefix(input, "~/.config/")
+	input = strings.TrimPrefix(input, ".config/")
 	if input == "" || strings.HasPrefix(input, "~") || strings.HasPrefix(input, "/") {
 		return "", fmt.Errorf("invalid config exclusion path %q", input)
 	}
@@ -65,8 +65,10 @@ func NormalizeExclusionPath(input string) (string, error) {
 	if input == "." || input == ".." || strings.HasPrefix(input, "../") || input == ".ssh" || strings.HasPrefix(input, ".ssh/") {
 		return "", fmt.Errorf("invalid config exclusion path %q", input)
 	}
-	return profile.NormalizeConfigPath(input)
+	return profile.NormalizeConfigPath(".config/" + input)
 }
+
+func NormalizeExclusionPath(input string) (string, error) { return NormalizeConfigPolicyPath(input) }
 
 // AddExclusion returns copied config metadata with path excluded and all saved
 // files and tombstones below that path removed. It never touches live config.
@@ -232,9 +234,13 @@ func IsExcludedConfigPath(path string, excluded []string) bool {
 	if err != nil {
 		return false
 	}
+	canonical := path
+	if !strings.HasPrefix(canonical, ".config/") {
+		canonical = ".config/" + canonical
+	}
 	for _, item := range excluded {
 		item, err = profile.NormalizeConfigPath(item)
-		if err == nil && (path == item || strings.HasPrefix(path, item+"/")) {
+		if err == nil && (path == item || strings.HasPrefix(path, item+"/") || canonical == item || strings.HasPrefix(canonical, item+"/")) {
 			return true
 		}
 	}
@@ -286,7 +292,14 @@ func sensitiveConfigPath(path string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(path, ".config/gcloud/")
+	if strings.HasPrefix(path, ".config/gcloud/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Base(path)) {
+	case "login data", "logins.json", "key4.db", "cookies":
+		return true
+	}
+	return false
 }
 
 // hasSensitiveContent rejects high-confidence credential material before it is

@@ -2991,9 +2991,13 @@ path remapping
 restore compatibility checks
 ```
 
-Baseline-aware Config overlay is complete: schema-8 profiles capture sparse
-HOME-relative additions, baseline modifications, and baseline-removal
-tombstones while ignoring update backups and stronger-provider paths. On an
+Schema-9 Config surface-aware discovery corrects the prior schema-8 overlay:
+Blueprint classifies each top-level `~/.config` surface before automatic
+recursion, captures only config-lean surfaces, and reports state-heavy, mixed,
+and sensitive surfaces without traversing their descendants. Safe explicit
+subpath inclusion remains available, while generic backup artifacts and backup
+directories are filtered before all Config semantics. Baseline-backed and saved
+paths remain exact-inspected; Resources remains the bulk-tree mechanism. On an
 Omarchy baseline change, text configuration uses a three-way merge; conflicts
 preserve unknown target work unless a recoverable `--force` replacement is
 approved.

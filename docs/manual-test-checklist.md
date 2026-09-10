@@ -48,13 +48,18 @@
 
 ## Baseline-aware Config overlay
 
-- Run `capture config`, `status config`, `restore config --dry-run`, and `restore config` for a modified baseline file and an ordinary added application config file.
+- Run `capture config`, `status config`, `diff config`, `restore config --dry-run`, and `restore config` for a modified baseline file and an ordinary added file in a config-lean surface.
+- Confirm `status config` and capture output aggregate Config changes by surface, while `diff config` retains detailed portable file differences and one summary per skipped surface.
+- On a real desktop with Chromium/Gecko/WebKit-style browsers and mixed applications installed, time `status config`; confirm it remains comfortably interactive, emits one surface-level line per browser/profile store, and never enumerates skipped descendants.
+- Confirm structurally detected browser/profile surfaces are pruned regardless of application directory name, and that mixed surfaces such as Typora, LibreOffice, or Obsidian are reported but not recursively auto-captured.
+- Confirm a baseline-backed path and a previously saved path inside a now-skipped surface are still inspected exactly and reported when they drift.
 - Confirm `restore config --force --dry-run` reports a recoverable backup before replacing a merge-conflicted or otherwise unknown target.
-- Use `exclude config:<path>` then `include config:<path>` and confirm capture preserves the explicit policy.
-- Confirm `*.bak.*` update backups appear in neither `config/files/` nor `config/baseline/` after capture.
+- Use `include config:.config/Typora/themes` on a mixed surface, then capture; confirm only the requested safe subtree is discovered, sibling recovery/runtime state remains skipped, and the inclusion persists in schema-9 Config policy.
+- Confirm explicit inclusion still refuses sensitive paths/content, symlinks, special files, oversized files, backup artifacts, and paths owned by stronger providers. Confirm an include below an excluded ancestor is rejected.
+- Confirm generic backup files (`*.bak`, `*.bak.*`, `*.backup`, `*.backup-*`, `*.orig`, `*~`) and backup directories (`backup`, `backups`, `*.bak`, `*.backup`, `*-backup`, `*-backups`, `*_backup`, `*_backups`) appear in neither `config/files/` nor `config/baseline/`, produce no tombstones, and are pruned before child inspection.
 - On an upgraded baseline, confirm independent source and upstream edits merge cleanly; confirm overlapping edits preserve the target unless `--force` is approved.
 - Delete a shipped baseline file, capture, restore onto a target where it exists, and confirm it is backed up then removed.
-- Track a config directory as a Resource, capture again, and confirm Config no longer duplicates its bytes or restore destination.
+- Track an intentionally authoritative large or opaque config tree as a Resource, capture again, and confirm Config no longer duplicates its bytes or restore destination.
 
 ### Same-machine capture and status
 

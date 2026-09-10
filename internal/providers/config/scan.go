@@ -67,6 +67,16 @@ const (
 // receives roots we control and always prunes symlinks, excluded, volatile, and
 // delegated directories before their children are enumerated.
 func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
+	return p.scan(saved, true)
+}
+
+// ScanForCapture intentionally excludes previous desired paths. A profile
+// upgrade must not keep legacy automatic discoveries alive merely by recapture.
+func (p Provider) ScanForCapture(saved profile.Configs) (ScanSummary, error) {
+	return p.scan(saved, false)
+}
+
+func (p Provider) scan(saved profile.Configs, includeSaved bool) (ScanSummary, error) {
 	entries := map[string]map[bool]treeEntry{}
 	if p.BaselineRoot != "" {
 		if err := p.walkRoot(p.BaselineRoot, p.configRootPrefix(), false, saved.Excluded, entries); err != nil {
@@ -113,20 +123,22 @@ func (p Provider) Scan(saved profile.Configs) (ScanSummary, error) {
 	// Walks intentionally omit directories. Preserve that broad behavior, but
 	// surface a directory that blocks an exact saved destination so planning can
 	// safely report or replace it rather than treating the path as missing.
-	for _, path := range savedPaths(saved) {
-		abs, err := p.absoluteUserPath(path)
-		if err != nil {
-			return ScanSummary{}, err
-		}
-		_, err = os.Lstat(abs)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return ScanSummary{}, err
-		}
-		if err := p.addExact(entries, true, abs, path); err != nil {
-			return ScanSummary{}, err
+	if includeSaved {
+		for _, path := range savedPaths(saved) {
+			abs, err := p.absoluteUserPath(path)
+			if err != nil {
+				return ScanSummary{}, err
+			}
+			_, err = os.Lstat(abs)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return ScanSummary{}, err
+			}
+			if err := p.addExact(entries, true, abs, path); err != nil {
+				return ScanSummary{}, err
+			}
 		}
 	}
 	paths := make([]string, 0, len(entries))
@@ -213,6 +225,10 @@ func (p Provider) scanUserSurfaces(saved profile.Configs, entries map[string]map
 			return nil, err
 		}
 		if info.IsDir() {
+			decision := ClassifyConfigPolicy(included, info, saved.Excluded)
+			if decision.Reason != PolicyAllowed || p.delegated(path) || info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("config include %q is blocked by %s policy", included, decision.Reason)
+			}
 			walked, exceeded, err := p.walkSurface(path, included, saved.Excluded)
 			if err != nil {
 				return nil, err

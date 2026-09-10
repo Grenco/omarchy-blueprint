@@ -27,7 +27,7 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if p.ProfileDir == "" {
 		return CaptureResult{}, fmt.Errorf("profile directory is required to capture config")
 	}
-	scan, err := p.Scan(saved)
+	scan, err := p.ScanForCapture(saved)
 	if err != nil {
 		return CaptureResult{}, err
 	}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -106,5 +107,86 @@ func TestSurfaceClassificationRequiresConfigLikeMajorityForLargeSurface(t *testi
 	}
 	if got, _ := ClassifySurface(probe); got != SurfaceConfigLean {
 		t.Fatalf("classification=%s, want config-lean", got)
+	}
+}
+
+func TestRealHomeNamespacePoliciesExcludeAndInclude(t *testing.T) {
+	home := t.TempDir()
+	user := filepath.Join(home, ".config")
+	writeFile(t, filepath.Join(user, "ghostty", "config"), "font-size = 12")
+	writeFile(t, filepath.Join(user, "Typora", "themes", "dark.css"), "body {}")
+	writeFile(t, filepath.Join(user, "Typora", "Cache", "state"), "state")
+	saved, _, err := AddExclusion(profile.Configs{}, "ghostty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Excluded[0]; got != ".config/ghostty" {
+		t.Fatalf("excluded=%q", got)
+	}
+	saved, _, err = AddInclusion(saved, ".config/Typora/themes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan, err := (Provider{HomeDir: home, UserRoot: user}).ScanForCapture(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range scan.Candidates {
+		if candidate.Path == ".config/ghostty/config" || candidate.Path == ".config/Typora/Cache/state" {
+			t.Fatalf("policy failed: %#v", scan.Candidates)
+		}
+		if candidate.Path == ".config/Typora/themes/dark.css" {
+			return
+		}
+	}
+	t.Fatalf("included path absent: %#v", scan.Candidates)
+}
+
+func TestCapturePrunesLegacySavedBrowserState(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	user := filepath.Join(home, ".config")
+	browserPath := filepath.Join(user, "arbitrary-browser", "Default", "Preferences")
+	writeFile(t, filepath.Join(user, "arbitrary-browser", "Local State"), "{}")
+	writeFile(t, browserPath, "{}")
+	writeFile(t, filepath.Join(user, "arbitrary-browser", "Default", "History"), "")
+	saved := profile.Configs{Files: []profile.ConfigFile{{Path: ".config/arbitrary-browser/Default/Preferences", Hash: "old"}}}
+	result, err := (Provider{HomeDir: home, UserRoot: user, BaselineRoot: t.TempDir(), ProfileDir: profileDir}).Capture(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 0 {
+		t.Fatalf("state=%#v", result.State)
+	}
+	for _, candidate := range result.Scan.Candidates {
+		if candidate.Path == saved.Files[0].Path {
+			t.Fatalf("legacy browser file was reconsidered for capture: %#v", result.Scan)
+		}
+	}
+	if _, err := os.Lstat(browserPath); err != nil {
+		t.Fatalf("live browser file changed: %v", err)
+	}
+}
+
+func TestExplicitIncludeCannotBypassBackupOrAuthenticationSafety(t *testing.T) {
+	home := t.TempDir()
+	user := filepath.Join(home, ".config")
+	writeFile(t, filepath.Join(user, "browser", "Login Data"), "opaque")
+	writeFile(t, filepath.Join(user, "browser", "Cookies"), "opaque")
+	scan, err := (Provider{HomeDir: home, UserRoot: user}).ScanForCapture(profile.Configs{Included: []string{".config/browser"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sensitive := false
+	for _, candidate := range scan.Candidates {
+		if candidate.Path == ".config/browser/Login Data" && candidate.Classification == ConfigSensitive {
+			sensitive = true
+		}
+	}
+	if !sensitive {
+		t.Fatalf("authentication database was not sensitive: %#v", scan.Candidates)
+	}
+	writeFile(t, filepath.Join(user, "nvim.backup", "config"), "ignored")
+	if _, err := (Provider{HomeDir: home, UserRoot: user}).ScanForCapture(profile.Configs{Included: []string{".config/nvim.backup"}}); err == nil {
+		t.Fatal("backup root accepted as explicit include")
 	}
 }

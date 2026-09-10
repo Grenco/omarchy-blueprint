@@ -23,17 +23,17 @@ func TestConfigBackupAndExclusionPolicy(t *testing.T) {
 
 func TestConfigExclusionHelpersNormalizeAndPruneMetadata(t *testing.T) {
 	saved := profile.Configs{
-		Files:   []profile.ConfigFile{{Path: "nvim/init.lua"}, {Path: "ghostty/config"}},
-		Deletes: []profile.ConfigDelete{{Path: "nvim/plugin.lua"}, {Path: "hypr/bindings.lua"}},
+		Files:   []profile.ConfigFile{{Path: ".config/nvim/init.lua"}, {Path: ".config/ghostty/config"}},
+		Deletes: []profile.ConfigDelete{{Path: ".config/nvim/plugin.lua"}, {Path: ".config/hypr/bindings.lua"}},
 	}
 	updated, removed, err := AddExclusion(saved, "~/.config/nvim")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(updated.Excluded, []string{"nvim"}) || !reflect.DeepEqual(removed, []string{"nvim/init.lua", "nvim/plugin.lua"}) {
+	if !reflect.DeepEqual(updated.Excluded, []string{".config/nvim"}) || !reflect.DeepEqual(removed, []string{".config/nvim/init.lua", ".config/nvim/plugin.lua"}) {
 		t.Fatalf("excluded=%v removed=%v", updated.Excluded, removed)
 	}
-	if len(updated.Files) != 1 || updated.Files[0].Path != "ghostty/config" || len(updated.Deletes) != 1 || updated.Deletes[0].Path != "hypr/bindings.lua" {
+	if len(updated.Files) != 1 || updated.Files[0].Path != ".config/ghostty/config" || len(updated.Deletes) != 1 || updated.Deletes[0].Path != ".config/hypr/bindings.lua" {
 		t.Fatalf("state=%#v", updated)
 	}
 	updated, changed, err := RemoveExclusion(updated, ".config/nvim")

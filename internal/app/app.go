@@ -505,6 +505,7 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	data := map[string]any{}
 	var changes []model.Change
 	var captured []string
+	var configResult *configprovider.CaptureResult
 	for _, provider := range providers {
 		state, providerChanges, err := captureProvider(ctx, provider, &d)
 		if err != nil {
@@ -521,6 +522,9 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 				data[provider.ID()] = state
 			}
 		}
+		if result, ok := state.(configprovider.CaptureResult); ok {
+			configResult = &result
+		}
 		changes = append(changes, providerChanges...)
 	}
 	data["changes"] = changes
@@ -531,17 +535,30 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return fmt.Errorf("save profile: %w", err)
 		}
 	}
-	human := renderChanges("Captured "+providerStateLabel(captured)+" state", changes)
-	for _, provider := range providers {
-		if provider.ID() != "config" {
-			continue
-		}
-		// Capture output summarizes recursive scan results rather than listing defaults.
-		if result, ok := data["config"].(configCaptureOutput); ok {
-			human += renderConfigScan(result.Scan)
+	human := renderCaptureChanges("Captured "+providerStateLabel(captured)+" state", changes, configResult)
+	return emit(deps.Out, opt.json, "capture", true, data, human)
+}
+
+func renderCaptureChanges(title string, changes []model.Change, result *configprovider.CaptureResult) string {
+	if result == nil {
+		return renderChanges(title, changes)
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, title)
+	configChanges := make([]model.Change, 0)
+	for _, change := range changes {
+		if change.Provider == "config" {
+			configChanges = append(configChanges, change)
+		} else {
+			fmt.Fprintln(&b, change.Summary)
 		}
 	}
-	return emit(deps.Out, opt.json, "capture", true, data, human)
+	configHuman := renderConfigStatus(configChanges, result.Scan)
+	if configHuman == "" && len(changes) == 0 {
+		fmt.Fprintln(&b, "No changes.")
+	}
+	b.WriteString(configHuman)
+	return b.String()
 }
 
 type configCaptureOutput struct {
@@ -577,19 +594,78 @@ func renderConfigScan(scan configScanOutput) string {
 		}
 		fmt.Fprintf(&b, "\nConfig %s: %d\n", group.title, count)
 	}
-	for _, surface := range scan.Surfaces {
-		if surface.Classification != configprovider.SurfaceConfigLean {
-			fmt.Fprintf(&b, "Config discovery: %s %s\n", surface.Classification, surface.Path)
+	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Config discovery"))
+	return b.String()
+}
+
+func renderConfigDiscovery(surfaces []configprovider.SurfaceSummary, title string) string {
+	var b strings.Builder
+	for _, surface := range surfaces {
+		if surface.Classification == configprovider.SurfaceConfigLean {
+			continue
+		}
+		if b.Len() == 0 {
+			fmt.Fprintln(&b, title)
+		}
+		fmt.Fprintf(&b, "  %-9s %s\n", surface.Classification, configSurfaceName(surface.Path))
+	}
+	return b.String()
+}
+
+func configSurfaceName(path string) string {
+	path = strings.TrimPrefix(filepath.ToSlash(path), ".config/")
+	if index := strings.IndexByte(path, '/'); index >= 0 {
+		return path[:index]
+	}
+	return path
+}
+
+func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary) string {
+	var b strings.Builder
+	counts := map[string]map[model.ChangeType]int{}
+	for _, change := range changes {
+		surface := configSurfaceName(change.Name)
+		if surface == "" {
+			surface = "home"
+		}
+		if counts[surface] == nil {
+			counts[surface] = map[model.ChangeType]int{}
+		}
+		counts[surface][change.Type]++
+	}
+	if len(counts) > 0 {
+		fmt.Fprintln(&b, "Config")
+		surfaces := make([]string, 0, len(counts))
+		for surface := range counts {
+			surfaces = append(surfaces, surface)
+		}
+		sort.Strings(surfaces)
+		for _, surface := range surfaces {
+			for _, changeType := range []model.ChangeType{model.ChangeModify, model.ChangeAdd, model.ChangeRemove} {
+				if count := counts[surface][changeType]; count > 0 {
+					fmt.Fprintf(&b, "  %-9s %-16s %d\n", changeType, surface, count)
+				}
+			}
 		}
 	}
+	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Config discovery"))
 	return b.String()
 }
 
 func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
 	providers = capturedProviders(providers, d)
 	var changes []model.Change
+	var configScan *configprovider.ScanSummary
 	for _, provider := range providers {
-		providerChanges, err := provider.Diff(ctx, d)
+		var providerChanges []model.Change
+		var err error
+		if scanner, ok := provider.(scanDiffProvider); ok {
+			var scan configprovider.ScanSummary
+			providerChanges, scan, err = scanner.DiffWithScan(ctx, d)
+			configScan = &scan
+		} else {
+			providerChanges, err = provider.Diff(ctx, d)
+		}
 		if err != nil {
 			return fmt.Errorf("diff %s: %w", provider.ID(), err)
 		}
@@ -619,13 +695,48 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	if diff {
 		commandName = "diff"
 	}
-	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": driftCount > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
+	data := map[string]any{"drift": driftCount > 0, "changes": changes}
+	human := renderChanges(title, changes)
+	if configScan != nil {
+		data["config"] = configCaptureOutput{Configs: d.Config, Scan: configScanOutput{Counts: configScan.Counts(), Candidates: configScan.Candidates, Surfaces: configScan.Surfaces}}
+		if diff {
+			human += renderConfigDiscovery(configScan.Surfaces, "Skipped discovery surfaces")
+		} else {
+			var configChanges []model.Change
+			for _, change := range changes {
+				if change.Provider == "config" {
+					configChanges = append(configChanges, change)
+				}
+			}
+			configHuman := renderConfigStatus(configChanges, *configScan)
+			otherHuman := renderNonConfigChanges(title, changes)
+			if configHuman == "" && otherHuman == "" {
+				human = renderChanges(title, nil)
+			} else {
+				human = configHuman + otherHuman
+			}
+		}
+	}
+	if err := emit(deps.Out, opt.json, commandName, true, data, human); err != nil {
 		return err
 	}
 	if driftCount > 0 {
 		return driftError{}
 	}
 	return nil
+}
+
+func renderNonConfigChanges(title string, changes []model.Change) string {
+	other := make([]model.Change, 0, len(changes))
+	for _, change := range changes {
+		if change.Provider != "config" {
+			other = append(other, change)
+		}
+	}
+	if len(other) == 0 {
+		return ""
+	}
+	return renderChanges(title, other)
 }
 
 type restorePlanOptions struct {

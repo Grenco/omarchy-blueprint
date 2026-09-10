@@ -70,7 +70,7 @@ func ProbeSurface(root string) (SurfaceProbe, error) {
 				p.RegularFiles++
 			}
 			p.observe(lowerName, lowerRel, info.IsDir())
-			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 && depth < maxSurfaceProbeDepth && !IsBackupArtifactName(entry.Name(), true) {
+			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 && depth+1 < maxSurfaceProbeDepth && !IsBackupArtifactName(entry.Name(), true) {
 				if err := walk(path, childRel, depth+1); err != nil {
 					return err
 				}
@@ -94,12 +94,6 @@ func (p *SurfaceProbe) observe(name, rel string, dir bool) {
 	if !dir && isConfigName(name) {
 		p.ConfigFiles++
 		p.config["config-like-files"] = true
-	}
-	if strings.HasSuffix(name, ".sqlite-wal") || strings.HasSuffix(name, ".sqlite-shm") || strings.HasSuffix(name, ".db-journal") {
-		p.state["state-database-family"] = true
-	}
-	if name == "current" || name == "lock" || strings.HasPrefix(name, "manifest-") || strings.HasSuffix(name, ".ldb") {
-		p.state["state-leveldb"] = true
 	}
 	if name == "cookies" || name == "history" || name == "dips" || name == "sharedstorage" || name == "network persistent state" {
 		p.state["state-runtime-directories"] = true
@@ -129,6 +123,19 @@ func isConfigName(name string) bool {
 }
 
 func ClassifySurface(p SurfaceProbe) (SurfaceClassification, []string) {
+	state := make(map[string]bool, len(p.state)+2)
+	for reason := range p.state {
+		state[reason] = true
+	}
+	byDir := probeNamesByDirectory(p)
+	for _, names := range byDir {
+		if hasDatabaseFamily(names) {
+			state["state-database-family"] = true
+		}
+		if hasLevelDBFamily(names) {
+			state["state-leveldb"] = true
+		}
+	}
 	reasons := func(m map[string]bool) []string {
 		r := make([]string, 0, len(m))
 		for k := range m {
@@ -137,29 +144,10 @@ func ClassifySurface(p SurfaceProbe) (SurfaceClassification, []string) {
 		sort.Strings(r)
 		return r
 	}
-	chromiumProfiles := false
-	for rel := range p.RelativeNames {
-		if strings.HasPrefix(rel, "default/") || strings.HasPrefix(rel, "profile ") {
-			chromiumProfiles = true
-			break
-		}
-	}
-	markers := 0
-	for _, marker := range []string{"preferences", "secure preferences", "cookies", "history", "web data", "extensions", "network", "dips"} {
-		if p.Names[marker] {
-			markers++
-		}
-	}
-	if p.Names["local state"] && chromiumProfiles && markers >= 2 {
+	if p.RelativeNames["local state"] && hasChromiumProfile(byDir) {
 		return SurfaceStateHeavy, []string{"browser-profile-chromium"}
 	}
-	geckoMarkers := 0
-	for _, marker := range []string{"places.sqlite", "cookies.sqlite", "extensions.json", "sessionstore.jsonlz4", "storage", "sessionstore-backups"} {
-		if p.Names[marker] {
-			geckoMarkers++
-		}
-	}
-	if (p.Names["profiles.ini"] && p.Names["prefs.js"] && geckoMarkers >= 1) || (p.Names["prefs.js"] && geckoMarkers >= 2) {
+	if hasGeckoProfile(p, byDir) {
 		return SurfaceStateHeavy, []string{"browser-profile-gecko"}
 	}
 	webkit := 0
@@ -171,19 +159,19 @@ func ClassifySurface(p SurfaceProbe) (SurfaceClassification, []string) {
 	if webkit >= 3 {
 		return SurfaceStateHeavy, []string{"browser-profile-webkit"}
 	}
-	if len(p.sensitive) > 0 && len(p.state) > 0 {
-		return SurfaceSensitive, append(reasons(p.sensitive), reasons(p.state)...)
+	if len(p.sensitive) > 0 {
+		return SurfaceSensitive, append(reasons(p.sensitive), reasons(state)...)
 	}
-	if len(p.config) > 0 && len(p.state) > 0 {
-		return SurfaceMixed, append(reasons(p.config), reasons(p.state)...)
+	if len(p.config) > 0 && len(state) > 0 {
+		return SurfaceMixed, append(reasons(p.config), reasons(state)...)
 	}
-	if len(p.state) >= 2 && len(p.config) == 0 {
-		return SurfaceStateHeavy, reasons(p.state)
+	if len(state) >= 2 && len(p.config) == 0 {
+		return SurfaceStateHeavy, reasons(state)
 	}
-	if len(p.state) == 0 && (p.Entries <= 64 && p.MaxDepth <= maxSurfaceProbeDepth || p.RegularFiles > 0 && p.ConfigFiles*10 >= p.RegularFiles*7) {
+	if len(state) == 0 && (p.Entries <= 64 && p.MaxDepth <= maxSurfaceProbeDepth || p.RegularFiles > 0 && p.ConfigFiles*10 >= p.RegularFiles*7) {
 		return SurfaceConfigLean, reasons(p.config)
 	}
-	r := reasons(p.state)
+	r := reasons(state)
 	if p.ProbeLimitHit {
 		r = append(r, "probe-limit-reached")
 	}
@@ -191,4 +179,72 @@ func ClassifySurface(p SurfaceProbe) (SurfaceClassification, []string) {
 		r = []string{"mixed-config-and-runtime"}
 	}
 	return SurfaceMixed, r
+}
+
+func probeNamesByDirectory(p SurfaceProbe) map[string]map[string]bool {
+	result := map[string]map[string]bool{}
+	for rel := range p.RelativeNames {
+		dir, name := filepath.ToSlash(filepath.Dir(rel)), filepath.Base(rel)
+		if result[dir] == nil {
+			result[dir] = map[string]bool{}
+		}
+		result[dir][name] = true
+	}
+	return result
+}
+
+func hasDatabaseFamily(names map[string]bool) bool {
+	for name := range names {
+		if strings.HasSuffix(name, ".sqlite-wal") && names[strings.TrimSuffix(name, "-wal")] || strings.HasSuffix(name, ".sqlite-shm") && names[strings.TrimSuffix(name, "-shm")] || strings.HasSuffix(name, ".db-journal") && names[strings.TrimSuffix(name, "-journal")] {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLevelDBFamily(names map[string]bool) bool {
+	markers := 0
+	for name := range names {
+		if name == "current" || name == "lock" || strings.HasPrefix(name, "manifest-") || strings.HasSuffix(name, ".ldb") || strings.HasSuffix(name, ".log") {
+			markers++
+		}
+	}
+	return markers >= 2
+}
+
+func hasChromiumProfile(byDir map[string]map[string]bool) bool {
+	for dir, names := range byDir {
+		base := filepath.Base(dir)
+		if base != "default" && !strings.HasPrefix(base, "profile ") {
+			continue
+		}
+		markers := 0
+		for _, marker := range []string{"preferences", "secure preferences", "cookies", "history", "web data", "extensions", "network", "dips"} {
+			if names[marker] {
+				markers++
+			}
+		}
+		if markers >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGeckoProfile(p SurfaceProbe, byDir map[string]map[string]bool) bool {
+	for _, names := range byDir {
+		if !names["prefs.js"] {
+			continue
+		}
+		markers := 0
+		for _, marker := range []string{"places.sqlite", "cookies.sqlite", "extensions.json", "sessionstore.jsonlz4", "storage", "sessionstore-backups"} {
+			if names[marker] {
+				markers++
+			}
+		}
+		if p.RelativeNames["profiles.ini"] && markers >= 1 || markers >= 2 {
+			return true
+		}
+	}
+	return false
 }

@@ -45,6 +45,12 @@ type stateEmptyer interface {
 	Empty(any) bool
 }
 
+// scanDiffProvider optionally retains discovery metadata alongside semantic
+// differences. Providers remain responsible only for domain state, not UI.
+type scanDiffProvider interface {
+	DiffWithScan(context.Context, profile.Data) ([]model.Change, configprovider.ScanSummary, error)
+}
+
 func stateProviders(deps Dependencies, opt *options) []stateProvider {
 	return []stateProvider{
 		packagesStateProvider{deps: deps},
@@ -538,7 +544,12 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 	if err != nil {
 		return configprovider.Provider{}, err
 	}
-	claims := ownership.Index{}
+	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}}}
+	if p.deps.StateHome != nil {
+		if state, err := p.deps.StateHome(); err == nil {
+			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "state", Path: state, Recursive: true})
+		}
+	}
 	if _, themes, err := p.deps.ThemeDirs(); err == nil {
 		claims = appendConfigOwnershipClaim(claims, "themes", themes, user, true)
 	}
@@ -594,16 +605,22 @@ func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, [
 	return result, result.Changes, nil
 }
 
-func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
+func (p configStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	changes, _, err := p.DiffWithScan(ctx, d)
+	return changes, err
+}
+
+func (p configStateProvider) DiffWithScan(_ context.Context, d profile.Data) ([]model.Change, configprovider.ScanSummary, error) {
 	provider, err := p.provider(d)
 	if err != nil {
-		return nil, err
+		return nil, configprovider.ScanSummary{}, err
 	}
 	current, err := provider.Scan(d.Config)
 	if err != nil {
-		return nil, err
+		return nil, configprovider.ScanSummary{}, err
 	}
-	return provider.Diff(d.Config, current)
+	changes, err := provider.Diff(d.Config, current)
+	return changes, current, err
 }
 
 func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
