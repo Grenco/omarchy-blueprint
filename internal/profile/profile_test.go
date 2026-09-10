@@ -14,8 +14,8 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	d := New("main", now)
-	if d.Manifest.Schema != 8 {
-		t.Fatalf("new profile schema = %d, want 8", d.Manifest.Schema)
+	if d.Manifest.Schema != 9 {
+		t.Fatalf("new profile schema = %d, want 9", d.Manifest.Schema)
 	}
 	d.Manifest.Capture.Packages = true
 	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
@@ -92,8 +92,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 8 {
-		t.Fatalf("schema = %d, want 8", got.Manifest.Schema)
+	if got.Manifest.Schema != 9 {
+		t.Fatalf("schema = %d, want 9", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Config || len(got.Config.Files) != 0 {
 		t.Fatalf("config state = %#v, want empty uncaptured config", got.Config)
@@ -114,8 +114,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 8\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 8", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 9\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 9", savedManifest)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestSchema8ConfigOverlayRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Configs{Files: []ConfigFile{{Path: ".config/ghostty/config", Hash: strings.Repeat("c", 64), Mode: "0600"}, {Path: ".config/hypr/bindings.lua", Hash: strings.Repeat("a", 64), Mode: "0644", BaselineHash: strings.Repeat("b", 64), BaselineMode: "0644"}}, Deletes: []ConfigDelete{{Path: ".config/example/default.conf", BaselineHash: strings.Repeat("d", 64), BaselineMode: "0644"}}, Excluded: []string{".config/discord", ".config/google-chrome"}}
-	if got.Manifest.Schema != 8 || !reflect.DeepEqual(got.Config, want) {
+	if got.Manifest.Schema != 9 || !reflect.DeepEqual(got.Config, want) {
 		t.Fatalf("config=%#v want=%#v", got.Config, want)
 	}
 	contents, err := os.ReadFile(filepath.Join(dir, "config", "config.toml"))
@@ -249,8 +249,8 @@ defaults = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 8 {
-		t.Fatalf("schema = %d, want 8", got.Manifest.Schema)
+	if got.Manifest.Schema != 9 {
+		t.Fatalf("schema = %d, want 9", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Shell {
 		t.Fatal("schema-3 profile must upgrade with shell uncaptured")
@@ -321,8 +321,8 @@ config = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 8 {
-		t.Fatalf("schema = %d, want 8", got.Manifest.Schema)
+	if got.Manifest.Schema != 9 {
+		t.Fatalf("schema = %d, want 9", got.Manifest.Schema)
 	}
 	if !got.Manifest.Capture.Config || len(got.Config.Files) != 1 {
 		t.Fatalf("config state = %#v, want retained schema-2 config", got.Config)
@@ -405,7 +405,7 @@ updated_at = 2026-09-03T12:00:00Z
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 8 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
+	if got.Manifest.Schema != 9 || got.Manifest.Capture.Hooks || len(got.Hooks.Items) != 0 {
 		t.Fatalf("schema-4 migration = %#v", got)
 	}
 }
@@ -497,7 +497,7 @@ func TestSchema5LoadsAsSchema6WithMiseEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 8 || len(got.Packages.Mise) != 0 {
+	if got.Manifest.Schema != 9 || len(got.Packages.Mise) != 0 {
 		t.Fatalf("migration = %#v", got)
 	}
 }
@@ -547,8 +547,8 @@ func TestSchema6LoadsAsSchema7WithResourcesEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 8 {
-		t.Fatalf("schema=%d want=8", got.Manifest.Schema)
+	if got.Manifest.Schema != 9 {
+		t.Fatalf("schema=%d want=9", got.Manifest.Schema)
 	}
 	if got.Manifest.Capture.Resources {
 		t.Fatal("schema-6 profile unexpectedly captured resources")

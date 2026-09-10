@@ -359,7 +359,7 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 			t.Fatalf("recapture code=%d out=%s", code, out)
 		}
 		d, err := profile.Load(profileDir)
-		if err != nil || d.Manifest.Schema != 8 || len(d.Config.Files) != 1 || d.Config.Files[0].Path != ".config/hypr/bindings.lua" {
+		if err != nil || d.Manifest.Schema != 9 || len(d.Config.Files) != 1 || d.Config.Files[0].Path != ".config/hypr/bindings.lua" {
 			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
 		}
 		if got := readAppFile(t, filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); got != "captured" {
@@ -885,15 +885,8 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 	if !reflect.DeepEqual(d.Config.Excluded, []string{"ghostty"}) || len(d.Config.Files) != 0 {
 		t.Fatalf("config=%#v", d.Config)
 	}
-	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code != 0 {
-		t.Fatalf("include code=%d out=%s", code, out)
-	}
-	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
-		t.Fatalf("adopt code=%d out=%s", code, out)
-	}
-	d, err = profile.Load(profileDir)
-	if err != nil || len(d.Config.Excluded) != 0 || len(d.Config.Files) != 1 || d.Config.Files[0].Path != "ghostty/config" {
-		t.Fatalf("config=%#v err=%v", d.Config, err)
+	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code == 0 || !strings.Contains(out, "excluded path") {
+		t.Fatalf("include under exclusion code=%d out=%s", code, out)
 	}
 }
 

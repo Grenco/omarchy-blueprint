@@ -60,7 +60,7 @@ func TestConfigPolicyVolatileAndSize(t *testing.T) {
 }
 
 func TestConfigPolicySkipsRuntimeDirectories(t *testing.T) {
-	for _, name := range []string{"IndexedDB", "Local Storage", "WebStorage", "Session Storage", "Service Worker", "Code Cache", "GPUCache", "Cache", "DawnCache", "blob_storage", "File System"} {
+	for _, name := range []string{"IndexedDB", "Local Storage", "WebStorage", "Session Storage", "Service Worker", "Code Cache", "GPUCache", "Cache", "DawnCache", "blob_storage", "File System", "Crashpad", "Crashes", "Logs", "Telemetry", "bookmarkbackups", "draftsrecover"} {
 		if got := ClassifyConfigPolicy(".config/browser/"+name, fakeInfo{dir: true}, nil).Reason; got != PolicyVolatile {
 			t.Fatalf("%s policy=%s", name, got)
 		}

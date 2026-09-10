@@ -13,7 +13,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 8
+const Schema = 9
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -98,6 +98,7 @@ type Plugins struct {
 type Configs struct {
 	Files    []ConfigFile   `json:"files" toml:"file"`
 	Deletes  []ConfigDelete `json:"deletes,omitempty" toml:"delete,omitempty"`
+	Included []string       `json:"included,omitempty" toml:"included,omitempty"`
 	Excluded []string       `json:"excluded,omitempty" toml:"excluded,omitempty"`
 }
 
@@ -449,6 +450,16 @@ func Validate(d Data) error {
 			return err
 		}
 	}
+	for _, included := range d.Config.Included {
+		if err := ValidateConfigPath(included); err != nil {
+			return err
+		}
+		for _, excluded := range d.Config.Excluded {
+			if included == excluded || strings.HasPrefix(included, excluded+"/") {
+				return fmt.Errorf("config include %q is below excluded path %q", included, excluded)
+			}
+		}
+	}
 	return nil
 }
 
@@ -562,6 +573,27 @@ func normalizeConfigs(config *Configs) error {
 	}
 	sort.Strings(excluded)
 	config.Excluded = excluded
+	included := make([]string, 0, len(config.Included))
+	seenIncluded := map[string]bool{}
+	for _, item := range config.Included {
+		path, err := NormalizeConfigPath(item)
+		if err != nil {
+			return err
+		}
+		if !seenIncluded[path] {
+			seenIncluded[path] = true
+			included = append(included, path)
+		}
+	}
+	sort.Strings(included)
+	for _, item := range included {
+		for _, excluded := range excluded {
+			if item == excluded || strings.HasPrefix(item, excluded+"/") {
+				return fmt.Errorf("config include %q is below excluded path %q", item, excluded)
+			}
+		}
+	}
+	config.Included = included
 	return nil
 }
 
@@ -579,6 +611,11 @@ func migrateLegacyConfigPaths(config *Configs) {
 	for i := range config.Excluded {
 		if !strings.HasPrefix(config.Excluded[i], ".") {
 			config.Excluded[i] = ".config/" + config.Excluded[i]
+		}
+	}
+	for i := range config.Included {
+		if !strings.HasPrefix(config.Included[i], ".") {
+			config.Included[i] = ".config/" + config.Included[i]
 		}
 	}
 }

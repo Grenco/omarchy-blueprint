@@ -47,7 +47,11 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if err != nil {
 		return CaptureResult{}, err
 	}
-	state := profile.Configs{Excluded: excluded}
+	included, err := normalizeExclusions(saved.Included)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	state := profile.Configs{Included: included, Excluded: excluded}
 	for _, c := range scan.Candidates {
 		switch c.Classification {
 		case ConfigAdded, ConfigModifiedBaseline:

@@ -356,7 +356,7 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			if exclude {
 				d.Config, _, err = configprovider.AddExclusion(d.Config, path)
 			} else {
-				d.Config, _, err = configprovider.RemoveExclusion(d.Config, path)
+				d.Config, _, err = configprovider.AddInclusion(d.Config, path)
 			}
 			if err != nil {
 				return err
@@ -373,7 +373,7 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			if exclude {
 				action = "Excluded"
 			}
-			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude}, fmt.Sprintf("%s config %s.\n", action, path))
+			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude, "included": !exclude}, fmt.Sprintf("%s config %s.\n", action, path))
 		}
 		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 			return err
@@ -516,7 +516,7 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		captured = append(captured, provider.ID())
 		if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
 			if result, ok := state.(configprovider.CaptureResult); ok {
-				data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates}}
+				data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates, Surfaces: result.Scan.Surfaces}}
 			} else {
 				data[provider.ID()] = state
 			}
@@ -552,6 +552,7 @@ type configCaptureOutput struct {
 type configScanOutput struct {
 	Counts     map[configprovider.Classification]int `json:"counts"`
 	Candidates []configprovider.Candidate            `json:"candidates"`
+	Surfaces   []configprovider.SurfaceSummary       `json:"surfaces,omitempty"`
 }
 
 func renderConfigScan(scan configScanOutput) string {
@@ -575,6 +576,11 @@ func renderConfigScan(scan configScanOutput) string {
 			continue
 		}
 		fmt.Fprintf(&b, "\nConfig %s: %d\n", group.title, count)
+	}
+	for _, surface := range scan.Surfaces {
+		if surface.Classification != configprovider.SurfaceConfigLean {
+			fmt.Fprintf(&b, "Config discovery: %s %s\n", surface.Classification, surface.Path)
+		}
 	}
 	return b.String()
 }

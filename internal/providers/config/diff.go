@@ -44,6 +44,9 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 	if !sameStrings(previous.Excluded, next.Excluded) {
 		changes = append(changes, configChange(model.ChangeModify, "exclusions", "~ config exclusions changed"))
 	}
+	if !sameStrings(previous.Included, next.Included) {
+		changes = append(changes, configChange(model.ChangeModify, "inclusions", "~ config inclusions changed"))
+	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
 	return changes
 }
@@ -682,6 +685,14 @@ func validateOverlay(state profile.Configs) error {
 	for _, e := range state.Excluded {
 		if err := profile.ValidateConfigPath(e); err != nil {
 			return err
+		}
+	}
+	for _, included := range state.Included {
+		if err := profile.ValidateConfigPath(included); err != nil {
+			return err
+		}
+		if IsExcludedConfigPath(included, state.Excluded) {
+			return fmt.Errorf("config include %s is excluded", included)
 		}
 	}
 	return nil

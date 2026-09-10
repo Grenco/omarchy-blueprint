@@ -524,7 +524,7 @@ func (configStateProvider) Captured(d profile.Data) bool { return d.Manifest.Cap
 func (configStateProvider) Empty(state any) bool {
 	if result, ok := state.(configprovider.CaptureResult); ok {
 		s := result.State
-		return len(s.Files) == 0 && len(s.Deletes) == 0 && len(s.Excluded) == 0
+		return len(s.Files) == 0 && len(s.Deletes) == 0 && len(s.Included) == 0 && len(s.Excluded) == 0
 	}
 	return false
 }

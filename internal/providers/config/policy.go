@@ -75,7 +75,7 @@ func AddExclusion(saved profile.Configs, path string) (profile.Configs, []string
 	if err != nil {
 		return saved, nil, err
 	}
-	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Excluded: append([]string{}, saved.Excluded...)}
+	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Included: append([]string{}, saved.Included...), Excluded: append([]string{}, saved.Excluded...)}
 	for i, exclusion := range result.Excluded {
 		result.Excluded[i], err = NormalizeExclusionPath(exclusion)
 		if err != nil {
@@ -90,6 +90,7 @@ func AddExclusion(saved profile.Configs, path string) (profile.Configs, []string
 	var removed []string
 	result.Files, removed = pruneFiles(result.Files, path, removed)
 	result.Deletes, removed = pruneDeletes(result.Deletes, path, removed)
+	result.Included = prunePolicyPaths(result.Included, path)
 	return result, removed, nil
 }
 
@@ -99,7 +100,7 @@ func RemoveExclusion(saved profile.Configs, path string) (profile.Configs, bool,
 	if err != nil {
 		return saved, false, err
 	}
-	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Excluded: append([]string{}, saved.Excluded...)}
+	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Included: append([]string{}, saved.Included...), Excluded: append([]string{}, saved.Excluded...)}
 	result.Excluded = result.Excluded[:0]
 	removed := false
 	for _, exclusion := range saved.Excluded {
@@ -116,6 +117,38 @@ func RemoveExclusion(saved profile.Configs, path string) (profile.Configs, bool,
 	sort.Strings(result.Excluded)
 	result.Excluded = uniquePaths(result.Excluded)
 	return result, removed, nil
+}
+
+// AddInclusion persists a safe, canonical discovery root. Exclusions remain
+// authoritative so callers cannot use inclusion to resurrect excluded state.
+func AddInclusion(saved profile.Configs, input string) (profile.Configs, bool, error) {
+	path, err := NormalizeExclusionPath(input)
+	if err != nil {
+		return saved, false, err
+	}
+	for _, excluded := range saved.Excluded {
+		if IsExcludedConfigPath(path, []string{excluded}) {
+			return saved, false, fmt.Errorf("config include %q is below excluded path %q; remove the exclusion first", path, excluded)
+		}
+	}
+	result := saved
+	result.Included = append([]string{}, saved.Included...)
+	if containsPath(result.Included, path) {
+		return result, false, nil
+	}
+	result.Included = append(result.Included, path)
+	sort.Strings(result.Included)
+	return result, true, nil
+}
+
+func prunePolicyPaths(paths []string, parent string) []string {
+	result := paths[:0]
+	for _, item := range paths {
+		if !IsExcludedConfigPath(item, []string{parent}) {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func containsPath(paths []string, want string) bool {
@@ -184,6 +217,16 @@ func IsBlueprintBackupName(name string) bool {
 	}
 	return true
 }
+func IsBackupArtifactName(name string, directory bool) bool {
+	lower := strings.ToLower(name)
+	if IsBlueprintBackupName(name) {
+		return true
+	}
+	if directory {
+		return lower == "backup" || lower == "backups" || strings.HasSuffix(lower, ".bak") || strings.HasSuffix(lower, ".backup") || strings.HasSuffix(lower, "-backup") || strings.HasSuffix(lower, "-backups") || strings.HasSuffix(lower, "_backup") || strings.HasSuffix(lower, "_backups")
+	}
+	return strings.HasSuffix(lower, ".bak") || strings.Contains(lower, ".bak.") || strings.HasSuffix(lower, ".backup") || strings.Contains(lower, ".backup-") || strings.HasSuffix(lower, ".orig") || strings.HasSuffix(name, "~")
+}
 func IsExcludedConfigPath(path string, excluded []string) bool {
 	path, err := profile.NormalizeConfigPath(path)
 	if err != nil {
@@ -203,7 +246,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyExcluded}
 	}
 	name := filepath.Base(path)
-	if IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name) || IsBlueprintBackupName(name) {
+	if IsBackupArtifactName(name, info.IsDir()) {
 		return PolicyDecision{PolicyOmarchyUpdateBackup}
 	}
 	if IsExcludedConfigPath(path, excluded) {
@@ -230,8 +273,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 
 func runtimeConfigPath(path string) bool {
 	for _, part := range strings.Split(path, "/") {
-		switch part {
-		case "indexeddb", "local storage", "webstorage", "session storage", "service worker", "code cache", "gpucache", "cache", "dawncache", "blob_storage", "file system":
+		if isRuntimeComponent(part) {
 			return true
 		}
 	}
@@ -285,6 +327,13 @@ func hasSensitiveContent(path string) (bool, error) {
 }
 
 func sensitiveContentWindow(window []byte) bool {
+	lower := make([]byte, len(window))
+	for i, b := range window {
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		lower[i] = b
+	}
 	for start := 0; ; {
 		i := bytes.Index(window[start:], []byte("-----BEGIN "))
 		if i < 0 {
@@ -302,22 +351,13 @@ func sensitiveContentWindow(window []byte) bool {
 		start = i + 1
 	}
 	for _, key := range sensitiveTokenKeys {
-		if containsASCIIFold(window, key) {
+		if bytes.Contains(lower, key) {
 			if sensitiveContentRegexCheck != nil {
 				sensitiveContentRegexCheck()
 			}
 			if structuredToken.Match(window) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func containsASCIIFold(b, want []byte) bool {
-	for i := 0; i+len(want) <= len(b); i++ {
-		if bytes.EqualFold(b[i:i+len(want)], want) {
-			return true
 		}
 	}
 	return false
