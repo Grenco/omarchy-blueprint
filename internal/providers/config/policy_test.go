@@ -42,6 +42,18 @@ func TestConfigExclusionHelpersNormalizeAndPruneMetadata(t *testing.T) {
 	}
 }
 
+func TestAddInclusionNormalizesCuratedHomePaths(t *testing.T) {
+	for _, input := range []string{".zshrc", "~/.zshrc"} {
+		state, _, err := AddInclusion(profile.Configs{}, input)
+		if err != nil || !reflect.DeepEqual(state.Included, []string{".zshrc"}) {
+			t.Fatalf("include %q = %#v, %v", input, state, err)
+		}
+	}
+	if _, _, err := AddInclusion(profile.Configs{}, ".unregistered-home-file"); err == nil {
+		t.Fatal("arbitrary HOME path was accepted")
+	}
+}
+
 func TestNormalizeConfigExclusionPathRejectsUnsafeInput(t *testing.T) {
 	for _, input := range []string{"", "../ssh", "/etc", "~/.ssh", ".ssh/id_ed25519", "~/.config"} {
 		if _, err := NormalizeExclusionPath(input); err == nil {
