@@ -271,6 +271,18 @@ func TestAggregateCaptureLeavesAmbiguousBaselineCustomizationUncaptured(t *testi
 	}
 }
 
+func TestRenderConfigProvenanceReviewIsNonDriftGuidance(t *testing.T) {
+	got := renderConfigProvenanceReview(configprovider.ScanSummary{Candidates: []configprovider.Candidate{
+		{Path: ".zshrc", Classification: configprovider.ConfigAmbiguousBaseline},
+		{Path: ".config/example/default.conf", Classification: configprovider.ConfigAmbiguousDeletion},
+	}})
+	for _, want := range []string{"Baseline provenance requires review", "differs   .zshrc", "absent    .config/example/default.conf", "Not captured automatically"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("review output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestConfigStateProviderCapturesKnownAuthoredBaseline(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	baseline, user, err := deps.ConfigDirs()

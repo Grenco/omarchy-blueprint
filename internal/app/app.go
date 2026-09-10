@@ -690,7 +690,7 @@ func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary)
 			}
 		}
 	}
-	if count := scan.Counts()[configprovider.ConfigAmbiguousBaseline]; count > 0 {
+	if count := scan.Counts()[configprovider.ConfigAmbiguousBaseline] + scan.Counts()[configprovider.ConfigAmbiguousDeletion]; count > 0 {
 		fmt.Fprintf(&b, "Baseline provenance requires review: %d\n", count)
 	}
 	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Skipped automatic Config discovery"))
@@ -746,6 +746,7 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		data["config"] = configCaptureOutput{Configs: d.Config, Scan: configScanOutput{Counts: configScan.Counts(), Candidates: configScan.Candidates, Surfaces: configScan.Surfaces}}
 		if diff {
 			human += renderConfigDiscovery(configScan.Surfaces, "Skipped discovery surfaces")
+			human += renderConfigProvenanceReview(*configScan)
 		} else {
 			var configChanges []model.Change
 			for _, change := range changes {
@@ -772,6 +773,30 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		return driftError{}
 	}
 	return nil
+}
+
+func renderConfigProvenanceReview(scan configprovider.ScanSummary) string {
+	var entries []configprovider.Candidate
+	for _, candidate := range scan.Candidates {
+		if candidate.Classification == configprovider.ConfigAmbiguousBaseline || candidate.Classification == configprovider.ConfigAmbiguousDeletion {
+			entries = append(entries, candidate)
+		}
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	var b strings.Builder
+	b.WriteString("Baseline provenance requires review\n")
+	for _, entry := range entries {
+		label := "differs"
+		if entry.Classification == configprovider.ConfigAmbiguousDeletion {
+			label = "absent"
+		}
+		fmt.Fprintf(&b, "  %-9s %s\n", label, entry.Path)
+	}
+	b.WriteString("\nNot captured automatically. Include a path to declare its current state as managed Config.\n")
+	return b.String()
 }
 
 func renderNonConfigChanges(title string, changes []model.Change) string {

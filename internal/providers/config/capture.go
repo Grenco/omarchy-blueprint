@@ -29,13 +29,6 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if p.ProfileDir == "" {
 		return CaptureResult{}, fmt.Errorf("profile directory is required to capture config")
 	}
-	scan, err := p.ScanForCapture(saved)
-	if err != nil {
-		return CaptureResult{}, err
-	}
-	if beforeStage != nil {
-		beforeStage()
-	}
 	parent := filepath.Join(p.ProfileDir, "config")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return CaptureResult{}, err
@@ -50,6 +43,13 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 		return CaptureResult{}, fmt.Errorf("config capture already in progress: %w", err)
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); _ = lock.Close() }()
+	scan, err := p.ScanForCapture(saved)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	if beforeStage != nil {
+		beforeStage()
+	}
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		return CaptureResult{}, err
