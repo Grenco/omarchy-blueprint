@@ -28,6 +28,7 @@ const (
 	ConfigOversized          Classification = "oversized"
 	ConfigHistoricalBaseline Classification = "historical-baseline"
 	ConfigAmbiguousBaseline  Classification = "ambiguous-baseline"
+	ConfigAmbiguousDeletion  Classification = "ambiguous-deletion"
 )
 
 var errAutomaticSurfaceBudget = errors.New("automatic Config surface budget exceeded")
@@ -154,9 +155,30 @@ func (p Provider) scan(saved profile.Configs, includeSaved bool) (ScanSummary, e
 		if err != nil {
 			return ScanSummary{}, err
 		}
+		if includeSaved && c.Classification == ConfigAmbiguousDeletion && (savedHasDelete(saved, path) || savedHasFile(saved, path)) {
+			c.Classification, c.Reason = ConfigDeletedBaseline, "saved deletion"
+		}
 		result.Candidates = append(result.Candidates, c)
 	}
 	return result, nil
+}
+
+func savedHasDelete(saved profile.Configs, path string) bool {
+	for _, deletion := range saved.Deletes {
+		if deletion.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func savedHasFile(saved profile.Configs, path string) bool {
+	for _, file := range saved.Files {
+		if file.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Provider) scanUserSurfaces(saved profile.Configs, entries map[string]map[bool]treeEntry) ([]SurfaceSummary, error) {
@@ -488,7 +510,21 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 	case uok:
 		c.Classification = ConfigAdded
 	case bok:
-		c.Classification = ConfigDeletedBaseline
+		if history, ok := p.History.(interface{ Deleted(string) (bool, error) }); ok {
+			deleted, err := history.Deleted(path)
+			if err != nil {
+				return c, err
+			}
+			if deleted {
+				c.Classification = ConfigDeletedBaseline
+			} else {
+				c.Classification, c.Reason = ConfigAmbiguousDeletion, "deletion provenance unavailable"
+			}
+		} else if p.History == nil {
+			c.Classification, c.Reason = ConfigAmbiguousDeletion, "deletion provenance unavailable"
+		} else {
+			c.Classification = ConfigDeletedBaseline
+		}
 	default:
 		c.Classification = ConfigUnsupported
 	}

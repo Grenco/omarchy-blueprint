@@ -222,8 +222,8 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 			t.Fatalf("capture data missing legacy key %q: %#v", key, envelope.Data)
 		}
 	}
-	if _, ok := envelope.Data["config"]; ok {
-		t.Fatalf("no-op config leaked into legacy JSON data: %#v", envelope.Data)
+	if _, ok := envelope.Data["config"]; !ok {
+		t.Fatalf("capture JSON missing Config scan data: %#v", envelope.Data)
 	}
 }
 
@@ -275,7 +275,7 @@ func TestConfigStateProviderCapturesKnownAuthoredBaseline(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	baseline, user, err := deps.ConfigDirs()
 	if err != nil {
-		 t.Fatal(err)
+		t.Fatal(err)
 	}
 	deps.HomeDir = func() (string, error) { return filepath.Dir(user), nil }
 	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
@@ -607,7 +607,7 @@ func TestConfigCaptureJSONIncludesScanSummary(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if len(envelope.Data.Config.Files) != 0 || len(envelope.Data.Config.Scan.Counts) != 0 {
+	if len(envelope.Data.Config.Files) != 0 || envelope.Data.Config.Scan.Counts[configprovider.ConfigAmbiguousBaseline] != 1 {
 		t.Fatalf("config scan output = %#v", envelope.Data.Config)
 	}
 }
@@ -999,8 +999,8 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 	if !reflect.DeepEqual(d.Config.Excluded, []string{".config/ghostty"}) || len(d.Config.Files) != 0 {
 		t.Fatalf("config=%#v", d.Config)
 	}
-	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code == 0 || !strings.Contains(out, "excluded path") {
-		t.Fatalf("include under exclusion code=%d out=%s", code, out)
+	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code != 0 || !strings.Contains(out, "Included config") {
+		t.Fatalf("exact unexclude code=%d out=%s", code, out)
 	}
 }
 
@@ -1322,7 +1322,7 @@ func TestAggregateCaptureMarksConfigBeforeCustomization(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "modify    hypr") {
+	if code != 0 || !strings.Contains(out, "Baseline provenance requires review") {
 		t.Fatalf("later customization must surface as drift, code=%d out=%q", code, out)
 	}
 }

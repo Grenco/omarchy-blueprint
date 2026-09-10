@@ -357,7 +357,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			if exclude {
 				d.Config, _, err = configprovider.AddExclusion(d.Config, path)
 			} else {
-				d.Config, _, err = configprovider.AddInclusion(d.Config, path)
+				var removed bool
+				d.Config, removed, err = configprovider.RemoveExclusion(d.Config, path)
+				if err == nil && !removed {
+					d.Config, _, err = configprovider.AddInclusion(d.Config, path)
+				}
 			}
 			if err != nil {
 				return err
@@ -516,12 +520,10 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			continue
 		}
 		captured = append(captured, provider.ID())
-		if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
-			if result, ok := state.(configprovider.CaptureResult); ok {
-				data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates, Surfaces: result.Scan.Surfaces}}
-			} else {
-				data[provider.ID()] = state
-			}
+		if result, ok := state.(configprovider.CaptureResult); ok {
+			data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates, Surfaces: result.Scan.Surfaces}}
+		} else if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
+			data[provider.ID()] = state
 		}
 		if result, ok := state.(configprovider.CaptureResult); ok {
 			configResult = &result

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -37,6 +38,24 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	parent := filepath.Join(p.ProfileDir, "config")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return CaptureResult{}, err
+	}
+	lockPath := filepath.Join(parent, ".capture.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return CaptureResult{}, fmt.Errorf("config capture already in progress: %w", err)
+	}
+	_ = lock.Close()
+	defer os.Remove(lockPath)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".capture-") || entry.Name() == ".files-capture-previous" || entry.Name() == ".baseline-capture-previous" {
+			if err := os.RemoveAll(filepath.Join(parent, entry.Name())); err != nil {
+				return CaptureResult{}, err
+			}
+		}
 	}
 	stage, err := os.MkdirTemp(parent, ".capture-*")
 	if err != nil {
