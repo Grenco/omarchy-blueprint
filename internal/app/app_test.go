@@ -1014,6 +1014,13 @@ func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
 	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code != 0 || !strings.Contains(out, "Included config") {
 		t.Fatalf("exact unexclude code=%d out=%s", code, out)
 	}
+	d, err = profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Config.Excluded) != 0 || !reflect.DeepEqual(d.Config.Included, []string{".config/ghostty"}) {
+		t.Fatalf("include did not persist final policy: %#v", d.Config)
+	}
 }
 
 func TestPackageExcludeHintsRelatedConfigWithoutExcludingIt(t *testing.T) {

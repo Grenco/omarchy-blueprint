@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -33,6 +34,39 @@ func TestCaptureStoresAddedModifiedAndTombstoneSparsely(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(profileDir, "config", "files", "same.conf")); !os.IsNotExist(err) {
 		t.Fatal("unchanged snapshot persisted")
+	}
+}
+
+func TestCaptureAdvisoryLockAndStaleStageRecovery(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(user, "settings.conf"), "value")
+	configDir := filepath.Join(profileDir, "config")
+	if err := os.MkdirAll(filepath.Join(configDir, ".capture-stage-crashed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	beforeStage = func() { close(started); <-release }
+	t.Cleanup(func() { beforeStage = nil })
+	p := Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}
+	done := make(chan error, 1)
+	go func() { _, err := p.Capture(profile.Configs{}); done <- err }()
+	<-started
+	if _, err := p.Capture(profile.Configs{}); err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("second capture error = %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	beforeStage = nil
+	if _, err := os.Stat(filepath.Join(configDir, ".capture-stage-crashed")); !os.IsNotExist(err) {
+		t.Fatalf("stale stage remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, ".capture.lock")); err != nil {
+		t.Fatalf("persistent lock missing: %v", err)
+	}
+	if _, err := p.Capture(profile.Configs{}); err != nil {
+		t.Fatalf("released lock blocked later capture: %v", err)
 	}
 }
 
