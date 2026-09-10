@@ -70,7 +70,7 @@ func ProbeSurface(root string) (SurfaceProbe, error) {
 				p.RegularFiles++
 			}
 			p.observe(lowerName, lowerRel, info.IsDir())
-			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 && depth+1 < maxSurfaceProbeDepth && !IsBackupArtifactName(entry.Name(), true) {
+			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 && depth < maxSurfaceProbeDepth && !IsBackupArtifactName(entry.Name(), true) {
 				if err := walk(path, childRel, depth+1); err != nil {
 					return err
 				}
@@ -144,7 +144,7 @@ func ClassifySurface(p SurfaceProbe) (SurfaceClassification, []string) {
 		sort.Strings(r)
 		return r
 	}
-	if p.RelativeNames["local state"] && hasChromiumProfile(byDir) {
+	if hasChromiumProfile(byDir) {
 		return SurfaceStateHeavy, []string{"browser-profile-chromium"}
 	}
 	if hasGeckoProfile(p, byDir) {
@@ -213,19 +213,27 @@ func hasLevelDBFamily(names map[string]bool) bool {
 }
 
 func hasChromiumProfile(byDir map[string]map[string]bool) bool {
-	for dir, names := range byDir {
-		base := filepath.Base(dir)
-		if base != "default" && !strings.HasPrefix(base, "profile ") {
+	for anchor, names := range byDir {
+		if !names["local state"] {
 			continue
 		}
-		markers := 0
-		for _, marker := range []string{"preferences", "secure preferences", "cookies", "history", "web data", "extensions", "network", "dips"} {
-			if names[marker] {
-				markers++
+		for dir, profile := range byDir {
+			if filepath.ToSlash(filepath.Dir(dir)) != anchor {
+				continue
 			}
-		}
-		if markers >= 2 {
-			return true
+			base := filepath.Base(dir)
+			if base != "default" && !strings.HasPrefix(base, "profile ") {
+				continue
+			}
+			markers := 0
+			for _, marker := range []string{"preferences", "secure preferences", "cookies", "history", "web data", "extensions", "network", "dips"} {
+				if profile[marker] {
+					markers++
+				}
+			}
+			if markers >= 2 {
+				return true
+			}
 		}
 	}
 	return false

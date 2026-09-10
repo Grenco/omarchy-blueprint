@@ -467,8 +467,10 @@ func Diff(saved profile.Configs, current any) []model.Change {
 			}
 			continue
 		}
-		if c.Classification == ConfigAdded || c.Classification == ConfigModifiedBaseline {
+		if c.Classification == ConfigAdded {
 			changes = append(changes, configChange(model.ChangeAdd, c.Path, "+ config "+c.Path+" added"))
+		} else if c.Classification == ConfigModifiedBaseline {
+			changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" modified from baseline"))
 		}
 	}
 	for path := range files {
@@ -534,8 +536,10 @@ func (p Provider) Diff(saved profile.Configs, scan ScanSummary) ([]model.Change,
 		delete(byPath, d.Path)
 	}
 	for _, c := range byPath {
-		if c.Classification == ConfigAdded || c.Classification == ConfigModifiedBaseline {
+		if c.Classification == ConfigAdded {
 			changes = append(changes, configChange(model.ChangeAdd, c.Path, "+ config "+c.Path+" added"))
+		} else if c.Classification == ConfigModifiedBaseline {
+			changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" modified from baseline"))
 		}
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })

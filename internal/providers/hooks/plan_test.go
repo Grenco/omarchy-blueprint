@@ -94,3 +94,22 @@ func TestPlanSkipsChildOfUnmanagedSymlinkDirectory(t *testing.T) {
 		t.Fatalf("external hook was created: %v", err)
 	}
 }
+
+func TestPlanDefersReservedInboundResourceLink(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	p := Provider{
+		UserDir:    filepath.Join(home, ".config", "omarchy", "hooks"),
+		ProfileDir: filepath.Join(root, "profile"),
+		HomeDir:    home,
+		Resources: profile.Resources{
+			Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}},
+			Links: []profile.ResourceLink{{Source: "~/.config/omarchy/hooks/post-boot", TargetResource: "dotfiles", Target: "hooks/post-boot", Origin: "inbound"}},
+		},
+	}
+	savedHook := planHook(t, p, "post-boot", "legacy", "0755")
+	plan, err := p.Plan(profile.Hooks{Items: []profile.Hook{savedHook}}, State{}, 5, "1", "2")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}

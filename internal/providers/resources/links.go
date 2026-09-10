@@ -103,6 +103,47 @@ func ClassifyResourceLinks(home string, resource profile.Resource, raw []RawLink
 	return candidates, nil
 }
 
+// IsTrackedInboundLink reports whether source is the exact live symlink
+// recorded as an inbound link for a tracked resource.
+func IsTrackedInboundLink(home, source string, saved profile.Resources) (bool, error) {
+	if _, err := LogicalHomePath(home, source); err != nil {
+		return false, nil
+	}
+	candidate, err := classifyLink(home, source, saved.Items, "", ownership.Index{})
+	if err != nil {
+		return false, err
+	}
+	if candidate.Classification != LinkManagedInbound {
+		return false, nil
+	}
+	for _, link := range saved.Links {
+		if link.Origin == "inbound" && link.SourceResource == "" && link.Source == candidate.Source && link.TargetResource == candidate.TargetResource && link.Target == candidate.TargetRelative {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// IsTrackedInboundLinkPath reports whether source is reserved for an inbound
+// resource link, including when that link still needs to be recreated.
+func IsTrackedInboundLinkPath(home, source string, saved profile.Resources) (bool, error) {
+	logical, err := LogicalHomePath(home, source)
+	if err != nil {
+		return false, nil
+	}
+	for _, link := range saved.Links {
+		if link.Origin != "inbound" || link.SourceResource != "" || link.Source != logical {
+			continue
+		}
+		for _, resource := range saved.Items {
+			if resource.ID == link.TargetResource {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func RelativeSymlinkTarget(sourcePath, targetPath string) (string, error) {
 	target, err := filepath.Rel(filepath.Dir(sourcePath), targetPath)
 	if err != nil {

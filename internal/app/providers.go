@@ -844,13 +844,20 @@ func (hooksStateProvider) Empty(state any) bool {
 	return ok && len(s.Items) == 0
 }
 
-func (p hooksStateProvider) provider() (hooksprovider.Provider, error) {
+func (p hooksStateProvider) provider(resources profile.Resources) (hooksprovider.Provider, error) {
 	dir, err := p.deps.HooksDir()
-	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir}, err
+	if err != nil {
+		return hooksprovider.Provider{}, err
+	}
+	home, err := p.deps.HomeDir()
+	if err != nil {
+		return hooksprovider.Provider{}, err
+	}
+	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir, HomeDir: home, Resources: resources}, nil
 }
 
 func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -870,7 +877,7 @@ func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []
 }
 
 func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, err
 	}
@@ -882,7 +889,7 @@ func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 }
 
 func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -894,7 +901,7 @@ func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 }
 
 func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
@@ -906,7 +913,7 @@ func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.Ver
 }
 
 func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return err
 	}

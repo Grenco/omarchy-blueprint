@@ -1,5 +1,7 @@
 package hooks
 
+import "github.com/Grenco/omarchy-blueprint/internal/profile"
+
 // DetectedHook is one runtime-relevant hook read from the live hook tree.
 type DetectedHook struct {
 	Path string
@@ -24,4 +26,6 @@ type UnmanagedHook struct {
 type Provider struct {
 	UserDir    string
 	ProfileDir string
+	HomeDir    string
+	Resources  profile.Resources
 }

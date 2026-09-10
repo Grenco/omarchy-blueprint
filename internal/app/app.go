@@ -607,9 +607,27 @@ func renderConfigDiscovery(surfaces []configprovider.SurfaceSummary, title strin
 		if b.Len() == 0 {
 			fmt.Fprintln(&b, title)
 		}
-		fmt.Fprintf(&b, "  %-9s %s\n", surface.Classification, configSurfaceName(surface.Path))
+		fmt.Fprintf(&b, "  %-16s %s\n", configSurfaceName(surface.Path), configSurfaceDescription(surface))
+	}
+	if b.Len() > 0 {
+		b.WriteString("  Informational only; skipped surfaces do not create drift. Include a safe subtree with include config:<path>.\n")
 	}
 	return b.String()
+}
+
+func configSurfaceDescription(surface configprovider.SurfaceSummary) string {
+	for _, reason := range surface.Reasons {
+		switch reason {
+		case "browser-profile-chromium", "browser-profile-gecko", "browser-profile-webkit":
+			return "browser/profile state"
+		case "mixed-config-and-runtime":
+			return "mixed config / application state"
+		}
+	}
+	if surface.Classification == configprovider.SurfaceMixed {
+		return "mixed config / application state"
+	}
+	return "application/profile state"
 }
 
 func configSurfaceName(path string) string {
@@ -643,7 +661,13 @@ func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary)
 		for _, surface := range surfaces {
 			for _, changeType := range []model.ChangeType{model.ChangeModify, model.ChangeAdd, model.ChangeRemove} {
 				if count := counts[surface][changeType]; count > 0 {
-					fmt.Fprintf(&b, "  %-9s %-16s %d\n", changeType, surface, count)
+					label := string(changeType)
+					if changeType == model.ChangeAdd {
+						label = "uncaptured"
+					} else if changeType == model.ChangeRemove {
+						label = "missing"
+					}
+					fmt.Fprintf(&b, "  %-9s %-16s %d\n", label, surface, count)
 				}
 			}
 		}
@@ -709,11 +733,14 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 				}
 			}
 			configHuman := renderConfigStatus(configChanges, *configScan)
-			otherHuman := renderNonConfigChanges(title, changes)
+			otherHuman := renderNonConfigChanges("", changes)
 			if configHuman == "" && otherHuman == "" {
 				human = renderChanges(title, nil)
 			} else {
 				human = configHuman + otherHuman
+				if driftCount > 0 {
+					human = title + "\n\n" + human
+				}
 			}
 		}
 	}
@@ -735,6 +762,13 @@ func renderNonConfigChanges(title string, changes []model.Change) string {
 	}
 	if len(other) == 0 {
 		return ""
+	}
+	if title == "" {
+		var b strings.Builder
+		for _, change := range other {
+			fmt.Fprintln(&b, change.Summary)
+		}
+		return b.String()
 	}
 	return renderChanges(title, other)
 }

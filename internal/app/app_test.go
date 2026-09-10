@@ -330,6 +330,58 @@ func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
 	}
 }
 
+func TestResourceInboundHookLinkHandoff(t *testing.T) {
+	profileDir, home, stateDir := t.TempDir(), t.TempDir(), t.TempDir()
+	hooksDir := filepath.Join(home, ".config", "omarchy", "hooks")
+	dotfiles := filepath.Join(home, "dotfiles")
+	writeAppFile(t, filepath.Join(dotfiles, "hooks", "post-boot"), "resource hook")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "hooks", "post-boot"), filepath.Join(hooksDir, "post-boot")); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		HomeDir:   func() (string, error) { return home, nil },
+		StateHome: func() (string, error) { return stateDir, nil },
+		HooksDir:  func() (string, error) { return hooksDir, nil },
+	}
+	run := func(args ...string) (int, string) {
+		out.Reset()
+		stderr.Reset()
+		code := Execute(context.Background(), args, deps)
+		return code, out.String() + stderr.String()
+	}
+	if code, output := run("init", profileDir); code != 0 {
+		t.Fatalf("init code=%d output=%s", code, output)
+	}
+	if code, output := run("--profile", profileDir, "track", dotfiles); code != 0 {
+		t.Fatalf("track code=%d output=%s", code, output)
+	}
+	if code, output := run("--profile", profileDir, "capture", "hooks"); code != 0 || strings.Contains(output, "left unmanaged") {
+		t.Fatalf("hook capture code=%d output=%s", code, output)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Resources.Links) != 1 || len(d.Hooks.Items) != 0 {
+		t.Fatalf("handoff profile resources=%#v hooks=%#v err=%v", d.Resources, d.Hooks, err)
+	}
+	if err := os.RemoveAll(dotfiles); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(hooksDir, "post-boot")); err != nil {
+		t.Fatal(err)
+	}
+	if code, output := run("--profile", profileDir, "restore", "resources", "--yes"); code != 0 {
+		t.Fatalf("resource restore code=%d output=%s", code, output)
+	}
+	if got := readAppFile(t, filepath.Join(hooksDir, "post-boot")); got != "resource hook" {
+		t.Fatalf("restored resource hook=%q", got)
+	}
+}
+
 func TestConfigOverlayAcceptance(t *testing.T) {
 	t.Run("schema 7 loads restores and recaptures as schema 8", func(t *testing.T) {
 		profileDir, deps, home, baseline := overlaySandbox(t)
@@ -1122,7 +1174,7 @@ func TestConfigVerticalSlice(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "add       hypr") {
+	if !strings.Contains(out, "uncaptured hypr") {
 		t.Fatalf("capture output = %q", out)
 	}
 	// Reset to baseline removes the stale snapshot.

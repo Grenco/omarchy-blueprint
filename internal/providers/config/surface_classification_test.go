@@ -34,6 +34,18 @@ func TestSurfaceClassificationStructuralBrowserSignatures(t *testing.T) {
 	if got != SurfaceStateHeavy || reasons[0] != "browser-profile-gecko" {
 		t.Fatalf("classification=%s reasons=%v", got, reasons)
 	}
+
+	writeFile(t, filepath.Join(root, "outer-vendor", "engine", "Local State"), "{}")
+	writeFile(t, filepath.Join(root, "outer-vendor", "engine", "Default", "Preferences"), "{}")
+	writeFile(t, filepath.Join(root, "outer-vendor", "engine", "Default", "History"), "{}")
+	probe, err = ProbeSurface(filepath.Join(root, "outer-vendor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, reasons = ClassifySurface(probe)
+	if got != SurfaceStateHeavy || reasons[0] != "browser-profile-chromium" {
+		t.Fatalf("wrapper classification=%s reasons=%v", got, reasons)
+	}
 }
 
 func TestScanSkipsMixedSurfaceButWalksExplicitIncludeAndBaseline(t *testing.T) {

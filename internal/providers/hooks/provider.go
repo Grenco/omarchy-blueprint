@@ -14,6 +14,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 )
 
 // Detect captures only the flat and immediate .d hook forms used at runtime.
@@ -39,6 +40,13 @@ func (p Provider) Detect() (State, error) {
 	for _, entry := range entries {
 		path := filepath.Join(p.UserDir, entry.Name())
 		if entry.Type()&os.ModeSymlink != 0 {
+			managed, err := p.managedInboundLink(path)
+			if err != nil {
+				return State{}, err
+			}
+			if managed {
+				continue
+			}
 			unmanaged, err := unmanagedHook(entry.Name(), path)
 			if err != nil {
 				return State{}, err
@@ -90,6 +98,13 @@ func (p Provider) detectDirectory(dir, path string) ([]DetectedHook, []Unmanaged
 		}
 		rel := dir + "/" + name
 		if entry.Type()&os.ModeSymlink != 0 {
+			managed, err := p.managedInboundLink(filepath.Join(path, name))
+			if err != nil {
+				return nil, nil, err
+			}
+			if managed {
+				continue
+			}
 			unmanaged, err := unmanagedHook(rel, filepath.Join(path, name))
 			if err != nil {
 				return nil, nil, err
@@ -114,6 +129,20 @@ func (p Provider) detectDirectory(dir, path string) ([]DetectedHook, []Unmanaged
 		hooks = append(hooks, hook)
 	}
 	return hooks, unmanagedHooks, nil
+}
+
+func (p Provider) managedInboundLink(path string) (bool, error) {
+	if p.HomeDir == "" {
+		return false, nil
+	}
+	return resourcesprovider.IsTrackedInboundLink(p.HomeDir, path, p.Resources)
+}
+
+func (p Provider) reservesInboundLink(path string) (bool, error) {
+	if p.HomeDir == "" {
+		return false, nil
+	}
+	return resourcesprovider.IsTrackedInboundLinkPath(p.HomeDir, path, p.Resources)
 }
 
 func unmanagedHook(rel, path string) (UnmanagedHook, error) {
