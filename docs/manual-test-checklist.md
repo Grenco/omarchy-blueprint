@@ -62,7 +62,7 @@
 - Confirm explicit inclusion still refuses sensitive paths/content, symlinks, special files, oversized files, backup artifacts, and paths owned by stronger providers. Confirm an include below an excluded ancestor is rejected.
 - Confirm generic backup files (`*.bak`, `*.bak.*`, `*.backup`, `*.backup-*`, `*.orig`, `*~`) and backup directories (`backup`, `backups`, `*.bak`, `*.backup`, `*-backup`, `*-backups`, `*_backup`, `*_backups`) appear in neither `config/files/` nor `config/baseline/`, produce no tombstones, and are pruned before child inspection.
 - On an upgraded baseline, confirm independent source and upstream edits merge cleanly; confirm overlapping edits preserve the target unless `--force` is approved.
-- Delete a shipped baseline file, capture, restore onto a target where it exists, and confirm it is backed up then removed.
+- Delete a baseline-backed file, run `diff config`, and confirm it is `absent`/review-only. Run `include config:<path>`, capture, confirm the tombstone persists, then restore onto a target where it exists and confirm it is backed up then removed.
 - Track an intentionally authoritative large or opaque config tree as a Resource, capture again, and confirm Config no longer duplicates its bytes or restore destination.
 
 ### Same-machine capture and status

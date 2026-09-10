@@ -14,7 +14,7 @@ A wholesale snapshot of `~/.config` would capture unchanged Omarchy defaults, ru
 
 Expand Config to a sparse baseline-aware home-configuration overlay in schema 8. The recursive surface is `~/.config/**`; important non-XDG configuration is covered by a curated registry of exact `$HOME`-relative paths such as `.bashrc`, `.zshrc`, `.tmux.conf`, `.XCompose`, and `.gitconfig`. Blueprint never recursively scans all of `$HOME`.
 
-Config captures modified Omarchy baseline files, user-added regular config files by default, and explicit tombstones for shipped baseline files the user removed. Unchanged baseline files are omitted.
+Config captures baseline modifications and explicit tombstones only when modification/deletion intent is established; ADR 0014 defines the conservative provenance and explicit-Include rules. User-added regular config files are captured by default, and unchanged baseline files are omitted.
 
 Paths owned by Resources, Themes, Plugins, Hooks, or Shell are delegated.
 

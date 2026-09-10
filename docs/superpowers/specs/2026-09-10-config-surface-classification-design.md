@@ -141,7 +141,7 @@ Therefore:
 
 > Surface classification controls user-added recursive discovery, not exact baseline-backed paths.
 
-A baseline-backed file inside a state-heavy surface is still inspected exactly and may be captured as modified/deleted Config state.
+A baseline-backed file inside a state-heavy surface is still inspected exactly and may be captured as modified/deleted Config state only when trusted provenance or explicit Include establishes intent.
 
 ### 4.3 High precision beats maximum recall
 
@@ -939,7 +939,7 @@ This makes the cost of any one Config surface operationally bounded without intr
 `capture config` produces new desired Config state only from:
 
 ```text
-baseline-backed modified/deleted paths
+baseline-backed modified/deleted paths whose intent is established by trusted provenance or explicit Include
 + user-added candidates under config-lean surfaces
 + user-added candidates under explicit Included roots
 + curated exact HOME paths
@@ -1262,7 +1262,14 @@ baseline-backed path inside state-heavy browser surface
 → no recursive browser discovery
 
 baseline file absent from user
-→ tombstone still captured
++ no trusted deletion provenance
+→ ambiguous-deletion
+→ not automatically captured
+
+baseline file absent
++ explicitly Included or trusted deletion provenance
+→ deleted-baseline
+→ tombstone captured
 ```
 
 ### 27.5 Saved-state compatibility tests
