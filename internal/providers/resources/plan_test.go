@@ -2,6 +2,8 @@ package resources
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -189,6 +191,60 @@ func TestPlanForceReplacesOnlyConflictingResourceLink(t *testing.T) {
 	if len(plan.Operations) != 1 || plan.Operations[0].Risk != model.RiskHigh || plan.Operations[0].Symlink == nil || !plan.Operations[0].Symlink.ReplaceExisting || !plan.Operations[0].Symlink.Backup || plan.Operations[0].Symlink.ExpectedExisting.Type != "file" {
 		t.Fatalf("plan=%#v", plan)
 	}
+}
+
+func TestPlanMissingGitDiffReconstructionChainsArtifactsAndLinks(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	index, worktree, note := hashPlanBytes("index"), hashPlanBytes("worktree"), hashPlanBytes("note")
+	item := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/dotfiles.git", Revision: strings.Repeat("a", 40), IndexPatchHash: index, WorktreePatchHash: worktree, Untracked: []profile.GitUntrackedFile{{Path: "notes.md", Hash: note, Mode: "0600"}}}
+	saved := profile.Resources{Items: []profile.Resource{item}, Links: []profile.ResourceLink{{Source: "~/.config/nvim", TargetResource: "dotfiles", Target: "nvim", Origin: "inbound"}}}
+	current := profile.Resources{Items: []profile.Resource{{ID: item.ID, Path: item.Path, Kind: item.Kind, Strategy: item.Strategy}}}
+	plan, err := p.Plan(context.Background(), saved, current, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"resources.git.clone.dotfiles", "resources.git.checkout.dotfiles", "resources.git.apply-index.dotfiles", "resources.git.apply-worktree.dotfiles", "resources.git.untracked.dotfiles.notes-md", "resources.link.home----config-nvim"}
+	got := make([]string, len(plan.Operations))
+	for i, op := range plan.Operations {
+		got[i] = op.ID
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("operations=%v want=%v", got, want)
+	}
+	for i := 1; i < len(plan.Operations); i++ {
+		if !reflect.DeepEqual(plan.Operations[i].DependsOn, []string{plan.Operations[i-1].ID}) {
+			t.Fatalf("%s dependencies=%v", plan.Operations[i].ID, plan.Operations[i].DependsOn)
+		}
+	}
+	if op := plan.Operations[2]; op.GitPatch == nil || !op.GitPatch.ToIndex || op.GitPatch.SourceHash != index {
+		t.Fatalf("index operation=%#v", op)
+	}
+	if op := plan.Operations[4]; op.File == nil || op.File.SourceHash != note || op.File.Mode == nil || *op.File.Mode != 0o600 || !op.File.ExpectedMissing {
+		t.Fatalf("untracked operation=%#v", op)
+	}
+}
+
+func TestPlanGitDiffExistingOverlayMismatchIsSkipped(t *testing.T) {
+	home := t.TempDir()
+	p := Provider{HomeDir: home, ProfileDir: t.TempDir()}
+	item := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/dotfiles.git", Revision: strings.Repeat("a", 40), IndexPatchHash: strings.Repeat("b", 64)}
+	current := item
+	current.IndexPatchHash = ""
+	if err := os.Mkdir(filepath.Join(home, "dotfiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(context.Background(), profile.Resources{Items: []profile.Resource{item}}, profile.Resources{Items: []profile.Resource{current}}, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "existing resource differs") {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
+func hashPlanBytes(value string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
 
 func plannedCopyFile(t *testing.T) (Provider, profile.Resources) {

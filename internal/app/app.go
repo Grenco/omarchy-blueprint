@@ -121,7 +121,8 @@ func newRoot(deps Dependencies) *cobra.Command {
 }
 
 func trackCommand(deps Dependencies, opt *options) *cobra.Command {
-	var id string
+	var id, strategy string
+	var includeUntracked, excludeUntracked []string
 	cmd := &cobra.Command{Use: "track <path|link:...>", Args: cobra.ExactArgs(1), Short: "Track a portable user resource", RunE: func(cmd *cobra.Command, args []string) error {
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
@@ -139,7 +140,27 @@ func trackCommand(deps Dependencies, opt *options) *cobra.Command {
 				changes = []model.Change{{Type: model.ChangeAdd, Provider: "resources", Kind: "link", Name: strings.TrimPrefix(args[0], "link:"), Summary: "+ link " + strings.TrimPrefix(args[0], "link:")}}
 			}
 		} else {
-			d.Resources, changes, err = provider.Track(cmd.Context(), d.Resources, args[0], id)
+			prepared, prepareErr := provider.PrepareTrack(cmd.Context(), d.Resources, args[0], resourcesprovider.TrackOptions{
+				ID: id, Strategy: strategy, IncludeUntracked: includeUntracked, ExcludeUntracked: excludeUntracked,
+			})
+			if prepareErr != nil {
+				return prepareErr
+			}
+			if err := prepared.Install(); err != nil {
+				return err
+			}
+			changes = trackChanges(d.Resources, prepared.State, prepared.Changes)
+			d.Resources = prepared.State
+			d.Manifest.Capture.Resources = true
+			d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+			if err := profile.Save(opt.profileDir, d); err != nil {
+				_ = prepared.Rollback()
+				return fmt.Errorf("save profile: %w", err)
+			}
+			if err := prepared.Finalize(); err != nil {
+				return err
+			}
+			return emit(deps.Out, opt.json, "track", true, map[string]any{"resources": d.Resources, "changes": changes}, renderTrackResult(d.Resources, changes))
 		}
 		if err != nil {
 			return err
@@ -152,7 +173,49 @@ func trackCommand(deps Dependencies, opt *options) *cobra.Command {
 		return emit(deps.Out, opt.json, "track", true, map[string]any{"resources": d.Resources, "changes": changes}, renderChanges("Tracked portable resource", changes))
 	}}
 	cmd.Flags().StringVar(&id, "id", "", "stable resource ID")
+	cmd.Flags().StringVar(&strategy, "strategy", "", "resource strategy: git, git+diff, or copy")
+	cmd.Flags().StringArrayVar(&includeUntracked, "include-untracked", nil, "include exact untracked file in git+diff state (repeatable)")
+	cmd.Flags().StringArrayVar(&excludeUntracked, "exclude-untracked", nil, "remove exact untracked file from git+diff state (repeatable)")
 	return cmd
+}
+
+func renderTrackResult(resources profile.Resources, changes []model.Change) string {
+	human := renderChanges("Tracked portable resource", changes)
+	for _, item := range resources.Items {
+		if item.Strategy == "git" && item.Dirty {
+			return human + "strategy: git\nLocal Git state is not captured by strategy git\nUse --strategy git+diff to capture local Git state or --strategy copy to snapshot the worktree.\n"
+		}
+	}
+	return human
+}
+
+func trackChanges(saved, current profile.Resources, changes []model.Change) []model.Change {
+	savedItems := make(map[string]profile.Resource, len(saved.Items))
+	for _, item := range saved.Items {
+		savedItems[item.ID] = item
+	}
+	result := make([]model.Change, 0, len(changes))
+	for _, change := range changes {
+		item, found := resourceByID(current.Items, change.Name)
+		if change.Provider != "resources" || change.Kind != "resource" || !found || item.Strategy != "git" || !item.Dirty || !strings.Contains(change.Summary, "local changes are not captured") {
+			result = append(result, change)
+			continue
+		}
+		if previous, exists := savedItems[item.ID]; exists && previous.Strategy != item.Strategy {
+			change.Summary = "~ resource " + item.ID + " differs"
+			result = append(result, change)
+		}
+	}
+	return result
+}
+
+func resourceByID(items []profile.Resource, id string) (profile.Resource, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return profile.Resource{}, false
 }
 
 func untrackCommand(deps Dependencies, opt *options) *cobra.Command {
@@ -510,10 +573,23 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	var changes []model.Change
 	var captured []string
 	var configResult *configprovider.CaptureResult
+	var transactions []interface {
+		FinalizeCapture() error
+		RollbackCapture() error
+	}
 	for _, provider := range providers {
 		state, providerChanges, err := captureProvider(ctx, provider, &d)
 		if err != nil {
+			for _, transaction := range transactions {
+				_ = transaction.RollbackCapture()
+			}
 			return err
+		}
+		if transaction, ok := provider.(interface {
+			FinalizeCapture() error
+			RollbackCapture() error
+		}); ok {
+			transactions = append(transactions, transaction)
 		}
 		if state == nil {
 			continue
@@ -534,7 +610,15 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
 		d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
 		if err := profile.Save(opt.profileDir, d); err != nil {
+			for _, transaction := range transactions {
+				_ = transaction.RollbackCapture()
+			}
 			return fmt.Errorf("save profile: %w", err)
+		}
+		for _, transaction := range transactions {
+			if err := transaction.FinalizeCapture(); err != nil {
+				return err
+			}
 		}
 	}
 	human := renderCaptureChanges("Captured "+providerStateLabel(captured)+" state", changes, configResult)
@@ -701,6 +785,7 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	providers = capturedProviders(providers, d)
 	var changes []model.Change
 	var configScan *configprovider.ScanSummary
+	var gitWorking map[string]resourcesprovider.GitWorkingSummary
 	for _, provider := range providers {
 		var providerChanges []model.Change
 		var err error
@@ -708,6 +793,8 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 			var scan configprovider.ScanSummary
 			providerChanges, scan, err = scanner.DiffWithScan(ctx, d)
 			configScan = &scan
+		} else if scanner, ok := provider.(resourceDiffProvider); ok {
+			providerChanges, gitWorking, err = scanner.DiffWithGitWorkingState(ctx, d)
 		} else {
 			providerChanges, err = provider.Diff(ctx, d)
 		}
@@ -742,6 +829,10 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	}
 	data := map[string]any{"drift": driftCount > 0, "changes": changes}
 	human := renderChanges(title, changes)
+	if len(gitWorking) > 0 {
+		data["git_working_state"] = gitWorking
+		human += renderGitWorkingState(d.Resources, gitWorking)
+	}
 	if configScan != nil {
 		data["config"] = configCaptureOutput{Configs: d.Config, Scan: configScanOutput{Counts: configScan.Counts(), Candidates: configScan.Candidates, Surfaces: configScan.Surfaces}}
 		if diff {
@@ -773,6 +864,45 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		return driftError{}
 	}
 	return nil
+}
+
+func renderGitWorkingState(resources profile.Resources, working map[string]resourcesprovider.GitWorkingSummary) string {
+	var b strings.Builder
+	gitIDs, gitDiffIDs := make([]string, 0, len(working)), make([]string, 0, len(working))
+	for id, summary := range working {
+		item, ok := resourceByID(resources.Items, id)
+		if !ok {
+			continue
+		}
+		if item.Strategy == "git" && (summary.StagedTracked > 0 || summary.UnstagedTracked > 0 || len(summary.Untracked) > 0) {
+			gitIDs = append(gitIDs, id)
+		}
+		if item.Strategy == "git+diff" && len(summary.Untracked) > len(summary.SelectedUntracked) {
+			gitDiffIDs = append(gitDiffIDs, id)
+		}
+	}
+	if len(gitIDs) == 0 && len(gitDiffIDs) == 0 {
+		return ""
+	}
+	sort.Strings(gitIDs)
+	if len(gitIDs) > 0 {
+		b.WriteString("Git working state not managed\n")
+	}
+	for _, id := range gitIDs {
+		summary := working[id]
+		fmt.Fprintf(&b, "  %-14s %d staged, %d unstaged, %d untracked\n", id, summary.StagedTracked, summary.UnstagedTracked, len(summary.Untracked))
+		fmt.Fprintln(&b, "  Capture policy: git")
+	}
+	sort.Strings(gitDiffIDs)
+	if len(gitDiffIDs) > 0 {
+		b.WriteString("Additional untracked Git files not managed\n")
+	}
+	for _, id := range gitDiffIDs {
+		summary := working[id]
+		fmt.Fprintf(&b, "  %-14s %d untracked\n", id, len(summary.Untracked)-len(summary.SelectedUntracked))
+		fmt.Fprintln(&b, "  Capture policy: git+diff")
+	}
+	return b.String()
 }
 
 func renderConfigProvenanceReview(scan configprovider.ScanSummary) string {

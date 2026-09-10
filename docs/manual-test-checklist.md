@@ -12,6 +12,23 @@
 - Confirm a direct symlink root is refused and its target is not automatically tracked.
 - Confirm a differing existing resource or link is skipped rather than overwritten.
 - Confirm copied resources with a private key, `.env`, special file, or external internal symlink are rejected.
+
+### Dirty Git State v2
+
+On a disposable real Git repository with a portable remote:
+
+1. Track a dirty repository without `--strategy`; confirm `git` is selected and `Local Git state is not captured by strategy git` is reported.
+2. Confirm `status resources` is clean when remote and HEAD match despite staged, unstaged, or untracked state.
+3. Switch to `git+diff`, select one untracked regular file with `--include-untracked`, and capture.
+4. Confirm `resources/git-state/<id>/` contains applicable deterministic patch files and only the selected untracked file.
+5. Re-run capture without edits and confirm there is no profile diff.
+6. Add an unselected untracked file and confirm it is informational, not drift.
+7. Modify a managed tracked file and confirm Resources reports drift.
+8. Restore where the Resource is missing; confirm exact HEAD, staged state, unstaged state, selected untracked bytes and modes, and dependent links are reconstructed.
+9. Confirm an existing differing checkout is skipped rather than mutated.
+10. Switch the source Resource back to `git`, capture, and confirm `git-state/<id>` is removed while live local changes remain untouched.
+11. Switch to `copy` and confirm `.git` administrative state is not copied.
+
 - Restore a missing local/custom theme and compare its files and permissions.
 - Restore a missing built-in overlay and confirm packaged files remain unchanged.
 - Confirm the captured active theme is applied after all theme installs.

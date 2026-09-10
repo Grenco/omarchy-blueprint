@@ -83,9 +83,13 @@ runtime files.
 - generic restore gains safe directory/symlink actions;
 - copied resources containing external untracked symlinks cannot yet be fully
   captured;
-- dirty Git working-tree/index changes are reported as drift but are not captured;
+- dirty Git working-tree/index changes were reported as drift but were not captured in Resources v1;
 - some provider-owned paths may require explicit ownership handoff before a
   symlink can be Resources-managed.
+
+The v1 dirty-Git limitation is superseded for schema-10 profiles by
+[ADR 0015](0015-dirty-git-resource-policies.md). `git` now treats local state
+as informational, while `git+diff` preserves supported local state explicitly.
 
 ## Rejected alternatives
 

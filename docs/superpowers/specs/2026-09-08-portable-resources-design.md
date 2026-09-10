@@ -5,6 +5,12 @@
 **Project:** Omarchy Blueprint  
 **Milestone:** Schema 7 — Portable Resources
 
+> **Supersession note (schema 10+):** This document preserves the historical
+> Resources v1 design. Its dirty-Git omission, clean-worktree detection, and
+> dirty-repository failure statements are superseded by [Dirty Git State v2](2026-09-10-dirty-git-state-v2-design.md)
+> and [ADR 0015](../../adr/0015-dirty-git-resource-policies.md). Other v1
+> Resources decisions remain historical context unless separately superseded.
+
 ## 1. Summary
 
 Omarchy Blueprint will add a first-class **Portable Resources** provider for user-selected files, directories, Git repositories, and the symlink relationships that connect those resources to the rest of the user's home directory.
@@ -598,6 +604,9 @@ Local filesystem-only remotes are rejected in v1 because they are not portable r
 
 ### 15.1 Dirty repository
 
+This section describes historical Resources v1 behavior. Schema-10 Dirty Git
+State v2 supersedes it with `git`, `git+diff`, and `copy` policies.
+
 A dirty Git repository is not silently copied. `track` and `capture resources`
 record its portable remote and current HEAD revision, but omit working-tree and
 index changes. They report:
@@ -607,7 +616,8 @@ resource dotfiles has uncommitted or untracked Git state;
 local Git changes are not captured
 ```
 
-The future Git-state milestone will add tracked patches and selected untracked files.
+Schema-10 Dirty Git State v2 adds separate tracked patch layers and explicitly
+selected untracked files.
 
 ## 16. Git Restore Policy
 
@@ -1973,6 +1983,11 @@ without changing provider ownership.
 
 ## 61. Future Dirty Git State
 
+**Superseded by schema-10 Dirty Git State v2.** This section records the v1
+extension sketch only; see [Dirty Git State v2](2026-09-10-dirty-git-state-v2-design.md)
+and [ADR 0015](../../adr/0015-dirty-git-resource-policies.md) for delivered
+behavior.
+
 Later Git-state support can extend a Git resource with:
 
 ```text
@@ -2019,7 +2034,7 @@ Do not modify profile when:
 - path outside HOME;
 - path overlaps another tracked resource;
 - path conflicts with provider ownership;
-- Git repo is dirty;
+- Git repo is dirty (v1 only; superseded by schema-10 Dirty Git State v2);
 - Git remote is not portable;
 - copied resource contains unsupported special file;
 - copied resource contains broken/untracked external symlink;
@@ -2055,7 +2070,7 @@ Portable Resources v1 is complete when all of the following hold:
 7. A copied resource with a symlink to an untracked target fails capture.
 8. A broken symlink inside a copied resource fails capture.
 9. A clean Git repo is stored as remote + branch + exact revision without repository bytes.
-10. A dirty Git repo captures portable HEAD provenance and reports uncaptured local drift.
+10. In v1, a dirty Git repo captures portable HEAD provenance and reports uncaptured local drift; schema-10 behavior is superseded by Dirty Git State v2.
 11. A local-only Git remote is refused.
 12. URL credentials are not persisted.
 13. `track ~/omarchy-setup` auto-discovers `~/.config/hypr/overrides.lua` pointing into it.

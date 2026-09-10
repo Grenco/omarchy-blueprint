@@ -169,8 +169,11 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.Symlink != nil {
 		actions++
 	}
+	if op.GitPatch != nil {
+		actions++
+	}
 	if actions != 1 {
-		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, or symlink action", op.ID)
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, symlink, or git patch action", op.ID)
 	}
 	if op.Copy != nil {
 		return copyTreeExclusive(*op.Copy)
@@ -187,7 +190,33 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.Symlink != nil {
 		return executeSymlinkWriteWithJournal(op.ID, *op.Symlink, journal, now)
 	}
+	if op.GitPatch != nil {
+		return executeGitPatch(ctx, runner, *op.GitPatch)
+	}
 	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
+	return err
+}
+
+func executeGitPatch(ctx context.Context, runner command.Runner, action model.GitPatchApply) error {
+	if err := validateGitPatch("git patch", action); err != nil {
+		return err
+	}
+	if err := validateSymlinkParents(action.Repository); err != nil {
+		return err
+	}
+	got, err := content.HashRegularFile(action.Source)
+	if err != nil {
+		return fmt.Errorf("validate git patch source: %w", err)
+	}
+	if got != action.SourceHash {
+		return fmt.Errorf("git patch source hash mismatch: got %s want %s", got, action.SourceHash)
+	}
+	args := []string{"-C", action.Repository, "apply", "--whitespace=nowarn"}
+	if action.ToIndex {
+		args = append(args, "--index")
+	}
+	args = append(args, action.Source)
+	_, err = runner.Run(ctx, "git", args...)
 	return err
 }
 

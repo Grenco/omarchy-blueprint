@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
@@ -19,39 +18,12 @@ type GitState struct {
 }
 
 func DetectGitResource(ctx context.Context, runner command.Runner, root string) (GitState, bool, error) {
-	topLevel, err := runner.Run(ctx, "git", "-C", root, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return GitState{}, false, nil
+	working, isGit, err := InspectGitWorkingState(ctx, runner, root)
+	if err != nil || !isGit {
+		return GitState{}, isGit, err
 	}
-	if filepath.Clean(strings.TrimSpace(topLevel)) != filepath.Clean(root) {
-		return GitState{}, false, nil
-	}
-	status, err := runner.Run(ctx, "git", "-C", root, "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		return GitState{}, true, fmt.Errorf("inspect Git status: %w", err)
-	}
-	state := GitState{Dirty: strings.TrimSpace(status) != ""}
-	remote, err := runner.Run(ctx, "git", "-C", root, "remote", "get-url", "origin")
-	if err != nil {
-		return state, true, fmt.Errorf("read Git origin: %w", err)
-	}
-	state.Remote, err = PortableGitRemote(strings.TrimSpace(remote))
-	if err != nil {
-		return state, true, err
-	}
-	revision, err := runner.Run(ctx, "git", "-C", root, "rev-parse", "HEAD")
-	if err != nil {
-		return state, true, fmt.Errorf("read Git revision: %w", err)
-	}
-	state.Revision = strings.TrimSpace(revision)
-	if !validGitRevision(state.Revision) {
-		return state, true, fmt.Errorf("invalid Git revision %q", state.Revision)
-	}
-	branch, err := runner.Run(ctx, "git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if err == nil {
-		state.Branch = strings.TrimSpace(branch)
-	}
-	return state, true, nil
+	dirty := working.StagedTracked > 0 || working.UnstagedTracked > 0 || len(working.Untracked) > 0 || working.Conflicted || working.DirtySubmodule
+	return GitState{Remote: working.Remote, Branch: working.Branch, Revision: working.Revision, Dirty: dirty}, true, nil
 }
 
 func PortableGitRemote(raw string) (string, error) {

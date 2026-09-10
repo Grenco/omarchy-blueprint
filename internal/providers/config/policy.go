@@ -1,40 +1,23 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
-	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/sensitive"
 )
 
 var (
-	pemPrivateKey              = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
-	structuredToken            = regexp.MustCompile(`(?i)["']?(?:api_token|access_token|auth_token|refresh_token|client_secret)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
 	sensitiveContentInspection func()
-	sensitiveContentRegexCheck func()
 )
 
 const MaxAutomaticConfigFileSize int64 = 16 << 20
 const MaxMergeableTextSize int64 = 4 << 20
-
-const sensitiveContentChunkSize = 32 << 10
-const sensitiveContentOverlap = 4 << 10
-
-var sensitiveTokenKeys = [][]byte{
-	[]byte("api_token"),
-	[]byte("access_token"),
-	[]byte("auth_token"),
-	[]byte("refresh_token"),
-	[]byte("client_secret"),
-}
 
 type PolicyReason string
 
@@ -316,73 +299,9 @@ func sensitiveConfigPath(path string) bool {
 // hasSensitiveContent rejects high-confidence credential material before it is
 // persisted in a profile, even when its filename looks harmless.
 func hasSensitiveContent(path string) (bool, error) {
-	f, _, err := content.OpenRegularFile(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
 	if sensitiveContentInspection != nil {
 		sensitiveContentInspection()
 	}
-
-	chunk := make([]byte, sensitiveContentChunkSize)
-	var previous []byte
-	reader := io.LimitReader(f, MaxAutomaticConfigFileSize+1)
-	for {
-		n, err := reader.Read(chunk)
-		if n > 0 {
-			window := append(append([]byte{}, previous...), chunk[:n]...)
-			if sensitiveContentWindow(window) {
-				return true, nil
-			}
-			if len(window) > sensitiveContentOverlap {
-				previous = append(previous[:0], window[len(window)-sensitiveContentOverlap:]...)
-			} else {
-				previous = append(previous[:0], window...)
-			}
-		}
-		if err == io.EOF {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-}
-
-func sensitiveContentWindow(window []byte) bool {
-	lower := make([]byte, len(window))
-	for i, b := range window {
-		if b >= 'A' && b <= 'Z' {
-			b += 'a' - 'A'
-		}
-		lower[i] = b
-	}
-	for start := 0; ; {
-		i := bytes.Index(window[start:], []byte("-----BEGIN "))
-		if i < 0 {
-			break
-		}
-		i += start
-		if i == 0 || window[i-1] == '\n' {
-			if sensitiveContentRegexCheck != nil {
-				sensitiveContentRegexCheck()
-			}
-			if pemPrivateKey.Match(window[i:]) {
-				return true
-			}
-		}
-		start = i + 1
-	}
-	for _, key := range sensitiveTokenKeys {
-		if bytes.Contains(lower, key) {
-			if sensitiveContentRegexCheck != nil {
-				sensitiveContentRegexCheck()
-			}
-			if structuredToken.Match(window) {
-				return true
-			}
-		}
-	}
-	return false
+	result, err := sensitive.ScanRegularFile(path, MaxAutomaticConfigFileSize)
+	return result.Sensitive, err
 }

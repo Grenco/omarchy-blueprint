@@ -23,10 +23,22 @@ type RawLink struct {
 	RawTarget      string
 }
 
+type SnapshotOptions struct {
+	ExcludeGitAdmin bool
+}
+
 func ScanCopyResource(root string) (SnapshotScan, error) { return scanCopyResource(root, "") }
 
+func ScanCopyResourceWithOptions(root string, options SnapshotOptions) (SnapshotScan, error) {
+	return scanCopyResource(root, "", options)
+}
+
 func StageCopyResource(source, destination string) (SnapshotScan, error) {
-	return scanCopyResource(source, destination)
+	return scanCopyResource(source, destination, SnapshotOptions{})
+}
+
+func StageCopyResourceWithOptions(source, destination string, options SnapshotOptions) (SnapshotScan, error) {
+	return scanCopyResource(source, destination, options)
 }
 
 func HashSnapshotTree(root string) (string, error) {
@@ -52,7 +64,11 @@ func ValidateSnapshotTree(root, expectedHash string) error {
 	return nil
 }
 
-func scanCopyResource(root, destination string) (SnapshotScan, error) {
+func scanCopyResource(root, destination string, options ...SnapshotOptions) (SnapshotScan, error) {
+	var option SnapshotOptions
+	if len(options) != 0 {
+		option = options[0]
+	}
 	info, err := os.Lstat(root)
 	if err != nil {
 		return SnapshotScan{}, err
@@ -101,6 +117,12 @@ func scanCopyResource(root, destination string) (SnapshotScan, error) {
 		if err != nil {
 			return err
 		}
+		if option.ExcludeGitAdmin && hasGitAdminComponent(relative) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(path)
 			if err != nil {
@@ -145,6 +167,15 @@ func scanCopyResource(root, destination string) (SnapshotScan, error) {
 	}
 	scan.Hash = fmt.Sprintf("%x", hash.Sum(nil))
 	return scan, nil
+}
+
+func hasGitAdminComponent(relative string) bool {
+	for _, component := range strings.Split(filepath.ToSlash(relative), "/") {
+		if component == ".git" {
+			return true
+		}
+	}
+	return false
 }
 
 func hashCopyFile(hash io.Writer, path, relative string, mode os.FileMode) error {

@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
+	"github.com/Grenco/omarchy-blueprint/internal/sensitive"
 )
 
 type FileInspection struct {
@@ -27,7 +28,7 @@ func InspectRegularFile(path string, maxBytes int64) (FileInspection, error) {
 		sensitiveContentInspection()
 	}
 	hash := sha256.New()
-	chunk := make([]byte, sensitiveContentChunkSize)
+	chunk := make([]byte, 32<<10)
 	var previous []byte
 	var total int64
 	textLike := true
@@ -48,11 +49,11 @@ func InspectRegularFile(path string, maxBytes int64) (FileInspection, error) {
 				return FileInspection{}, err
 			}
 			window := append(append([]byte{}, previous...), chunk[:n]...)
-			if sensitiveContentWindow(window) {
+			if sensitive.ScanWindow(window).Sensitive {
 				return FileInspection{Sensitive: true, BytesRead: total}, nil
 			}
-			if len(window) > sensitiveContentOverlap {
-				previous = append(previous[:0], window[len(window)-sensitiveContentOverlap:]...)
+			if len(window) > 4<<10 {
+				previous = append(previous[:0], window[len(window)-(4<<10):]...)
 			} else {
 				previous = append(previous[:0], window...)
 			}

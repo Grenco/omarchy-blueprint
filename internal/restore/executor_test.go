@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 )
@@ -700,6 +701,124 @@ func TestExecuteOperationActionExclusivityIncludesDirectoryAndSymlink(t *testing
 			}
 		})
 	}
+}
+
+func TestExecuteGitPatchAppliesValidatedPatchLayers(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		toIndex bool
+	}{
+		{name: "index", toIndex: true},
+		{name: "worktree", toIndex: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repository := gitPatchFixture(t)
+			writeGitPatchFile(t, repository, tt.toIndex)
+			patch := filepath.Join(repository, "patch")
+			runGitPatch(t, repository, "reset", "--hard", "HEAD")
+			action := model.GitPatchApply{Repository: repository, Source: patch, SourceHash: hashFile(t, patch), ToIndex: tt.toIndex}
+			if err := executeGitPatch(context.Background(), command.SystemRunner{}, action); err != nil {
+				t.Fatal(err)
+			}
+			wantIndex := "A\n"
+			if tt.toIndex {
+				wantIndex = "B\n"
+			}
+			if got := runGitPatch(t, repository, "show", ":file.txt"); got != wantIndex {
+				t.Fatalf("index=%q want=%q", got, wantIndex)
+			}
+			contents, err := os.ReadFile(filepath.Join(repository, "file.txt"))
+			if err != nil || string(contents) != "B\n" {
+				t.Fatalf("worktree=%q err=%v", contents, err)
+			}
+		})
+	}
+}
+
+func TestExecuteGitPatchRefusesInvalidArtifactsAndRepositoryPaths(t *testing.T) {
+	repository := gitPatchFixture(t)
+	writeGitPatchFile(t, repository, true)
+	patch := filepath.Join(repository, "patch")
+	action := model.GitPatchApply{Repository: repository, Source: patch, SourceHash: hashFile(t, patch), ToIndex: true}
+
+	if err := os.WriteFile(patch, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeGitPatch(context.Background(), command.SystemRunner{}, action); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("tampered patch err=%v", err)
+	}
+
+	if err := os.Remove(patch); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("file.txt", patch); err != nil {
+		t.Fatal(err)
+	}
+	action.SourceHash = strings.Repeat("a", 64)
+	if err := executeGitPatch(context.Background(), command.SystemRunner{}, action); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink patch err=%v", err)
+	}
+
+	patch = filepath.Join(t.TempDir(), "patch")
+	if err := os.WriteFile(patch, []byte("not a valid patch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	action.Source, action.SourceHash = patch, hashFile(t, patch)
+	if err := executeGitPatch(context.Background(), command.SystemRunner{}, action); err == nil {
+		t.Fatal("non-applicable patch succeeded")
+	}
+
+	parent := t.TempDir()
+	linkedParent := filepath.Join(parent, "linked-parent")
+	if err := os.Symlink(filepath.Dir(repository), linkedParent); err != nil {
+		t.Fatal(err)
+	}
+	action.Repository = filepath.Join(linkedParent, filepath.Base(repository))
+	if err := executeGitPatch(context.Background(), command.SystemRunner{}, action); err == nil || !strings.Contains(err.Error(), "parent is a symlink") {
+		t.Fatalf("symlink repository parent err=%v", err)
+	}
+}
+
+func gitPatchFixture(t *testing.T) string {
+	t.Helper()
+	repository := t.TempDir()
+	runGitPatch(t, repository, "init")
+	runGitPatch(t, repository, "config", "user.email", "test@example.invalid")
+	runGitPatch(t, repository, "config", "user.name", "Blueprint Test")
+	if err := os.WriteFile(filepath.Join(repository, "file.txt"), []byte("A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitPatch(t, repository, "add", "file.txt")
+	runGitPatch(t, repository, "commit", "-m", "initial")
+	return repository
+}
+
+func writeGitPatchFile(t *testing.T, repository string, toIndex bool) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repository, "file.txt"), []byte("B\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if toIndex {
+		runGitPatch(t, repository, "add", "file.txt")
+	}
+	args := []string{"diff"}
+	if toIndex {
+		args = append(args, "--cached")
+	}
+	args = append(args, "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--")
+	patch := runGitPatch(t, repository, args...)
+	if err := os.WriteFile(filepath.Join(repository, "patch"), []byte(patch), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runGitPatch(t *testing.T, repository string, args ...string) string {
+	t.Helper()
+	output, err := command.SystemRunner{}.Run(context.Background(), "git", append([]string{"-C", repository}, args...)...)
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return output
 }
 
 func TestExecuteFileDeleteBacksUpRegularFile(t *testing.T) {
