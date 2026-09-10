@@ -16,7 +16,7 @@ func TestCaptureStoresAddedModifiedAndTombstoneSparsely(t *testing.T) {
 	writeFile(t, filepath.Join(user, "changed.conf"), "user")
 	writeFile(t, filepath.Join(base, "deleted.conf"), "base")
 	writeFile(t, filepath.Join(user, "added.conf"), "added")
-	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{Excluded: []string{"discord"}})
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(false)}).Capture(profile.Configs{Excluded: []string{"discord"}})
 	if err != nil {
 		t.Fatal(err)
 	}

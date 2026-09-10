@@ -37,6 +37,7 @@ type Dependencies struct {
 	ThemeDirs         func() (builtin, user string, err error)
 	PluginDir         func() (string, error)
 	ConfigDirs        func() (baseline, user string, err error)
+	BaselineHistory   func() configprovider.BaselineHistory
 	ShellPaths        func() (baseline, user string, err error)
 	HooksDir          func() (string, error)
 	MiseGlobalConfig  func() (string, error)
@@ -546,8 +547,13 @@ func renderCaptureChanges(title string, changes []model.Change, result *configpr
 	var b strings.Builder
 	fmt.Fprintln(&b, title)
 	configChanges := make([]model.Change, 0)
+	pruned := map[string]int{}
 	for _, change := range changes {
 		if change.Provider == "config" {
+			if change.Type == model.ChangeRemove {
+				pruned[configSurfaceName(change.Name)]++
+				continue
+			}
 			configChanges = append(configChanges, change)
 		} else {
 			fmt.Fprintln(&b, change.Summary)
@@ -558,6 +564,17 @@ func renderCaptureChanges(title string, changes []model.Change, result *configpr
 		fmt.Fprintln(&b, "No changes.")
 	}
 	b.WriteString(configHuman)
+	if len(pruned) > 0 {
+		fmt.Fprintln(&b, "No longer captured")
+		surfaces := make([]string, 0, len(pruned))
+		for surface := range pruned {
+			surfaces = append(surfaces, surface)
+		}
+		sort.Strings(surfaces)
+		for _, surface := range surfaces {
+			fmt.Fprintf(&b, "  %-16s %d\n", surface, pruned[surface])
+		}
+	}
 	return b.String()
 }
 
@@ -594,7 +611,7 @@ func renderConfigScan(scan configScanOutput) string {
 		}
 		fmt.Fprintf(&b, "\nConfig %s: %d\n", group.title, count)
 	}
-	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Config discovery"))
+	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Skipped automatic Config discovery"))
 	return b.String()
 }
 
@@ -672,7 +689,10 @@ func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary)
 			}
 		}
 	}
-	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Config discovery"))
+	if count := scan.Counts()[configprovider.ConfigAmbiguousBaseline]; count > 0 {
+		fmt.Fprintf(&b, "Baseline provenance requires review: %d\n", count)
+	}
+	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Skipped automatic Config discovery"))
 	return b.String()
 }
 

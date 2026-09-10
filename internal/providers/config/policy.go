@@ -265,7 +265,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyVolatile}
 	}
 	lower := strings.ToLower(path)
-	if runtimeConfigPath(lower) || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, "singletonlock") {
+	if runtimeConfigPath(lower) || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, "singletonlock") || strings.HasPrefix(strings.ToLower(name), "cached_") {
 		return PolicyDecision{PolicyVolatile}
 	}
 	if strings.Contains(lower, "credential") || strings.Contains(lower, "private_key") || strings.Contains(lower, "secret") {
@@ -296,10 +296,10 @@ func sensitiveConfigPath(path string) bool {
 		return true
 	}
 	switch strings.ToLower(filepath.Base(path)) {
-	case "login data", "logins.json", "key4.db", "cookies":
+	case "login data", "logins.json", "key4.db", "cookies", "restore_token", "auth_token", "access_token":
 		return true
 	}
-	return false
+	return strings.HasSuffix(strings.ToLower(path), ".psk")
 }
 
 // hasSensitiveContent rejects high-confidence credential material before it is

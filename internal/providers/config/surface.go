@@ -105,7 +105,7 @@ func (p *SurfaceProbe) observe(name, rel string, dir bool) {
 
 func isRuntimeComponent(name string) bool {
 	switch name {
-	case "cache", "code cache", "gpucache", "dawncache", "dawngraphitecache", "dawnwebgpucache", "indexeddb", "local storage", "session storage", "service worker", "webstorage", "blob_storage", "file system", "crashpad", "crashes", "logs", "telemetry", "sessionstore-backups", "bookmarkbackups", "draftsrecover":
+	case "cache", "code cache", "gpucache", "dawncache", "dawngraphitecache", "dawnwebgpucache", "indexeddb", "local storage", "session storage", "service worker", "webstorage", "blob_storage", "file system", "crashpad", "crashes", "logs", "telemetry", "sessionstore-backups", "bookmarkbackups", "draftsrecover", "nativemessaginghosts", "bus", "dbus":
 		return true
 	}
 	return false
@@ -168,7 +168,7 @@ func ClassifySurface(p SurfaceProbe) (SurfaceClassification, []string) {
 	if len(state) >= 2 && len(p.config) == 0 {
 		return SurfaceStateHeavy, reasons(state)
 	}
-	if len(state) == 0 && (p.Entries <= 64 && p.MaxDepth <= maxSurfaceProbeDepth || p.RegularFiles > 0 && p.ConfigFiles*10 >= p.RegularFiles*7) {
+	if len(state) == 0 && len(p.config) > 0 && (p.Entries <= 64 && p.MaxDepth <= maxSurfaceProbeDepth || p.RegularFiles > 0 && p.ConfigFiles*10 >= p.RegularFiles*7) {
 		return SurfaceConfigLean, reasons(p.config)
 	}
 	r := reasons(state)

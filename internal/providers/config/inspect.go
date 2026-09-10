@@ -11,6 +11,7 @@ import (
 type FileInspection struct {
 	Hash      string
 	Sensitive bool
+	TextLike  bool
 	BytesRead int64
 }
 
@@ -29,9 +30,16 @@ func InspectRegularFile(path string, maxBytes int64) (FileInspection, error) {
 	chunk := make([]byte, sensitiveContentChunkSize)
 	var previous []byte
 	var total int64
+	textLike := true
 	for {
 		n, readErr := f.Read(chunk)
 		if n > 0 {
+			for _, b := range chunk[:n] {
+				if b == 0 {
+					textLike = false
+					break
+				}
+			}
 			total += int64(n)
 			if total > maxBytes {
 				return FileInspection{BytesRead: total}, nil
@@ -50,7 +58,7 @@ func InspectRegularFile(path string, maxBytes int64) (FileInspection, error) {
 			}
 		}
 		if readErr == io.EOF {
-			return FileInspection{Hash: hex.EncodeToString(hash.Sum(nil)), BytesRead: total}, nil
+			return FileInspection{Hash: hex.EncodeToString(hash.Sum(nil)), BytesRead: total, TextLike: textLike}, nil
 		}
 		if readErr != nil {
 			return FileInspection{}, readErr

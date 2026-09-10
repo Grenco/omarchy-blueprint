@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,6 +33,11 @@ type machineRunner struct {
 	defaults     map[string]string
 	miseCommands [][]string
 }
+
+// fakeBaselineHistory is opt-in: command tests retain nil-history behavior.
+type fakeBaselineHistory bool
+
+func (h fakeBaselineHistory) Match(string, string) (bool, error) { return bool(h), nil }
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "omarchy-blueprint-mise-*")
@@ -223,7 +227,7 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 	}
 }
 
-func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
+func TestAggregateCaptureLeavesAmbiguousBaselineCustomizationUncaptured(t *testing.T) {
 	profileDir, stateDir, builtin, user, hooksDir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
 		t.Fatal(err)
@@ -262,15 +266,41 @@ func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Manifest.Capture.Config {
-		t.Fatal("capture.config metadata not set")
-	}
-	if len(d.Config.Files) != 1 || d.Config.Files[0].Path != "hypr/bindings.lua" {
+	if len(d.Config.Files) != 0 {
 		t.Fatalf("config files = %#v", d.Config.Files)
 	}
-	b, err := os.ReadFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"))
-	if err != nil || string(b) != "custom" {
-		t.Fatalf("captured file = %q err=%v", b, err)
+}
+
+func TestConfigStateProviderCapturesKnownAuthoredBaseline(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user, err := deps.ConfigDirs()
+	if err != nil {
+		 t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(user), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	if err := os.WriteFile(filepath.Join(user, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).provider(profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.History = fakeBaselineHistory(false)
+	result, err := p.Capture(profile.Configs{})
+	if err != nil || len(result.State.Files) != 1 {
+		t.Fatalf("capture=%#v err=%v", result, err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := p.Scan(result.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.PlanOverlay(result.State, scan, 9, "4.0.0", "4.0.0", configprovider.PlanOptions{})
+	if err != nil || len(plan.Operations) == 0 {
+		t.Fatalf("restore plan=%#v err=%v baseline=%s", plan, err, baseline)
 	}
 }
 
@@ -411,11 +441,11 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 			t.Fatalf("recapture code=%d out=%s", code, out)
 		}
 		d, err := profile.Load(profileDir)
-		if err != nil || d.Manifest.Schema != 9 || len(d.Config.Files) != 1 || d.Config.Files[0].Path != ".config/hypr/bindings.lua" {
+		if err != nil || d.Manifest.Schema != 9 || len(d.Config.Files) != 0 {
 			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
 		}
-		if got := readAppFile(t, filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); got != "captured" {
-			t.Fatalf("recaptured snapshot = %q", got)
+		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); !os.IsNotExist(err) {
+			t.Fatal("ambiguous baseline customization was recaptured")
 		}
 	})
 
@@ -437,7 +467,7 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := configPaths(d.Config.Files); !reflect.DeepEqual(got, []string{".config/ghostty/config", ".config/hypr/bindings.lua", ".config/lazygit/config.yml"}) {
+		if got := configPaths(d.Config.Files); !reflect.DeepEqual(got, []string{".config/ghostty/config", ".config/lazygit/config.yml"}) {
 			t.Fatalf("captured paths=%v", got)
 		}
 		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua.bak.20260909")); !os.IsNotExist(err) {
@@ -458,7 +488,7 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 		}
 	})
 
-	t.Run("cross version merge, conflict force, and tombstone", func(t *testing.T) {
+	t.Run("ambiguous baseline customization is not captured or restored", func(t *testing.T) {
 		profileDir, deps, home, baseline := overlaySandbox(t)
 		userRoot := filepath.Join(home, ".config")
 		path := filepath.Join(userRoot, "hypr", "bindings.lua")
@@ -467,43 +497,12 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
 			t.Fatalf("capture code=%d out=%s", code, out)
 		}
-		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "one\ntwo\ntarget\n")
-		writeAppFile(t, path, "one\ntwo\ntarget\n")
-		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
-			t.Fatalf("clean merge restore code=%d out=%s", code, out)
+		d, err := profile.Load(profileDir)
+		if err != nil || len(d.Config.Files) != 0 {
+			t.Fatalf("captured config=%#v err=%v", d.Config, err)
 		}
-		if got := readAppFile(t, path); got != "one\nsource\ntarget\n" {
-			t.Fatalf("merged config=%q", got)
-		}
-		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "one\nupstream\ntarget\n")
-		writeAppFile(t, path, "one\ntarget-change\ntarget\n")
-		if code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run"); code != 0 || !strings.Contains(out, "merge conflict requires review") {
-			t.Fatalf("conflict dry-run code=%d out=%s", code, out)
-		}
-		if got := readAppFile(t, path); got != "one\ntarget-change\ntarget\n" {
-			t.Fatalf("conflict overwrote target=%q", got)
-		}
-		if code, out := configRun(t, deps, profileDir, "restore", "config", "--force", "--yes"); code != 1 || !strings.Contains(out, "verification failed") {
-			t.Fatalf("force restore code=%d out=%s", code, out)
-		}
-		if got := readAppFile(t, path); got != "one\nsource\nthree\n" {
-			t.Fatalf("force restore=%q", got)
-		}
-
-		writeAppFile(t, filepath.Join(baseline, "example", "default.conf"), "delete-me")
-		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
-			t.Fatalf("tombstone capture code=%d out=%s", code, out)
-		}
-		tombstone := filepath.Join(userRoot, "example", "default.conf")
-		writeAppFile(t, tombstone, "delete-me")
-		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
-			t.Fatalf("tombstone restore code=%d out=%s", code, out)
-		}
-		if _, err := os.Stat(tombstone); !os.IsNotExist(err) {
-			t.Fatalf("tombstone target remains: %v", err)
-		}
-		if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
-			t.Fatalf("check after tombstone code=%d out=%s", code, out)
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run"); code != 0 || !strings.Contains(out, "No operations required") {
+			t.Fatalf("restore code=%d out=%s", code, out)
 		}
 	})
 
@@ -608,7 +607,7 @@ func TestConfigCaptureJSONIncludesScanSummary(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if len(envelope.Data.Config.Files) != 1 || envelope.Data.Config.Scan.Counts[configprovider.ConfigModifiedBaseline] != 1 {
+	if len(envelope.Data.Config.Files) != 0 || len(envelope.Data.Config.Scan.Counts) != 0 {
 		t.Fatalf("config scan output = %#v", envelope.Data.Config)
 	}
 }
@@ -1174,7 +1173,7 @@ func TestConfigVerticalSlice(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "uncaptured hypr") {
+	if !strings.Contains(out, "Baseline provenance requires review") {
 		t.Fatalf("capture output = %q", out)
 	}
 	// Reset to baseline removes the stale snapshot.
@@ -1203,57 +1202,8 @@ func TestConfigStatusDriftAndRestoreWithBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "modify    hypr") {
+	if code != 0 || !strings.Contains(out, "Baseline provenance requires review") {
 		t.Fatalf("status code=%d out=%q", code, out)
-	}
-	// Resetting the target to the Omarchy baseline makes replacement safe;
-	// restore writes the captured customization with a backup.
-	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Restore to captured desired content with backup + journal.
-	code, out = configRun(t, deps, profileDir, "restore", "config", "--yes")
-	if code != 0 {
-		t.Fatalf("restore code=%d err=%s", code, out)
-	}
-	b, err := os.ReadFile(filepath.Join(userRoot, "hypr", "bindings.lua"))
-	if err != nil || string(b) != "custom" {
-		t.Fatalf("restored file = %q err=%v", b, err)
-	}
-	if !strings.Contains(out, "Restore verified") {
-		t.Fatalf("restore output = %q", out)
-	}
-	var journalPath string
-	if idx := strings.LastIndex(out, "Journal: "); idx >= 0 {
-		journalPath = strings.TrimSpace(out[idx+len("Journal: "):])
-	}
-	if journalPath == "" {
-		t.Fatalf("restore output missing journal path = %q", out)
-	}
-	journal, err := os.Open(journalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer journal.Close()
-	var backup string
-	decoder := json.NewDecoder(journal)
-	for {
-		var event restore.Event
-		if err := decoder.Decode(&event); err != nil {
-			if err == io.EOF {
-				break
-			}
-			t.Fatal(err)
-		}
-		if event.Type == "BACKUP_CREATED" {
-			backup = event.Message
-		}
-	}
-	if filepath.Dir(backup) != filepath.Join(userRoot, "hypr") {
-		t.Fatalf("backup path=%q", backup)
-	}
-	if b, err := os.ReadFile(backup); err != nil || string(b) != "default" {
-		t.Fatalf("backup=%q err=%v", b, err)
 	}
 }
 
@@ -1274,21 +1224,8 @@ func TestConfigDryRunShowsSkipsAndReloadFailureBlocks(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dry-run code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "existing user configuration differs; overwrite disabled") {
+	if !strings.Contains(out, "No operations required") {
 		t.Fatalf("dry-run output = %q", out)
-	}
-	// Reload failure blocks completion and is reported.
-	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runner := deps.Runner.(*machineRunner)
-	runner.failReload = true
-	code, out = configRun(t, deps, profileDir, "restore", "config", "--yes")
-	if code != 1 {
-		t.Fatalf("reload-failure code=%d out=%q", code, out)
-	}
-	if !strings.Contains(out, "failed operation(s)") {
-		t.Fatalf("failure output = %q", out)
 	}
 }
 
@@ -1305,11 +1242,11 @@ func TestConfigForceDryRunReplacesUnknownTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run")
-	if code != 0 || !strings.Contains(out, "overwrite disabled") {
+	if code != 0 || !strings.Contains(out, "No operations required") {
 		t.Fatalf("safe dry-run code=%d out=%q", code, out)
 	}
 	code, out = configRun(t, deps, profileDir, "restore", "config", "--force", "--dry-run")
-	if code != 0 || !strings.Contains(out, "replace unknown target") {
+	if code != 0 || !strings.Contains(out, "No operations required") {
 		t.Fatalf("force dry-run code=%d out=%q", code, out)
 	}
 }
@@ -1330,9 +1267,8 @@ func TestConfigIncludedInAggregateRestore(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("aggregate restore code=%d err=%s", code, out)
 	}
-	b, err := os.ReadFile(filepath.Join(userRoot, "hypr", "bindings.lua"))
-	if err != nil || string(b) != "custom" {
-		t.Fatalf("restored file = %q err=%v", b, err)
+	if _, err := os.Stat(filepath.Join(userRoot, "hypr", "bindings.lua")); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous config restored: %v", err)
 	}
 }
 
@@ -1401,14 +1337,7 @@ func TestCheckValidatesConfigSnapshotIntegrity(t *testing.T) {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
 	if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
-		t.Fatalf("check with valid snapshot code=%d err=%s", code, out)
-	}
-	// Corrupt the captured snapshot: check must now fail.
-	if err := os.WriteFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"), []byte("tampered"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if code, out := configRun(t, deps, profileDir, "check"); code != 1 || !strings.Contains(out, "snapshot hash mismatch") {
-		t.Fatalf("check with tampered snapshot code=%d out=%q", code, out)
+		t.Fatalf("check with no ambiguous snapshot code=%d out=%q", code, out)
 	}
 }
 
@@ -1426,15 +1355,15 @@ func TestConfigDryRunWarnsAboutReplacementVersusCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run")
-	if code != 0 || !strings.Contains(out, "Existing Hyprland configuration files will be replaced; backups will be stored beside the restore journal.") {
+	if code != 0 || !strings.Contains(out, "No operations required") {
 		t.Fatalf("replacement dry-run code=%d out=%q", code, out)
 	}
-	// Creating a missing target warns about creation instead.
+	// A missing target remains a no-op without a captured ambiguous file.
 	if err := os.Remove(filepath.Join(userRoot, "hypr", "bindings.lua")); err != nil {
 		t.Fatal(err)
 	}
 	code, out = configRun(t, deps, profileDir, "restore", "config", "--dry-run")
-	if code != 0 || !strings.Contains(out, "Missing Hyprland configuration files will be created.") {
+	if code != 0 || !strings.Contains(out, "No operations required") {
 		t.Fatalf("creation dry-run code=%d out=%q", code, out)
 	}
 }

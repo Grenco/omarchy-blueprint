@@ -15,17 +15,19 @@ import (
 type Classification string
 
 const (
-	ConfigUnchangedBaseline Classification = "unchanged-baseline"
-	ConfigModifiedBaseline  Classification = "modified-baseline"
-	ConfigDeletedBaseline   Classification = "deleted-baseline"
-	ConfigAdded             Classification = "added"
-	ConfigDelegated         Classification = "delegated"
-	ConfigExcluded          Classification = "excluded"
-	ConfigVolatile          Classification = "volatile"
-	ConfigSensitive         Classification = "sensitive"
-	ConfigUnmanagedSymlink  Classification = "unmanaged-symlink"
-	ConfigUnsupported       Classification = "unsupported"
-	ConfigOversized         Classification = "oversized"
+	ConfigUnchangedBaseline  Classification = "unchanged-baseline"
+	ConfigModifiedBaseline   Classification = "modified-baseline"
+	ConfigDeletedBaseline    Classification = "deleted-baseline"
+	ConfigAdded              Classification = "added"
+	ConfigDelegated          Classification = "delegated"
+	ConfigExcluded           Classification = "excluded"
+	ConfigVolatile           Classification = "volatile"
+	ConfigSensitive          Classification = "sensitive"
+	ConfigUnmanagedSymlink   Classification = "unmanaged-symlink"
+	ConfigUnsupported        Classification = "unsupported"
+	ConfigOversized          Classification = "oversized"
+	ConfigHistoricalBaseline Classification = "historical-baseline"
+	ConfigAmbiguousBaseline  Classification = "ambiguous-baseline"
 )
 
 var errAutomaticSurfaceBudget = errors.New("automatic Config surface budget exceeded")
@@ -439,6 +441,11 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 			c.Reason = string(PolicySensitive)
 			return c, nil
 		}
+		if !inspection.TextLike && !bok {
+			c.Classification = ConfigVolatile
+			c.Reason = "opaque application state"
+			return c, nil
+		}
 		c.UserHash = inspection.Hash
 		c.UserMode = fmt.Sprintf("%04o", user.info.Mode().Perm())
 	}
@@ -457,6 +464,20 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 			}
 			c.BaselineHash = hash
 			c.BaselineMode = fmt.Sprintf("%04o", base.info.Mode().Perm())
+		}
+	}
+	if uok && bok && !baselineIdentity(c.UserHash, c.UserMode, c.BaselineHash, c.BaselineMode) {
+		if p.History == nil {
+			c.Classification, c.Reason = ConfigAmbiguousBaseline, "baseline provenance unavailable"
+			return c, nil
+		}
+		historical, err := p.History.Match(path, c.UserHash)
+		if err != nil {
+			return c, err
+		}
+		if historical {
+			c.Classification, c.Reason = ConfigHistoricalBaseline, "matches trusted historical baseline"
+			return c, nil
 		}
 	}
 	switch {

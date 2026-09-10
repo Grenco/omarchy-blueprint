@@ -579,7 +579,11 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 		}
 		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "resources", Path: path})
 	}
-	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir, Ownership: claims}, nil
+	var history configprovider.BaselineHistory
+	if p.deps.BaselineHistory != nil {
+		history = p.deps.BaselineHistory()
+	}
+	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir, Ownership: claims, History: history}, nil
 }
 
 func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoot string, recursive bool) ownership.Index {

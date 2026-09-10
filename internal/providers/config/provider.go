@@ -45,6 +45,13 @@ type Provider struct {
 	ProfileDir   string
 	Ownership    ownership.Index
 	Specs        []Spec
+	History      BaselineHistory
+}
+
+// BaselineHistory optionally proves prior Omarchy baseline identities.
+// Production currently has no source; absence is intentionally ambiguous.
+type BaselineHistory interface {
+	Match(path, hash string) (bool, error)
 }
 
 // DetectedFile is the live machine state for one spec.

@@ -55,7 +55,7 @@ func TestScanSkipsMixedSurfaceButWalksExplicitIncludeAndBaseline(t *testing.T) {
 	writeFile(t, filepath.Join(user, "writer", "Cache", "state"), "not captured")
 	writeFile(t, filepath.Join(user, "writer", "baseline.conf"), "custom")
 	writeFile(t, filepath.Join(baseline, "writer", "baseline.conf"), "base")
-	p := Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline}
+	p := Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, History: fakeBaselineHistory(false)}
 	scan, err := p.Scan(profile.Configs{Included: []string{".config/writer/themes"}})
 	if err != nil {
 		t.Fatal(err)
