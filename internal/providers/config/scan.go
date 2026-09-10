@@ -163,6 +163,9 @@ func (p Provider) scan(saved profile.Configs, includeSaved bool) (ScanSummary, e
 				if c.Classification == ConfigAmbiguousBaseline {
 					c.Classification, c.Reason = ConfigModifiedBaseline, "explicitly-included"
 				}
+				if c.Classification == ConfigHistoricalBaseline {
+					c.Classification, c.Reason = ConfigModifiedBaseline, "explicitly-included"
+				}
 				if c.Classification == ConfigAmbiguousDeletion {
 					c.Classification, c.Reason = ConfigDeletedBaseline, "explicitly-included"
 				}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -40,12 +41,15 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 		return CaptureResult{}, err
 	}
 	lockPath := filepath.Join(parent, ".capture.lock")
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		return CaptureResult{}, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
 		return CaptureResult{}, fmt.Errorf("config capture already in progress: %w", err)
 	}
-	_ = lock.Close()
-	defer os.Remove(lockPath)
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); _ = lock.Close() }()
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		return CaptureResult{}, err

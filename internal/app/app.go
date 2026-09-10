@@ -357,9 +357,8 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			if exclude {
 				d.Config, _, err = configprovider.AddExclusion(d.Config, path)
 			} else {
-				var removed bool
-				d.Config, removed, err = configprovider.RemoveExclusion(d.Config, path)
-				if err == nil && !removed {
+				d.Config, _, err = configprovider.RemoveExclusion(d.Config, path)
+				if err == nil {
 					d.Config, _, err = configprovider.AddInclusion(d.Config, path)
 				}
 			}
