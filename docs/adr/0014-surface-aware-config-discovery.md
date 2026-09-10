@@ -28,6 +28,8 @@ positive inclusion cannot be silently discarded by a schema-8 binary.
 - Baseline-backed paths and saved desired paths remain exact-inspected regardless
   of later surface classification.
 - `Configs.Included` persists safe, HOME-relative explicit inclusion roots.
+- Automatic baseline inference is conservative: unavailable trusted history yields review-only ambiguous baseline/deletion candidates; explicit Includes supply user intent.
+- `BaselineHistory` is an optional future provenance seam, not a production dependency.
   Inclusion recursively inspects only the requested subtree and does not bypass
   ownership, sensitive-path/content, symlink, special-file, backup, or size
   policy. Exclusion outranks inclusion.
@@ -46,3 +48,15 @@ mixed application contains portable settings, without turning Config into an
 application-state backup provider. Existing schema-8 profiles migrate
 non-destructively with an empty inclusion policy; their saved paths remain
 authoritative until a later capture prunes paths that are no longer eligible.
+
+### Baseline provenance
+
+- A user file equal to the current baseline is unchanged.
+- A differing user file with a trusted prior-baseline match is `historical-baseline`.
+- A differing user file without that proof is `ambiguous-baseline`.
+- A current baseline file absent from the user tree without deletion proof is `ambiguous-deletion`.
+- An explicit safe `Configs.Included` path supplies the user's intent: it is
+  `modified-baseline` or `deleted-baseline` as appropriate, with reason
+  `explicitly-included`.
+- Explicit inclusion never bypasses sensitive, volatile, backup, ownership,
+  symlink/special-file, or budget safeguards.

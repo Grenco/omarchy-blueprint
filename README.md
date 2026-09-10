@@ -34,7 +34,9 @@ Use `omarchy-blueprint include config:.config/Typora/themes` to explicitly
 discover a safe subpath of a skipped surface; inclusion does not override
 sensitive-path/content checks, symlink or special-file refusal, backup
 filtering, ownership, or size limits. For an intentionally authoritative bulk
-tree, track it as a Resource rather than weakening Config discovery. On an
+ tree, track it as a Resource rather than weakening Config discovery. Unknown
+baseline mismatches and baseline-only paths are review-only unless trusted
+history or an explicit Config include supplies provenance. On an
 Omarchy upgrade, independent text changes are three-way merged; conflicts
 preserve target work unless `restore config --force` is explicitly approved,
 with a recoverable backup.

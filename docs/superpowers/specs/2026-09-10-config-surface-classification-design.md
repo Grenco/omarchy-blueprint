@@ -1,7 +1,17 @@
 # Config v2: Surface-Aware Discovery and Bounded App-State Filtering
 
 **Project:** Omarchy Blueprint
-**Status:** Proposed design for user review
+**Status:** Accepted and implemented
+
+## Provenance policy
+
+`user == current baseline` is unchanged. A differing user file is
+`historical-baseline` only with a trusted prior-baseline match; without proof it
+is `ambiguous-baseline`. A current baseline path missing from the user tree is
+`ambiguous-deletion` without trusted deletion proof. Neither ambiguity is
+captured automatically. A safe explicit Include supplies intent and classifies
+the corresponding path as `modified-baseline` or `deleted-baseline` with reason
+`explicitly-included`; it never overrides safety, ownership, or size policy.
 **Target schema:** 9
 **Date:** 2026-09-10
 **Companion to:** `docs/superpowers/specs/2026-09-09-config-overlay-design.md`
@@ -444,7 +454,7 @@ at least two profile-state markers under one such profile directory:
 
 This recognizes Chromium, Chrome, Brave, Edge, Vivaldi, Opera, Chromium-derived browsers, and similar layouts without product-name matching.
 
-A surface containing only `NativeMessagingHosts/` or standalone flags files does not satisfy this signature and may remain config-lean.
+`NativeMessagingHosts/` is generated integration state and is never automatic Config discovery.
 
 ### 9.2 Gecko-family signature
 
@@ -675,7 +685,7 @@ A browser signature also reaches this outcome earlier.
 
 ### Rule 6: config-lean
 
-Classify `config-lean` when no state-heavy evidence family exists and either:
+Classify `config-lean` only when no state-heavy evidence family exists, there is positive configuration evidence, and either:
 
 ```text
 (a) the probe is small/shallow:
@@ -687,7 +697,7 @@ OR
 (b) at least 70% of sampled regular files have config/source-like names/extensions
 ```
 
-This allows conventional editor/terminal/window-manager config repositories to remain auto-discoverable even when they contain more than a handful of files.
+Small/shallow is supporting evidence only; it never substitutes for positive configuration evidence.
 
 ### Rule 7: conservative fallback
 
