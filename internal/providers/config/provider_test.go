@@ -24,6 +24,11 @@ func testProvider(root, baseline, profileDir string) Provider {
 	}
 }
 
+// fakeBaselineHistory is opt-in: nil History deliberately remains ambiguous.
+type fakeBaselineHistory bool
+
+func (h fakeBaselineHistory) Match(string, string) (bool, error) { return bool(h), nil }
+
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -148,6 +153,7 @@ func TestCaptureStoresOnlyCustomizedFilesWithBaselineAndMetadata(t *testing.T) {
 	writeFile(t, filepath.Join(base, "hypr/bindings.lua"), "bindings default")
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "bindings custom")
 	p := testProvider(user, base, profileDir)
+	p.History = fakeBaselineHistory(false)
 	result, err := p.Capture(profile.Configs{})
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +208,7 @@ func TestCaptureSortsMetadataDeterministically(t *testing.T) {
 	writeFile(t, filepath.Join(user, "hypr/autostart.lua"), "c3")
 	writeFile(t, filepath.Join(user, "hypr/hyprland.lua"), "c1")
 	p := testProvider(user, base, profileDir)
+	p.History = fakeBaselineHistory(false)
 	p.Specs = []Spec{
 		{ID: "hypr.looknfeel", Path: "hypr/autostart.lua"},
 		{ID: "hypr.autostart", Path: "hypr/hyprland.lua"},

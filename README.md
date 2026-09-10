@@ -18,14 +18,28 @@ plugins retain their public URL and revision; modified, cloned, and local
 plugins are snapshotted under `plugins/local/`. Restore uses Omarchy validation
 and lifecycle commands, and marks executable third-party code as high risk.
 
-Customized Hyprland configuration files (`hypr/hyprland.lua`,
-`hypr/bindings.lua`, `hypr/looknfeel.lua`, and `hypr/autostart.lua`) are
-captured as content together with the Omarchy baseline they were captured
-against. Restore writes a file only when the target is missing or still matches
-that baseline; otherwise it is skipped as migration-required or user drift, so
-unknown user work is never overwritten. Existing files are backed up beside the
-restore journal before replacement and Hyprland is reloaded only after all
-writes succeed.
+Configuration is captured as a sparse, baseline-aware overlay. Blueprint first
+classifies each top-level `~/.config` surface with a bounded metadata-only
+probe: only `config-lean` surfaces are recursively auto-discovered;
+`state-heavy`, `mixed`, and `sensitive` surfaces are reported once and skipped.
+Browser/profile state is identified structurally rather than by product-name
+blacklists. Modified Omarchy defaults, safe user-added files, and removed
+shipped files are recorded, while unchanged defaults and generic backup
+artifacts such as `.bak`, `.backup`, `.orig`, `*~`, and backup directories are
+ignored. Baseline-backed paths remain exact-inspected even inside a skipped
+surface, and semantic providers and tracked Resources own their paths ahead of
+Config.
+
+Use `omarchy-blueprint include config:.config/Typora/themes` to explicitly
+discover a safe subpath of a skipped surface; inclusion does not override
+sensitive-path/content checks, symlink or special-file refusal, backup
+filtering, ownership, or size limits. For an intentionally authoritative bulk
+ tree, track it as a Resource rather than weakening Config discovery. Unknown
+baseline mismatches and baseline-only paths are review-only unless trusted
+history or an explicit Config include supplies provenance. On an
+Omarchy upgrade, independent text changes are three-way merged; conflicts
+preserve target work unless `restore config --force` is explicitly approved,
+with a recoverable backup.
 
 Omarchy's semantic default applications — terminal, browser, editor, and
 agent — are captured as plain values in `defaults/defaults.toml`. Restore

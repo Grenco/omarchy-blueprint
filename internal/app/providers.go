@@ -45,6 +45,12 @@ type stateEmptyer interface {
 	Empty(any) bool
 }
 
+// scanDiffProvider optionally retains discovery metadata alongside semantic
+// differences. Providers remain responsible only for domain state, not UI.
+type scanDiffProvider interface {
+	DiffWithScan(context.Context, profile.Data) ([]model.Change, configprovider.ScanSummary, error)
+}
+
 func stateProviders(deps Dependencies, opt *options) []stateProvider {
 	return []stateProvider{
 		packagesStateProvider{deps: deps},
@@ -522,23 +528,78 @@ func (configStateProvider) CategoryEnabled() bool { return true }
 func (configStateProvider) Captured(d profile.Data) bool { return d.Manifest.Capture.Config }
 
 func (configStateProvider) Empty(state any) bool {
-	if s, ok := state.(profile.Configs); ok {
-		return len(s.Files) == 0
+	if result, ok := state.(configprovider.CaptureResult); ok {
+		s := result.State
+		return len(s.Files) == 0 && len(s.Deletes) == 0 && len(s.Included) == 0 && len(s.Excluded) == 0
 	}
 	return false
 }
 
-func (p configStateProvider) provider() (configprovider.Provider, error) {
+func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, error) {
 	baseline, user, err := p.deps.ConfigDirs()
 	if err != nil {
 		return configprovider.Provider{}, err
 	}
 	home, err := p.deps.HomeDir()
-	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir}, err
+	if err != nil {
+		return configprovider.Provider{}, err
+	}
+	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}}}
+	if p.deps.StateHome != nil {
+		if state, err := p.deps.StateHome(); err == nil {
+			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "state", Path: state, Recursive: true})
+		}
+	}
+	if _, themes, err := p.deps.ThemeDirs(); err == nil {
+		claims = appendConfigOwnershipClaim(claims, "themes", themes, user, true)
+	}
+	if plugins, err := p.deps.PluginDir(); err == nil {
+		claims = appendConfigOwnershipClaim(claims, "plugins", plugins, user, true)
+	}
+	if hooks, err := p.deps.HooksDir(); err == nil {
+		claims = appendConfigOwnershipClaim(claims, "hooks", hooks, user, true)
+	}
+	if _, shell, err := p.deps.ShellPaths(); err == nil {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "shell", Path: shell})
+	}
+	for _, path := range defaultsprovider.GeneratedOutputPaths(home) {
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "defaults", Path: path})
+	}
+	for _, resource := range d.Resources.Items {
+		path, err := resourcesprovider.ExpandHomePath(home, resource.Path)
+		if err != nil {
+			return configprovider.Provider{}, err
+		}
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "resources", Path: path, Recursive: resource.Kind == "directory"})
+	}
+	for _, link := range d.Resources.Links {
+		if link.Origin != "inbound" {
+			continue
+		}
+		path, err := resourcesprovider.ExpandHomePath(home, link.Source)
+		if err != nil {
+			return configprovider.Provider{}, err
+		}
+		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "resources", Path: path})
+	}
+	var history configprovider.BaselineHistory
+	if p.deps.BaselineHistory != nil {
+		history = p.deps.BaselineHistory()
+	}
+	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir, Ownership: claims, History: history}, nil
+}
+
+func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoot string, recursive bool) ownership.Index {
+	relative, err := filepath.Rel(configRoot, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return index
+	}
+	index.Claims = append(index.Claims, ownership.Claim{Provider: provider, Path: path, Recursive: recursive})
+	return index
 }
 
 func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(*d)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -548,23 +609,29 @@ func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, [
 	}
 	d.Config = result.State
 	d.Manifest.Capture.Config = true
-	return result.State, result.Changes, nil
+	return result, result.Changes, nil
 }
 
-func (p configStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
-	provider, err := p.provider()
+func (p configStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	changes, _, err := p.DiffWithScan(ctx, d)
+	return changes, err
+}
+
+func (p configStateProvider) DiffWithScan(_ context.Context, d profile.Data) ([]model.Change, configprovider.ScanSummary, error) {
+	provider, err := p.provider(d)
 	if err != nil {
-		return nil, err
+		return nil, configprovider.ScanSummary{}, err
 	}
 	current, err := provider.Scan(d.Config)
 	if err != nil {
-		return nil, err
+		return nil, configprovider.ScanSummary{}, err
 	}
-	return provider.Diff(d.Config, current)
+	changes, err := provider.Diff(d.Config, current)
+	return changes, current, err
 }
 
 func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -580,7 +647,7 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 }
 
 func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
@@ -592,7 +659,7 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.Ve
 }
 
 func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return err
 	}
@@ -784,13 +851,20 @@ func (hooksStateProvider) Empty(state any) bool {
 	return ok && len(s.Items) == 0
 }
 
-func (p hooksStateProvider) provider() (hooksprovider.Provider, error) {
+func (p hooksStateProvider) provider(resources profile.Resources) (hooksprovider.Provider, error) {
 	dir, err := p.deps.HooksDir()
-	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir}, err
+	if err != nil {
+		return hooksprovider.Provider{}, err
+	}
+	home, err := p.deps.HomeDir()
+	if err != nil {
+		return hooksprovider.Provider{}, err
+	}
+	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir, HomeDir: home, Resources: resources}, nil
 }
 
 func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -810,7 +884,7 @@ func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []
 }
 
 func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Change, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, err
 	}
@@ -822,7 +896,7 @@ func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 }
 
 func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -834,7 +908,7 @@ func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 }
 
 func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
@@ -846,7 +920,7 @@ func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.Ver
 }
 
 func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
-	provider, err := p.provider()
+	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return err
 	}

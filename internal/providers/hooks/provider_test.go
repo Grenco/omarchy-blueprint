@@ -101,6 +101,51 @@ func TestDetectLeavesRuntimeSymlinksUnmanaged(t *testing.T) {
 	}
 }
 
+func TestDetectDelegatesOnlyTrackedInboundResourceLinks(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	hooksDir := filepath.Join(home, ".config", "omarchy", "hooks")
+	dotfiles := filepath.Join(home, "dotfiles")
+	writeHook(t, filepath.Join(dotfiles, "hooks", "post-boot"), "resource", 0o755)
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(hooksDir, "post-boot")
+	if err := os.Symlink(filepath.Join(dotfiles, "hooks", "post-boot"), link); err != nil {
+		t.Fatal(err)
+	}
+	resources := profile.Resources{
+		Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}},
+		Links: []profile.ResourceLink{{Source: "~/.config/omarchy/hooks/post-boot", TargetResource: "dotfiles", Target: "hooks/post-boot", Origin: "inbound"}},
+	}
+	p := Provider{UserDir: hooksDir, HomeDir: home, Resources: resources}
+	state, err := p.Detect()
+	if err != nil || len(state.Unmanaged) != 0 {
+		t.Fatalf("tracked inbound link state=%#v err=%v", state, err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	writeHook(t, filepath.Join(dotfiles, "other"), "other", 0o755)
+	if err := os.Symlink(filepath.Join(dotfiles, "other"), link); err != nil {
+		t.Fatal(err)
+	}
+	state, err = p.Detect()
+	if err != nil || len(state.Unmanaged) != 1 || state.Unmanaged[0].Broken {
+		t.Fatalf("wrong target state=%#v err=%v", state, err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "missing"), link); err != nil {
+		t.Fatal(err)
+	}
+	state, err = p.Detect()
+	if err != nil || len(state.Unmanaged) != 1 || !state.Unmanaged[0].Broken {
+		t.Fatalf("broken target state=%#v err=%v", state, err)
+	}
+}
+
 func TestCaptureStoresInertSnapshotsAndCheckValidatesTree(t *testing.T) {
 	p, user, profileDir := hookProvider(t)
 	writeHook(t, filepath.Join(user, "post-update.d", "update-rust"), "#!/bin/sh\nprintf x\n", 0o755)

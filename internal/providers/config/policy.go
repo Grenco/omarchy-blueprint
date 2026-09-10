@@ -1,10 +1,14 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
@@ -12,12 +16,25 @@ import (
 )
 
 var (
-	pemPrivateKey   = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
-	structuredToken = regexp.MustCompile(`(?i)["']?(?:api_token|access_token|auth_token|refresh_token|client_secret)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
+	pemPrivateKey              = regexp.MustCompile(`(?m)^-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----\r?$`)
+	structuredToken            = regexp.MustCompile(`(?i)["']?(?:api_token|access_token|auth_token|refresh_token|client_secret)["']?\s*[:=]\s*["']?[A-Za-z0-9._~-]{16,}`)
+	sensitiveContentInspection func()
+	sensitiveContentRegexCheck func()
 )
 
 const MaxAutomaticConfigFileSize int64 = 16 << 20
 const MaxMergeableTextSize int64 = 4 << 20
+
+const sensitiveContentChunkSize = 32 << 10
+const sensitiveContentOverlap = 4 << 10
+
+var sensitiveTokenKeys = [][]byte{
+	[]byte("api_token"),
+	[]byte("access_token"),
+	[]byte("auth_token"),
+	[]byte("refresh_token"),
+	[]byte("client_secret"),
+}
 
 type PolicyReason string
 
@@ -31,6 +48,167 @@ const (
 )
 
 type PolicyDecision struct{ Reason PolicyReason }
+
+// NormalizeConfigPolicyPath converts ergonomic Config policy input into the
+// canonical HOME-relative namespace used by ConfigFile.Path.
+func NormalizeConfigPolicyPath(input string) (string, error) {
+	input = strings.TrimSpace(strings.ReplaceAll(input, "\\", "/"))
+	if strings.HasPrefix(input, "~/") && !strings.HasPrefix(input, "~/.config/") {
+		input = strings.TrimPrefix(input, "~/")
+	}
+	if strings.HasPrefix(input, ".") && !strings.HasPrefix(input, ".config") {
+		for _, spec := range DefaultHomeConfigSpecs() {
+			if input == spec.Path {
+				return profile.NormalizeConfigPath(input)
+			}
+		}
+		return "", fmt.Errorf("invalid config exclusion path %q", input)
+	}
+	if input == "~/.config" || input == ".config" {
+		return "", fmt.Errorf("config exclusion path must name an entry below ~/.config")
+	}
+	input = strings.TrimPrefix(input, "~/.config/")
+	input = strings.TrimPrefix(input, ".config/")
+	if input == "" || strings.HasPrefix(input, "~") || strings.HasPrefix(input, "/") {
+		return "", fmt.Errorf("invalid config exclusion path %q", input)
+	}
+	input = path.Clean(input)
+	if input == "." || input == ".." || strings.HasPrefix(input, "../") || input == ".ssh" || strings.HasPrefix(input, ".ssh/") {
+		return "", fmt.Errorf("invalid config exclusion path %q", input)
+	}
+	return profile.NormalizeConfigPath(".config/" + input)
+}
+
+func NormalizeExclusionPath(input string) (string, error) { return NormalizeConfigPolicyPath(input) }
+
+// AddExclusion returns copied config metadata with path excluded and all saved
+// files and tombstones below that path removed. It never touches live config.
+func AddExclusion(saved profile.Configs, path string) (profile.Configs, []string, error) {
+	path, err := NormalizeExclusionPath(path)
+	if err != nil {
+		return saved, nil, err
+	}
+	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Included: append([]string{}, saved.Included...), Excluded: append([]string{}, saved.Excluded...)}
+	for i, exclusion := range result.Excluded {
+		result.Excluded[i], err = NormalizeExclusionPath(exclusion)
+		if err != nil {
+			return saved, nil, err
+		}
+	}
+	if !containsPath(result.Excluded, path) {
+		result.Excluded = append(result.Excluded, path)
+	}
+	sort.Strings(result.Excluded)
+	result.Excluded = uniquePaths(result.Excluded)
+	var removed []string
+	result.Files, removed = pruneFiles(result.Files, path, removed)
+	result.Deletes, removed = pruneDeletes(result.Deletes, path, removed)
+	result.Included = prunePolicyPaths(result.Included, path)
+	return result, removed, nil
+}
+
+// RemoveExclusion returns copied config metadata with path no longer excluded.
+func RemoveExclusion(saved profile.Configs, path string) (profile.Configs, bool, error) {
+	path, err := NormalizeExclusionPath(path)
+	if err != nil {
+		return saved, false, err
+	}
+	result := profile.Configs{Files: append([]profile.ConfigFile{}, saved.Files...), Deletes: append([]profile.ConfigDelete{}, saved.Deletes...), Included: append([]string{}, saved.Included...), Excluded: append([]string{}, saved.Excluded...)}
+	result.Excluded = result.Excluded[:0]
+	removed := false
+	for _, exclusion := range saved.Excluded {
+		exclusion, err = NormalizeExclusionPath(exclusion)
+		if err != nil {
+			return saved, false, err
+		}
+		if exclusion == path {
+			removed = true
+			continue
+		}
+		result.Excluded = append(result.Excluded, exclusion)
+	}
+	sort.Strings(result.Excluded)
+	result.Excluded = uniquePaths(result.Excluded)
+	return result, removed, nil
+}
+
+// AddInclusion persists a safe, canonical discovery root. Exclusions remain
+// authoritative so callers cannot use inclusion to resurrect excluded state.
+func AddInclusion(saved profile.Configs, input string) (profile.Configs, bool, error) {
+	path, err := NormalizeExclusionPath(input)
+	if err != nil {
+		return saved, false, err
+	}
+	for _, excluded := range saved.Excluded {
+		if IsExcludedConfigPath(path, []string{excluded}) {
+			return saved, false, fmt.Errorf("config include %q is below excluded path %q; remove the exclusion first", path, excluded)
+		}
+	}
+	result := saved
+	result.Included = append([]string{}, saved.Included...)
+	if containsPath(result.Included, path) {
+		return result, false, nil
+	}
+	result.Included = append(result.Included, path)
+	sort.Strings(result.Included)
+	return result, true, nil
+}
+
+func prunePolicyPaths(paths []string, parent string) []string {
+	result := paths[:0]
+	for _, item := range paths {
+		if !IsExcludedConfigPath(item, []string{parent}) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, item := range paths {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func uniquePaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	result := paths[:1]
+	for _, item := range paths[1:] {
+		if item != result[len(result)-1] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func pruneFiles(files []profile.ConfigFile, excluded string, removed []string) ([]profile.ConfigFile, []string) {
+	result := files[:0]
+	for _, file := range files {
+		if IsExcludedConfigPath(file.Path, []string{excluded}) {
+			removed = append(removed, file.Path)
+			continue
+		}
+		result = append(result, file)
+	}
+	return result, removed
+}
+
+func pruneDeletes(deletes []profile.ConfigDelete, excluded string, removed []string) ([]profile.ConfigDelete, []string) {
+	result := deletes[:0]
+	for _, deletion := range deletes {
+		if IsExcludedConfigPath(deletion.Path, []string{excluded}) {
+			removed = append(removed, deletion.Path)
+			continue
+		}
+		result = append(result, deletion)
+	}
+	return result, removed
+}
 
 func IsOmarchyUpdateBackupName(name string) bool {
 	i := strings.Index(name, ".bak.")
@@ -52,14 +230,28 @@ func IsBlueprintBackupName(name string) bool {
 	}
 	return true
 }
+func IsBackupArtifactName(name string, directory bool) bool {
+	lower := strings.ToLower(name)
+	if IsBlueprintBackupName(name) {
+		return true
+	}
+	if directory {
+		return lower == "backup" || lower == "backups" || strings.HasSuffix(lower, ".bak") || strings.HasSuffix(lower, ".backup") || strings.HasSuffix(lower, "-backup") || strings.HasSuffix(lower, "-backups") || strings.HasSuffix(lower, "_backup") || strings.HasSuffix(lower, "_backups")
+	}
+	return strings.HasSuffix(lower, ".bak") || strings.Contains(lower, ".bak.") || strings.HasSuffix(lower, ".backup") || strings.Contains(lower, ".backup-") || strings.HasSuffix(lower, ".orig") || strings.HasSuffix(name, "~")
+}
 func IsExcludedConfigPath(path string, excluded []string) bool {
 	path, err := profile.NormalizeConfigPath(path)
 	if err != nil {
 		return false
 	}
+	canonical := path
+	if !strings.HasPrefix(canonical, ".config/") {
+		canonical = ".config/" + canonical
+	}
 	for _, item := range excluded {
 		item, err = profile.NormalizeConfigPath(item)
-		if err == nil && (path == item || strings.HasPrefix(path, item+"/")) {
+		if err == nil && (path == item || strings.HasPrefix(path, item+"/") || canonical == item || strings.HasPrefix(canonical, item+"/")) {
 			return true
 		}
 	}
@@ -71,7 +263,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyExcluded}
 	}
 	name := filepath.Base(path)
-	if IsOmarchyUpdateBackupName(name) || IsOmarchySetupBackupName(name) || IsBlueprintBackupName(name) {
+	if IsBackupArtifactName(name, info.IsDir()) {
 		return PolicyDecision{PolicyOmarchyUpdateBackup}
 	}
 	if IsExcludedConfigPath(path, excluded) {
@@ -84,7 +276,7 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 		return PolicyDecision{PolicyVolatile}
 	}
 	lower := strings.ToLower(path)
-	if strings.Contains(lower, "cache/") || strings.Contains(lower, "code cache/") || strings.Contains(lower, "session storage/") || strings.Contains(lower, "service worker/") || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, "singletonlock") {
+	if runtimeConfigPath(lower) || strings.HasSuffix(lower, ".pid") || strings.HasSuffix(lower, ".lock") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, "singletonlock") || strings.HasPrefix(strings.ToLower(name), "cached_") {
 		return PolicyDecision{PolicyVolatile}
 	}
 	if strings.Contains(lower, "credential") || strings.Contains(lower, "private_key") || strings.Contains(lower, "secret") {
@@ -96,13 +288,29 @@ func ClassifyConfigPolicy(path string, info os.FileInfo, excluded []string) Poli
 	return PolicyDecision{PolicyAllowed}
 }
 
+func runtimeConfigPath(path string) bool {
+	for _, part := range strings.Split(path, "/") {
+		if isRuntimeComponent(part) {
+			return true
+		}
+	}
+	return false
+}
+
 func sensitiveConfigPath(path string) bool {
 	for _, exact := range []string{".config/gh/hosts.yml", ".config/rclone/rclone.conf", ".config/sops/age/keys.txt", ".config/containers/auth.json"} {
 		if path == exact {
 			return true
 		}
 	}
-	return strings.HasPrefix(path, ".config/gcloud/")
+	if strings.HasPrefix(path, ".config/gcloud/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Base(path)) {
+	case "login data", "logins.json", "key4.db", "cookies", "restore_token", "auth_token", "access_token":
+		return true
+	}
+	return strings.HasSuffix(strings.ToLower(path), ".psk")
 }
 
 // hasSensitiveContent rejects high-confidence credential material before it is
@@ -113,10 +321,68 @@ func hasSensitiveContent(path string) (bool, error) {
 		return false, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, MaxAutomaticConfigFileSize+1))
-	if err != nil {
-		return false, err
+	if sensitiveContentInspection != nil {
+		sensitiveContentInspection()
 	}
-	content := string(b)
-	return pemPrivateKey.MatchString(content) || structuredToken.MatchString(content), nil
+
+	chunk := make([]byte, sensitiveContentChunkSize)
+	var previous []byte
+	reader := io.LimitReader(f, MaxAutomaticConfigFileSize+1)
+	for {
+		n, err := reader.Read(chunk)
+		if n > 0 {
+			window := append(append([]byte{}, previous...), chunk[:n]...)
+			if sensitiveContentWindow(window) {
+				return true, nil
+			}
+			if len(window) > sensitiveContentOverlap {
+				previous = append(previous[:0], window[len(window)-sensitiveContentOverlap:]...)
+			} else {
+				previous = append(previous[:0], window...)
+			}
+		}
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+}
+
+func sensitiveContentWindow(window []byte) bool {
+	lower := make([]byte, len(window))
+	for i, b := range window {
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		lower[i] = b
+	}
+	for start := 0; ; {
+		i := bytes.Index(window[start:], []byte("-----BEGIN "))
+		if i < 0 {
+			break
+		}
+		i += start
+		if i == 0 || window[i-1] == '\n' {
+			if sensitiveContentRegexCheck != nil {
+				sensitiveContentRegexCheck()
+			}
+			if pemPrivateKey.Match(window[i:]) {
+				return true
+			}
+		}
+		start = i + 1
+	}
+	for _, key := range sensitiveTokenKeys {
+		if bytes.Contains(lower, key) {
+			if sensitiveContentRegexCheck != nil {
+				sensitiveContentRegexCheck()
+			}
+			if structuredToken.Match(window) {
+				return true
+			}
+		}
+	}
+	return false
 }

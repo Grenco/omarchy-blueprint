@@ -44,6 +44,9 @@ func DiffConfigs(previous, next profile.Configs) []model.Change {
 	if !sameStrings(previous.Excluded, next.Excluded) {
 		changes = append(changes, configChange(model.ChangeModify, "exclusions", "~ config exclusions changed"))
 	}
+	if !sameStrings(previous.Included, next.Included) {
+		changes = append(changes, configChange(model.ChangeModify, "inclusions", "~ config inclusions changed"))
+	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
 	return changes
 }
@@ -464,8 +467,10 @@ func Diff(saved profile.Configs, current any) []model.Change {
 			}
 			continue
 		}
-		if c.Classification == ConfigAdded || c.Classification == ConfigModifiedBaseline {
+		if c.Classification == ConfigAdded {
 			changes = append(changes, configChange(model.ChangeAdd, c.Path, "+ config "+c.Path+" added"))
+		} else if c.Classification == ConfigModifiedBaseline {
+			changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" modified from baseline"))
 		}
 	}
 	for path := range files {
@@ -531,8 +536,10 @@ func (p Provider) Diff(saved profile.Configs, scan ScanSummary) ([]model.Change,
 		delete(byPath, d.Path)
 	}
 	for _, c := range byPath {
-		if c.Classification == ConfigAdded || c.Classification == ConfigModifiedBaseline {
+		if c.Classification == ConfigAdded {
 			changes = append(changes, configChange(model.ChangeAdd, c.Path, "+ config "+c.Path+" added"))
+		} else if c.Classification == ConfigModifiedBaseline {
+			changes = append(changes, configChange(model.ChangeModify, c.Path, "~ config "+c.Path+" modified from baseline"))
 		}
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
@@ -682,6 +689,14 @@ func validateOverlay(state profile.Configs) error {
 	for _, e := range state.Excluded {
 		if err := profile.ValidateConfigPath(e); err != nil {
 			return err
+		}
+	}
+	for _, included := range state.Included {
+		if err := profile.ValidateConfigPath(included); err != nil {
+			return err
+		}
+		if IsExcludedConfigPath(included, state.Excluded) {
+			return fmt.Errorf("config include %s is excluded", included)
 		}
 	}
 	return nil

@@ -46,7 +46,24 @@
 - Confirm additional target-machine plugins remain installed.
 - Confirm failures for one plugin do not prevent independent plugins from restoring.
 
-## Portable Hyprland configuration
+## Baseline-aware Config overlay
+
+- Run `capture config`, `status config`, `diff config`, `restore config --dry-run`, and `restore config` for an explicitly included baseline customization and an ordinary added file in a config-lean surface.
+- Confirm no-history baseline mismatches/deletions are review-only, not captured or ordinary drift; include a safe path to supply intent.
+- Run `diff config` and confirm review candidates say `differs` for ambiguous baselines and `absent` for ambiguous deletions, while exit status remains success without actual drift.
+- Verify `include config:.zshrc` and `include config:~/.zshrc` both persist canonical `.zshrc`; an exact exclusion becomes Included, while an excluded ancestor rejects a child include.
+- Verify `.config/xdg-terminals.list`, `.config/brave-flags.conf`, and `.config/environment.d/omarchy-firefox-wayland.conf` remain delegated to Defaults, while an unrelated safe Config file remains eligible.
+- Confirm `status config` and capture output aggregate Config changes by surface, while `diff config` retains detailed portable file differences and one summary per skipped surface.
+- On a real desktop with Chromium/Gecko/WebKit-style browsers and mixed applications installed, time `status config`; confirm it remains comfortably interactive, emits one surface-level line per browser/profile store, and never enumerates skipped descendants.
+- Confirm structurally detected browser/profile surfaces are pruned regardless of application directory name, and that mixed surfaces such as Typora, LibreOffice, or Obsidian are reported but not recursively auto-captured.
+- Confirm a baseline-backed path and a previously saved path inside a now-skipped surface are still inspected exactly and reported when they drift.
+- Confirm `restore config --force --dry-run` reports a recoverable backup before replacing a merge-conflicted or otherwise unknown target.
+- Use `include config:.config/Typora/themes` on a mixed surface, then capture; confirm only the requested safe subtree is discovered, sibling recovery/runtime state remains skipped, and the inclusion persists in schema-9 Config policy.
+- Confirm explicit inclusion still refuses sensitive paths/content, symlinks, special files, oversized files, backup artifacts, and paths owned by stronger providers. Confirm an include below an excluded ancestor is rejected.
+- Confirm generic backup files (`*.bak`, `*.bak.*`, `*.backup`, `*.backup-*`, `*.orig`, `*~`) and backup directories (`backup`, `backups`, `*.bak`, `*.backup`, `*-backup`, `*-backups`, `*_backup`, `*_backups`) appear in neither `config/files/` nor `config/baseline/`, produce no tombstones, and are pruned before child inspection.
+- On an upgraded baseline, confirm independent source and upstream edits merge cleanly; confirm overlapping edits preserve the target unless `--force` is approved.
+- Delete a baseline-backed file, run `diff config`, and confirm it is `absent`/review-only. Run `include config:<path>`, capture, confirm the tombstone persists, then restore onto a target where it exists and confirm it is backed up then removed.
+- Track an intentionally authoritative large or opaque config tree as a Resource, capture again, and confirm Config no longer duplicates its bytes or restore destination.
 
 ### Same-machine capture and status
 

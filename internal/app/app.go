@@ -19,6 +19,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
@@ -36,6 +37,7 @@ type Dependencies struct {
 	ThemeDirs         func() (builtin, user string, err error)
 	PluginDir         func() (string, error)
 	ConfigDirs        func() (baseline, user string, err error)
+	BaselineHistory   func() configprovider.BaselineHistory
 	ShellPaths        func() (baseline, user string, err error)
 	HooksDir          func() (string, error)
 	MiseGlobalConfig  func() (string, error)
@@ -347,6 +349,36 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
+		if strings.HasPrefix(refs[0], "config:") {
+			if len(refs) != 1 {
+				return fmt.Errorf("config policy accepts exactly one config:<path> reference")
+			}
+			path := strings.TrimPrefix(refs[0], "config:")
+			if exclude {
+				d.Config, _, err = configprovider.AddExclusion(d.Config, path)
+			} else {
+				d.Config, _, err = configprovider.RemoveExclusion(d.Config, path)
+				if err == nil {
+					d.Config, _, err = configprovider.AddInclusion(d.Config, path)
+				}
+			}
+			if err != nil {
+				return err
+			}
+			path, err = configprovider.NormalizeExclusionPath(path)
+			if err != nil {
+				return err
+			}
+			d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+			if err := profile.Save(opt.profileDir, d); err != nil {
+				return fmt.Errorf("save profile: %w", err)
+			}
+			action := "Included"
+			if exclude {
+				action = "Excluded"
+			}
+			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude, "included": !exclude}, fmt.Sprintf("%s config %s.\n", action, path))
+		}
 		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 			return err
 		}
@@ -368,6 +400,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			action = "Excluded"
 		}
 		human := fmt.Sprintf("%s %d package(s).\n", action, len(changed))
+		if exclude {
+			for _, association := range configprovider.RelatedConfig(changed, d.Config) {
+				human += fmt.Sprintf("Related Config state remains included:\n  ~/.config/%s\nRun:\n  omarchy-blueprint exclude config:%s\n", association.ConfigPath, association.ConfigPath)
+			}
+		}
 		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed, "excluded": d.Packages.Excluded}, human)
 	}}
 }
@@ -472,6 +509,7 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	data := map[string]any{}
 	var changes []model.Change
 	var captured []string
+	var configResult *configprovider.CaptureResult
 	for _, provider := range providers {
 		state, providerChanges, err := captureProvider(ctx, provider, &d)
 		if err != nil {
@@ -481,8 +519,13 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			continue
 		}
 		captured = append(captured, provider.ID())
-		if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
+		if result, ok := state.(configprovider.CaptureResult); ok {
+			data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates, Surfaces: result.Scan.Surfaces}}
+		} else if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
 			data[provider.ID()] = state
+		}
+		if result, ok := state.(configprovider.CaptureResult); ok {
+			configResult = &result
 		}
 		changes = append(changes, providerChanges...)
 	}
@@ -494,14 +537,180 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return fmt.Errorf("save profile: %w", err)
 		}
 	}
-	return emit(deps.Out, opt.json, "capture", true, data, renderChanges("Captured "+providerStateLabel(captured)+" state", changes))
+	human := renderCaptureChanges("Captured "+providerStateLabel(captured)+" state", changes, configResult)
+	return emit(deps.Out, opt.json, "capture", true, data, human)
+}
+
+func renderCaptureChanges(title string, changes []model.Change, result *configprovider.CaptureResult) string {
+	if result == nil {
+		return renderChanges(title, changes)
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, title)
+	configChanges := make([]model.Change, 0)
+	pruned := map[string]int{}
+	for _, change := range changes {
+		if change.Provider == "config" {
+			if change.Type == model.ChangeRemove {
+				pruned[configSurfaceName(change.Name)]++
+				continue
+			}
+			configChanges = append(configChanges, change)
+		} else {
+			fmt.Fprintln(&b, change.Summary)
+		}
+	}
+	configHuman := renderConfigStatus(configChanges, result.Scan)
+	if configHuman == "" && len(changes) == 0 {
+		fmt.Fprintln(&b, "No changes.")
+	}
+	b.WriteString(configHuman)
+	if len(pruned) > 0 {
+		fmt.Fprintln(&b, "No longer captured")
+		surfaces := make([]string, 0, len(pruned))
+		for surface := range pruned {
+			surfaces = append(surfaces, surface)
+		}
+		sort.Strings(surfaces)
+		for _, surface := range surfaces {
+			fmt.Fprintf(&b, "  %-16s %d\n", surface, pruned[surface])
+		}
+	}
+	return b.String()
+}
+
+type configCaptureOutput struct {
+	profile.Configs
+	Scan configScanOutput `json:"scan"`
+}
+
+type configScanOutput struct {
+	Counts     map[configprovider.Classification]int `json:"counts"`
+	Candidates []configprovider.Candidate            `json:"candidates"`
+	Surfaces   []configprovider.SurfaceSummary       `json:"surfaces,omitempty"`
+}
+
+func renderConfigScan(scan configScanOutput) string {
+	var b strings.Builder
+	groups := []struct {
+		title string
+		items []configprovider.Classification
+	}{
+		{"Modified", []configprovider.Classification{configprovider.ConfigModifiedBaseline}},
+		{"Added", []configprovider.Classification{configprovider.ConfigAdded}},
+		{"Deleted", []configprovider.Classification{configprovider.ConfigDeletedBaseline}},
+		{"Ignored", []configprovider.Classification{configprovider.ConfigUnchangedBaseline, configprovider.ConfigDelegated, configprovider.ConfigExcluded, configprovider.ConfigVolatile}},
+		{"Skipped", []configprovider.Classification{configprovider.ConfigSensitive, configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized}},
+	}
+	for _, group := range groups {
+		count := 0
+		for _, classification := range group.items {
+			count += scan.Counts[classification]
+		}
+		if count == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\nConfig %s: %d\n", group.title, count)
+	}
+	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Skipped automatic Config discovery"))
+	return b.String()
+}
+
+func renderConfigDiscovery(surfaces []configprovider.SurfaceSummary, title string) string {
+	var b strings.Builder
+	for _, surface := range surfaces {
+		if surface.Classification == configprovider.SurfaceConfigLean {
+			continue
+		}
+		if b.Len() == 0 {
+			fmt.Fprintln(&b, title)
+		}
+		fmt.Fprintf(&b, "  %-16s %s\n", configSurfaceName(surface.Path), configSurfaceDescription(surface))
+	}
+	if b.Len() > 0 {
+		b.WriteString("  Informational only; skipped surfaces do not create drift. Include a safe subtree with include config:<path>.\n")
+	}
+	return b.String()
+}
+
+func configSurfaceDescription(surface configprovider.SurfaceSummary) string {
+	for _, reason := range surface.Reasons {
+		switch reason {
+		case "browser-profile-chromium", "browser-profile-gecko", "browser-profile-webkit":
+			return "browser/profile state"
+		case "mixed-config-and-runtime":
+			return "mixed config / application state"
+		}
+	}
+	if surface.Classification == configprovider.SurfaceMixed {
+		return "mixed config / application state"
+	}
+	return "application/profile state"
+}
+
+func configSurfaceName(path string) string {
+	path = strings.TrimPrefix(filepath.ToSlash(path), ".config/")
+	if index := strings.IndexByte(path, '/'); index >= 0 {
+		return path[:index]
+	}
+	return path
+}
+
+func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary) string {
+	var b strings.Builder
+	counts := map[string]map[model.ChangeType]int{}
+	for _, change := range changes {
+		surface := configSurfaceName(change.Name)
+		if surface == "" {
+			surface = "home"
+		}
+		if counts[surface] == nil {
+			counts[surface] = map[model.ChangeType]int{}
+		}
+		counts[surface][change.Type]++
+	}
+	if len(counts) > 0 {
+		fmt.Fprintln(&b, "Config")
+		surfaces := make([]string, 0, len(counts))
+		for surface := range counts {
+			surfaces = append(surfaces, surface)
+		}
+		sort.Strings(surfaces)
+		for _, surface := range surfaces {
+			for _, changeType := range []model.ChangeType{model.ChangeModify, model.ChangeAdd, model.ChangeRemove} {
+				if count := counts[surface][changeType]; count > 0 {
+					label := string(changeType)
+					if changeType == model.ChangeAdd {
+						label = "uncaptured"
+					} else if changeType == model.ChangeRemove {
+						label = "missing"
+					}
+					fmt.Fprintf(&b, "  %-9s %-16s %d\n", label, surface, count)
+				}
+			}
+		}
+	}
+	if count := scan.Counts()[configprovider.ConfigAmbiguousBaseline] + scan.Counts()[configprovider.ConfigAmbiguousDeletion]; count > 0 {
+		fmt.Fprintf(&b, "Baseline provenance requires review: %d\n", count)
+	}
+	b.WriteString(renderConfigDiscovery(scan.Surfaces, "Skipped automatic Config discovery"))
+	return b.String()
 }
 
 func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
 	providers = capturedProviders(providers, d)
 	var changes []model.Change
+	var configScan *configprovider.ScanSummary
 	for _, provider := range providers {
-		providerChanges, err := provider.Diff(ctx, d)
+		var providerChanges []model.Change
+		var err error
+		if scanner, ok := provider.(scanDiffProvider); ok {
+			var scan configprovider.ScanSummary
+			providerChanges, scan, err = scanner.DiffWithScan(ctx, d)
+			configScan = &scan
+		} else {
+			providerChanges, err = provider.Diff(ctx, d)
+		}
 		if err != nil {
 			return fmt.Errorf("diff %s: %w", provider.ID(), err)
 		}
@@ -531,13 +740,83 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	if diff {
 		commandName = "diff"
 	}
-	if err := emit(deps.Out, opt.json, commandName, true, map[string]any{"drift": driftCount > 0, "changes": changes}, renderChanges(title, changes)); err != nil {
+	data := map[string]any{"drift": driftCount > 0, "changes": changes}
+	human := renderChanges(title, changes)
+	if configScan != nil {
+		data["config"] = configCaptureOutput{Configs: d.Config, Scan: configScanOutput{Counts: configScan.Counts(), Candidates: configScan.Candidates, Surfaces: configScan.Surfaces}}
+		if diff {
+			human += renderConfigDiscovery(configScan.Surfaces, "Skipped discovery surfaces")
+			human += renderConfigProvenanceReview(*configScan)
+		} else {
+			var configChanges []model.Change
+			for _, change := range changes {
+				if change.Provider == "config" {
+					configChanges = append(configChanges, change)
+				}
+			}
+			configHuman := renderConfigStatus(configChanges, *configScan)
+			otherHuman := renderNonConfigChanges("", changes)
+			if configHuman == "" && otherHuman == "" {
+				human = renderChanges(title, nil)
+			} else {
+				human = configHuman + otherHuman
+				if driftCount > 0 {
+					human = title + "\n\n" + human
+				}
+			}
+		}
+	}
+	if err := emit(deps.Out, opt.json, commandName, true, data, human); err != nil {
 		return err
 	}
 	if driftCount > 0 {
 		return driftError{}
 	}
 	return nil
+}
+
+func renderConfigProvenanceReview(scan configprovider.ScanSummary) string {
+	var entries []configprovider.Candidate
+	for _, candidate := range scan.Candidates {
+		if candidate.Classification == configprovider.ConfigAmbiguousBaseline || candidate.Classification == configprovider.ConfigAmbiguousDeletion {
+			entries = append(entries, candidate)
+		}
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	var b strings.Builder
+	b.WriteString("Baseline provenance requires review\n")
+	for _, entry := range entries {
+		label := "differs"
+		if entry.Classification == configprovider.ConfigAmbiguousDeletion {
+			label = "absent"
+		}
+		fmt.Fprintf(&b, "  %-9s %s\n", label, entry.Path)
+	}
+	b.WriteString("\nNot captured automatically. Include a path to declare its current state as managed Config.\n")
+	return b.String()
+}
+
+func renderNonConfigChanges(title string, changes []model.Change) string {
+	other := make([]model.Change, 0, len(changes))
+	for _, change := range changes {
+		if change.Provider != "config" {
+			other = append(other, change)
+		}
+	}
+	if len(other) == 0 {
+		return ""
+	}
+	if title == "" {
+		var b strings.Builder
+		for _, change := range other {
+			fmt.Fprintln(&b, change.Summary)
+		}
+		return b.String()
+	}
+	return renderChanges(title, other)
 }
 
 type restorePlanOptions struct {

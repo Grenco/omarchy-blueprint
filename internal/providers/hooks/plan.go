@@ -33,6 +33,13 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 			return model.RestorePlan{}, err
 		}
 		resource := "hook:" + item.Path
+		reserved, err := p.reservesInboundLink(filepath.Join(p.UserDir, filepath.FromSlash(item.Path)))
+		if err != nil {
+			return model.RestorePlan{}, err
+		}
+		if reserved {
+			continue
+		}
 		current, exists := actual[item.Path]
 		delete(actual, item.Path)
 		if reason, blocked := blockedByUnmanaged(item.Path, unmanaged); blocked {

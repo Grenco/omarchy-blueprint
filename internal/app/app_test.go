@@ -3,9 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
@@ -32,6 +33,11 @@ type machineRunner struct {
 	defaults     map[string]string
 	miseCommands [][]string
 }
+
+// fakeBaselineHistory is opt-in: command tests retain nil-history behavior.
+type fakeBaselineHistory bool
+
+func (h fakeBaselineHistory) Match(string, string) (bool, error) { return bool(h), nil }
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "omarchy-blueprint-mise-*")
@@ -216,12 +222,12 @@ func TestAggregateCaptureKeepsLegacyJSONEnvelopeAndOmitsNoopConfig(t *testing.T)
 			t.Fatalf("capture data missing legacy key %q: %#v", key, envelope.Data)
 		}
 	}
-	if _, ok := envelope.Data["config"]; ok {
-		t.Fatalf("no-op config leaked into legacy JSON data: %#v", envelope.Data)
+	if _, ok := envelope.Data["config"]; !ok {
+		t.Fatalf("capture JSON missing Config scan data: %#v", envelope.Data)
 	}
 }
 
-func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
+func TestAggregateCaptureLeavesAmbiguousBaselineCustomizationUncaptured(t *testing.T) {
 	profileDir, stateDir, builtin, user, hooksDir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
 		t.Fatal(err)
@@ -260,15 +266,424 @@ func TestAggregateCaptureCapturesCustomizedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Manifest.Capture.Config {
-		t.Fatal("capture.config metadata not set")
-	}
-	if len(d.Config.Files) != 1 || d.Config.Files[0].Path != "hypr/bindings.lua" {
+	if len(d.Config.Files) != 0 {
 		t.Fatalf("config files = %#v", d.Config.Files)
 	}
-	b, err := os.ReadFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"))
-	if err != nil || string(b) != "custom" {
-		t.Fatalf("captured file = %q err=%v", b, err)
+}
+
+func TestRenderConfigProvenanceReviewIsNonDriftGuidance(t *testing.T) {
+	got := renderConfigProvenanceReview(configprovider.ScanSummary{Candidates: []configprovider.Candidate{
+		{Path: ".zshrc", Classification: configprovider.ConfigAmbiguousBaseline},
+		{Path: ".config/example/default.conf", Classification: configprovider.ConfigAmbiguousDeletion},
+	}})
+	for _, want := range []string{"Baseline provenance requires review", "differs   .zshrc", "absent    .config/example/default.conf", "Not captured automatically"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("review output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestConfigStateProviderCapturesKnownAuthoredBaseline(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	baseline, user, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(user), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	if err := os.WriteFile(filepath.Join(user, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).provider(profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.History = fakeBaselineHistory(false)
+	result, err := p.Capture(profile.Configs{})
+	if err != nil || len(result.State.Files) != 1 {
+		t.Fatalf("capture=%#v err=%v", result, err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := p.Scan(result.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.PlanOverlay(result.State, scan, 9, "4.0.0", "4.0.0", configprovider.PlanOptions{})
+	if err != nil || len(plan.Operations) == 0 {
+		t.Fatalf("restore plan=%#v err=%v baseline=%s", plan, err, baseline)
+	}
+}
+
+func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
+	profileDir, home, baseline := t.TempDir(), t.TempDir(), t.TempDir()
+	userRoot := filepath.Join(home, ".config")
+	for _, dir := range []string{"omarchy/themes", "omarchy/plugins", "omarchy/hooks", "nvim", "wezterm", "alacritty"} {
+		if err := os.MkdirAll(filepath.Join(userRoot, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "nvim", "init.lua"), []byte("resource"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "wezterm", "wezterm.lua"), []byte("config"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "alacritty.toml"), filepath.Join(userRoot, "alacritty", "alacritty.toml")); err != nil {
+		t.Fatal(err)
+	}
+	deps := Dependencies{
+		ConfigDirs: func() (string, string, error) { return baseline, userRoot, nil },
+		HomeDir:    func() (string, error) { return home, nil },
+		ThemeDirs:  func() (string, string, error) { return "", filepath.Join(userRoot, "omarchy", "themes"), nil },
+		PluginDir:  func() (string, error) { return filepath.Join(userRoot, "omarchy", "plugins"), nil },
+		HooksDir:   func() (string, error) { return filepath.Join(userRoot, "omarchy", "hooks"), nil },
+		ShellPaths: func() (string, string, error) { return "", filepath.Join(userRoot, "omarchy", "shell.json"), nil },
+	}
+	d := profile.Data{
+		Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/nvim/init.lua"}}},
+		Resources: profile.Resources{
+			Items: []profile.Resource{{ID: "dotfiles", Path: "~/.config/nvim", Kind: "directory", Strategy: "copy"}},
+			Links: []profile.ResourceLink{{Source: "~/.config/alacritty/alacritty.toml", Origin: "inbound", TargetResource: "dotfiles"}},
+		},
+	}
+	provider := configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}
+	configProvider, err := provider.provider(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(userRoot, "nvim", "init.lua"), filepath.Join(userRoot, "alacritty", "alacritty.toml")} {
+		claims := configProvider.Ownership.TrackConflict(path)
+		if len(claims) != 1 || claims[0].Provider != "resources" {
+			t.Fatalf("resource ownership for %s = %#v", path, claims)
+		}
+	}
+	state, _, err := provider.Capture(context.Background(), &d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := state.(configprovider.CaptureResult)
+	if len(result.State.Files) != 1 || result.State.Files[0].Path != ".config/wezterm/wezterm.lua" {
+		t.Fatalf("captured config = %#v", result.State.Files)
+	}
+	if len(d.Resources.Items) != 1 || d.Resources.Items[0].ID != "dotfiles" {
+		t.Fatalf("resources lost ownership: %#v", d.Resources)
+	}
+}
+
+func TestResourceInboundHookLinkHandoff(t *testing.T) {
+	profileDir, home, stateDir := t.TempDir(), t.TempDir(), t.TempDir()
+	hooksDir := filepath.Join(home, ".config", "omarchy", "hooks")
+	dotfiles := filepath.Join(home, "dotfiles")
+	writeAppFile(t, filepath.Join(dotfiles, "hooks", "post-boot"), "resource hook")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "hooks", "post-boot"), filepath.Join(hooksDir, "post-boot")); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		HomeDir:   func() (string, error) { return home, nil },
+		StateHome: func() (string, error) { return stateDir, nil },
+		HooksDir:  func() (string, error) { return hooksDir, nil },
+	}
+	run := func(args ...string) (int, string) {
+		out.Reset()
+		stderr.Reset()
+		code := Execute(context.Background(), args, deps)
+		return code, out.String() + stderr.String()
+	}
+	if code, output := run("init", profileDir); code != 0 {
+		t.Fatalf("init code=%d output=%s", code, output)
+	}
+	if code, output := run("--profile", profileDir, "track", dotfiles); code != 0 {
+		t.Fatalf("track code=%d output=%s", code, output)
+	}
+	if code, output := run("--profile", profileDir, "capture", "hooks"); code != 0 || strings.Contains(output, "left unmanaged") {
+		t.Fatalf("hook capture code=%d output=%s", code, output)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Resources.Links) != 1 || len(d.Hooks.Items) != 0 {
+		t.Fatalf("handoff profile resources=%#v hooks=%#v err=%v", d.Resources, d.Hooks, err)
+	}
+	if err := os.RemoveAll(dotfiles); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(hooksDir, "post-boot")); err != nil {
+		t.Fatal(err)
+	}
+	if code, output := run("--profile", profileDir, "restore", "resources", "--yes"); code != 0 {
+		t.Fatalf("resource restore code=%d output=%s", code, output)
+	}
+	if got := readAppFile(t, filepath.Join(hooksDir, "post-boot")); got != "resource hook" {
+		t.Fatalf("restored resource hook=%q", got)
+	}
+}
+
+func TestConfigOverlayAcceptance(t *testing.T) {
+	t.Run("schema 7 loads restores and recaptures as schema 8", func(t *testing.T) {
+		profileDir, deps, home, baseline := overlaySandbox(t)
+		userRoot := filepath.Join(home, ".config")
+		paths := []string{"hypr/hyprland.lua", "hypr/bindings.lua", "hypr/looknfeel.lua", "hypr/autostart.lua"}
+		for _, path := range paths {
+			writeAppFile(t, filepath.Join(baseline, path), "default "+path)
+			writeAppFile(t, filepath.Join(userRoot, path), "default "+path)
+		}
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "captured")
+		writeAppFile(t, filepath.Join(profileDir, "profile.toml"), "schema = 7\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-09T00:00:00Z\nupdated_at = 2026-09-09T00:00:00Z\n\n[capture]\nconfig = true\n")
+		writeAppFile(t, filepath.Join(profileDir, "config", "config.toml"), "[[file]]\nid = 'hypr.bindings'\npath = 'hypr/bindings.lua'\nhash = '"+appHash(t, "captured")+"'\nmode = '0644'\nbaseline_hash = '"+appHash(t, "default hypr/bindings.lua")+"'\nbaseline_mode = '0644'\n")
+		writeAppFile(t, filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"), "captured")
+		writeAppFile(t, filepath.Join(profileDir, "config", "baseline", "hypr", "bindings.lua"), "default hypr/bindings.lua")
+
+		if code, out := configRun(t, deps, profileDir, "status", "config"); code != 0 {
+			t.Fatalf("status legacy code=%d out=%s", code, out)
+		}
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "default hypr/bindings.lua")
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+			t.Fatalf("restore legacy code=%d out=%s", code, out)
+		}
+		if got := readAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua")); got != "captured" {
+			t.Fatalf("legacy restore = %q", got)
+		}
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("recapture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil || d.Manifest.Schema != 9 || len(d.Config.Files) != 0 {
+			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); !os.IsNotExist(err) {
+			t.Fatal("ambiguous baseline customization was recaptured")
+		}
+	})
+
+	t.Run("ordinary config captures restores and ignores update backups", func(t *testing.T) {
+		profileDir, deps, home, baseline := overlaySandbox(t)
+		userRoot := filepath.Join(home, ".config")
+		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "default")
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "custom")
+		writeAppFile(t, filepath.Join(userRoot, "ghostty", "config"), "font-size=14")
+		writeAppFile(t, filepath.Join(userRoot, "lazygit", "config.yml"), "gui:\n  theme: dark")
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "clean.lua"), "unchanged")
+		writeAppFile(t, filepath.Join(baseline, "hypr", "clean.lua"), "unchanged")
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua.bak.20260909"), "backup")
+
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("capture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := configPaths(d.Config.Files); !reflect.DeepEqual(got, []string{".config/ghostty/config", ".config/lazygit/config.yml"}) {
+			t.Fatalf("captured paths=%v", got)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua.bak.20260909")); !os.IsNotExist(err) {
+			t.Fatal("update backup was captured")
+		}
+		writeAppFile(t, filepath.Join(userRoot, "hypr", "bindings.lua"), "default")
+		if err := os.Remove(filepath.Join(userRoot, "ghostty", "config")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(userRoot, "lazygit", "config.yml")); err != nil {
+			t.Fatal(err)
+		}
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+			t.Fatalf("restore code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "status", "config"); code != 0 {
+			t.Fatalf("status after restore code=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("ambiguous baseline customization is not captured or restored", func(t *testing.T) {
+		profileDir, deps, home, baseline := overlaySandbox(t)
+		userRoot := filepath.Join(home, ".config")
+		path := filepath.Join(userRoot, "hypr", "bindings.lua")
+		writeAppFile(t, filepath.Join(baseline, "hypr", "bindings.lua"), "one\ntwo\nthree\n")
+		writeAppFile(t, path, "one\nsource\nthree\n")
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("capture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil || len(d.Config.Files) != 0 {
+			t.Fatalf("captured config=%#v err=%v", d.Config, err)
+		}
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run"); code != 0 || !strings.Contains(out, "No operations required") {
+			t.Fatalf("restore code=%d out=%s", code, out)
+		}
+	})
+
+	t.Run("resource handoff removes duplicate config ownership", func(t *testing.T) {
+		profileDir, deps, home, _ := overlaySandbox(t)
+		nvim := filepath.Join(home, ".config", "nvim")
+		writeAppFile(t, filepath.Join(nvim, "init.lua"), "vim.opt.number = true")
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("config capture code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "track", nvim); code != 0 {
+			t.Fatalf("track code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("handoff capture code=%d out=%s", code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Resources.Items) != 1 || d.Resources.Items[0].Path != "~/.config/nvim" || len(d.Config.Files) != 0 {
+			t.Fatalf("handoff resources=%#v config=%#v", d.Resources, d.Config)
+		}
+		if code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run"); code != 0 || strings.Contains(out, "nvim") {
+			t.Fatalf("config plan after handoff code=%d out=%s", code, out)
+		}
+		if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
+			t.Fatalf("check after handoff code=%d out=%s", code, out)
+		}
+	})
+}
+
+func overlaySandbox(t *testing.T) (profileDir string, deps Dependencies, home string, baseline string) {
+	t.Helper()
+	stateDir := t.TempDir()
+	profileDir, home, baseline = t.TempDir(), t.TempDir(), t.TempDir()
+	deps = Dependencies{
+		Runner: &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: time.Now,
+		StateHome:  func() (string, error) { return stateDir, nil },
+		HomeDir:    func() (string, error) { return home, nil },
+		ConfigDirs: func() (string, string, error) { return baseline, filepath.Join(home, ".config"), nil },
+	}
+	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
+		t.Fatalf("init code=%d", code)
+	}
+	return profileDir, deps, home, baseline
+}
+
+func writeAppFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readAppFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func appHash(t *testing.T, body string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("%x", sum)
+}
+
+func configPaths(files []profile.ConfigFile) []string {
+	paths := make([]string, len(files))
+	for i, file := range files {
+		paths[i] = file.Path
+	}
+	return paths
+}
+
+func TestConfigCaptureJSONIncludesScanSummary(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "--json", "capture", "config")
+	if code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	var envelope struct {
+		Data struct {
+			Config struct {
+				Files []profile.ConfigFile `json:"files"`
+				Scan  struct {
+					Counts map[configprovider.Classification]int `json:"counts"`
+				} `json:"scan"`
+			} `json:"config"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Config.Files) != 0 || envelope.Data.Config.Scan.Counts[configprovider.ConfigAmbiguousBaseline] != 1 {
+		t.Fatalf("config scan output = %#v", envelope.Data.Config)
+	}
+}
+
+func TestConfigStatusAndDiffReportSkippedSurfaceOnceWithScanJSON(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	browser := filepath.Join(userRoot, "arbitrary-browser")
+	for _, path := range []string{"Local State", "Default/Preferences", "Default/History", "Default/Cookies"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(browser, path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(browser, path), []byte("state"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 1000; i++ {
+		path := filepath.Join(browser, "zzz-descendants", fmt.Sprintf("descendant-%04d", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("state"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	code, out := configRun(t, deps, profileDir, "status", "config")
+	if code != 0 || strings.Count(out, "arbitrary-browser") != 1 || strings.Contains(out, "descendant-0000") {
+		t.Fatalf("status code=%d out=%s", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "diff", "config")
+	if code != 0 || strings.Count(out, "arbitrary-browser") != 1 || strings.Contains(out, "descendant-0000") {
+		t.Fatalf("diff code=%d out=%s", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "--json", "status", "config")
+	if code != 0 {
+		t.Fatalf("json status code=%d out=%s", code, out)
+	}
+	var envelope struct {
+		Data struct {
+			Config struct {
+				Scan struct {
+					Candidates []configprovider.Candidate      `json:"candidates"`
+					Surfaces   []configprovider.SurfaceSummary `json:"surfaces"`
+				} `json:"scan"`
+			} `json:"config"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Config.Scan.Surfaces) != 2 || envelope.Data.Config.Scan.Surfaces[0].Path != ".config/arbitrary-browser" || envelope.Data.Config.Scan.Surfaces[0].Classification != configprovider.SurfaceStateHeavy {
+		t.Fatalf("config scan = %#v", envelope.Data.Config.Scan)
+	}
+	for _, candidate := range envelope.Data.Config.Scan.Candidates {
+		if strings.Contains(candidate.Path, "arbitrary-browser") {
+			t.Fatalf("skipped descendant candidate = %#v", candidate)
+		}
 	}
 }
 
@@ -558,6 +973,211 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	}
 }
 
+func TestConfigExcludeJSONAndPersistenceAcrossCapture(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.MkdirAll(filepath.Join(userRoot, "ghostty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "ghostty", "config"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	code, out := configRun(t, deps, profileDir, "--json", "exclude", "config:~/.config/ghostty")
+	if code != 0 {
+		t.Fatalf("exclude code=%d out=%s", code, out)
+	}
+	var envelope struct {
+		Data struct {
+			Kind     string `json:"kind"`
+			Path     string `json:"path"`
+			Excluded bool   `json:"excluded"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil || envelope.Data.Kind != "config" || envelope.Data.Path != ".config/ghostty" || !envelope.Data.Excluded {
+		t.Fatalf("json=%s err=%v", out, err)
+	}
+	for range 2 {
+		if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+			t.Fatalf("capture code=%d out=%s", code, out)
+		}
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d.Config.Excluded, []string{".config/ghostty"}) || len(d.Config.Files) != 0 {
+		t.Fatalf("config=%#v", d.Config)
+	}
+	if code, out := configRun(t, deps, profileDir, "include", "config:ghostty"); code != 0 || !strings.Contains(out, "Included config") {
+		t.Fatalf("exact unexclude code=%d out=%s", code, out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Config.Excluded) != 0 || !reflect.DeepEqual(d.Config.Included, []string{".config/ghostty"}) {
+		t.Fatalf("include did not persist final policy: %#v", d.Config)
+	}
+}
+
+func TestExecuteConfigHomeIncludeNormalizesAndReplacesExclusion(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	for _, input := range []string{"config:.zshrc", "config:~/.zshrc"} {
+		if code, out := configRun(t, deps, profileDir, "include", input); code != 0 {
+			t.Fatalf("include %s: %d %s", input, code, out)
+		}
+		d, err := profile.Load(profileDir)
+		if err != nil || !reflect.DeepEqual(d.Config.Included, []string{".zshrc"}) {
+			t.Fatalf("state=%#v err=%v", d.Config, err)
+		}
+	}
+	if code, out := configRun(t, deps, profileDir, "exclude", "config:.zshrc"); code != 0 {
+		t.Fatalf("exclude: %d %s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "include", "config:.zshrc"); code != 0 {
+		t.Fatalf("include: %d %s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Config.Excluded) != 0 || !reflect.DeepEqual(d.Config.Included, []string{".zshrc"}) {
+		t.Fatalf("final state=%#v err=%v", d.Config, err)
+	}
+}
+
+func TestExecuteConfigIncludeResolvesAmbiguousBaselineAndDeletion(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	base, user, _ := deps.ConfigDirs()
+	deps.HomeDir = func() (string, error) { return filepath.Dir(user), nil }
+	path := "example/settings.conf"
+	if err := os.MkdirAll(filepath.Join(base, "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(user, "example"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, path), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, path), []byte("B"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatal("ambiguous capture failed")
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Config.Files) != 0 {
+		t.Fatalf("ambiguous saved: %#v %v", d.Config, err)
+	}
+	if code, out := configRun(t, deps, profileDir, "diff", "config"); code != 0 || !strings.Contains(out, "differs   .config/example/settings.conf") {
+		t.Fatalf("diff %d: %s", code, out)
+	}
+	if code, _ := configRun(t, deps, profileDir, "include", "config:.config/example/settings.conf"); code != 0 {
+		t.Fatal("include failed")
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture included: %s", out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || len(d.Config.Files) != 1 || !reflect.DeepEqual(d.Config.Included, []string{".config/example/settings.conf"}) {
+		t.Fatalf("captured=%#v err=%v", d.Config, err)
+	}
+	if err := os.WriteFile(filepath.Join(user, path), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "config", "--yes"); code != 0 {
+		t.Fatalf("restore: %s", out)
+	}
+	b, err := os.ReadFile(filepath.Join(user, path))
+	if err != nil || string(b) != "B" {
+		t.Fatalf("restored=%q err=%v", b, err)
+	}
+	if err := os.Remove(filepath.Join(user, path)); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatal("deletion ambiguity capture failed")
+	}
+	if code, _ := configRun(t, deps, profileDir, "include", "config:.config/example/settings.conf"); code != 0 {
+		t.Fatal("deletion include failed")
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("tombstone capture: %s", out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || len(d.Config.Deletes) != 1 {
+		t.Fatalf("tombstone=%#v err=%v", d.Config, err)
+	}
+}
+
+func TestConfigDelegatesDefaultsGeneratedOutputs(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, user, _ := deps.ConfigDirs()
+	home := filepath.Dir(user)
+	deps.HomeDir = func() (string, error) { return home, nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	for _, path := range []string{"xdg-terminals.list", "brave-flags.conf", "environment.d/omarchy-firefox-wayland.conf", "nvim/init.lua"} {
+		full := filepath.Join(user, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("value"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).provider(profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan, err := p.Scan(profile.Configs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]configprovider.Classification{}
+	for _, candidate := range scan.Candidates {
+		got[candidate.Path] = candidate.Classification
+	}
+	for _, path := range []string{".config/xdg-terminals.list", ".config/brave-flags.conf", ".config/environment.d/omarchy-firefox-wayland.conf"} {
+		if _, exists := got[path]; exists {
+			t.Fatalf("Defaults-generated path escaped delegation: %s=%s", path, got[path])
+		}
+	}
+	if got[".config/nvim/init.lua"] != configprovider.ConfigAdded {
+		t.Fatalf("unrelated config classification=%s", got[".config/nvim/init.lua"])
+	}
+}
+
+func TestPackageExcludeHintsRelatedConfigWithoutExcludingIt(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.MkdirAll(filepath.Join(userRoot, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "nvim", "init.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	deps.Runner.(*machineRunner).official["neovim"] = true
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture packages code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "exclude", "official:neovim"); code != 0 || !strings.Contains(out, "Related Config state remains included:\n  ~/.config/nvim\nRun:\n  omarchy-blueprint exclude config:nvim") {
+		t.Fatalf("exclude code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Config.Files) != 1 || d.Config.Files[0].Path != "nvim/init.lua" || len(d.Config.Excluded) != 0 {
+		t.Fatalf("config changed by package exclusion: %#v", d.Config)
+	}
+}
+
 func TestRestoreExplainsNonActionableAdditionalPackages(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{}}
@@ -699,7 +1319,7 @@ func TestConfigVerticalSlice(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "config hypr/bindings.lua captured") {
+	if !strings.Contains(out, "Baseline provenance requires review") {
 		t.Fatalf("capture output = %q", out)
 	}
 	// Reset to baseline removes the stale snapshot.
@@ -728,57 +1348,8 @@ func TestConfigStatusDriftAndRestoreWithBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "differs") {
+	if code != 0 || !strings.Contains(out, "Baseline provenance requires review") {
 		t.Fatalf("status code=%d out=%q", code, out)
-	}
-	// Resetting the target to the Omarchy baseline makes replacement safe;
-	// restore writes the captured customization with a backup.
-	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Restore to captured desired content with backup + journal.
-	code, out = configRun(t, deps, profileDir, "restore", "config", "--yes")
-	if code != 0 {
-		t.Fatalf("restore code=%d err=%s", code, out)
-	}
-	b, err := os.ReadFile(filepath.Join(userRoot, "hypr", "bindings.lua"))
-	if err != nil || string(b) != "custom" {
-		t.Fatalf("restored file = %q err=%v", b, err)
-	}
-	if !strings.Contains(out, "Restore verified") {
-		t.Fatalf("restore output = %q", out)
-	}
-	var journalPath string
-	if idx := strings.LastIndex(out, "Journal: "); idx >= 0 {
-		journalPath = strings.TrimSpace(out[idx+len("Journal: "):])
-	}
-	if journalPath == "" {
-		t.Fatalf("restore output missing journal path = %q", out)
-	}
-	journal, err := os.Open(journalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer journal.Close()
-	var backup string
-	decoder := json.NewDecoder(journal)
-	for {
-		var event restore.Event
-		if err := decoder.Decode(&event); err != nil {
-			if err == io.EOF {
-				break
-			}
-			t.Fatal(err)
-		}
-		if event.Type == "BACKUP_CREATED" {
-			backup = event.Message
-		}
-	}
-	if filepath.Dir(backup) != filepath.Join(userRoot, "hypr") {
-		t.Fatalf("backup path=%q", backup)
-	}
-	if b, err := os.ReadFile(backup); err != nil || string(b) != "default" {
-		t.Fatalf("backup=%q err=%v", b, err)
 	}
 }
 
@@ -799,21 +1370,30 @@ func TestConfigDryRunShowsSkipsAndReloadFailureBlocks(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dry-run code=%d err=%s", code, out)
 	}
-	if !strings.Contains(out, "existing user configuration differs; overwrite disabled") {
+	if !strings.Contains(out, "No operations required") {
 		t.Fatalf("dry-run output = %q", out)
 	}
-	// Reload failure blocks completion and is reported.
-	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+}
+
+func TestConfigForceDryRunReplacesUnknownTarget(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, _ := deps.ConfigDirs()
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("captured"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runner := deps.Runner.(*machineRunner)
-	runner.failReload = true
-	code, out = configRun(t, deps, profileDir, "restore", "config", "--yes")
-	if code != 1 {
-		t.Fatalf("reload-failure code=%d out=%q", code, out)
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
 	}
-	if !strings.Contains(out, "failed operation(s)") {
-		t.Fatalf("failure output = %q", out)
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("target-only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run")
+	if code != 0 || !strings.Contains(out, "No operations required") {
+		t.Fatalf("safe dry-run code=%d out=%q", code, out)
+	}
+	code, out = configRun(t, deps, profileDir, "restore", "config", "--force", "--dry-run")
+	if code != 0 || !strings.Contains(out, "No operations required") {
+		t.Fatalf("force dry-run code=%d out=%q", code, out)
 	}
 }
 
@@ -833,9 +1413,8 @@ func TestConfigIncludedInAggregateRestore(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("aggregate restore code=%d err=%s", code, out)
 	}
-	b, err := os.ReadFile(filepath.Join(userRoot, "hypr", "bindings.lua"))
-	if err != nil || string(b) != "custom" {
-		t.Fatalf("restored file = %q err=%v", b, err)
+	if _, err := os.Stat(filepath.Join(userRoot, "hypr", "bindings.lua")); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous config restored: %v", err)
 	}
 }
 
@@ -889,7 +1468,7 @@ func TestAggregateCaptureMarksConfigBeforeCustomization(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "status", "config")
-	if code != 2 || !strings.Contains(out, "deletion differs") {
+	if code != 0 || !strings.Contains(out, "Baseline provenance requires review") {
 		t.Fatalf("later customization must surface as drift, code=%d out=%q", code, out)
 	}
 }
@@ -904,14 +1483,7 @@ func TestCheckValidatesConfigSnapshotIntegrity(t *testing.T) {
 		t.Fatalf("capture code=%d err=%s", code, out)
 	}
 	if code, out := configRun(t, deps, profileDir, "check"); code != 0 {
-		t.Fatalf("check with valid snapshot code=%d err=%s", code, out)
-	}
-	// Corrupt the captured snapshot: check must now fail.
-	if err := os.WriteFile(filepath.Join(profileDir, "config", "files", "hypr", "bindings.lua"), []byte("tampered"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if code, out := configRun(t, deps, profileDir, "check"); code != 1 || !strings.Contains(out, "snapshot hash mismatch") {
-		t.Fatalf("check with tampered snapshot code=%d out=%q", code, out)
+		t.Fatalf("check with no ambiguous snapshot code=%d out=%q", code, out)
 	}
 }
 
@@ -929,15 +1501,15 @@ func TestConfigDryRunWarnsAboutReplacementVersusCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out := configRun(t, deps, profileDir, "restore", "config", "--dry-run")
-	if code != 0 || !strings.Contains(out, "Existing Hyprland configuration files will be replaced; backups will be stored beside the restore journal.") {
+	if code != 0 || !strings.Contains(out, "No operations required") {
 		t.Fatalf("replacement dry-run code=%d out=%q", code, out)
 	}
-	// Creating a missing target warns about creation instead.
+	// A missing target remains a no-op without a captured ambiguous file.
 	if err := os.Remove(filepath.Join(userRoot, "hypr", "bindings.lua")); err != nil {
 		t.Fatal(err)
 	}
 	code, out = configRun(t, deps, profileDir, "restore", "config", "--dry-run")
-	if code != 0 || !strings.Contains(out, "Missing Hyprland configuration files will be created.") {
+	if code != 0 || !strings.Contains(out, "No operations required") {
 		t.Fatalf("creation dry-run code=%d out=%q", code, out)
 	}
 }

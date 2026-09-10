@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"syscall"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -13,9 +15,9 @@ import (
 )
 
 type CaptureResult struct {
-	State   profile.Configs
-	Scan    ScanSummary
-	Changes []model.Change
+	State   profile.Configs `json:"state"`
+	Scan    ScanSummary     `json:"scan"`
+	Changes []model.Change  `json:"-"`
 }
 
 // beforeStage is used by package tests to model a source changing after scan.
@@ -27,18 +29,39 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if p.ProfileDir == "" {
 		return CaptureResult{}, fmt.Errorf("profile directory is required to capture config")
 	}
-	scan, err := p.Scan(saved)
+	parent := filepath.Join(p.ProfileDir, "config")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return CaptureResult{}, err
+	}
+	lockPath := filepath.Join(parent, ".capture.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		return CaptureResult{}, fmt.Errorf("config capture already in progress: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); _ = lock.Close() }()
+	scan, err := p.ScanForCapture(saved)
 	if err != nil {
 		return CaptureResult{}, err
 	}
 	if beforeStage != nil {
 		beforeStage()
 	}
-	parent := filepath.Join(p.ProfileDir, "config")
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
 		return CaptureResult{}, err
 	}
-	stage, err := os.MkdirTemp(parent, ".capture-*")
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".capture-stage-") || entry.Name() == ".files-capture-previous" || entry.Name() == ".baseline-capture-previous" {
+			if err := os.RemoveAll(filepath.Join(parent, entry.Name())); err != nil {
+				return CaptureResult{}, err
+			}
+		}
+	}
+	stage, err := os.MkdirTemp(parent, ".capture-stage-*")
 	if err != nil {
 		return CaptureResult{}, err
 	}
@@ -47,7 +70,11 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if err != nil {
 		return CaptureResult{}, err
 	}
-	state := profile.Configs{Excluded: excluded}
+	included, err := normalizeExclusions(saved.Included)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	state := profile.Configs{Included: included, Excluded: excluded}
 	for _, c := range scan.Candidates {
 		switch c.Classification {
 		case ConfigAdded, ConfigModifiedBaseline:
