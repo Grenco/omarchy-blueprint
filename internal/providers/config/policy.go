@@ -53,6 +53,17 @@ type PolicyDecision struct{ Reason PolicyReason }
 // canonical HOME-relative namespace used by ConfigFile.Path.
 func NormalizeConfigPolicyPath(input string) (string, error) {
 	input = strings.TrimSpace(strings.ReplaceAll(input, "\\", "/"))
+	if strings.HasPrefix(input, "~/") && !strings.HasPrefix(input, "~/.config/") {
+		input = strings.TrimPrefix(input, "~/")
+	}
+	if strings.HasPrefix(input, ".") && !strings.HasPrefix(input, ".config") {
+		for _, spec := range DefaultHomeConfigSpecs() {
+			if input == spec.Path {
+				return profile.NormalizeConfigPath(input)
+			}
+		}
+		return "", fmt.Errorf("invalid config exclusion path %q", input)
+	}
 	if input == "~/.config" || input == ".config" {
 		return "", fmt.Errorf("config exclusion path must name an entry below ~/.config")
 	}

@@ -158,6 +158,16 @@ func (p Provider) scan(saved profile.Configs, includeSaved bool) (ScanSummary, e
 		if includeSaved && c.Classification == ConfigAmbiguousDeletion && (savedHasDelete(saved, path) || savedHasFile(saved, path)) {
 			c.Classification, c.Reason = ConfigDeletedBaseline, "saved deletion"
 		}
+		for _, included := range saved.Included {
+			if path == included || strings.HasPrefix(path, included+"/") {
+				if c.Classification == ConfigAmbiguousBaseline {
+					c.Classification, c.Reason = ConfigModifiedBaseline, "explicitly-included"
+				}
+				if c.Classification == ConfigAmbiguousDeletion {
+					c.Classification, c.Reason = ConfigDeletedBaseline, "explicitly-included"
+				}
+			}
+		}
 		result.Candidates = append(result.Candidates, c)
 	}
 	return result, nil
@@ -520,10 +530,8 @@ func (p Provider) classify(path string, entries map[bool]treeEntry, excluded []s
 			} else {
 				c.Classification, c.Reason = ConfigAmbiguousDeletion, "deletion provenance unavailable"
 			}
-		} else if p.History == nil {
-			c.Classification, c.Reason = ConfigAmbiguousDeletion, "deletion provenance unavailable"
 		} else {
-			c.Classification = ConfigDeletedBaseline
+			c.Classification, c.Reason = ConfigAmbiguousDeletion, "deletion provenance unavailable"
 		}
 	default:
 		c.Classification = ConfigUnsupported

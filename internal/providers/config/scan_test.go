@@ -22,7 +22,7 @@ func TestScanClassifiesBaselineOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]Classification{"added.conf": ConfigAdded, "changed.conf": ConfigModifiedBaseline, "deleted.conf": ConfigDeletedBaseline, "same.conf": ConfigUnchangedBaseline}
+	want := map[string]Classification{"added.conf": ConfigAdded, "changed.conf": ConfigModifiedBaseline, "deleted.conf": ConfigAmbiguousDeletion, "same.conf": ConfigUnchangedBaseline}
 	if len(scan.Candidates) != len(want) {
 		t.Fatalf("scan=%#v", scan)
 	}

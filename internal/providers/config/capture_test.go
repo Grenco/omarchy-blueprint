@@ -20,13 +20,13 @@ func TestCaptureStoresAddedModifiedAndTombstoneSparsely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.State.Files) != 2 || len(result.State.Deletes) != 1 || result.State.Deletes[0].Path != "deleted.conf" {
+	if len(result.State.Files) != 2 || len(result.State.Deletes) != 0 {
 		t.Fatalf("state=%#v", result.State)
 	}
 	if result.State.Excluded[0] != "discord" {
 		t.Fatalf("excluded=%v", result.State.Excluded)
 	}
-	for _, path := range []string{"files/changed.conf", "files/added.conf", "baseline/changed.conf", "baseline/deleted.conf"} {
+	for _, path := range []string{"files/changed.conf", "files/added.conf", "baseline/changed.conf"} {
 		if _, err := os.Lstat(filepath.Join(profileDir, "config", path)); err != nil {
 			t.Fatalf("%s: %v", path, err)
 		}

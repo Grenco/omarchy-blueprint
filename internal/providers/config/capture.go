@@ -51,13 +51,13 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 		return CaptureResult{}, err
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".capture-") || entry.Name() == ".files-capture-previous" || entry.Name() == ".baseline-capture-previous" {
+		if strings.HasPrefix(entry.Name(), ".capture-stage-") || entry.Name() == ".files-capture-previous" || entry.Name() == ".baseline-capture-previous" {
 			if err := os.RemoveAll(filepath.Join(parent, entry.Name())); err != nil {
 				return CaptureResult{}, err
 			}
 		}
 	}
-	stage, err := os.MkdirTemp(parent, ".capture-*")
+	stage, err := os.MkdirTemp(parent, ".capture-stage-*")
 	if err != nil {
 		return CaptureResult{}, err
 	}
