@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -11,9 +12,11 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/sensitive"
 )
 
 type Provider struct {
@@ -44,6 +47,10 @@ func (p Provider) Track(ctx context.Context, saved profile.Resources, path strin
 		return saved, nil, err
 	}
 	if err := prepared.Install(); err != nil {
+		return saved, nil, err
+	}
+	if err := prepared.Commit(); err != nil {
+		_ = prepared.Rollback()
 		return saved, nil, err
 	}
 	if err := prepared.Finalize(); err != nil {
@@ -207,6 +214,10 @@ func (p Provider) Capture(ctx context.Context, saved profile.Resources) (profile
 	if err := prepared.Install(); err != nil {
 		return saved, nil, err
 	}
+	if err := prepared.Commit(); err != nil {
+		_ = prepared.Rollback()
+		return saved, nil, err
+	}
 	if err := prepared.Finalize(); err != nil {
 		return saved, nil, err
 	}
@@ -292,13 +303,31 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 					return fail(fmt.Errorf("stage worktree patch for %s: %w", item.ID, err))
 				}
 			}
+			capture.TotalBytes = int64(len(capture.IndexPatch) + len(capture.WorktreePatch))
 			for _, file := range capture.Untracked {
 				source := filepath.Join(root, filepath.FromSlash(file.Path))
 				destination := filepath.Join(gitState, "untracked", filepath.FromSlash(file.Path))
-				if _, err := StageCopyResource(source, destination); err != nil {
+				scan, err := stageUntrackedFile(source, destination)
+				if err != nil {
 					return fail(fmt.Errorf("stage untracked file %s: %w", file.Path, err))
 				}
+				info, err := os.Stat(destination)
+				if err != nil {
+					return fail(fmt.Errorf("inspect staged untracked file %s: %w", file.Path, err))
+				}
+				capture.TotalBytes += info.Size()
+				if capture.TotalBytes > MaxGitStateSize {
+					return fail(fmt.Errorf("Git state exceeds %d bytes", MaxGitStateSize))
+				}
+				for j := range capture.Untracked {
+					if capture.Untracked[j].Path == file.Path {
+						capture.Untracked[j].Hash = scan.Hash
+						capture.Untracked[j].Mode = fmt.Sprintf("%04o", scan.Mode.Perm())
+					}
+				}
 			}
+			sort.Slice(capture.Untracked, func(i, j int) bool { return capture.Untracked[i].Path < capture.Untracked[j].Path })
+			item.Untracked = capture.Untracked
 			continue
 		}
 		scan, err := StageCopyResourceWithOptions(root, resourceSnapshotPath(staging, *item), SnapshotOptions{ExcludeGitAdmin: p.isGitWorktreeRoot(ctx, root)})
@@ -346,6 +375,28 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 }
 
 func (p Provider) Untrack(saved profile.Resources, ref string) (profile.Resources, []string, error) {
+	prepared, changed, err := p.PrepareUntrack(saved, ref)
+	if err != nil {
+		return saved, nil, err
+	}
+	if prepared == nil {
+		return cloneResources(saved), changed, nil
+	}
+	if err := prepared.Install(); err != nil {
+		return saved, nil, err
+	}
+	if err := prepared.Commit(); err != nil {
+		_ = prepared.Rollback()
+		return saved, nil, err
+	}
+	if err := prepared.Finalize(); err != nil {
+		return saved, nil, err
+	}
+	return prepared.State, changed, nil
+}
+
+// PrepareUntrack stages removal without changing the current generation.
+func (p Provider) PrepareUntrack(saved profile.Resources, ref string) (*PreparedCapture, []string, error) {
 	next := cloneResources(saved)
 	if len(ref) > len("resource:") && ref[:len("resource:")] == "resource:" {
 		id := ref[len("resource:"):]
@@ -359,7 +410,7 @@ func (p Provider) Untrack(saved profile.Resources, ref string) (profile.Resource
 			items = append(items, item)
 		}
 		if !found {
-			return saved, nil, fmt.Errorf("resource %s is not tracked", id)
+			return nil, nil, fmt.Errorf("resource %s is not tracked", id)
 		}
 		next.Items = items
 		links := next.Links[:0]
@@ -369,15 +420,24 @@ func (p Provider) Untrack(saved profile.Resources, ref string) (profile.Resource
 			}
 		}
 		next.Links = links
-		if err := os.RemoveAll(filepath.Join(p.ProfileDir, "resources", "files", id)); err != nil {
-			return saved, nil, err
+		prepared, err := p.prepareResourcesGeneration(saved, next)
+		if err != nil {
+			return nil, nil, err
 		}
-		return next, []string{"resource:" + id}, nil
+		if err := os.RemoveAll(filepath.Join(prepared.stage, "files", id)); err != nil {
+			_ = prepared.Rollback()
+			return nil, nil, err
+		}
+		if err := os.RemoveAll(filepath.Join(prepared.stage, "git-state", id)); err != nil {
+			_ = prepared.Rollback()
+			return nil, nil, err
+		}
+		return prepared, []string{"resource:" + id}, nil
 	}
 	if len(ref) > len("link:") && ref[:len("link:")] == "link:" {
 		source := ref[len("link:"):]
 		if _, err := ExpandHomePath(p.HomeDir, source); err != nil {
-			return saved, nil, err
+			return nil, nil, err
 		}
 		links := next.Links[:0]
 		found := false
@@ -389,14 +449,114 @@ func (p Provider) Untrack(saved profile.Resources, ref string) (profile.Resource
 			links = append(links, link)
 		}
 		if !found {
-			return saved, nil, fmt.Errorf("link %s is not tracked", source)
+			return nil, nil, fmt.Errorf("link %s is not tracked", source)
 		}
 		next.Links = links
 		next.IgnoredLinks = append(next.IgnoredLinks, source)
 		sortResources(&next)
-		return next, []string{"link:" + source}, nil
+		prepared, err := p.prepareResourcesGeneration(saved, next)
+		if err != nil {
+			return nil, nil, err
+		}
+		return prepared, []string{"link:" + source}, nil
 	}
-	return saved, nil, fmt.Errorf("unknown resource reference %q", ref)
+	return nil, nil, fmt.Errorf("unknown resource reference %q", ref)
+}
+
+func (p Provider) prepareResourcesGeneration(saved, next profile.Resources) (*PreparedCapture, error) {
+	prepared, err := prepareCapture(filepath.Join(p.ProfileDir, "resources"), next, Diff(saved, next))
+	if err != nil {
+		return nil, err
+	}
+	if err := copyGeneration(filepath.Join(p.ProfileDir, "resources"), prepared.stage); err != nil {
+		_ = prepared.Rollback()
+		return nil, err
+	}
+	body, err := profile.MarshalResources(next)
+	if err != nil {
+		_ = prepared.Rollback()
+		return nil, err
+	}
+	if err := os.WriteFile(prepared.stagePath("resources.toml"), body, 0o644); err != nil {
+		_ = prepared.Rollback()
+		return nil, err
+	}
+	prepared.State = next
+	return prepared, nil
+}
+
+func stageUntrackedFile(source, destination string) (SnapshotScan, error) {
+	if _, err := StageCopyResource(source, destination); err != nil {
+		return SnapshotScan{}, err
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		return SnapshotScan{}, err
+	}
+	if info.Size() > MaxGitUntrackedFileSize {
+		return SnapshotScan{}, fmt.Errorf("untracked file exceeds %d bytes", MaxGitUntrackedFileSize)
+	}
+	result, err := sensitive.ScanRegularFile(destination, MaxGitUntrackedFileSize)
+	if err != nil {
+		return SnapshotScan{}, err
+	}
+	if result.Sensitive {
+		return SnapshotScan{}, fmt.Errorf("sensitive untracked content")
+	}
+	hash, err := content.HashRegularFile(destination)
+	if err != nil {
+		return SnapshotScan{}, err
+	}
+	return SnapshotScan{Hash: hash, Mode: info.Mode().Perm()}, nil
+}
+
+func copyGeneration(source, destination string) error {
+	for _, name := range captureComponents {
+		if err := copyGenerationPath(filepath.Join(source, name), filepath.Join(destination, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyGenerationPath(source, destination string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(destination, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyGenerationPath(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return os.Chmod(destination, info.Mode().Perm())
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("invalid resource generation entry: %s", source)
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (p Provider) EnableLink(saved profile.Resources, source string) (profile.Resources, error) {
@@ -436,7 +596,7 @@ func (p Provider) DetectDetailed(ctx context.Context, saved profile.Resources) (
 			return Detection{}, err
 		}
 		if item.Strategy == "copy" {
-			scan, err := ScanCopyResource(root)
+			scan, err := ScanCopyResourceWithOptions(root, SnapshotOptions{ExcludeGitAdmin: p.isGitWorktreeRoot(ctx, root)})
 			if err != nil {
 				item.Hash = ""
 				continue

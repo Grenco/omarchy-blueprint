@@ -135,3 +135,27 @@ func TestStageCopyResourceWithOptionsExcludesGitAdministration(t *testing.T) {
 		t.Fatalf(".gitignore was excluded: %v", err)
 	}
 }
+
+func TestScanCopyResourceWithOptionsMatchesGitAdminExclusion(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".git", "objects", "object"), []byte("admin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "tracked"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withoutAdmin, err := ScanCopyResourceWithOptions(source, SnapshotOptions{ExcludeGitAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := StageCopyResourceWithOptions(source, filepath.Join(t.TempDir(), "snapshot"), SnapshotOptions{ExcludeGitAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutAdmin.Hash != staged.Hash || withoutAdmin.FileCount != staged.FileCount {
+		t.Fatalf("scan=%#v staged=%#v", withoutAdmin, staged)
+	}
+}

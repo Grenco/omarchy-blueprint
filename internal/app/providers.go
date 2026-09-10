@@ -159,6 +159,12 @@ func (p *resourcesStateProvider) FinalizeCapture() error {
 	p.prepared = nil
 	return err
 }
+func (p *resourcesStateProvider) CommitCapture() error {
+	if p.prepared == nil {
+		return nil
+	}
+	return p.prepared.Commit()
+}
 
 func (p *resourcesStateProvider) RollbackCapture() error {
 	if p.prepared == nil {

@@ -93,11 +93,15 @@ func (c *PreparedCapture) Install() error {
 			return err
 		}
 	}
-	if err := c.writeMarker("committed"); err != nil {
-		_ = c.Rollback()
-		return err
-	}
 	return nil
+}
+
+// Commit marks an installed generation durable after its profile metadata was saved.
+func (c *PreparedCapture) Commit() error {
+	if c.stage == "" {
+		return fmt.Errorf("resources capture is not prepared")
+	}
+	return c.writeMarker("committed")
 }
 
 func (c *PreparedCapture) Rollback() error {

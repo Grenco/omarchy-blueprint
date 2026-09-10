@@ -27,6 +27,9 @@ func TestPreparedCaptureFinalizeKeepsNewGenerationAndCleansDebris(t *testing.T) 
 	if err := c.Install(); err != nil {
 		t.Fatal(err)
 	}
+	if err := c.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Finalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +94,9 @@ func TestPrepareCaptureRecoversCommittedMarkerAndStaleStage(t *testing.T) {
 	if err := c.Install(); err != nil {
 		t.Fatal(err)
 	}
+	if err := c.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	c.close()
 	recovered, err := prepareCapture(parent, profile.Resources{}, nil)
 	if err != nil {
@@ -112,6 +118,21 @@ func TestPrepareCaptureRecoversCommittedMarkerAndStaleStage(t *testing.T) {
 	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale stage retained: %v", err)
 	}
+}
+
+func TestPrepareCaptureRecoversInstalledGenerationByRollingBack(t *testing.T) {
+	parent := transactionGeneration(t, "old")
+	c := transactionPrepared(t, parent, "new")
+	if err := c.Install(); err != nil {
+		t.Fatal(err)
+	}
+	c.close()
+	recovered, err := prepareCapture(parent, profile.Resources{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Rollback()
+	assertTransactionGeneration(t, parent, "old")
 }
 
 func transactionGeneration(t *testing.T, value string) string {

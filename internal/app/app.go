@@ -157,6 +157,9 @@ func trackCommand(deps Dependencies, opt *options) *cobra.Command {
 				_ = prepared.Rollback()
 				return fmt.Errorf("save profile: %w", err)
 			}
+			if err := prepared.Commit(); err != nil {
+				return err
+			}
 			if err := prepared.Finalize(); err != nil {
 				return err
 			}
@@ -232,15 +235,31 @@ func untrackCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		updated, changed, err := provider.Untrack(d.Resources, ref)
+		prepared, changed, err := provider.PrepareUntrack(d.Resources, ref)
 		if err != nil {
 			return err
 		}
-		d.Resources = updated
+		if prepared != nil {
+			if err := prepared.Install(); err != nil {
+				return err
+			}
+			d.Resources = prepared.State
+		}
 		d.Manifest.Capture.Resources = true
 		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
 		if err := profile.Save(opt.profileDir, d); err != nil {
+			if prepared != nil {
+				_ = prepared.Rollback()
+			}
 			return err
+		}
+		if prepared != nil {
+			if err := prepared.Commit(); err != nil {
+				return err
+			}
+			if err := prepared.Finalize(); err != nil {
+				return err
+			}
 		}
 		return emit(deps.Out, opt.json, "untrack", true, map[string]any{"resources": d.Resources, "removed": changed}, "Untracked "+strings.Join(changed, ", ")+"\n")
 	}}
@@ -574,6 +593,7 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	var captured []string
 	var configResult *configprovider.CaptureResult
 	var transactions []interface {
+		CommitCapture() error
 		FinalizeCapture() error
 		RollbackCapture() error
 	}
@@ -586,6 +606,7 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return err
 		}
 		if transaction, ok := provider.(interface {
+			CommitCapture() error
 			FinalizeCapture() error
 			RollbackCapture() error
 		}); ok {
@@ -614,6 +635,11 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 				_ = transaction.RollbackCapture()
 			}
 			return fmt.Errorf("save profile: %w", err)
+		}
+		for _, transaction := range transactions {
+			if err := transaction.CommitCapture(); err != nil {
+				return err
+			}
 		}
 		for _, transaction := range transactions {
 			if err := transaction.FinalizeCapture(); err != nil {

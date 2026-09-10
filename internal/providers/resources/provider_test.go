@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -162,6 +164,59 @@ func TestUntrackAndEnableLinkKeepLivePaths(t *testing.T) {
 	}
 }
 
+func TestPrepareUntrackRemovesGitStateInGeneration(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	for _, path := range []string{"files/dotfiles/content", "git-state/dotfiles/untracked/notes.md", "files/other/content"} {
+		full := filepath.Join(profileDir, "resources", path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(path), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := profile.Resources{Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff"}, {ID: "other", Path: "~/other", Kind: "file", Strategy: "copy"}}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	prepared, _, err := p.PrepareUntrack(saved, "resource:dotfiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Install(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(profileDir, "resources", "git-state", "dotfiles")); !os.IsNotExist(err) {
+		t.Fatalf("Git state retained: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "resources", "files", "other", "content")); err != nil {
+		t.Fatalf("other snapshot removed: %v", err)
+	}
+	if err := prepared.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "resources", "git-state", "dotfiles", "untracked", "notes.md")); err != nil {
+		t.Fatalf("Git state not restored: %v", err)
+	}
+}
+
+func TestStageUntrackedFileMetadataComesFromStagedBytes(t *testing.T) {
+	root := t.TempDir()
+	source, destination := filepath.Join(root, "notes.md"), filepath.Join(root, "staged", "notes.md")
+	if err := os.WriteFile(source, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := stageUntrackedFile(source, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := content.HashRegularFile(destination)
+	if err != nil || scan.Hash != hash || scan.Mode != 0o600 {
+		t.Fatalf("metadata=%#v hash=%s err=%v", scan, hash, err)
+	}
+}
+
 func TestCheckOnlyRequiresGitWhenGitResourceExists(t *testing.T) {
 	home, profileDir := t.TempDir(), t.TempDir()
 	file := filepath.Join(home, "deploy")
@@ -209,6 +264,34 @@ func TestDetectRebuildsInternalResourceLinks(t *testing.T) {
 	}
 	if len(current.Links) != 1 || current.Links[0].SourceResource != "scripts" || current.Links[0].TargetResource != "dotfiles" || current.Links[0].Target != "bin/tool" {
 		t.Fatalf("links=%#v", current.Links)
+	}
+}
+
+func TestDetectCopyGitWorktreeExcludesGitAdministration(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "dotfiles")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitLifecycle(t, "init", root)
+	if err := os.WriteFile(filepath.Join(root, "tracked"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := ScanCopyResourceWithOptions(root, SnapshotOptions{ExcludeGitAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	includingAdmin, err := ScanCopyResource(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{HomeDir: home, Runner: command.SystemRunner{}}
+	current, _, err := p.Detect(context.Background(), profile.Resources{Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Items[0].Hash != expected.Hash || current.Items[0].Hash == includingAdmin.Hash {
+		t.Fatalf("detected=%s excluded=%s included=%s", current.Items[0].Hash, expected.Hash, includingAdmin.Hash)
 	}
 }
 
@@ -297,12 +380,12 @@ func TestPrepareTrackGitDiffStagesArtifactsTransactionally(t *testing.T) {
 	}
 	revision := strings.Repeat("b", 40)
 	runner := gitRunner{output: map[string]string{
-		"git -C " + root + " rev-parse --show-toplevel":                                                                       root + "\n",
-		"git -C " + root + " remote get-url origin":                                                                           "https://github.com/example/dotfiles.git\n",
-		"git -C " + root + " rev-parse HEAD":                                                                                  revision + "\n",
-		"git -C " + root + " status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none":                         "? notes.md\x00",
-		"git -C " + root + " diff --cached HEAD --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --": "index patch",
-		"git -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --":               "worktree patch",
+		"git -C " + root + " rev-parse --show-toplevel":                                               root + "\n",
+		"git -C " + root + " remote get-url origin":                                                   "https://github.com/example/dotfiles.git\n",
+		"git -C " + root + " rev-parse HEAD":                                                          revision + "\n",
+		"git -C " + root + " status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none": "? notes.md\x00",
+		"git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --cached HEAD --": "index patch",
+		"git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --":               "worktree patch",
 	}}
 	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: runner}
 	prepared, err := p.PrepareTrack(context.Background(), profile.Resources{}, root, TrackOptions{Strategy: "git+diff", IncludeUntracked: []string{"notes.md"}})

@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -203,7 +204,7 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 			if err != nil {
 				return resourcePlanState{}, nil, "", err
 			}
-			id := "resources.git.untracked." + saved.ID + "." + safeOperationID(file.Path)
+			id := "resources.git.untracked." + saved.ID + "." + safeOperationID(file.Path) + "." + fmt.Sprintf("%x", sha256.Sum256([]byte(file.Path)))[:12]
 			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "restore untracked Git file", Resource: "resource:" + saved.ID, File: &model.FileWrite{Source: filepath.Join(stateRoot, "untracked", filepath.FromSlash(file.Path)), Destination: filepath.Join(path, filepath.FromSlash(file.Path)), SourceHash: file.Hash, ExpectedMissing: true, Mode: &mode, RejectSymlinkParents: true}, DependsOn: []string{ready}, Risk: model.RiskLow})
 			ready = id
 		}
