@@ -53,6 +53,20 @@ func CaptureGitWorkingState(ctx context.Context, runner command.Runner, root str
 	if err := validateChangedGitContent(ctx, runner, root); err != nil {
 		return GitStateCapture{}, err
 	}
+	selectedPaths := make(map[string]bool, len(state.Untracked))
+	for _, item := range state.Untracked {
+		selectedPaths[item] = true
+	}
+	for _, raw := range selected {
+		if _, err := validateSelectedUntracked(root, raw, selectedPaths); err != nil {
+			return GitStateCapture{}, err
+		}
+	}
+	return calculateGitWorkingStateOverlay(ctx, runner, root, state, selected)
+}
+
+// calculateGitWorkingStateOverlay derives non-persisted Git state without inspecting content for secrets.
+func calculateGitWorkingStateOverlay(ctx context.Context, runner command.Runner, root string, state GitWorkingState, selected []string) (GitStateCapture, error) {
 	diffConfig := []string{"-c", "diff.external=", "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false", "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.algorithm=myers", "-c", "diff.indentHeuristic=false", "-c", "diff.compactionHeuristic=false", "-c", "diff.context=3", "-c", "diff.interHunkContext=0", "-c", "core.quotePath=true", "-C", root, "diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"}
 	indexArgs := append(append([]string{}, diffConfig...), "--cached", "HEAD", "--")
 	index, err := command.RunOutput(ctx, runner, MaxGitStateSize, "git", indexArgs...)
@@ -76,7 +90,7 @@ func CaptureGitWorkingState(ctx context.Context, runner command.Runner, root str
 		untracked[item] = true
 	}
 	for _, raw := range selected {
-		item, err := validateSelectedUntracked(root, raw, untracked)
+		item, err := overlaySelectedUntracked(root, raw, untracked)
 		if err != nil {
 			return GitStateCapture{}, err
 		}
@@ -105,7 +119,7 @@ func validateChangedGitContent(ctx context.Context, runner command.Runner, root 
 		if len(fields) != 9 || len(fields[1]) != 2 {
 			return fmt.Errorf("parse Git status record for safety scan")
 		}
-		xy, mode, blob, path := fields[1], fields[4], fields[7], fields[8]
+		xy, modes, blob, path := fields[1], fields[3:6], fields[7], fields[8]
 		if record[0] == '2' {
 			if i+1 >= len(records) {
 				return fmt.Errorf("parse Git rename status record for safety scan")
@@ -113,12 +127,18 @@ func validateChangedGitContent(ctx context.Context, runner command.Runner, root 
 			i++ // The following NUL record is the old path, not a desired path.
 		}
 
+		if xy[0] != '.' && (modes[0] == "160000" || modes[1] == "160000") {
+			return fmt.Errorf("unsupported submodule change: %s", path)
+		}
+		if xy[1] != '.' && (modes[1] == "160000" || modes[2] == "160000") {
+			return fmt.Errorf("unsupported submodule change: %s", path)
+		}
+
 		if xy[0] != '.' && xy[0] != 'D' {
 			if sensitiveResourcePath(path) {
 				return fmt.Errorf("sensitive tracked path: %s", path)
 			}
-			// Gitlinks point to commits, not blobs, and are represented by a directory.
-			if mode != "160000" {
+			if modes[1] != "160000" {
 				content, err := command.RunOutput(ctx, runner, MaxGitStateSize, "git", "-C", root, "cat-file", "blob", blob)
 				if err != nil {
 					return fmt.Errorf("read Git index blob %s: %w", path, err)
@@ -159,12 +179,9 @@ func validateChangedGitContent(ctx context.Context, runner command.Runner, root 
 }
 
 func validateSelectedUntracked(root, raw string, untracked map[string]bool) (profile.GitUntrackedFile, error) {
-	clean := pathpkg.Clean(strings.ReplaceAll(raw, "\\", "/"))
-	if raw == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || pathpkg.IsAbs(clean) || strings.Contains("/"+clean+"/", "/.git/") {
-		return profile.GitUntrackedFile{}, fmt.Errorf("invalid untracked path %q", raw)
-	}
-	if !untracked[clean] {
-		return profile.GitUntrackedFile{}, fmt.Errorf("untracked path is not eligible: %s", clean)
+	clean, err := validateSelectedUntrackedPath(raw, untracked)
+	if err != nil {
+		return profile.GitUntrackedFile{}, err
 	}
 	if sensitiveResourcePath(clean) {
 		return profile.GitUntrackedFile{}, fmt.Errorf("sensitive resource path: %s", clean)
@@ -189,6 +206,37 @@ func validateSelectedUntracked(root, raw string, untracked map[string]bool) (pro
 		return profile.GitUntrackedFile{}, err
 	}
 	return profile.GitUntrackedFile{Path: clean, Hash: hash, Mode: fmt.Sprintf("%04o", info.Mode().Perm())}, nil
+}
+
+func overlaySelectedUntracked(root, raw string, untracked map[string]bool) (profile.GitUntrackedFile, error) {
+	clean, err := validateSelectedUntrackedPath(raw, untracked)
+	if err != nil {
+		return profile.GitUntrackedFile{}, err
+	}
+	file, info, err := content.OpenRegularFile(filepath.Join(root, filepath.FromSlash(clean)))
+	if err != nil {
+		return profile.GitUntrackedFile{}, err
+	}
+	defer file.Close()
+	if info.Size() > MaxGitUntrackedFileSize {
+		return profile.GitUntrackedFile{}, fmt.Errorf("untracked file exceeds %d bytes: %s", MaxGitUntrackedFileSize, clean)
+	}
+	hash, err := content.HashOpenFile(file)
+	if err != nil {
+		return profile.GitUntrackedFile{}, err
+	}
+	return profile.GitUntrackedFile{Path: clean, Hash: hash, Mode: fmt.Sprintf("%04o", info.Mode().Perm())}, nil
+}
+
+func validateSelectedUntrackedPath(raw string, untracked map[string]bool) (string, error) {
+	clean := pathpkg.Clean(strings.ReplaceAll(raw, "\\", "/"))
+	if raw == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || pathpkg.IsAbs(clean) || strings.Contains("/"+clean+"/", "/.git/") {
+		return "", fmt.Errorf("invalid untracked path %q", raw)
+	}
+	if !untracked[clean] {
+		return "", fmt.Errorf("untracked path is not eligible: %s", clean)
+	}
+	return clean, nil
 }
 
 func itemSize(root, path string) int64 {

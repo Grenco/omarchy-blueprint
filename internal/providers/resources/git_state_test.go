@@ -120,7 +120,7 @@ func TestCaptureGitWorkingStateScansOnlyChangedDesiredContent(t *testing.T) {
 	}
 }
 
-func TestCaptureGitWorkingStateIgnoresRenameSourceAndGitlinks(t *testing.T) {
+func TestCaptureGitWorkingStateIgnoresRenameSourceAndAllowsCleanGitlinks(t *testing.T) {
 	root := initGitRepository(t)
 	original := "api_token=abcdefghijklmnopqrstuvwxyz\n" + strings.Repeat("unchanged\n", 20)
 	writeGitFile(t, root, "under", original)
@@ -137,13 +137,35 @@ func TestCaptureGitWorkingStateIgnoresRenameSourceAndGitlinks(t *testing.T) {
 	}
 
 	revision := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	runGit(t, root, "clone", root, "submodule")
 	runGit(t, root, "update-index", "--add", "--cacheinfo", "160000,"+revision+",submodule")
-	if _, err := CaptureGitWorkingState(context.Background(), command.SystemRunner{}, root, nil); err != nil {
-		t.Fatalf("staged gitlink was treated as a blob or regular file: %v", err)
+	if _, err := CaptureGitWorkingState(context.Background(), command.SystemRunner{}, root, nil); err == nil || !strings.Contains(err.Error(), "unsupported submodule change") {
+		t.Fatalf("staged gitlink err=%v", err)
 	}
 	runGit(t, root, "commit", "-m", "add submodule")
 	if _, err := CaptureGitWorkingState(context.Background(), command.SystemRunner{}, root, nil); err != nil {
 		t.Fatalf("clean gitlink was rejected: %v", err)
+	}
+}
+
+func TestCaptureGitWorkingStateRejectsChangedGitlinks(t *testing.T) {
+	root := t.TempDir()
+	revision := strings.Repeat("a", 40)
+	for name, status := range map[string]string{
+		"staged":   "1 M. N... 100644 160000 160000 a " + revision + " module\x00",
+		"unstaged": "1 .M N... 160000 160000 100644 " + revision + " b module\x00",
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := gitRunner{output: map[string]string{
+				"git -C " + root + " rev-parse --show-toplevel":                                               root + "\n",
+				"git -C " + root + " remote get-url origin":                                                   "https://github.com/example/repo.git\n",
+				"git -C " + root + " rev-parse HEAD":                                                          revision + "\n",
+				"git -C " + root + " status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none": status,
+			}}
+			if _, err := CaptureGitWorkingState(context.Background(), runner, root, nil); err == nil || !strings.Contains(err.Error(), "unsupported submodule change: module") {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
 

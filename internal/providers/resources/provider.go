@@ -622,7 +622,7 @@ func (p Provider) DetectDetailed(ctx context.Context, saved profile.Resources) (
 						selected = append(selected, file.Path)
 					}
 				}
-				capture, err := CaptureGitWorkingState(ctx, p.Runner, root, selected)
+				capture, err := calculateGitWorkingStateOverlay(ctx, p.Runner, root, git, selected)
 				if err != nil {
 					return Detection{}, fmt.Errorf("inspect Git state for %s: %w", item.ID, err)
 				}

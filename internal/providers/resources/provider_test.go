@@ -535,6 +535,63 @@ func TestCaptureGitDiffUnsafeStateLeavesArtifactsUntouched(t *testing.T) {
 	}
 }
 
+func TestDetectGitDiffWithSensitiveChangesSucceedsWhileCapturePreservesState(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	root := filepath.Join(home, "dotfiles")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "init")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	runGit(t, root, "config", "user.name", "Test User")
+	runGit(t, root, "remote", "add", "origin", "https://github.com/example/dotfiles.git")
+	writeGitFile(t, root, "tracked.txt", "safe\n")
+	runGit(t, root, "add", "tracked.txt")
+	runGit(t, root, "commit", "-m", "initial")
+	writeGitFile(t, root, "notes.md", "safe\n")
+	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: command.SystemRunner{}}
+	saved, _, err := p.Track(context.Background(), profile.Resources{}, root, TrackOptions{Strategy: "git+diff", IncludeUntracked: []string{"notes.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourcesPath := filepath.Join(profileDir, "resources", "resources.toml")
+	artifactPath := filepath.Join(profileDir, "resources", "git-state", "dotfiles", "untracked", "notes.md")
+	beforeResources, err := os.ReadFile(resourcesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeArtifact, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeGitFile(t, root, "tracked.txt", "api_token=abcdefghijklmnopqrstuvwxyz\n")
+	writeGitFile(t, root, "notes.md", "api_token=abcdefghijklmnopqrstuvwxyz\n")
+
+	detection, err := p.DetectDetailed(context.Background(), saved)
+	if err != nil || detection.Git["dotfiles"].UnstagedTracked != 1 || len(detection.Git["dotfiles"].Untracked) != 1 || len(Diff(saved, detection.Resources)) == 0 {
+		t.Fatalf("detection=%#v diff=%#v err=%v", detection, Diff(saved, detection.Resources), err)
+	}
+	if _, _, err := p.Capture(context.Background(), saved); err == nil || !strings.Contains(err.Error(), "sensitive tracked content") {
+		t.Fatalf("capture err=%v", err)
+	}
+	if got, err := os.ReadFile(resourcesPath); err != nil || !reflect.DeepEqual(got, beforeResources) {
+		t.Fatalf("resources metadata changed after rejected capture: %v", err)
+	}
+	if got, err := os.ReadFile(artifactPath); err != nil || !reflect.DeepEqual(got, beforeArtifact) {
+		t.Fatalf("untracked artifact changed after rejected capture: %v", err)
+	}
+	writeGitFile(t, root, "tracked.txt", "safe\n")
+	if _, _, err := p.Capture(context.Background(), saved); err == nil || !strings.Contains(err.Error(), "sensitive untracked content") {
+		t.Fatalf("capture err=%v", err)
+	}
+	if got, err := os.ReadFile(resourcesPath); err != nil || !reflect.DeepEqual(got, beforeResources) {
+		t.Fatalf("resources metadata changed after rejected untracked capture: %v", err)
+	}
+	if got, err := os.ReadFile(artifactPath); err != nil || !reflect.DeepEqual(got, beforeArtifact) {
+		t.Fatalf("untracked artifact changed after rejected capture: %v", err)
+	}
+}
+
 func gitDiffTestRunner(root, status string) gitRunner {
 	revision := strings.Repeat("a", 40)
 	return gitRunner{output: map[string]string{
