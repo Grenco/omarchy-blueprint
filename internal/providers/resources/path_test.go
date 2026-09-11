@@ -2,7 +2,11 @@ package resources
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/Grenco/omarchy-blueprint/internal/ownership"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 func TestHomePathRoundTrip(t *testing.T) {
@@ -20,6 +24,20 @@ func TestHomePathRoundTrip(t *testing.T) {
 		if _, err := ExpandHomePath(home, path); err == nil {
 			t.Fatalf("accepted invalid logical path %q", path)
 		}
+	}
+}
+
+func TestValidateEffectiveOwnership(t *testing.T) {
+	roots := map[string]string{"projects": "/home/test/.config/omarchy"}
+	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "config", Path: "/home/test/.config/omarchy", Recursive: true}}}
+	err := ValidateEffectiveOwnership(roots, claims)
+	for _, want := range []string{"projects", "/home/test/.config/omarchy", "config"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	if err := ValidateEffectiveOwnership(map[string]string{"projects": "/mnt/projects"}, claims); err != nil {
+		t.Fatalf("unexpected ownership conflict: %v", err)
 	}
 }
 
@@ -46,5 +64,28 @@ func TestResourcePathAndIDValidation(t *testing.T) {
 		if ValidateResourceID(id) == nil {
 			t.Fatalf("accepted invalid ID %q", id)
 		}
+	}
+}
+
+func TestResourcePathsResolve(t *testing.T) {
+	item := profile.Resource{ID: "projects", Path: "~/Projects"}
+	for _, test := range []struct {
+		name      string
+		overrides map[string]string
+		want      string
+	}{
+		{"default", nil, "/home/test/Projects"},
+		{"home override", map[string]string{"projects": "~/Code"}, "/home/test/Code"},
+		{"absolute override", map[string]string{"projects": "/mnt/projects"}, "/mnt/projects"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ResolveResourcePath(ResourcePaths{Home: "/home/test", Overrides: test.overrides}, item)
+			if err != nil || got != test.want {
+				t.Fatalf("ResolveResourcePath() = %q, %v; want %q, nil", got, err, test.want)
+			}
+			if item.Path != "~/Projects" {
+				t.Fatalf("item.Path = %q, want unchanged", item.Path)
+			}
+		})
 	}
 }

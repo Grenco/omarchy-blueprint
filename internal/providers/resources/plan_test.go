@@ -324,6 +324,102 @@ func TestPlanGitDiffReconstructsRealGitState(t *testing.T) {
 	}
 }
 
+func TestMachineMappedGitDiffReconstruction(t *testing.T) {
+	home, profileDir, origin := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "origin.git")
+	source := filepath.Join(home, "dotfiles")
+	mapped := filepath.Join(t.TempDir(), "desktop", "dotfiles")
+	runGitLifecycle(t, "init", "--bare", origin)
+	runGitLifecycle(t, "init", source)
+	runGitLifecycle(t, "-C", source, "config", "user.email", "test@example.invalid")
+	runGitLifecycle(t, "-C", source, "config", "user.name", "Blueprint Test")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitLifecycle(t, "-C", source, "add", "file.txt")
+	runGitLifecycle(t, "-C", source, "commit", "-m", "initial")
+	runGitLifecycle(t, "-C", source, "remote", "add", "origin", origin)
+	runGitLifecycle(t, "-C", source, "push", "origin", "HEAD")
+	runGitLifecycle(t, "-C", source, "remote", "set-url", "origin", "https://example.invalid/fixture.git")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("B\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitLifecycle(t, "-C", source, "add", "file.txt")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("C\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "notes.md"), []byte("notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: command.SystemRunner{}}
+	saved, _, err := p.Track(context.Background(), profile.Resources{}, source, TrackOptions{ID: "dotfiles", Strategy: "git+diff", IncludeUntracked: []string{"notes.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Items[0].Path != "~/dotfiles" {
+		t.Fatalf("portable path=%q", saved.Items[0].Path)
+	}
+	saved.Items[0].Remote = origin
+	p.ResourcePaths = ResourcePaths{Home: home, Overrides: map[string]string{"dotfiles": mapped}}
+	link := filepath.Join(home, ".config", "tool")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(source, "notes.md"), link); err != nil {
+		t.Fatal(err)
+	}
+	saved.Links = []profile.ResourceLink{{Source: "~/.config/tool", TargetResource: "dotfiles", Target: "notes.md", Origin: "inbound"}}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(context.Background(), saved, profile.Resources{}, 11, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := restore.NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	result, err := restore.Execute(context.Background(), command.SystemRunner{}, plan, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 0 || len(result.Blocked) != 0 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, "dotfiles")); !os.IsNotExist(err) {
+		t.Fatalf("portable root was restored: %v", err)
+	}
+	if got := runGitLifecycle(t, "-C", mapped, "rev-parse", "HEAD"); got != saved.Items[0].Revision {
+		t.Fatalf("HEAD=%q want=%q", got, saved.Items[0].Revision)
+	}
+	if got := runGitLifecycle(t, "-C", mapped, "show", ":file.txt"); got != "B" {
+		t.Fatalf("index=%q want=B", got)
+	}
+	if got := runGitLifecycle(t, "-C", mapped, "diff"); !strings.Contains(got, "+C") {
+		t.Fatalf("worktree diff=%q", got)
+	}
+	if info, err := os.Stat(filepath.Join(mapped, "notes.md")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("notes mode=%v err=%v", info, err)
+	}
+	if got, err := os.Readlink(link); err != nil {
+		t.Fatalf("inbound link err=%v", err)
+	} else if target, err := filepath.EvalSymlinks(filepath.Join(filepath.Dir(link), got)); err != nil || target != filepath.Join(mapped, "notes.md") {
+		t.Fatalf("inbound target=%q resolved=%q err=%v", got, target, err)
+	}
+	runGitLifecycle(t, "-C", mapped, "remote", "set-url", "origin", "https://example.invalid/fixture.git")
+	saved.Items[0].Remote = "https://example.invalid/fixture.git"
+	current, _, err := p.Detect(context.Background(), saved)
+	if err != nil || !Verify(saved, current).OK {
+		t.Fatalf("mapped detection=%#v err=%v", current, err)
+	}
+	p.ResourcePaths.Overrides = nil
+	current, _, err = p.Detect(context.Background(), saved)
+	if err != nil || current.Items[0].Revision != "" {
+		t.Fatalf("default-path detection=%#v err=%v", current, err)
+	}
+}
+
 func runGitLifecycle(t *testing.T, args ...string) string {
 	t.Helper()
 	out, err := (command.SystemRunner{}).Run(context.Background(), "git", args...)
@@ -348,6 +444,62 @@ func TestPlanGitDiffExistingOverlayMismatchIsSkipped(t *testing.T) {
 	}
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "existing resource differs") {
 		t.Fatalf("plan=%#v", plan)
+	}
+}
+
+func TestPlanMappedRootsUseMappedDestinationsAndPreserveDependencies(t *testing.T) {
+	home, profileDir, tools, repos := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "tools"), filepath.Join(t.TempDir(), "repos")
+	copy := profile.Resource{ID: "scripts", Path: "~/Scripts", Kind: "directory", Strategy: "copy", Hash: "hash", Mode: "0755"}
+	git := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/dotfiles.git", Revision: strings.Repeat("a", 40), IndexPatchHash: hashPlanBytes("index"), WorktreePatchHash: hashPlanBytes("worktree"), Untracked: []profile.GitUntrackedFile{{Path: "notes.md", Hash: hashPlanBytes("note"), Mode: "0600"}}}
+	saved := profile.Resources{Items: []profile.Resource{copy, git}, Links: []profile.ResourceLink{{SourceResource: "scripts", Source: "current", TargetResource: "dotfiles", Target: "notes.md", Origin: "resource"}, {Source: "~/.config/tool", TargetResource: "dotfiles", Target: "notes.md", Origin: "inbound"}}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"scripts": tools, "dotfiles": repos}}}
+	plan, err := p.Plan(context.Background(), saved, profile.Resources{}, 11, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Copy != nil && op.Copy.Destination != tools {
+			t.Fatalf("copy destination=%q", op.Copy.Destination)
+		}
+		if op.Command != nil && op.ID == "resources.git.clone.dotfiles" && op.Command[len(op.Command)-1] != repos {
+			t.Fatalf("clone=%v", op.Command)
+		}
+		if op.Command != nil && op.ID == "resources.git.checkout.dotfiles" && op.Command[2] != repos {
+			t.Fatalf("checkout=%v", op.Command)
+		}
+		if op.GitPatch != nil && op.GitPatch.Repository != repos {
+			t.Fatalf("patch=%#v", op.GitPatch)
+		}
+		if op.File != nil && op.ID == "resources.git.untracked.dotfiles.notes-md.754b6dc3f872" && op.File.Destination != filepath.Join(repos, "notes.md") {
+			t.Fatalf("untracked=%#v", op.File)
+		}
+		if op.Symlink != nil && op.Symlink.Destination == filepath.Join(tools, "current") && len(op.DependsOn) != 2 {
+			t.Fatalf("internal link dependencies=%#v", op)
+		}
+	}
+	for _, op := range plan.Operations {
+		if op.Symlink != nil && op.Symlink.Destination == filepath.Join(home, ".config", "tool") && !strings.Contains(op.Symlink.Target, "..") {
+			t.Fatalf("inbound target=%q", op.Symlink.Target)
+		}
+	}
+}
+
+func TestPlanMappedDestinationConflictDoesNotUsePortablePath(t *testing.T) {
+	home, mapped := t.TempDir(), filepath.Join(t.TempDir(), "Scripts")
+	if err := os.MkdirAll(filepath.Dir(mapped), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mapped, []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := profile.Resource{ID: "scripts", Path: "~/Scripts", Kind: "file", Strategy: "copy", Hash: "hash", Mode: "0644"}
+	p := Provider{HomeDir: home, ProfileDir: t.TempDir(), ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"scripts": mapped}}}
+	plan, err := p.Plan(context.Background(), profile.Resources{Items: []profile.Resource{item}}, profile.Resources{}, 11, "", "")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "existing resource differs") {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, "Scripts")); !os.IsNotExist(err) {
+		t.Fatalf("portable destination was considered: %v", err)
 	}
 }
 

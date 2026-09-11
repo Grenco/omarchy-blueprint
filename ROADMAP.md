@@ -3010,8 +3010,14 @@ administration data for Git worktrees). Missing resources can be reconstructed;
 existing differing destinations remain untouched. See
 [ADR 0015](docs/adr/0015-dirty-git-resource-policies.md) and the [Dirty Git
 State v2 design](docs/superpowers/specs/2026-09-10-dirty-git-state-v2-design.md).
-Path mappings, TUI workflows, and Git workflow helpers remain separate future
-work.
+
+Schema-11 **Machine Overlays v1 / Resource Path Mappings** is delivered.
+Explicit, portable machine overlays map complete Resource roots to a local
+`~/...` or absolute path while retaining each Resource's portable default path,
+content, and semantic links. Local machine selection is outside the profile;
+hardware-specific state and broader per-provider machine overlays remain
+future work. See [ADR 0016](docs/adr/0016-machine-overlay-resource-path-mappings.md).
+TUI workflows and Git workflow helpers remain separate future work.
 
 ---
 

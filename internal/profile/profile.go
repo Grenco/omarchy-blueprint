@@ -6,6 +6,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,20 +15,21 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 10
+const Schema = 11
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
 // their state as new schema versions arrive.
 const (
-	configSchema        = 2
-	defaultsSchema      = 3
-	shellSchema         = 4
-	hooksSchema         = 5
-	misePackagesSchema  = 6
-	resourcesSchema     = 7
-	configOverlaySchema = 8
-	gitStateSchema      = 10
+	configSchema         = 2
+	defaultsSchema       = 3
+	shellSchema          = 4
+	hooksSchema          = 5
+	misePackagesSchema   = 6
+	resourcesSchema      = 7
+	configOverlaySchema  = 8
+	gitStateSchema       = 10
+	machineOverlaySchema = 11
 )
 
 type Manifest struct {
@@ -147,6 +149,20 @@ type Resources struct {
 	IgnoredLinks []string       `json:"ignored_links,omitempty" toml:"ignored_links,omitempty"`
 }
 
+type Machines struct {
+	Items []Machine `json:"machines" toml:"-"`
+}
+
+type Machine struct {
+	Name          string                `json:"name" toml:"name"`
+	ResourcePaths []MachineResourcePath `json:"resource_paths,omitempty" toml:"resource_path,omitempty"`
+}
+
+type MachineResourcePath struct {
+	Resource string `json:"resource" toml:"resource"`
+	Path     string `json:"path" toml:"path"`
+}
+
 type Resource struct {
 	ID       string `json:"id" toml:"id"`
 	Path     string `json:"path" toml:"path"`
@@ -200,6 +216,7 @@ type Data struct {
 	Themes    Themes    `json:"themes"`
 	Plugins   Plugins   `json:"plugins"`
 	Resources Resources `json:"resources"`
+	Machines  Machines  `json:"machines"`
 	Config    Configs   `json:"config"`
 	Defaults  Defaults  `json:"defaults"`
 	Shell     Shell     `json:"shell"`
@@ -343,6 +360,11 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	if loadedSchema >= machineOverlaySchema {
+		if err := loadMachines(filepath.Join(dir, "machines"), &d.Machines); err != nil {
+			return d, err
+		}
+	}
 	return d, nil
 }
 
@@ -360,6 +382,9 @@ func Save(dir string, d Data) error {
 	}
 	sortHooks(d.Hooks.Items)
 	sortResources(&d.Resources)
+	if err := normalizeMachines(&d.Machines); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
@@ -382,6 +407,9 @@ func Save(dir string, d Data) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "resources"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "machines"), 0o755); err != nil {
 		return err
 	}
 	b, err := toml.Marshal(d.Manifest)
@@ -443,7 +471,91 @@ func Save(dir string, d Data) error {
 			return err
 		}
 	}
-	return nil
+	for _, machine := range d.Machines.Items {
+		contents, err := toml.Marshal(machine)
+		if err != nil {
+			return err
+		}
+		if err := atomicWrite(filepath.Join(dir, "machines", machine.Name+".toml"), contents); err != nil {
+			return err
+		}
+	}
+	return pruneMachineFiles(filepath.Join(dir, "machines"), d.Machines.Items)
+}
+
+func pruneMachineFiles(dir string, machines []Machine) error {
+	desired := make(map[string]bool, len(machines))
+	for _, item := range machines {
+		desired[item.Name+".toml"] = true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".toml" || desired[entry.Name()] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	dirHandle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer dirHandle.Close()
+	return dirHandle.Sync()
+}
+
+func loadMachines(dir string, machines *Machines) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".toml" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var machine Machine
+		if err := toml.Unmarshal(contents, &machine); err != nil {
+			return fmt.Errorf("parse machines/%s: %w", entry.Name(), err)
+		}
+		if strings.TrimSuffix(entry.Name(), ".toml") != machine.Name {
+			return fmt.Errorf("machine file name %q does not match name %q", entry.Name(), machine.Name)
+		}
+		if seen[machine.Name] {
+			return fmt.Errorf("duplicate machine name %q", machine.Name)
+		}
+		seen[machine.Name] = true
+		machines.Items = append(machines.Items, machine)
+	}
+	if err := validateMachines(machines.Items); err != nil {
+		return err
+	}
+	return normalizeMachines(machines)
 }
 
 // MarshalResources returns the canonical on-disk representation used by Save.
@@ -462,6 +574,9 @@ func Validate(d Data) error {
 	}
 	if strings.TrimSpace(d.Manifest.Profile.Name) == "" {
 		return errors.New("profile name is empty")
+	}
+	if err := validateMachines(d.Machines.Items); err != nil {
+		return err
 	}
 	for _, file := range d.Config.Files {
 		if err := ValidateConfigPath(file.Path); err != nil {
@@ -487,6 +602,49 @@ func Validate(d Data) error {
 				return fmt.Errorf("config include %q is below excluded path %q", included, excluded)
 			}
 		}
+	}
+	return nil
+}
+
+var validMachineIdentifier = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+func validateMachines(machines []Machine) error {
+	seen := make(map[string]bool, len(machines))
+	for _, item := range machines {
+		if item.Name == "" || item.Name == "." || item.Name == ".." || !validMachineIdentifier.MatchString(item.Name) {
+			return fmt.Errorf("invalid machine name %q", item.Name)
+		}
+		if seen[item.Name] {
+			return fmt.Errorf("duplicate machine name %q", item.Name)
+		}
+		seen[item.Name] = true
+		mapped := make(map[string]bool, len(item.ResourcePaths))
+		for _, mapping := range item.ResourcePaths {
+			if mapping.Resource == "" || mapping.Resource == "." || mapping.Resource == ".." || !validMachineIdentifier.MatchString(mapping.Resource) {
+				return fmt.Errorf("machine %q has invalid resource path %q", item.Name, mapping.Resource)
+			}
+			if mapped[mapping.Resource] {
+				return fmt.Errorf("machine %q has duplicate resource path %q", item.Name, mapping.Resource)
+			}
+			mapped[mapping.Resource] = true
+			if err := validateMachineMappingPath(mapping.Path); err != nil {
+				return fmt.Errorf("machine %q mapping for resource %q: %w", item.Name, mapping.Resource, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateMachineMappingPath(path string) error {
+	if strings.HasPrefix(path, "~/") {
+		clean := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(path, "~/")))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("mapping path escapes home: %s", path)
+		}
+		return nil
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) == string(filepath.Separator) {
+		return fmt.Errorf("mapping path must use ~/... or a non-root absolute path: %s", path)
 	}
 	return nil
 }
@@ -661,6 +819,35 @@ func sortResources(resources *Resources) {
 		return resources.Links[i].SourceResource < resources.Links[j].SourceResource
 	})
 	resources.IgnoredLinks = normalize(resources.IgnoredLinks)
+}
+
+func sortMachines(machines *Machines) {
+	for i := range machines.Items {
+		sort.Slice(machines.Items[i].ResourcePaths, func(a, b int) bool {
+			return machines.Items[i].ResourcePaths[a].Resource < machines.Items[i].ResourcePaths[b].Resource
+		})
+	}
+	sort.Slice(machines.Items, func(i, j int) bool { return machines.Items[i].Name < machines.Items[j].Name })
+}
+
+func normalizeMachines(machines *Machines) error {
+	names := map[string]bool{}
+	for i := range machines.Items {
+		machine := &machines.Items[i]
+		if names[machine.Name] {
+			return fmt.Errorf("duplicate machine name %q", machine.Name)
+		}
+		names[machine.Name] = true
+		resources := map[string]bool{}
+		for _, resourcePath := range machine.ResourcePaths {
+			if resources[resourcePath.Resource] {
+				return fmt.Errorf("machine %q has duplicate resource path %q", machine.Name, resourcePath.Resource)
+			}
+			resources[resourcePath.Resource] = true
+		}
+	}
+	sortMachines(machines)
+	return nil
 }
 
 func normalizeGitUntracked(resources *Resources) error {

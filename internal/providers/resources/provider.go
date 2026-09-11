@@ -20,11 +20,12 @@ import (
 )
 
 type Provider struct {
-	Runner     command.Runner
-	HomeDir    string
-	ProfileDir string
-	LinkRoots  []LinkSearchRoot
-	Ownership  ownership.Index
+	Runner        command.Runner
+	HomeDir       string
+	ProfileDir    string
+	LinkRoots     []LinkSearchRoot
+	Ownership     ownership.Index
+	ResourcePaths ResourcePaths
 }
 
 // GitWorkingSummary is runtime-only detail about local Git state.
@@ -72,46 +73,60 @@ func (p Provider) PrepareTrack(ctx context.Context, saved profile.Resources, pat
 	if err != nil {
 		return nil, err
 	}
-	logical, err := LogicalHomePath(p.HomeDir, abs)
-	if err != nil {
-		return nil, err
-	}
 	info, err := os.Lstat(abs)
 	if err != nil {
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is a symlink; track its owning resource instead", logical)
+		return nil, fmt.Errorf("%s is a symlink; track its owning resource instead", abs)
 	}
 	if !info.IsDir() && !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("unsupported resource type: %s", logical)
-	}
-	id := options.ID
-	if id == "" {
-		id = ResourceIDForPath(abs)
-	}
-	if err := ValidateResourceID(id); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unsupported resource type: %s", abs)
 	}
 	existing := -1
 	for i, item := range saved.Items {
-		root, err := ExpandHomePath(p.HomeDir, item.Path)
+		root, err := p.resourceRoot(item)
 		if err != nil {
 			return nil, err
 		}
 		if filepath.Clean(abs) == filepath.Clean(root) {
-			if options.ID != "" && options.ID != item.ID {
-				return nil, fmt.Errorf("resource %s is already tracked as %s", logical, item.ID)
-			}
 			existing = i
-			id = item.ID
 			continue
 		}
-		if item.ID == id || PathsOverlap(abs, root) {
-			return nil, fmt.Errorf("resource %s conflicts with tracked resource %s", logical, item.ID)
+		if PathsOverlap(abs, root) {
+			return nil, fmt.Errorf("resource %s conflicts with tracked resource %s", abs, item.ID)
 		}
 	}
-	if p.ProfileDir != "" && PathsOverlap(abs, p.ProfileDir) {
+	logical := ""
+	id := options.ID
+	if existing >= 0 {
+		item := saved.Items[existing]
+		logical, id = item.Path, item.ID
+		if options.ID != "" && options.ID != item.ID {
+			return nil, fmt.Errorf("resource %s is already tracked as %s", logical, item.ID)
+		}
+	} else {
+		logical, err = LogicalHomePath(p.HomeDir, abs)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" {
+			id = ResourceIDForPath(abs)
+		}
+		if err := ValidateResourceID(id); err != nil {
+			return nil, err
+		}
+		for _, item := range saved.Items {
+			if item.ID == id {
+				return nil, fmt.Errorf("resource %s conflicts with tracked resource %s", logical, item.ID)
+			}
+		}
+	}
+	profileDir, err := canonicalPath(p.ProfileDir)
+	if err != nil {
+		return nil, err
+	}
+	if profileDir != "" && PathsOverlap(abs, profileDir) {
 		return nil, fmt.Errorf("resource %s overlaps active profile directory", logical)
 	}
 	if conflicts := p.Ownership.TrackConflict(abs); len(conflicts) != 0 {
@@ -206,6 +221,20 @@ func (p Provider) PrepareTrack(ctx context.Context, saved profile.Resources, pat
 	return p.PrepareCapture(ctx, next, CaptureOptions{})
 }
 
+func canonicalPath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	return filepath.Clean(abs), nil
+}
+
 func (p Provider) Capture(ctx context.Context, saved profile.Resources) (profile.Resources, []model.Change, error) {
 	prepared, err := p.PrepareCapture(ctx, saved, CaptureOptions{})
 	if err != nil {
@@ -234,7 +263,7 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 		return nil, errors.New("home and profile directories are required")
 	}
 	next := cloneResources(saved)
-	if err := validateMetadata(p.HomeDir, next); err != nil {
+	if err := p.validateMetadata(next); err != nil {
 		return nil, err
 	}
 	parent := filepath.Join(p.ProfileDir, "resources")
@@ -247,7 +276,7 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	rawLinks := make(map[string][]RawLink)
 	for i := range next.Items {
 		item := &next.Items[i]
-		root, err := ExpandHomePath(p.HomeDir, item.Path)
+		root, err := p.resourceRoot(*item)
 		if err != nil {
 			return fail(err)
 		}
@@ -342,7 +371,11 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 		if item.Strategy != "copy" {
 			continue
 		}
-		links, err := ClassifyResourceLinks(p.HomeDir, item, rawLinks[item.ID], next.Items)
+		roots, err := p.resourceRoots(next.Items)
+		if err != nil {
+			return fail(err)
+		}
+		links, err := classifyResourceLinks(p.HomeDir, item, rawLinks[item.ID], next.Items, roots)
 		if err != nil {
 			return fail(err)
 		}
@@ -353,7 +386,11 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 			next.Links = append(next.Links, resourceLink(link, "resource"))
 		}
 	}
-	links, err := DiscoverLinks(p.HomeDir, p.roots(), next.Items, p.Ownership, next.IgnoredLinks)
+	roots, err := p.resourceRoots(next.Items)
+	if err != nil {
+		return fail(err)
+	}
+	links, err := discoverLinks(p.HomeDir, p.roots(), next.Items, roots, p.Ownership, next.IgnoredLinks)
 	if err != nil {
 		return fail(err)
 	}
@@ -564,7 +601,11 @@ func (p Provider) EnableLink(saved profile.Resources, source string) (profile.Re
 	if err != nil {
 		return saved, err
 	}
-	candidate, err := classifyLink(p.HomeDir, abs, saved.Items, "", p.Ownership)
+	roots, err := p.resourceRoots(saved.Items)
+	if err != nil {
+		return saved, err
+	}
+	candidate, err := classifyLink(p.HomeDir, abs, saved.Items, roots, "", p.Ownership)
 	if err != nil || candidate.Classification != LinkManagedInbound {
 		return saved, fmt.Errorf("link %s does not resolve into a tracked resource", source)
 	}
@@ -591,7 +632,7 @@ func (p Provider) DetectDetailed(ctx context.Context, saved profile.Resources) (
 	rawLinks := make(map[string][]RawLink)
 	for i := range current.Items {
 		item := &current.Items[i]
-		root, err := ExpandHomePath(p.HomeDir, item.Path)
+		root, err := p.resourceRoot(*item)
 		if err != nil {
 			return Detection{}, err
 		}
@@ -632,7 +673,11 @@ func (p Provider) DetectDetailed(ctx context.Context, saved profile.Resources) (
 			detection.Git[item.ID] = summary
 		}
 	}
-	links, err := DiscoverLinks(p.HomeDir, p.roots(), current.Items, p.Ownership, current.IgnoredLinks)
+	roots, err := p.resourceRoots(current.Items)
+	if err != nil {
+		return Detection{}, err
+	}
+	links, err := discoverLinks(p.HomeDir, p.roots(), current.Items, roots, p.Ownership, current.IgnoredLinks)
 	if err != nil {
 		return Detection{}, err
 	}
@@ -641,7 +686,7 @@ func (p Provider) DetectDetailed(ctx context.Context, saved profile.Resources) (
 		if item.Strategy != "copy" || currentItemMissing(item) {
 			continue
 		}
-		internal, err := ClassifyResourceLinks(p.HomeDir, item, rawLinks[item.ID], current.Items)
+		internal, err := classifyResourceLinks(p.HomeDir, item, rawLinks[item.ID], current.Items, roots)
 		if err != nil {
 			return Detection{}, err
 		}
@@ -669,6 +714,31 @@ func (p Provider) roots() []LinkSearchRoot {
 		return p.LinkRoots
 	}
 	return DefaultLinkSearchRoots(p.HomeDir)
+}
+
+// resourceRoot resolves a live Resource root without changing its portable
+// profile path. An unset context retains ExpandHomePath's existing semantics.
+func (p Provider) resourceRoot(item profile.Resource) (string, error) {
+	paths := p.ResourcePaths
+	if paths.Home == "" {
+		paths.Home = p.HomeDir
+	}
+	if len(paths.Overrides) == 0 {
+		return ExpandHomePath(p.HomeDir, item.Path)
+	}
+	return ResolveResourcePath(paths, item)
+}
+
+func (p Provider) resourceRoots(items []profile.Resource) (map[string]string, error) {
+	roots := make(map[string]string, len(items))
+	for _, item := range items {
+		root, err := p.resourceRoot(item)
+		if err != nil {
+			return nil, err
+		}
+		roots[item.ID] = root
+	}
+	return roots, nil
 }
 func resourceLink(link LinkCandidate, origin string) profile.ResourceLink {
 	return profile.ResourceLink{SourceResource: link.SourceResource, Source: link.Source, TargetResource: link.TargetResource, Target: link.TargetRelative, Origin: origin}

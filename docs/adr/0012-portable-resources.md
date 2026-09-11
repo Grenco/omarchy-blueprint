@@ -91,6 +91,10 @@ The v1 dirty-Git limitation is superseded for schema-10 profiles by
 [ADR 0015](0015-dirty-git-resource-policies.md). `git` now treats local state
 as informational, while `git+diff` preserves supported local state explicitly.
 
+Schema-11 machine path mappings use this Resource-ID link indirection to change
+Resource placement without rewriting semantic links; see
+[ADR 0016](0016-machine-overlay-resource-path-mappings.md).
+
 ## Rejected alternatives
 
 - Explicit-only symlink registration: too manual for dotfiles.

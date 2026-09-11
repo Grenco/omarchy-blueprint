@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
@@ -101,7 +102,7 @@ func (resourcesStateProvider) Empty(state any) bool {
 	resources, ok := state.(profile.Resources)
 	return ok && len(resources.Items) == 0
 }
-func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
+func (p resourcesStateProvider) provider(d profile.Data) (resourcesprovider.Provider, error) {
 	home, err := p.deps.HomeDir()
 	if err != nil {
 		return resourcesprovider.Provider{}, err
@@ -110,7 +111,11 @@ func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
 	if err != nil {
 		return resourcesprovider.Provider{}, err
 	}
-	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
+	profileDir, err := machine.CanonicalProfileRoot(p.opt.profileDir)
+	if err != nil {
+		return resourcesprovider.Provider{}, err
+	}
+	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
 	if _, user, err := p.deps.ConfigDirs(); err == nil {
 		for _, spec := range configprovider.DefaultSpecs {
 			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "config", Path: filepath.Join(user, spec.Path)})
@@ -128,13 +133,26 @@ func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
 	if plugins, err := p.deps.PluginDir(); err == nil {
 		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "plugins", Path: plugins, Recursive: true})
 	}
-	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: p.opt.profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims}, nil
+	context, err := resolveMachineContext(p.deps, p.opt, d)
+	if err != nil {
+		return resourcesprovider.Provider{}, err
+	}
+	if err := resourcesprovider.ValidateEffectiveOwnership(context.Roots, claims); err != nil {
+		return resourcesprovider.Provider{}, err
+	}
+	overrides := make(map[string]string)
+	if context.Selection.Machine != nil {
+		for _, mapping := range context.Selection.Machine.ResourcePaths {
+			overrides[mapping.Resource] = mapping.Path
+		}
+	}
+	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims, ResourcePaths: resourcesprovider.ResourcePaths{Home: home, Overrides: overrides}}, nil
 }
 func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
 	}
-	provider, err := p.provider()
+	provider, err := p.provider(*d)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -179,7 +197,7 @@ func (p resourcesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mod
 	return changes, err
 }
 func (p resourcesStateProvider) DiffWithGitWorkingState(ctx context.Context, d profile.Data) ([]model.Change, map[string]resourcesprovider.GitWorkingSummary, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -190,7 +208,7 @@ func (p resourcesStateProvider) DiffWithGitWorkingState(ctx context.Context, d p
 	return resourcesprovider.Diff(d.Resources, detection.Resources), detection.Git, nil
 }
 func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -201,7 +219,7 @@ func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info o
 	return provider.Plan(ctx, d.Resources, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, resourcesprovider.PlanOptions{Force: options.Force})
 }
 func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
@@ -212,7 +230,7 @@ func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data) (mod
 	return resourcesprovider.Verify(d.Resources, current), nil
 }
 func (p resourcesStateProvider) Check(ctx context.Context, d profile.Data) error {
-	provider, err := p.provider()
+	provider, err := p.provider(d)
 	if err != nil {
 		return err
 	}

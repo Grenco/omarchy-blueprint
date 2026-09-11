@@ -114,8 +114,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 10\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 10", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 11\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 11", savedManifest)
 	}
 }
 
@@ -194,6 +194,57 @@ func TestSaveRejectsNonCanonicalAndOverlappingConfigState(t *testing.T) {
 		d.Config = configs
 		if err := Save(t.TempDir(), d); err == nil {
 			t.Fatalf("invalid configs accepted: %#v", configs)
+		}
+	}
+}
+
+func TestSavePrunesStaleMachineFiles(t *testing.T) {
+	dir := t.TempDir()
+	d := New("test", time.Now())
+	d.Machines.Items = []Machine{{Name: "old"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "machines", "README"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.Machines.Items = []Machine{{Name: "new"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "machines", "old.toml")); !os.IsNotExist(err) {
+		t.Fatalf("old=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "machines", "new.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "machines", "README")); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil || !reflect.DeepEqual(loaded.Machines.Items, d.Machines.Items) {
+		t.Fatalf("machines=%#v err=%v", loaded.Machines, err)
+	}
+}
+
+func TestLoadRejectsInvalidMachineDefinitions(t *testing.T) {
+	for _, machineTOML := range []string{
+		"name = 'bad name'\n",
+		"name = 'desktop'\n[[resource_path]]\nresource = 'projects'\npath = 'relative'\n",
+		"name = 'desktop'\n[[resource_path]]\nresource = ''\npath = '~/Code'\n",
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte("schema = 11\n[profile]\nname = 'test'\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "machines"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "machines", "desktop.toml"), []byte(machineTOML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(dir); err == nil {
+			t.Fatalf("invalid machine accepted: %s", machineTOML)
 		}
 	}
 }
@@ -619,7 +670,7 @@ func TestSchema10ResourceGitDiffRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 10 || !reflect.DeepEqual(got.Resources, d.Resources) {
+	if got.Manifest.Schema != 11 || !reflect.DeepEqual(got.Resources, d.Resources) {
 		t.Fatalf("round trip=%#v", got.Resources)
 	}
 }
@@ -642,7 +693,124 @@ func TestSchema9GitResourceLoadsWithoutInventedGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := got.Resources.Items[0]
-	if got.Manifest.Schema != 10 || r.Strategy != "git" || r.IndexPatchHash != "" || r.WorktreePatchHash != "" || len(r.Untracked) != 0 {
+	if got.Manifest.Schema != 11 || r.Strategy != "git" || r.IndexPatchHash != "" || r.WorktreePatchHash != "" || len(r.Untracked) != 0 {
 		t.Fatalf("migrated resource=%#v", r)
+	}
+}
+
+func TestLoadSchema10MigratesWithNoMachines(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 10\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-11T00:00:00Z\nupdated_at = 2026-09-11T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest.Schema != 11 || len(got.Machines.Items) != 0 {
+		t.Fatalf("migration = %#v", got)
+	}
+}
+
+func TestLoadSchema11MachinesCanonicalizesAndValidates(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'main'\ncreated_at = 2026-09-11T00:00:00Z\nupdated_at = 2026-09-11T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "machines"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	framework := "name = \"framework\"\n\n[[resource_path]]\nresource = \"projects\"\npath = \"~/Code\"\n\n[[resource_path]]\nresource = \"dotfiles\"\npath = \"/mnt/dotfiles\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "machines", "framework.toml"), []byte(framework), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "machines", "ignored.txt"), []byte("ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Machines{Items: []Machine{{Name: "framework", ResourcePaths: []MachineResourcePath{{Resource: "dotfiles", Path: "/mnt/dotfiles"}, {Resource: "projects", Path: "~/Code"}}}}}
+	if !reflect.DeepEqual(got.Machines, want) {
+		t.Fatalf("machines = %#v, want %#v", got.Machines, want)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "machines", "framework.toml"), []byte(strings.Replace(framework, "name = \"framework\"", "name = \"desktop\"", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("filename/name mismatch error = %v", err)
+	}
+}
+
+func TestLoadSchema11RejectsDuplicateMachineResources(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'main'\ncreated_at = 2026-09-11T00:00:00Z\nupdated_at = 2026-09-11T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "machines"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "name = 'framework'\n[[resource_path]]\nresource = 'projects'\npath = '~/Code'\n[[resource_path]]\nresource = 'projects'\npath = '~/Work'\n"
+	if err := os.WriteFile(filepath.Join(dir, "machines", "framework.toml"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "duplicate resource path") {
+		t.Fatalf("duplicate resource error = %v", err)
+	}
+}
+
+func TestSaveLoadMachinesRoundTripInCanonicalOrder(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Machines = Machines{Items: []Machine{
+		{Name: "framework", ResourcePaths: []MachineResourcePath{{Resource: "projects", Path: "~/Code"}, {Resource: "dotfiles", Path: "/mnt/dotfiles"}}},
+		{Name: "desktop", ResourcePaths: []MachineResourcePath{{Resource: "music", Path: "/srv/music"}, {Resource: "photos", Path: "~/Pictures"}}},
+	}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(dir, "profile.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), "schema = 11\n") {
+		t.Fatalf("profile.toml = %q, want schema 11", manifest)
+	}
+	framework, err := os.ReadFile(filepath.Join(dir, "machines", "framework.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFramework := "name = 'framework'\n\n[[resource_path]]\nresource = 'dotfiles'\npath = '/mnt/dotfiles'\n\n[[resource_path]]\nresource = 'projects'\npath = '~/Code'\n"
+	if string(framework) != wantFramework {
+		t.Fatalf("framework.toml = %q, want %q", framework, wantFramework)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Machines{Items: []Machine{
+		{Name: "desktop", ResourcePaths: []MachineResourcePath{{Resource: "music", Path: "/srv/music"}, {Resource: "photos", Path: "~/Pictures"}}},
+		{Name: "framework", ResourcePaths: []MachineResourcePath{{Resource: "dotfiles", Path: "/mnt/dotfiles"}, {Resource: "projects", Path: "~/Code"}}},
+	}}
+	if !reflect.DeepEqual(got.Machines, want) {
+		t.Fatalf("machines = %#v, want %#v", got.Machines, want)
+	}
+}
+
+func TestSaveRejectsDuplicateMachineState(t *testing.T) {
+	for _, machines := range []Machines{
+		{Items: []Machine{{Name: "framework"}, {Name: "framework"}}},
+		{Items: []Machine{{Name: "framework", ResourcePaths: []MachineResourcePath{{Resource: "projects", Path: "~/Code"}, {Resource: "projects", Path: "~/Work"}}}}},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Machines = machines
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("invalid machines accepted: %#v", machines)
+		}
 	}
 }
