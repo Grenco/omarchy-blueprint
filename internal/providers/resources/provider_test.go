@@ -384,8 +384,8 @@ func TestPrepareTrackGitDiffStagesArtifactsTransactionally(t *testing.T) {
 		"git -C " + root + " remote get-url origin":                                                   "https://github.com/example/dotfiles.git\n",
 		"git -C " + root + " rev-parse HEAD":                                                          revision + "\n",
 		"git -C " + root + " status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none": "? notes.md\x00",
-		"git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --cached HEAD --": "index patch",
-		"git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --":               "worktree patch",
+		"git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -c diff.compactionHeuristic=false -c diff.context=3 -c diff.interHunkContext=0 -c core.quotePath=true -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --cached HEAD --": "index patch",
+		"git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -c diff.compactionHeuristic=false -c diff.context=3 -c diff.interHunkContext=0 -c core.quotePath=true -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --":               "worktree patch",
 	}}
 	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: runner}
 	prepared, err := p.PrepareTrack(context.Background(), profile.Resources{}, root, TrackOptions{Strategy: "git+diff", IncludeUntracked: []string{"notes.md"}})

@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -49,10 +50,10 @@ func CaptureGitWorkingState(ctx context.Context, runner command.Runner, root str
 	if state.Conflicted || state.Operation != "" || state.DirtySubmodule {
 		return GitStateCapture{}, fmt.Errorf("Git working state cannot be captured safely")
 	}
-	if err := validateTrackedGitContent(ctx, runner, root); err != nil {
+	if err := validateChangedGitContent(ctx, runner, root); err != nil {
 		return GitStateCapture{}, err
 	}
-	diffConfig := []string{"-c", "diff.external=", "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false", "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.algorithm=myers", "-c", "diff.indentHeuristic=false", "-C", root, "diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"}
+	diffConfig := []string{"-c", "diff.external=", "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false", "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.algorithm=myers", "-c", "diff.indentHeuristic=false", "-c", "diff.compactionHeuristic=false", "-c", "diff.context=3", "-c", "diff.interHunkContext=0", "-c", "core.quotePath=true", "-C", root, "diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"}
 	indexArgs := append(append([]string{}, diffConfig...), "--cached", "HEAD", "--")
 	index, err := command.RunOutput(ctx, runner, MaxGitStateSize, "git", indexArgs...)
 	if err != nil {
@@ -89,50 +90,69 @@ func CaptureGitWorkingState(ctx context.Context, runner command.Runner, root str
 	return result, nil
 }
 
-func validateTrackedGitContent(ctx context.Context, runner command.Runner, root string) error {
-	entries, err := command.RunOutput(ctx, runner, 8<<20, "git", "-C", root, "ls-files", "--stage", "-z")
+func validateChangedGitContent(ctx context.Context, runner command.Runner, root string) error {
+	status, err := command.RunOutput(ctx, runner, 8<<20, "git", "-C", root, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
-		return fmt.Errorf("list Git index entries: %w", err)
+		return fmt.Errorf("inspect Git status for safety scan: %w", err)
 	}
-	for _, entry := range strings.Split(string(entries), "\x00") {
-		if entry == "" {
+	records := strings.Split(string(status), "\x00")
+	for i := 0; i < len(records); i++ {
+		record := records[i]
+		if record == "" || (record[0] != '1' && record[0] != '2') {
 			continue
 		}
-		metadata, path, ok := strings.Cut(entry, "\t")
-		fields := strings.Fields(metadata)
-		if !ok || len(fields) != 3 || fields[2] != "0" {
-			continue
+		fields := strings.SplitN(record, " ", 9)
+		if len(fields) != 9 || len(fields[1]) != 2 {
+			return fmt.Errorf("parse Git status record for safety scan")
 		}
-		if sensitiveResourcePath(path) {
-			return fmt.Errorf("sensitive tracked path: %s", path)
-		}
-		blob, err := command.RunOutput(ctx, runner, MaxGitStateSize, "git", "-C", root, "cat-file", "blob", fields[1])
-		if err != nil {
-			return fmt.Errorf("read Git index blob %s: %w", path, err)
-		}
-		if result, err := sensitive.ScanReader(strings.NewReader(string(blob)), MaxGitStateSize); err != nil {
-			return fmt.Errorf("scan Git index blob %s: %w", path, err)
-		} else if result.Sensitive {
-			return fmt.Errorf("sensitive tracked content: %s", path)
+		xy, mode, blob, path := fields[1], fields[4], fields[7], fields[8]
+		if record[0] == '2' {
+			if i+1 >= len(records) {
+				return fmt.Errorf("parse Git rename status record for safety scan")
+			}
+			i++ // The following NUL record is the old path, not a desired path.
 		}
 
-		worktreePath := filepath.Join(root, filepath.FromSlash(path))
-		info, err := os.Lstat(worktreePath)
-		if err != nil {
-			if os.IsNotExist(err) {
+		if xy[0] != '.' && xy[0] != 'D' {
+			if sensitiveResourcePath(path) {
+				return fmt.Errorf("sensitive tracked path: %s", path)
+			}
+			// Gitlinks point to commits, not blobs, and are represented by a directory.
+			if mode != "160000" {
+				content, err := command.RunOutput(ctx, runner, MaxGitStateSize, "git", "-C", root, "cat-file", "blob", blob)
+				if err != nil {
+					return fmt.Errorf("read Git index blob %s: %w", path, err)
+				}
+				if result, err := sensitive.ScanReader(bytes.NewReader(content), MaxGitStateSize); err != nil {
+					return fmt.Errorf("scan Git index blob %s: %w", path, err)
+				} else if result.Sensitive {
+					return fmt.Errorf("sensitive tracked content: %s", path)
+				}
+			}
+		}
+
+		if xy[1] != '.' && xy[1] != 'D' {
+			if sensitiveResourcePath(path) {
+				return fmt.Errorf("sensitive tracked path: %s", path)
+			}
+			worktreePath := filepath.Join(root, filepath.FromSlash(path))
+			info, err := os.Lstat(worktreePath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return fmt.Errorf("stat Git worktree file %s: %w", path, err)
+			}
+			if !info.Mode().IsRegular() {
 				continue
 			}
-			return fmt.Errorf("stat Git worktree file %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		result, err := sensitive.ScanRegularFile(worktreePath, MaxGitStateSize)
-		if err != nil {
-			return fmt.Errorf("scan Git worktree file %s: %w", path, err)
-		}
-		if result.Sensitive {
-			return fmt.Errorf("sensitive tracked content: %s", path)
+			result, err := sensitive.ScanRegularFile(worktreePath, MaxGitStateSize)
+			if err != nil {
+				return fmt.Errorf("scan Git worktree file %s: %w", path, err)
+			}
+			if result.Sensitive {
+				return fmt.Errorf("sensitive tracked content: %s", path)
+			}
 		}
 	}
 	return nil
