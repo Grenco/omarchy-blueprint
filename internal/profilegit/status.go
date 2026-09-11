@@ -177,12 +177,14 @@ func repositoryTopLevel(ctx context.Context, runner command.Runner, root string)
 }
 
 func invalidGitMarker(root string) (bool, error) {
-	info, err := os.Lstat(filepath.Join(root, ".git"))
+	_, err := os.Lstat(filepath.Join(root, ".git"))
 	if os.IsNotExist(err) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return !info.IsDir(), nil
+	// Init calls this only after exact-root repository detection failed. Any
+	// remaining marker, including an empty directory, must be repaired by Git.
+	return true, nil
 }

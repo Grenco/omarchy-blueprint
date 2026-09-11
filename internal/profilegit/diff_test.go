@@ -66,6 +66,31 @@ func TestDiffUnbornHeadTreatsManagedFilesAsNew(t *testing.T) {
 	}
 }
 
+func TestDiffDoesNotRenderHistoricalSymlinkContent(t *testing.T) {
+	root := newDiffRepository(t)
+	path := filepath.Join(root, "config", "link")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("old-target", path); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "add", "config/link")
+	git(t, root, "commit", "-m", "add link")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, "regular replacement\n")
+	service, err := New(command.SystemRunner{}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Diff(context.Background(), "config/link")
+	if err != nil || len(got.Files) != 1 || got.Files[0].Document.Kind != inspection.DiffMetadata || got.Files[0].Document.Metadata[0] != (inspection.DiffFact{Key: "head-kind", Value: "symlink"}) {
+		t.Fatalf("symlink diff=%#v err=%v", got, err)
+	}
+}
+
 func newDiffRepository(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

@@ -65,8 +65,22 @@ func (s Service) diffFile(ctx context.Context, path string, unborn bool) (DiffFi
 		return DiffFile{}, fmt.Errorf("read profile diff %s: %w", path, err)
 	}
 	file := DiffFile{Path: path, Deleted: !exists, New: unborn || !s.headPathExists(ctx, path)}
+	if !regular && exists {
+		file.Document = inspection.DiffDocument{Kind: inspection.DiffMetadata, OldLabel: "HEAD/" + path, NewLabel: "worktree/" + path, Metadata: []inspection.DiffFact{{Key: "worktree-kind", Value: mode}}}
+		return file, nil
+	}
 	old := []byte(nil)
+	headMode := ""
 	if !unborn && !file.New {
+		headMode, err = s.headMode(ctx, path)
+		if err != nil {
+			file.Document = inspection.DiffDocument{Kind: inspection.DiffUnavailable, OldLabel: "HEAD/" + path, NewLabel: "worktree/" + path, Metadata: []inspection.DiffFact{{Key: "reason", Value: "historical object metadata is unavailable"}}}
+			return file, nil
+		}
+		if !regularGitMode(headMode) {
+			file.Document = inspection.DiffDocument{Kind: inspection.DiffMetadata, OldLabel: "HEAD/" + path, NewLabel: "worktree/" + path, Metadata: []inspection.DiffFact{{Key: "head-kind", Value: gitObjectKind(headMode)}}}
+			return file, nil
+		}
 		old, err = command.RunOutput(ctx, s.Runner, maxDiffOutput, "git", "-C", s.Root, "show", "HEAD:"+path)
 		if err != nil {
 			kind, fact := inspection.DiffUnavailable, inspection.DiffFact{Key: "reason", Value: "historical content is unavailable"}
@@ -77,17 +91,22 @@ func (s Service) diffFile(ctx context.Context, path string, unborn bool) (DiffFi
 			return file, nil
 		}
 	}
-	if !regular && exists {
-		file.Document = inspection.DiffDocument{Kind: inspection.DiffMetadata, OldLabel: "HEAD/" + path, NewLabel: "worktree/" + path, Metadata: []inspection.DiffFact{{Key: "worktree-kind", Value: mode}}}
-		return file, nil
-	}
 	file.Document = inspection.BuildTextDiff("HEAD/"+path, old, "worktree/"+path, worktree)
 	if file.Document.Kind == inspection.DiffMetadata && regular && !unborn && !file.New {
-		if headMode, err := s.headMode(ctx, path); err == nil && headMode != mode {
+		if headMode != mode {
 			file.Document.Metadata = []inspection.DiffFact{{Key: "old-mode", Value: headMode}, {Key: "new-mode", Value: mode}}
 		}
 	}
 	return file, nil
+}
+
+func regularGitMode(mode string) bool { return mode == "100644" || mode == "100755" }
+
+func gitObjectKind(mode string) string {
+	if mode == "120000" {
+		return "symlink"
+	}
+	return "special"
 }
 
 func (s Service) headPathExists(ctx context.Context, path string) bool {

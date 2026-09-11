@@ -55,6 +55,19 @@ func TestInitRefusesParentRepositoryAndInvalidGitMarker(t *testing.T) {
 			t.Fatalf("init error=%v", err)
 		}
 	})
+	t.Run("empty marker directory", func(t *testing.T) {
+		root := t.TempDir()
+		writeProfile(t, root)
+		if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := profileGitService(t, root).Init(context.Background()); err == nil || !strings.Contains(err.Error(), "not a valid repository") {
+			t.Fatalf("init error=%v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".git", "HEAD")); !os.IsNotExist(err) {
+			t.Fatalf("invalid marker was initialized: %v", err)
+		}
+	})
 }
 
 func TestRemoteLifecyclePreservesOtherRemotes(t *testing.T) {
