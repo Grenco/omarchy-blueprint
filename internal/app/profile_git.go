@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 )
 
@@ -115,11 +116,35 @@ func profileGitDiffCommand(deps Dependencies, opt *options) *cobra.Command {
 			human.WriteString("No managed changes.\n")
 		} else {
 			for _, file := range diff.Files {
-				fmt.Fprintf(&human, "  %s\n", file.Path)
+				fmt.Fprintf(&human, "\n%s\n", profilegit.SanitizeDisplay(file.Path))
+				renderProfileGitDocument(&human, file.Document)
 			}
 		}
 		return emit(deps.Out, opt.json, "profile git diff", true, map[string]any{"profilegit": diff}, human.String())
 	}}
+}
+
+func renderProfileGitDocument(human *strings.Builder, document inspection.DiffDocument) {
+	if document.Kind == inspection.DiffText {
+		for _, hunk := range document.Hunks {
+			fmt.Fprintf(human, "@@ -%d,%d +%d,%d @@\n", hunk.OldStart, hunk.OldCount, hunk.NewStart, hunk.NewCount)
+			for _, line := range hunk.Lines {
+				prefix := " "
+				if line.Kind == "add" {
+					prefix = "+"
+				}
+				if line.Kind == "remove" {
+					prefix = "-"
+				}
+				fmt.Fprintf(human, "%s%s\n", prefix, line.Text)
+			}
+		}
+		return
+	}
+	fmt.Fprintf(human, "  %s\n", document.Kind)
+	for _, fact := range document.Metadata {
+		fmt.Fprintf(human, "  %s: %s\n", profilegit.SanitizeDisplay(fact.Key), profilegit.SanitizeDisplay(fact.Value))
+	}
 }
 
 func profileGitCommitCommand(deps Dependencies, opt *options) *cobra.Command {
@@ -182,17 +207,17 @@ func renderProfileGitStatus(status profilegit.Status) string {
 	}
 	b.WriteString("  repository: yes\n")
 	if status.Branch != "" {
-		fmt.Fprintf(&b, "  branch: %s\n", status.Branch)
+		fmt.Fprintf(&b, "  branch: %s\n", profilegit.SanitizeDisplay(status.Branch))
 	} else {
 		b.WriteString("  branch: detached\n")
 	}
 	if status.Origin != "" {
-		fmt.Fprintf(&b, "  origin: %s\n", status.Origin)
+		fmt.Fprintf(&b, "  origin: %s\n", profilegit.SanitizeDisplay(status.Origin))
 	} else {
 		b.WriteString("  origin: not configured\n")
 	}
 	if status.Upstream != "" {
-		fmt.Fprintf(&b, "  upstream: %s\n", status.Upstream)
+		fmt.Fprintf(&b, "  upstream: %s\n", profilegit.SanitizeDisplay(status.Upstream))
 	}
 	fmt.Fprintf(&b, "  ahead/behind: %d/%d\n", status.Ahead, status.Behind)
 	b.WriteString("\nChanges\n")
@@ -209,7 +234,7 @@ func renderProfileGitStatus(status profilegit.Status) string {
 		if change.Managed {
 			kind = "managed"
 		}
-		fmt.Fprintf(&b, "  %-2s %-30s %s\n", state, change.Path, kind)
+		fmt.Fprintf(&b, "  %-2s %-30s %s\n", state, profilegit.SanitizeDisplay(change.Path), kind)
 	}
 	return b.String()
 }

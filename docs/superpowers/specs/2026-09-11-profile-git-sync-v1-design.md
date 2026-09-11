@@ -494,7 +494,10 @@ pull is not fast-forwardable; resolve repository history in Git/LazyGit
 cannot push detached HEAD in Blueprint v1
 ```
 
-Human output is actionable; JSON includes a stable error code where new workflow-specific errors are introduced.
+Human output is actionable. Blueprint's existing JSON envelope does not yet have
+a global structured-error contract, so Profile Git v1 returns the existing
+plain command failure output rather than introducing a Profile-Git-only error
+schema. A future cross-Blueprint error-envelope design may add stable codes.
 
 ## 21. Testing and acceptance
 

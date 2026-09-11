@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 // Result reports a profile repository mutation and refreshed local status.
@@ -16,6 +18,9 @@ type Result struct {
 
 // Init initializes a Git repository at exactly the profile root.
 func (s Service) Init(ctx context.Context) (Result, error) {
+	if _, err := profile.Load(s.Root); err != nil {
+		return Result{}, fmt.Errorf("load profile before initializing Git: %w", err)
+	}
 	status, err := s.Status(ctx)
 	if err != nil {
 		return Result{}, err
@@ -23,8 +28,22 @@ func (s Service) Init(ctx context.Context) (Result, error) {
 	if status.Repository {
 		return Result{Status: status}, nil
 	}
+	top, err := repositoryTopLevel(ctx, s.Runner, s.Root)
+	if err != nil {
+		return Result{}, gitError("inspect profile repository", err)
+	}
+	if top != "" && top != s.Root {
+		return Result{}, fmt.Errorf("profile is inside parent Git repository %s; initialize a standalone profile outside that repository", SanitizeDisplay(top))
+	}
+	invalid, err := invalidGitMarker(s.Root)
+	if err != nil {
+		return Result{}, err
+	}
+	if invalid {
+		return Result{}, fmt.Errorf("profile .git is not a valid repository directory; repair it with Git before initializing")
+	}
 	if _, err := s.Runner.Run(ctx, "git", "init", "-b", "main", s.Root); err != nil {
-		return Result{}, fmt.Errorf("initialize profile repository: %w", err)
+		return Result{}, gitError("initialize profile repository", err)
 	}
 	status, err = s.Status(ctx)
 	if err != nil {
@@ -62,7 +81,7 @@ func (s Service) SetRemote(ctx context.Context, rawURL string) (Result, error) {
 		command = []string{"-C", s.Root, "remote", "set-url", "origin", rawURL}
 	}
 	if _, err := s.Runner.Run(ctx, "git", command...); err != nil {
-		return Result{}, fmt.Errorf("set profile origin: %w", err)
+		return Result{}, gitError("set profile origin", err)
 	}
 	status, err = s.Status(ctx)
 	if err != nil {
@@ -81,7 +100,7 @@ func (s Service) RemoveRemote(ctx context.Context) (Result, error) {
 		return Result{Status: status}, nil
 	}
 	if _, err := s.Runner.Run(ctx, "git", "-C", s.Root, "remote", "remove", "origin"); err != nil {
-		return Result{}, fmt.Errorf("remove profile origin: %w", err)
+		return Result{}, gitError("remove profile origin", err)
 	}
 	status, err = s.Status(ctx)
 	if err != nil {
@@ -103,7 +122,7 @@ func (s Service) Fetch(ctx context.Context) (Result, error) {
 		return Result{}, fmt.Errorf("profile origin is not configured; set origin before fetching")
 	}
 	if _, err := s.Runner.Run(ctx, "git", "-C", s.Root, "fetch", "origin"); err != nil {
-		return Result{}, fmt.Errorf("fetch profile origin: %w", err)
+		return Result{}, gitError("fetch profile origin", err)
 	}
 	return s.syncResult(ctx)
 }
@@ -127,7 +146,7 @@ func (s Service) Pull(ctx context.Context) (Result, error) {
 		return Result{}, fmt.Errorf("profile repository has uncommitted changes; commit or discard them before pulling")
 	}
 	if _, err := s.Runner.Run(ctx, "git", "-C", s.Root, "pull", "--ff-only"); err != nil {
-		return Result{}, fmt.Errorf("pull profile with --ff-only (use Git or LazyGit to resolve divergent history): %w", err)
+		return Result{}, gitError("pull profile with --ff-only (use Git or LazyGit to resolve divergent history)", err)
 	}
 	return s.syncResult(ctx)
 }
@@ -155,7 +174,7 @@ func (s Service) Push(ctx context.Context) (Result, error) {
 		command = append(command, "--set-upstream", "origin", status.Branch)
 	}
 	if _, err := s.Runner.Run(ctx, "git", command...); err != nil {
-		return Result{}, fmt.Errorf("push profile: %w", err)
+		return Result{}, gitError("push profile", err)
 	}
 	return s.syncResult(ctx)
 }

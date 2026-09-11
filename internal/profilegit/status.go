@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -160,9 +161,28 @@ func statusChange(xy, path string) Change {
 // SanitizeRemote removes URL-form remote userinfo before display or logging.
 func SanitizeRemote(raw string) string {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.User == nil {
-		return raw
+	if err == nil && parsed.Scheme != "" && parsed.User != nil {
+		parsed.User = nil
+		return SanitizeDisplay(parsed.String())
 	}
-	parsed.User = nil
-	return parsed.String()
+	return SanitizeDisplay(urlUserinfo.ReplaceAllString(raw, "$1"))
+}
+
+func repositoryTopLevel(ctx context.Context, runner command.Runner, root string) (string, error) {
+	top, err := runner.Run(ctx, "git", "-C", root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", nil
+	}
+	return filepath.Clean(strings.TrimSpace(top)), nil
+}
+
+func invalidGitMarker(root string) (bool, error) {
+	info, err := os.Lstat(filepath.Join(root, ".git"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !info.IsDir(), nil
 }

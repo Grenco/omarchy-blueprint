@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,6 +139,39 @@ func TestProfileGitRefusesUnsafeOperationsAndSanitizesRemote(t *testing.T) {
 	if code, output := profileGitRun(t, profileDir, "profile", "git", "push"); code != 1 || !strings.Contains(output, "detached HEAD") {
 		t.Fatalf("detached push code=%d output=%q", code, output)
 	}
+}
+
+func TestProfileGitDiffRendersTextHunksAndRemoteFailureRedactsJSONMode(t *testing.T) {
+	profileDir := newProfileGitProfile(t)
+	profileGitMustRun(t, profileDir, "profile", "git", "init")
+	gitRun(t, "-C", profileDir, "config", "user.email", "test@example.invalid")
+	gitRun(t, "-C", profileDir, "config", "user.name", "Blueprint Test")
+	profileGitMustRun(t, profileDir, "profile", "git", "commit", "-m", "Initial profile")
+	if err := os.WriteFile(filepath.Join(profileDir, "profile.toml"), []byte("schema = 11\n[profile]\nname = 'changed'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, output := profileGitRun(t, profileDir, "profile", "git", "diff"); code != 0 || !strings.Contains(output, "@@") {
+		t.Fatalf("diff code=%d output=%q", code, output)
+	}
+
+	var out, stderr bytes.Buffer
+	deps := Dependencies{Runner: profileGitFailureRunner{}, Out: &out, Err: &stderr}
+	code := Execute(context.Background(), []string{"--profile", profileDir, "--json", "profile", "git", "remote", "set", "https://user:secret@example.invalid/repo"}, deps)
+	combined := out.String() + stderr.String()
+	if code != 1 || strings.Contains(combined, "user:secret") || strings.Contains(combined, "secret") {
+		t.Fatalf("credential leaked in JSON-mode failure: %q", combined)
+	}
+}
+
+type profileGitFailureRunner struct{}
+
+func (profileGitFailureRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	for _, arg := range args {
+		if strings.Contains(arg, "user:secret@") {
+			return "fatal: invalid URL https://user:secret@example.invalid/repo", &command.RunError{Name: name, Args: args, Output: "fatal: invalid URL https://user:secret@example.invalid/repo", Err: errors.New("exit status 128")}
+		}
+	}
+	return command.SystemRunner{}.Run(ctx, name, args...)
 }
 
 func newProfileGitProfile(t *testing.T) string {

@@ -4,16 +4,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 func TestInitCreatesRootRepositoryAndIsIdempotent(t *testing.T) {
-	parent := t.TempDir()
-	root := filepath.Join(parent, "profile")
-	mustMkdir(t, root)
-	git(t, parent, "init", "-b", "main")
+	root := t.TempDir()
+	writeProfile(t, root)
 	service, err := New(command.SystemRunner{}, root)
 	if err != nil {
 		t.Fatal(err)
@@ -29,6 +30,31 @@ func TestInitCreatesRootRepositoryAndIsIdempotent(t *testing.T) {
 	if err != nil || result.Changed {
 		t.Fatalf("second init=%#v err=%v", result, err)
 	}
+}
+
+func TestInitRefusesParentRepositoryAndInvalidGitMarker(t *testing.T) {
+	t.Run("parent repository", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "profile")
+		writeProfile(t, root)
+		git(t, parent, "init", "-b", "main")
+		if _, err := profileGitService(t, root).Init(context.Background()); err == nil || !strings.Contains(err.Error(), "parent Git repository") {
+			t.Fatalf("init error=%v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".git")); !os.IsNotExist(err) {
+			t.Fatalf("nested repository created: %v", err)
+		}
+	})
+	t.Run("invalid marker", func(t *testing.T) {
+		root := t.TempDir()
+		writeProfile(t, root)
+		if err := os.WriteFile(filepath.Join(root, ".git"), []byte("invalid"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := profileGitService(t, root).Init(context.Background()); err == nil || !strings.Contains(err.Error(), "not a valid repository") {
+			t.Fatalf("init error=%v", err)
+		}
+	})
 }
 
 func TestRemoteLifecyclePreservesOtherRemotes(t *testing.T) {
@@ -158,6 +184,8 @@ func TestPullRejectsDirtyRepositoryAndDivergence(t *testing.T) {
 		git(t, first, "commit", "-m", "remote")
 		git(t, first, "push")
 		mustWrite(t, filepath.Join(second, "README.md"), "local\n")
+		git(t, second, "config", "user.name", "Blueprint Test")
+		git(t, second, "config", "user.email", "blueprint@example.test")
 		git(t, second, "add", "README.md")
 		git(t, second, "commit", "-m", "local")
 		before := gitOutput(t, second, "rev-parse", "HEAD")
@@ -226,6 +254,36 @@ func TestPushRejectsDetachedHeadAndMissingOriginButAllowsDirtyWorktree(t *testin
 	})
 }
 
+func TestNetworkFailuresLeaveProfileBytesUntouched(t *testing.T) {
+	root := t.TempDir()
+	writeProfile(t, root)
+	service := profileGitService(t, root)
+	if _, err := service.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "config", "user.name", "Blueprint Test")
+	git(t, root, "config", "user.email", "blueprint@example.test")
+	if _, err := service.Commit(context.Background(), "initial"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetRemote(context.Background(), filepath.Join(t.TempDir(), "missing-origin.git")); err != nil {
+		t.Fatal(err)
+	}
+	before := mustRead(t, filepath.Join(root, "profile.toml"))
+	if _, err := service.Fetch(context.Background()); err == nil {
+		t.Fatal("fetch succeeded against missing remote")
+	}
+	if after := mustRead(t, filepath.Join(root, "profile.toml")); after != before {
+		t.Fatal("fetch changed profile bytes")
+	}
+	if _, err := service.Push(context.Background()); err == nil {
+		t.Fatal("push succeeded against missing remote")
+	}
+	if after := mustRead(t, filepath.Join(root, "profile.toml")); after != before {
+		t.Fatal("push changed profile bytes")
+	}
+}
+
 func gitRemoteClones(t *testing.T) (origin, first, second string) {
 	t.Helper()
 	parent := t.TempDir()
@@ -249,6 +307,13 @@ func profileGitService(t *testing.T, root string) Service {
 		t.Fatal(err)
 	}
 	return service
+}
+
+func writeProfile(t *testing.T, root string) {
+	t.Helper()
+	if err := profile.Save(root, profile.New("test", time.Now())); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func gitCommit(t *testing.T, root, path, content string) {

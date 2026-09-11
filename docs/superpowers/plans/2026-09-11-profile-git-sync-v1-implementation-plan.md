@@ -334,7 +334,7 @@ Prove:
 ```text
 profile loads + no repo → initializes branch main
 second Init            → successful Changed=false
-profile nested in unrelated parent repo → creates/uses only profile/.git when Init requested
+profile nested in unrelated parent repo → refused with actionable guidance and no mutation
 invalid existing .git filesystem object → error, no profile file mutation
 ```
 
@@ -382,6 +382,10 @@ Expected: FAIL.
 ```go
 _, err := s.Runner.Run(ctx, "git", "init", "-b", "main", s.Root)
 ```
+
+First require `profile.Load(root)`, distinguish an exact-root repository from
+parent-repository membership, and refuse a parent repository or incompatible
+`.git` marker without attempting repair.
 
 Before invoking, check whether `Status.Repository` is already true.
 
@@ -872,6 +876,10 @@ Changes
 ```
 
 JSON uses existing `emit` envelope and serializes `profilegit.Status`/`Diff` directly or through a stable DTO.
+
+Do not introduce Profile-Git-only JSON error codes. The existing global JSON
+failure behavior remains until Blueprint adopts a shared structured-error
+envelope.
 
 - [ ] **Step 7: Run tests**
 
