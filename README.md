@@ -114,6 +114,26 @@ captured; clean defaults stay out of the profile.
 The non-interactive form is `omarchy-blueprint restore --yes`. Combine `--json`
 with `--dry-run` or `--yes`; JSON restores never wait for a prompt.
 
+### Profile Git sync
+
+Blueprint can manage the simple capture-to-commit-to-push workflow for its own
+profile files:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile profile git init
+omarchy-blueprint --profile ~/omarchy-profile profile git remote set <remote>
+omarchy-blueprint --profile ~/omarchy-profile profile git status
+omarchy-blueprint --profile ~/omarchy-profile profile git diff
+omarchy-blueprint --profile ~/omarchy-profile profile git commit
+omarchy-blueprint --profile ~/omarchy-profile profile git push
+```
+
+Only Blueprint-managed profile paths are staged and committed; unrelated files
+in the same repository remain untouched. Status never fetches implicitly, pull
+is fast-forward-only and requires a clean repository, and existing staged work
+blocks Blueprint commits. Use Git or LazyGit for conflicts, rebases, history
+editing, interactive staging, or other advanced repository work.
+
 Package profiles are human-readable:
 
 ```text

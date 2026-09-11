@@ -223,6 +223,14 @@ On a disposable real Git repository with a portable remote:
 - Re-run aggregate `status`; only intentionally skipped conflicts or machine-specific differences should remain.
 - Capture again, review the Git diff for secrets and unexpected machine-local data, then push the profile.
 
+## Profile Git Sync
+
+- In a disposable profile, run `profile git init`, set a disposable origin, inspect status/diff, commit managed changes, and push.
+- Add an unmanaged `README.md`; confirm status reports it but Blueprint commit leaves it uncommitted.
+- From a second disposable checkout, fetch and fast-forward pull a clean profile, then confirm the profile still loads.
+- Confirm Blueprint commit refuses pre-staged work, pull refuses managed or unmanaged local changes, and divergent history is left for Git/LazyGit.
+- Confirm `profile git status --json` never displays userinfo from a credential-bearing origin URL.
+
 ## Portable Omarchy Hooks
 
 - Capture a flat `post-boot` hook and an immediate `post-update.d` hook; confirm both source bytes and recorded modes are present in the profile.
