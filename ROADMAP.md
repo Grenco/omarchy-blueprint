@@ -3017,7 +3017,13 @@ Explicit, portable machine overlays map complete Resource roots to a local
 content, and semantic links. Local machine selection is outside the profile;
 hardware-specific state and broader per-provider machine overlays remain
 future work. See [ADR 0016](docs/adr/0016-machine-overlay-resource-path-mappings.md).
-TUI workflows and Git workflow helpers remain separate future work.
+
+**Profile Git Sync v1** is delivered. Blueprint can inspect, initialize, diff,
+commit managed profile paths, and explicitly fetch, fast-forward pull, and push
+the profile repository. It deliberately excludes automatic commits, cloud
+backup, conflict resolution, history editing, and general Git workflows; those
+remain Git/LazyGit work. The TUI Sync screen remains future work under
+[ADR 0017](docs/adr/0017-tui-interactive-client-architecture.md).
 
 ---
 
