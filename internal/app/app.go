@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -42,12 +43,14 @@ type Dependencies struct {
 	HooksDir          func() (string, error)
 	MiseGlobalConfig  func() (string, error)
 	HomeDir           func() (string, error)
+	Hostname          func() (string, error)
 	ResourceLinkRoots func(string) []resourcesprovider.LinkSearchRoot
 }
 
 type options struct {
 	profileDir string
 	json       bool
+	machine    string
 }
 
 type driftError struct{}
@@ -94,6 +97,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	if deps.HomeDir == nil {
 		deps.HomeDir = os.UserHomeDir
 	}
+	if deps.Hostname == nil {
+		deps.Hostname = os.Hostname
+	}
 	if deps.ResourceLinkRoots == nil {
 		deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
 	}
@@ -116,8 +122,345 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
-	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false))
+	root.PersistentFlags().StringVar(&opt.machine, "machine", "", "use machine overlay for this invocation")
+	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), machineCommand(deps, opt))
 	return root
+}
+
+type machineOutput struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// resourceOutput supplements portable profile state with the live path used
+// for this invocation. It is never written back to resources.toml.
+type resourceOutput struct {
+	profile.Resource
+	DefaultPath   string `json:"default_path"`
+	EffectivePath string `json:"effective_path"`
+	Machine       string `json:"machine,omitempty"`
+}
+
+type resourcesOutput struct {
+	Items        []resourceOutput       `json:"items"`
+	Links        []profile.ResourceLink `json:"links"`
+	IgnoredLinks []string               `json:"ignored_links"`
+}
+
+type machineContext struct {
+	Selection machine.Selection
+	Home      string
+	Roots     map[string]string
+	Dormant   []string
+}
+
+func machineCommand(deps Dependencies, opt *options) *cobra.Command {
+	command := &cobra.Command{Use: "machine", Short: "Manage machine resource path overlays"}
+	command.AddCommand(machineAddCommand(deps, opt), machineListCommand(deps, opt), machineCurrentCommand(deps, opt), machineUseCommand(deps, opt), machineClearCommand(deps, opt), machineMapCommand(deps, opt), machineUnmapCommand(deps, opt))
+	return command
+}
+
+func machineAddCommand(deps Dependencies, opt *options) *cobra.Command {
+	var noUse bool
+	cmd := &cobra.Command{Use: "add [name]", Args: cobra.MaximumNArgs(1), Short: "Add a machine overlay", RunE: func(_ *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		name := ""
+		if len(args) == 1 {
+			name = args[0]
+		} else {
+			hostname, err := deps.Hostname()
+			if err != nil {
+				return err
+			}
+			name = machine.SuggestName(hostname, d.Machines.Items)
+		}
+		if err := machine.ValidateName(name); err != nil {
+			return err
+		}
+		if _, err := machine.Select(name, "", d.Machines.Items); err == nil {
+			return fmt.Errorf("machine %q already exists", name)
+		}
+		d.Machines.Items = append(d.Machines.Items, profile.Machine{Name: name})
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
+		if !noUse {
+			store, err := machineBindingStore(deps)
+			if err != nil {
+				return err
+			}
+			if err := store.Save(opt.profileDir, name); err != nil {
+				return err
+			}
+		}
+		source := "default"
+		if !noUse {
+			source = "binding"
+		}
+		return emit(deps.Out, opt.json, "machine add", true, map[string]any{"machine": machineOutput{Name: name, Source: source}}, fmt.Sprintf("Added machine %s.\n", name))
+	}}
+	cmd.Flags().BoolVar(&noUse, "no-use", false, "create without selecting locally")
+	return cmd
+}
+
+func machineListCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "list", Args: cobra.NoArgs, Short: "List machine overlays", RunE: func(_ *cobra.Command, _ []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		selection, err := selectedMachine(deps, opt, d)
+		if err != nil {
+			return err
+		}
+		type entry struct {
+			Name     string `json:"name"`
+			Selected bool   `json:"selected"`
+			Source   string `json:"source,omitempty"`
+		}
+		items := make([]entry, 0, len(d.Machines.Items))
+		var human strings.Builder
+		human.WriteString("Machines\n")
+		for _, item := range d.Machines.Items {
+			selected := item.Name == selection.Name
+			source := ""
+			if selected {
+				source = selection.Source
+			}
+			items = append(items, entry{Name: item.Name, Selected: selected, Source: source})
+			marker := " "
+			if selected {
+				marker = "*"
+			}
+			fmt.Fprintf(&human, "%s %s\n", marker, item.Name)
+		}
+		if selection.Source == "binding" {
+			human.WriteString("\n* locally selected for this profile\n")
+		}
+		return emit(deps.Out, opt.json, "machine list", true, map[string]any{"machines": items, "machine": machineOutput{Name: selection.Name, Source: selection.Source}}, human.String())
+	}}
+}
+
+func machineCurrentCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "current", Args: cobra.NoArgs, Short: "Show the active machine overlay", RunE: func(_ *cobra.Command, _ []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		selection, err := selectedMachine(deps, opt, d)
+		if err != nil {
+			return err
+		}
+		human := "Machine: none (portable default resource paths)\n"
+		if selection.Name != "" {
+			label := "local binding"
+			if selection.Source == "explicit" {
+				label = "explicit --machine"
+			}
+			human = fmt.Sprintf("Machine: %s (%s)\n", selection.Name, label)
+		}
+		return emit(deps.Out, opt.json, "machine current", true, map[string]any{"machine": machineOutput{Name: selection.Name, Source: selection.Source}}, human)
+	}}
+}
+
+func machineUseCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "use <name>", Args: cobra.ExactArgs(1), Short: "Select a machine overlay locally", RunE: func(_ *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		if _, err := machine.Select(args[0], "", d.Machines.Items); err != nil {
+			return err
+		}
+		store, err := machineBindingStore(deps)
+		if err != nil {
+			return err
+		}
+		if err := store.Save(opt.profileDir, args[0]); err != nil {
+			return err
+		}
+		return emit(deps.Out, opt.json, "machine use", true, map[string]any{"machine": machineOutput{Name: args[0], Source: "binding"}}, fmt.Sprintf("Using machine %s.\n", args[0]))
+	}}
+}
+
+func machineClearCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "clear", Args: cobra.NoArgs, Short: "Clear the local machine selection", RunE: func(_ *cobra.Command, _ []string) error {
+		store, err := machineBindingStore(deps)
+		if err != nil {
+			return err
+		}
+		if err := store.Clear(opt.profileDir); err != nil {
+			return err
+		}
+		return emit(deps.Out, opt.json, "machine clear", true, map[string]any{"machine": machineOutput{Source: "default"}}, "Machine selection cleared.\n")
+	}}
+}
+
+func machineMapCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "map <resource-ref> <path>", Args: cobra.ExactArgs(2), Short: "Map a resource root for the active machine", RunE: func(_ *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		selection, err := selectedMachine(deps, opt, d)
+		if err != nil {
+			return err
+		}
+		if selection.Machine == nil {
+			return errors.New("no machine selected; use `machine use <name>` or pass `--machine <name>`")
+		}
+		id := strings.TrimPrefix(args[0], "resource:")
+		if _, found := resourceByID(d.Resources.Items, id); !found {
+			return fmt.Errorf("resource %q is not tracked", id)
+		}
+		home, err := deps.HomeDir()
+		if err != nil {
+			return err
+		}
+		path, err := machine.NormalizeMappingPath(home, args[1])
+		if err != nil {
+			return err
+		}
+		candidate := *selection.Machine
+		candidate.ResourcePaths = append([]profile.MachineResourcePath(nil), selection.Machine.ResourcePaths...)
+		mapped := false
+		for i := range candidate.ResourcePaths {
+			if candidate.ResourcePaths[i].Resource == id {
+				candidate.ResourcePaths[i].Path = path
+				mapped = true
+			}
+		}
+		if !mapped {
+			candidate.ResourcePaths = append(candidate.ResourcePaths, profile.MachineResourcePath{Resource: id, Path: path})
+		}
+		state, err := deps.StateHome()
+		if err != nil {
+			return err
+		}
+		roots, _, err := machine.ResolveEffectiveRoots(home, opt.profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, &candidate)
+		if err != nil {
+			return err
+		}
+		provider, err := (resourcesStateProvider{deps: deps, opt: opt}).provider(d)
+		if err != nil {
+			return err
+		}
+		if err := resourcesprovider.ValidateEffectiveOwnership(roots, provider.Ownership); err != nil {
+			return err
+		}
+		for i := range d.Machines.Items {
+			if d.Machines.Items[i].Name == candidate.Name {
+				d.Machines.Items[i] = candidate
+				break
+			}
+		}
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
+		return emit(deps.Out, opt.json, "machine map", true, map[string]any{"machine": machineOutput{Name: selection.Name, Source: selection.Source}, "resource": id, "path": path}, fmt.Sprintf("Mapped resource %s to %s on %s.\n", id, path, selection.Name))
+	}}
+}
+
+func machineUnmapCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "unmap <resource-ref>", Args: cobra.ExactArgs(1), Short: "Remove a resource mapping from the active machine", RunE: func(_ *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		selection, err := selectedMachine(deps, opt, d)
+		if err != nil {
+			return err
+		}
+		if selection.Machine == nil {
+			return errors.New("no machine selected; use `machine use <name>` or pass `--machine <name>`")
+		}
+		id := strings.TrimPrefix(args[0], "resource:")
+		candidate := *selection.Machine
+		candidate.ResourcePaths = nil
+		for _, mapping := range selection.Machine.ResourcePaths {
+			if mapping.Resource != id {
+				candidate.ResourcePaths = append(candidate.ResourcePaths, mapping)
+			}
+		}
+		if len(candidate.ResourcePaths) != len(selection.Machine.ResourcePaths) {
+			for i := range d.Machines.Items {
+				if d.Machines.Items[i].Name == candidate.Name {
+					d.Machines.Items[i] = candidate
+					break
+				}
+			}
+			d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+			if err := profile.Save(opt.profileDir, d); err != nil {
+				return fmt.Errorf("save profile: %w", err)
+			}
+		}
+		return emit(deps.Out, opt.json, "machine unmap", true, map[string]any{"machine": machineOutput{Name: selection.Name, Source: selection.Source}, "resource": id}, fmt.Sprintf("Unmapped resource %s from %s.\n", id, selection.Name))
+	}}
+}
+
+func machineBindingStore(deps Dependencies) (machine.BindingStore, error) {
+	state, err := deps.StateHome()
+	if err != nil {
+		return machine.BindingStore{}, err
+	}
+	return machine.BindingStore{StateHome: state}, nil
+}
+
+func selectedMachine(deps Dependencies, opt *options, d profile.Data) (machine.Selection, error) {
+	state, err := deps.StateHome()
+	if err != nil {
+		return machine.Selection{}, err
+	}
+	bound, err := (machine.BindingStore{StateHome: state}).Load(opt.profileDir)
+	if err != nil {
+		return machine.Selection{}, err
+	}
+	return machine.Select(opt.machine, bound, d.Machines.Items)
+}
+
+func resolveMachineContext(deps Dependencies, opt *options, d profile.Data) (machineContext, error) {
+	home, err := deps.HomeDir()
+	if err != nil {
+		return machineContext{}, err
+	}
+	state, err := deps.StateHome()
+	if err != nil {
+		return machineContext{}, err
+	}
+	selection, err := selectedMachine(deps, opt, d)
+	if err != nil {
+		return machineContext{}, err
+	}
+	roots, dormant, err := machine.ResolveEffectiveRoots(home, opt.profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, selection.Machine)
+	if err != nil {
+		return machineContext{}, err
+	}
+	return machineContext{Selection: selection, Home: home, Roots: roots, Dormant: dormant}, nil
+}
+
+func machineContextOutput(context machineContext) machineOutput {
+	return machineOutput{Name: context.Selection.Name, Source: context.Selection.Source}
+}
+
+func runtimeResources(resources profile.Resources, context machineContext) resourcesOutput {
+	items := make([]resourceOutput, 0, len(resources.Items))
+	for _, item := range resources.Items {
+		output := resourceOutput{Resource: item, DefaultPath: item.Path, EffectivePath: context.Roots[item.ID], Machine: context.Selection.Name}
+		items = append(items, output)
+	}
+	return resourcesOutput{Items: items, Links: resources.Links, IgnoredLinks: resources.IgnoredLinks}
+}
+
+func renderMachineContext(context machineContext) string {
+	if context.Selection.Name == "" {
+		return "Machine: none (portable default resource paths)\n"
+	}
+	return "Machine: " + context.Selection.Name + "\n"
 }
 
 func trackCommand(deps Dependencies, opt *options) *cobra.Command {
@@ -129,7 +472,7 @@ func trackCommand(deps Dependencies, opt *options) *cobra.Command {
 			return profileError(opt.profileDir, err)
 		}
 		adapter := resourcesStateProvider{deps: deps, opt: opt}
-		provider, err := adapter.provider()
+		provider, err := adapter.provider(d)
 		if err != nil {
 			return err
 		}
@@ -231,7 +574,7 @@ func untrackCommand(deps Dependencies, opt *options) *cobra.Command {
 		if !strings.HasPrefix(ref, "resource:") && !strings.HasPrefix(ref, "link:") {
 			ref = "resource:" + ref
 		}
-		provider, err := (resourcesStateProvider{deps: deps, opt: opt}).provider()
+		provider, err := (resourcesStateProvider{deps: deps, opt: opt}).provider(d)
 		if err != nil {
 			return err
 		}
@@ -271,10 +614,21 @@ func trackedCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
+		context, err := resolveMachineContext(deps, opt, d)
+		if err != nil {
+			return err
+		}
 		var b strings.Builder
+		b.WriteString(renderMachineContext(context))
 		b.WriteString("Portable resources\n\n")
 		for _, item := range d.Resources.Items {
 			fmt.Fprintf(&b, "%s\n  %s\n  %s\n", item.ID, item.Path, item.Strategy)
+			if effective := context.Roots[item.ID]; effective != "" {
+				defaultPath, _ := resourcesprovider.ExpandHomePath(context.Home, item.Path)
+				if filepath.Clean(effective) != filepath.Clean(defaultPath) {
+					fmt.Fprintf(&b, "  effective: %s (%s)\n", effective, context.Selection.Name)
+				}
+			}
 		}
 		if len(d.Resources.IgnoredLinks) > 0 {
 			b.WriteString("Ignored links\n")
@@ -282,7 +636,7 @@ func trackedCommand(deps Dependencies, opt *options) *cobra.Command {
 				fmt.Fprintf(&b, "  %s\n", link)
 			}
 		}
-		return emit(deps.Out, opt.json, "tracked", true, map[string]any{"resources": d.Resources}, b.String())
+		return emit(deps.Out, opt.json, "tracked", true, map[string]any{"machine": machineContextOutput(context), "resources": runtimeResources(d.Resources, context)}, b.String())
 	}}
 }
 
@@ -398,6 +752,10 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err := profile.Validate(d); err != nil {
 			return err
 		}
+		context, err := resolveMachineContext(deps, opt, d)
+		if err != nil {
+			return err
+		}
 		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
 		if err != nil {
 			return err
@@ -413,10 +771,14 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 			checks = append(checks, providerCheckLabel(provider.ID()))
 		}
 		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
+		human += renderMachineContext(context)
+		if len(context.Dormant) > 0 {
+			human += fmt.Sprintf("ℹ dormant machine mappings: %s\n", strings.Join(context.Dormant, ", "))
+		}
 		if len(d.Packages.Excluded) > 0 {
 			human += fmt.Sprintf("ℹ %d excluded package(s): %s\n", len(d.Packages.Excluded), strings.Join(d.Packages.Excluded, ", "))
 		}
-		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "excluded": d.Packages.Excluded}, human)
+		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "excluded": d.Packages.Excluded, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
 	}}
 }
 
@@ -808,6 +1170,10 @@ func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary)
 }
 
 func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
+	machineContext, err := resolveMachineContext(deps, opt, d)
+	if err != nil {
+		return err
+	}
 	providers = capturedProviders(providers, d)
 	var changes []model.Change
 	var configScan *configprovider.ScanSummary
@@ -853,8 +1219,8 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	if diff {
 		commandName = "diff"
 	}
-	data := map[string]any{"drift": driftCount > 0, "changes": changes}
-	human := renderChanges(title, changes)
+	data := map[string]any{"drift": driftCount > 0, "changes": changes, "machine": machineContextOutput(machineContext), "resources": runtimeResources(d.Resources, machineContext)}
+	human := renderMachineContext(machineContext) + renderChanges(title, changes)
 	if len(gitWorking) > 0 {
 		data["git_working_state"] = gitWorking
 		human += renderGitWorkingState(d.Resources, gitWorking)

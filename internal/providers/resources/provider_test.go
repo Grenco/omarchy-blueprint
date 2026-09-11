@@ -603,3 +603,88 @@ func gitDiffTestRunner(root, status string) gitRunner {
 		"git -C " + root + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames --":               "worktree patch",
 	}, err: map[string]error{}}
 }
+
+func TestMappedRootsCaptureAndDetectAllStrategiesWithoutRewritingPortablePaths(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	copyRoot := filepath.Join(home, "Code", "copy")
+	gitRoot := filepath.Join(home, "Code", "git")
+	diffRoot := filepath.Join(home, "Code", "diff")
+	for _, root := range []string{copyRoot, gitRoot, diffRoot} {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(copyRoot, "current"), []byte("mapped"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	revision := strings.Repeat("a", 40)
+	runner := gitRunner{output: map[string]string{}, err: map[string]error{}}
+	for _, root := range []string{gitRoot, diffRoot} {
+		runner.output["git -C "+root+" rev-parse --show-toplevel"] = root + "\n"
+		runner.output["git -C "+root+" remote get-url origin"] = "https://example.invalid/repo.git\n"
+		runner.output["git -C "+root+" rev-parse HEAD"] = revision + "\n"
+		runner.output["git -C "+root+" status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none"] = ""
+	}
+	diffPrefix := "git -c diff.external= -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.srcPrefix=a/ -c diff.dstPrefix=b/ -c diff.algorithm=myers -c diff.indentHeuristic=false -c diff.compactionHeuristic=false -c diff.context=3 -c diff.interHunkContext=0 -c core.quotePath=true -C " + diffRoot + " diff --binary --full-index --no-color --no-ext-diff --no-textconv --no-renames"
+	runner.output[diffPrefix+" --cached HEAD --"] = "index patch"
+	runner.output[diffPrefix+" --"] = "worktree patch"
+	saved := profile.Resources{Items: []profile.Resource{
+		{ID: "copy", Path: "~/Projects/copy", Kind: "directory", Strategy: "copy"},
+		{ID: "git", Path: "~/Projects/git", Kind: "directory", Strategy: "git", Remote: "https://example.invalid/repo.git", Revision: revision},
+		{ID: "diff", Path: "~/Projects/diff", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/repo.git", Revision: revision},
+	}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: runner, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"copy": "~/Code/copy", "git": "~/Code/git", "diff": "~/Code/diff"}}}
+	captured, _, err := p.Capture(context.Background(), saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range captured.Items {
+		if item.Path != "~/Projects/"+item.ID {
+			t.Fatalf("resource %s path = %q", item.ID, item.Path)
+		}
+	}
+	items := resourceMap(captured.Items)
+	if items["copy"].Hash == "" || items["git"].Revision != revision || items["diff"].IndexPatchHash == "" {
+		t.Fatalf("captured=%#v", captured.Items)
+	}
+	current, _, err := p.Detect(context.Background(), captured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Verify(captured, current).OK {
+		t.Fatalf("mapped resources not satisfied: captured=%#v current=%#v", captured, current)
+	}
+}
+
+func TestPrepareTrackUpdatesMappedExistingResourceWithoutRewritingPortablePath(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	mapped := filepath.Join(home, "Code", "repo")
+	if err := os.MkdirAll(mapped, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mapped, "current"), []byte("mapped"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Resources{Items: []profile.Resource{{ID: "repo", Path: "~/Projects/repo", Kind: "directory", Strategy: "copy"}}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"repo": "~/Code/repo"}}}
+	prepared, err := p.PrepareTrack(context.Background(), saved, mapped, TrackOptions{Strategy: "copy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Rollback()
+	if len(prepared.State.Items) != 1 || prepared.State.Items[0].ID != "repo" || prepared.State.Items[0].Path != "~/Projects/repo" {
+		t.Fatalf("tracked=%#v", prepared.State.Items)
+	}
+}
+
+func TestCheckValidatesEffectiveMappedRoots(t *testing.T) {
+	home := t.TempDir()
+	p := Provider{HomeDir: home, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"one": "~/Code", "two": "~/Code/nested"}}}
+	saved := profile.Resources{Items: []profile.Resource{
+		{ID: "one", Path: "~/Projects/one", Kind: "directory", Strategy: "copy", Hash: strings.Repeat("a", 64), Mode: "0755"},
+		{ID: "two", Path: "~/Projects/two", Kind: "directory", Strategy: "copy", Hash: strings.Repeat("b", 64), Mode: "0755"},
+	}}
+	if err := p.Check(context.Background(), saved); err == nil || !strings.Contains(err.Error(), "resource roots overlap") {
+		t.Fatalf("check err=%v", err)
+	}
+}

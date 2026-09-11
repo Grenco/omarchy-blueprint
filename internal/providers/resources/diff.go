@@ -79,7 +79,7 @@ func Verify(saved, current profile.Resources) model.VerificationResult {
 }
 
 func (p Provider) Check(ctx context.Context, saved profile.Resources) error {
-	if err := validateMetadata(p.HomeDir, saved); err != nil {
+	if err := p.validateMetadata(saved); err != nil {
 		return err
 	}
 	for _, item := range saved.Items {
@@ -137,8 +137,8 @@ func (p Provider) Check(ctx context.Context, saved profile.Resources) error {
 	return nil
 }
 
-func validateMetadata(home string, resources profile.Resources) error {
-	if home == "" {
+func (p Provider) validateMetadata(resources profile.Resources) error {
+	if p.HomeDir == "" {
 		return fmt.Errorf("home directory is required")
 	}
 	ids, roots, sources := map[string]bool{}, []string{}, map[string]bool{}
@@ -150,7 +150,7 @@ func validateMetadata(home string, resources profile.Resources) error {
 			return fmt.Errorf("duplicate resource id %q", item.ID)
 		}
 		ids[item.ID] = true
-		root, err := ExpandHomePath(home, item.Path)
+		root, err := p.resourceRoot(item)
 		if err != nil {
 			return err
 		}
@@ -196,7 +196,7 @@ func validateMetadata(home string, resources profile.Resources) error {
 		}
 		sources[key] = true
 		if link.SourceResource == "" {
-			if _, err := ExpandHomePath(home, link.Source); err != nil {
+			if _, err := ExpandHomePath(p.HomeDir, link.Source); err != nil {
 				return err
 			}
 		} else if !SafeRelativeResourcePath(link.Source) || !ids[link.SourceResource] {
@@ -210,7 +210,7 @@ func validateMetadata(home string, resources profile.Resources) error {
 		}
 	}
 	for _, ignored := range resources.IgnoredLinks {
-		if _, err := ExpandHomePath(home, ignored); err != nil {
+		if _, err := ExpandHomePath(p.HomeDir, ignored); err != nil {
 			return err
 		}
 	}

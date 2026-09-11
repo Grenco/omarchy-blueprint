@@ -4,10 +4,42 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
+	"github.com/Grenco/omarchy-blueprint/internal/ownership"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 var validResourceID = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+// ResourcePaths resolves Resource live roots with optional machine mappings.
+// It is an alias so Resources callers need not import machine directly.
+type ResourcePaths = machine.ResourcePaths
+
+// ResolveResourcePath resolves item through the configured machine path policy.
+func ResolveResourcePath(paths ResourcePaths, item profile.Resource) (string, error) {
+	return paths.Resolve(item)
+}
+
+// ValidateEffectiveOwnership rejects effective roots claimed by another
+// semantic provider. Sorting IDs keeps validation errors deterministic.
+func ValidateEffectiveOwnership(roots map[string]string, claims ownership.Index) error {
+	ids := make([]string, 0, len(roots))
+	for id := range roots {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		root := roots[id]
+		if conflicts := claims.TrackConflict(root); len(conflicts) != 0 {
+			conflict := conflicts[0]
+			return fmt.Errorf("resource %q effective root %s is owned by %s at %s", id, root, conflict.Provider, conflict.Path)
+		}
+	}
+	return nil
+}
 
 func ExpandHomePath(home, logical string) (string, error) {
 	if logical == "~" || !strings.HasPrefix(logical, "~/") {

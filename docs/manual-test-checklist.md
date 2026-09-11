@@ -13,6 +13,15 @@
 - Confirm a differing existing resource or link is skipped rather than overwritten.
 - Confirm copied resources with a private key, `.env`, special file, or external internal symlink are rejected.
 
+### Machine Resource path mappings
+
+- Create and bind a machine overlay, then map a HOME-local Resource root and confirm capture and status use the mapped root.
+- Map a Resource to an external absolute root and confirm its saved `path` remains the portable default in `resources/resources.toml`.
+- Remove a mapped `git+diff` destination and restore it; confirm the checkout, saved local state, and dependent link are reconstructed at the mapped root.
+- Run a command with `--machine <name>` and confirm the local binding is unchanged afterward.
+- Run `machine clear` and confirm Resources use their portable default paths again.
+- Confirm mappings that overlap another Resource, the profile root, or Blueprint state are rejected.
+
 ### Dirty Git State v2
 
 On a disposable real Git repository with a portable remote:

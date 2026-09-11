@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
+	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
@@ -178,6 +180,342 @@ func TestStateProviderRegistryOrderIncludesConfigSlot(t *testing.T) {
 	}
 	if want := []string{"packages", "themes", "plugins", "resources", "config", "defaults", "shell", "hooks"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("provider order = %v, want %v", got, want)
+	}
+}
+
+func TestRootMachineFlag(t *testing.T) {
+	flag := newRoot(Dependencies{}).PersistentFlags().Lookup("machine")
+	if flag == nil {
+		t.Fatal("machine flag is not registered")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("machine default = %q, want empty", flag.DefValue)
+	}
+	if flag.Usage != "use machine overlay for this invocation" {
+		t.Errorf("machine usage = %q", flag.Usage)
+	}
+}
+
+func TestMachineCommandsManageOverlayAndBinding(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	now := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+	d := profile.New("test", now)
+	d.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}, {ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Out: &out, Err: &stderr, Now: func() time.Time { return now.Add(time.Minute) },
+		Hostname:  func() (string, error) { return "Framework", nil },
+		HomeDir:   func() (string, error) { return home, nil },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}
+	run := func(args ...string) string {
+		out.Reset()
+		stderr.Reset()
+		if code := Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps); code != 0 {
+			t.Fatalf("%v code=%d stderr=%s", args, code, stderr.String())
+		}
+		return out.String()
+	}
+	run("machine", "add")
+	loaded, err := profile.Load(profileDir)
+	if err != nil || len(loaded.Machines.Items) != 1 || loaded.Machines.Items[0].Name != "framework" {
+		t.Fatalf("machines = %#v, err=%v", loaded.Machines, err)
+	}
+	store := machine.BindingStore{StateHome: stateHome}
+	if bound, err := store.Load(profileDir); err != nil || bound != "framework" {
+		t.Fatalf("binding = %q, %v", bound, err)
+	}
+	if output := run("machine", "list"); !strings.Contains(output, "* framework") {
+		t.Fatalf("list output = %q", output)
+	}
+	if output := run("machine", "current"); !strings.Contains(output, "framework (local binding)") {
+		t.Fatalf("current output = %q", output)
+	}
+	run("machine", "add", "desktop", "--no-use")
+	if bound, _ := store.Load(profileDir); bound != "framework" {
+		t.Fatalf("binding after --no-use = %q", bound)
+	}
+	if output := run("--machine", "desktop", "machine", "current"); !strings.Contains(output, "desktop (explicit --machine)") {
+		t.Fatalf("explicit current output = %q", output)
+	}
+	if bound, _ := store.Load(profileDir); bound != "framework" {
+		t.Fatalf("binding after explicit selection = %q", bound)
+	}
+	run("machine", "use", "desktop")
+	if bound, _ := store.Load(profileDir); bound != "desktop" {
+		t.Fatalf("binding after use = %q", bound)
+	}
+	run("machine", "map", "projects", "~/Code")
+	loaded, err = profile.Load(profileDir)
+	if err != nil || loaded.Machines.Items[0].ResourcePaths[0].Path != "~/Code" {
+		t.Fatalf("home mapping = %#v, err=%v", loaded.Machines, err)
+	}
+	run("machine", "map", "resource:projects", filepath.Join(home, "Work"))
+	loaded, err = profile.Load(profileDir)
+	if err != nil || loaded.Machines.Items[0].ResourcePaths[0].Path != "~/Work" {
+		t.Fatalf("canonical home mapping = %#v, err=%v", loaded.Machines, err)
+	}
+	run("machine", "map", "projects", "/mnt/fast/projects")
+	loaded, err = profile.Load(profileDir)
+	if err != nil || !reflect.DeepEqual(loaded.Machines.Items[0].ResourcePaths, []profile.MachineResourcePath{{Resource: "projects", Path: "/mnt/fast/projects"}}) && !reflect.DeepEqual(loaded.Machines.Items[1].ResourcePaths, []profile.MachineResourcePath{{Resource: "projects", Path: "/mnt/fast/projects"}}) {
+		t.Fatalf("mapped machines = %#v, err=%v", loaded.Machines, err)
+	}
+	run("machine", "unmap", "projects")
+	loaded, err = profile.Load(profileDir)
+	if err != nil || len(loaded.Machines.Items[0].ResourcePaths) != 0 || len(loaded.Machines.Items[1].ResourcePaths) != 0 {
+		t.Fatalf("unmapped machines = %#v, err=%v", loaded.Machines, err)
+	}
+	run("machine", "clear")
+	if bound, err := store.Load(profileDir); err != nil || bound != "" {
+		t.Fatalf("binding after clear = %q, %v", bound, err)
+	}
+	if output := run("--json", "machine", "current"); !strings.Contains(output, `"source": "default"`) || strings.Contains(output, stateHome) {
+		t.Fatalf("current JSON = %s", output)
+	}
+}
+
+func TestMachineMapValidation(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	d := profile.New("test", time.Now())
+	d.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}, {ID: "other", Path: "~/Code/other", Kind: "directory", Strategy: "copy"}}
+	d.Machines.Items = []profile.Machine{{Name: "desktop"}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{Out: &out, Err: &stderr, HomeDir: func() (string, error) { return home, nil }, StateHome: func() (string, error) { return stateHome, nil }}
+	run := func(args ...string) (int, string) {
+		out.Reset()
+		stderr.Reset()
+		code := Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps)
+		return code, stderr.String()
+	}
+	if code, output := run("machine", "map", "projects", "~/Code"); code == 0 || !strings.Contains(output, "no machine selected; use `machine use <name>` or pass `--machine <name>`") {
+		t.Fatalf("no-selection map code=%d output=%s", code, output)
+	}
+	if code, output := run("--machine", "desktop", "machine", "map", "unknown", "~/Code"); code == 0 || !strings.Contains(output, "not tracked") {
+		t.Fatalf("unknown map code=%d output=%s", code, output)
+	}
+	if code, output := run("--machine", "desktop", "machine", "map", "projects", "~/Code"); code == 0 || !strings.Contains(output, "overlaps resource") {
+		t.Fatalf("overlap map code=%d output=%s", code, output)
+	}
+}
+
+func TestMachineContextIsReportedForResourceCommands(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	mapped := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(mapped, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mapped, "README"), []byte("mapped\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := profile.New("test", time.Now())
+	d.Manifest.Capture.Resources = true
+	d.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}}
+	d.Machines.Items = []profile.Machine{{Name: "desktop", ResourcePaths: []profile.MachineResourcePath{{Resource: "projects", Path: mapped}, {Resource: "retired", Path: "~/Retired"}}}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := (machine.BindingStore{StateHome: stateHome}).Save(profileDir, "desktop"); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner:    &machineRunner{official: map[string]bool{}, aur: map[string]bool{}},
+		Out:       &out,
+		Err:       &stderr,
+		HomeDir:   func() (string, error) { return home, nil },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}
+	run := func(args ...string) (int, string) {
+		out.Reset()
+		stderr.Reset()
+		return Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps), out.String()
+	}
+	for _, command := range [][]string{{"status", "resources"}, {"diff", "resources"}} {
+		code, output := run(command...)
+		if code != 2 || !strings.Contains(output, "Machine: desktop") {
+			t.Fatalf("%v code=%d output=%s", command, code, output)
+		}
+	}
+	if code, output := run("tracked"); code != 0 || !strings.Contains(output, "effective: "+mapped+" (desktop)") {
+		t.Fatalf("tracked code=%d output=%s", code, output)
+	}
+	code, output := run("--json", "status", "resources")
+	if code != 2 {
+		t.Fatalf("json status code=%d output=%s", code, output)
+	}
+	var envelope struct {
+		Data struct {
+			Machine   machineOutput `json:"machine"`
+			Resources struct {
+				Items []struct {
+					DefaultPath   string `json:"default_path"`
+					EffectivePath string `json:"effective_path"`
+					Machine       string `json:"machine"`
+				} `json:"items"`
+			} `json:"resources"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.Machine != (machineOutput{Name: "desktop", Source: "binding"}) || len(envelope.Data.Resources.Items) != 1 || envelope.Data.Resources.Items[0].DefaultPath != "~/Projects" || envelope.Data.Resources.Items[0].EffectivePath != mapped || envelope.Data.Resources.Items[0].Machine != "desktop" {
+		t.Fatalf("machine output=%s", output)
+	}
+
+	d.Manifest.Capture.Resources = false
+	d.Resources.Items = nil
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	if code, output := run("check"); code != 0 || !strings.Contains(output, "dormant machine mappings: projects, retired") || !strings.Contains(output, "Machine: desktop") {
+		t.Fatalf("check code=%d output=%s", code, output)
+	}
+}
+
+func TestAggregateCaptureAndExplicitMachineOverrideUseMappedRoots(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	laptopRoot, desktopRoot := filepath.Join(t.TempDir(), "laptop-projects"), filepath.Join(t.TempDir(), "desktop-projects")
+	writeAppFile(t, filepath.Join(laptopRoot, "README"), "laptop\n")
+	writeAppFile(t, filepath.Join(desktopRoot, "README"), "desktop\n")
+	laptopScan, err := resourcesprovider.ScanCopyResource(laptopRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopScan, err := resourcesprovider.ScanCopyResource(desktopRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := profile.New("test", time.Now())
+	d.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}}
+	d.Machines.Items = []profile.Machine{
+		{Name: "desktop", ResourcePaths: []profile.MachineResourcePath{{Resource: "projects", Path: desktopRoot}}},
+		{Name: "laptop", ResourcePaths: []profile.MachineResourcePath{{Resource: "projects", Path: laptopRoot}}},
+	}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	store := machine.BindingStore{StateHome: stateHome}
+	if err := store.Save(profileDir, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	builtinThemes := t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtinThemes, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, theme: "Nord"}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{
+		Runner: runner, In: strings.NewReader(""), Out: &out, Err: &stderr, Now: time.Now,
+		HomeDir: func() (string, error) { return home, nil }, StateHome: func() (string, error) { return stateHome, nil },
+		ThemeDirs:  func() (string, string, error) { return builtinThemes, t.TempDir(), nil },
+		ConfigDirs: func() (string, string, error) { return t.TempDir(), filepath.Join(home, ".config"), nil },
+		ShellPaths: shellPathFunc(t), HooksDir: func() (string, error) { return t.TempDir(), nil },
+	}
+	run := func(args ...string) int {
+		out.Reset()
+		stderr.Reset()
+		return Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps)
+	}
+	if code := run("capture"); code != 0 {
+		t.Fatalf("aggregate capture code=%d stderr=%s", code, stderr.String())
+	}
+	loaded, err := profile.Load(profileDir)
+	if err != nil || loaded.Resources.Items[0].Hash != laptopScan.Hash || loaded.Resources.Items[0].Path != "~/Projects" {
+		t.Fatalf("aggregate capture resources=%#v err=%v", loaded.Resources.Items, err)
+	}
+	if code := run("--machine", "desktop", "status", "resources"); code != 2 {
+		t.Fatalf("explicit status code=%d stderr=%s", code, stderr.String())
+	}
+	if code := run("--machine", "desktop", "capture", "resources"); code != 0 {
+		t.Fatalf("explicit capture code=%d stderr=%s", code, stderr.String())
+	}
+	loaded, err = profile.Load(profileDir)
+	if err != nil || loaded.Resources.Items[0].Hash != desktopScan.Hash || loaded.Resources.Items[0].Path != "~/Projects" {
+		t.Fatalf("explicit capture resources=%#v err=%v", loaded.Resources.Items, err)
+	}
+	if bound, err := store.Load(profileDir); err != nil || bound != "laptop" {
+		t.Fatalf("binding after explicit override=%q err=%v", bound, err)
+	}
+}
+
+func TestMachineMapAndCaptureAreIdempotent(t *testing.T) {
+	profileDir, stateHome, home, mapped := t.TempDir(), t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "projects")
+	writeAppFile(t, filepath.Join(mapped, "README"), "stable\n")
+	d := profile.New("test", time.Now())
+	d.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}}
+	d.Machines.Items = []profile.Machine{{Name: "desktop"}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	deps := Dependencies{Out: &out, Err: &stderr, Now: time.Now, HomeDir: func() (string, error) { return home, nil }, StateHome: func() (string, error) { return stateHome, nil }}
+	run := func(args ...string) {
+		out.Reset()
+		stderr.Reset()
+		if code := Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps); code != 0 {
+			t.Fatalf("%v code=%d stderr=%s", args, code, stderr.String())
+		}
+	}
+	run("--machine", "desktop", "machine", "map", "projects", mapped)
+	machinePath := filepath.Join(profileDir, "machines", "desktop.toml")
+	firstMapping, err := os.ReadFile(machinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run("--machine", "desktop", "machine", "map", "projects", mapped)
+	if got, err := os.ReadFile(machinePath); err != nil || !bytes.Equal(got, firstMapping) {
+		t.Fatalf("mapping changed on repeat: %q err=%v", got, err)
+	}
+	run("--machine", "desktop", "capture", "resources")
+	loaded, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := loaded.Resources
+	run("--machine", "desktop", "capture", "resources")
+	loaded, err = profile.Load(profileDir)
+	if err != nil || !reflect.DeepEqual(loaded.Resources, first) || loaded.Resources.Items[0].Path != "~/Projects" {
+		t.Fatalf("second capture=%#v first=%#v err=%v", loaded.Resources, first, err)
+	}
+}
+
+func TestResourcesProviderUsesSelectedMachineMappingAndValidatesOwnership(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	d := profile.New("test", time.Now())
+	d.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}}
+	d.Machines.Items = []profile.Machine{{Name: "desktop", ResourcePaths: []profile.MachineResourcePath{{Resource: "projects", Path: "~/Code"}}}}
+	if err := (machine.BindingStore{StateHome: stateHome}).Save(profileDir, "desktop"); err != nil {
+		t.Fatal(err)
+	}
+	deps := Dependencies{
+		HomeDir:    func() (string, error) { return home, nil },
+		StateHome:  func() (string, error) { return stateHome, nil },
+		ConfigDirs: func() (string, string, error) { return "", filepath.Join(home, ".config"), nil },
+		ShellPaths: func() (string, string, error) { return "", "", nil },
+		HooksDir:   func() (string, error) { return "", nil },
+		ThemeDirs:  func() (string, string, error) { return "", "", nil },
+		PluginDir:  func() (string, error) { return "", nil },
+		ResourceLinkRoots: func(string) []resourcesprovider.LinkSearchRoot {
+			return nil
+		},
+	}
+	adapter := resourcesStateProvider{deps: deps, opt: &options{profileDir: profileDir}}
+	p, err := adapter.provider(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ResourcePaths.Home != home || p.ResourcePaths.Overrides["projects"] != "~/Code" {
+		t.Fatalf("resource paths = %#v", p.ResourcePaths)
+	}
+	d.Machines.Items[0].ResourcePaths[0].Path = "~/.config/hypr"
+	if _, err := adapter.provider(d); err == nil || !strings.Contains(err.Error(), "owned by config") {
+		t.Fatalf("ownership err=%v", err)
 	}
 }
 

@@ -191,3 +191,38 @@ func TestClassifyResourceLinksReportsExternalAndBrokenTargets(t *testing.T) {
 		t.Fatalf("links=%#v err=%v", got, err)
 	}
 }
+
+func TestMappedResourceRootsClassifyInboundAndInternalLinks(t *testing.T) {
+	home, mapped := t.TempDir(), filepath.Join(t.TempDir(), "dotfiles")
+	if err := os.MkdirAll(filepath.Join(mapped, "tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mapped, "tool", "config"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inbound := filepath.Join(home, ".config", "tool")
+	if err := os.MkdirAll(filepath.Dir(inbound), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(mapped, "tool"), inbound); err != nil {
+		t.Fatal(err)
+	}
+	resources := []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}, {ID: "scripts", Path: "~/Scripts", Kind: "directory", Strategy: "copy"}}
+	scripts := filepath.Join(t.TempDir(), "scripts")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	internal := filepath.Join(scripts, "tool")
+	if err := os.Symlink(filepath.Join(mapped, "tool"), internal); err != nil {
+		t.Fatal(err)
+	}
+	roots := map[string]string{"dotfiles": mapped, "scripts": scripts}
+	links, err := discoverLinks(home, DefaultLinkSearchRoots(home), resources, roots, ownership.Index{}, nil)
+	if err != nil || len(links) != 1 || links[0].Classification != LinkManagedInbound || links[0].TargetResource != "dotfiles" || links[0].TargetRelative != "tool" {
+		t.Fatalf("inbound=%#v err=%v", links, err)
+	}
+	got, err := classifyResourceLinks(home, resources[1], []RawLink{{SourceAbsolute: internal}}, resources, roots)
+	if err != nil || len(got) != 1 || got[0].Classification != LinkManagedResource || got[0].SourceResource != "scripts" || got[0].Source != "tool" || got[0].TargetResource != "dotfiles" || got[0].TargetRelative != "tool" {
+		t.Fatalf("internal=%#v err=%v", got, err)
+	}
+}

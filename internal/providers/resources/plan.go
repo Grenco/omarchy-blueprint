@@ -140,7 +140,7 @@ func filesystemPrecondition(path string, info os.FileInfo) (model.FilesystemPrec
 }
 
 func (p Provider) planResource(saved, current profile.Resource) (resourcePlanState, []model.Operation, string, error) {
-	path, err := ExpandHomePath(p.HomeDir, saved.Path)
+	path, err := p.resourceRoot(saved)
 	if err != nil {
 		return resourcePlanState{}, nil, "", err
 	}
@@ -214,7 +214,7 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 func (p Provider) resourcePath(resources profile.Resources, id string) (string, error) {
 	for _, item := range resources.Items {
 		if item.ID == id {
-			return ExpandHomePath(p.HomeDir, item.Path)
+			return p.resourceRoot(item)
 		}
 	}
 	return "", fmt.Errorf("unknown resource %s", id)

@@ -38,6 +38,14 @@ func DefaultLinkSearchRoots(home string) []LinkSearchRoot {
 }
 
 func DiscoverLinks(home string, roots []LinkSearchRoot, resources []profile.Resource, index ownership.Index, ignored []string) ([]LinkCandidate, error) {
+	resourceRoots, err := defaultResourceRoots(home, resources)
+	if err != nil {
+		return nil, err
+	}
+	return discoverLinks(home, roots, resources, resourceRoots, index, ignored)
+}
+
+func discoverLinks(home string, roots []LinkSearchRoot, resources []profile.Resource, resourceRoots map[string]string, index ownership.Index, ignored []string) ([]LinkCandidate, error) {
 	seen, ignoredSet := map[string]bool{}, map[string]bool{}
 	for _, path := range ignored {
 		ignoredSet[path] = true
@@ -52,11 +60,11 @@ func DiscoverLinks(home string, roots []LinkSearchRoot, resources []profile.Reso
 			return nil, err
 		}
 		for _, source := range entries {
-			if seen[source] || insideResource(home, source, resources) {
+			if seen[source] || insideResource(source, resourceRoots) {
 				continue
 			}
 			seen[source] = true
-			candidate, err := classifyLink(home, source, resources, "", index)
+			candidate, err := classifyLink(home, source, resources, resourceRoots, "", index)
 			if err != nil {
 				return nil, err
 			}
@@ -71,9 +79,17 @@ func DiscoverLinks(home string, roots []LinkSearchRoot, resources []profile.Reso
 }
 
 func ClassifyResourceLinks(home string, resource profile.Resource, raw []RawLink, all []profile.Resource) ([]LinkCandidate, error) {
+	roots, err := defaultResourceRoots(home, all)
+	if err != nil {
+		return nil, err
+	}
+	return classifyResourceLinks(home, resource, raw, all, roots)
+}
+
+func classifyResourceLinks(home string, resource profile.Resource, raw []RawLink, all []profile.Resource, resourceRoots map[string]string) ([]LinkCandidate, error) {
 	var candidates []LinkCandidate
 	for _, link := range raw {
-		candidate, err := classifyLink(home, link.SourceAbsolute, all, resource.ID, ownership.Index{})
+		candidate, err := classifyLink(home, link.SourceAbsolute, all, resourceRoots, resource.ID, ownership.Index{})
 		if err != nil {
 			return nil, err
 		}
@@ -88,9 +104,9 @@ func ClassifyResourceLinks(home string, resource profile.Resource, raw []RawLink
 		}
 		if candidate.Classification == LinkManagedResource {
 			candidate.SourceResource = resource.ID
-			root, err := ExpandHomePath(home, resource.Path)
-			if err != nil {
-				return nil, err
+			root, ok := resourceRoots[resource.ID]
+			if !ok {
+				return nil, fmt.Errorf("unknown resource %s", resource.ID)
 			}
 			relative, err := filepath.Rel(root, link.SourceAbsolute)
 			if err != nil {
@@ -109,7 +125,11 @@ func IsTrackedInboundLink(home, source string, saved profile.Resources) (bool, e
 	if _, err := LogicalHomePath(home, source); err != nil {
 		return false, nil
 	}
-	candidate, err := classifyLink(home, source, saved.Items, "", ownership.Index{})
+	roots, err := defaultResourceRoots(home, saved.Items)
+	if err != nil {
+		return false, err
+	}
+	candidate, err := classifyLink(home, source, saved.Items, roots, "", ownership.Index{})
 	if err != nil {
 		return false, err
 	}
@@ -198,16 +218,19 @@ func isBlueprintBackupName(name string) bool {
 	return strings.HasPrefix(name, ".") && strings.Contains(name, ".omarchy-blueprint-backup-")
 }
 
-func classifyLink(home, source string, resources []profile.Resource, sourceResource string, index ownership.Index) (LinkCandidate, error) {
+func classifyLink(home, source string, resources []profile.Resource, resourceRoots map[string]string, sourceResource string, index ownership.Index) (LinkCandidate, error) {
 	raw, err := os.Readlink(source)
 	if err != nil {
 		return LinkCandidate{}, err
 	}
-	logical, err := LogicalHomePath(home, source)
-	if err != nil {
-		return LinkCandidate{}, err
+	candidate := LinkCandidate{Source: source, RawTarget: raw, SourceResource: sourceResource}
+	if sourceResource == "" {
+		logical, err := LogicalHomePath(home, source)
+		if err != nil {
+			return LinkCandidate{}, err
+		}
+		candidate.Source = logical
 	}
-	candidate := LinkCandidate{Source: logical, RawTarget: raw, SourceResource: sourceResource}
 	target := raw
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(source), target)
@@ -219,9 +242,9 @@ func classifyLink(home, source string, resources []profile.Resource, sourceResou
 	}
 	candidate.Resolved = resolved
 	for _, resource := range resources {
-		root, err := ExpandHomePath(home, resource.Path)
-		if err != nil {
-			return candidate, err
+		root, ok := resourceRoots[resource.ID]
+		if !ok {
+			return candidate, fmt.Errorf("unknown resource %s", resource.ID)
 		}
 		relative, err := filepath.Rel(root, resolved)
 		if err == nil && SafeRelativeResourcePath(relative) {
@@ -246,10 +269,21 @@ func classifyLink(home, source string, resources []profile.Resource, sourceResou
 	return candidate, nil
 }
 
-func insideResource(home, path string, resources []profile.Resource) bool {
+func defaultResourceRoots(home string, resources []profile.Resource) (map[string]string, error) {
+	roots := make(map[string]string, len(resources))
 	for _, resource := range resources {
 		root, err := ExpandHomePath(home, resource.Path)
-		if err == nil && within(root, path) {
+		if err != nil {
+			return nil, err
+		}
+		roots[resource.ID] = root
+	}
+	return roots, nil
+}
+
+func insideResource(path string, resourceRoots map[string]string) bool {
+	for _, root := range resourceRoots {
+		if within(root, path) {
 			return true
 		}
 	}
