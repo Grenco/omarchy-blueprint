@@ -73,26 +73,15 @@ func (p Provider) PrepareTrack(ctx context.Context, saved profile.Resources, pat
 	if err != nil {
 		return nil, err
 	}
-	logical, err := LogicalHomePath(p.HomeDir, abs)
-	if err != nil {
-		return nil, err
-	}
 	info, err := os.Lstat(abs)
 	if err != nil {
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is a symlink; track its owning resource instead", logical)
+		return nil, fmt.Errorf("%s is a symlink; track its owning resource instead", abs)
 	}
 	if !info.IsDir() && !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("unsupported resource type: %s", logical)
-	}
-	id := options.ID
-	if id == "" {
-		id = ResourceIDForPath(abs)
-	}
-	if err := ValidateResourceID(id); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unsupported resource type: %s", abs)
 	}
 	existing := -1
 	for i, item := range saved.Items {
@@ -101,18 +90,43 @@ func (p Provider) PrepareTrack(ctx context.Context, saved profile.Resources, pat
 			return nil, err
 		}
 		if filepath.Clean(abs) == filepath.Clean(root) {
-			if options.ID != "" && options.ID != item.ID {
-				return nil, fmt.Errorf("resource %s is already tracked as %s", logical, item.ID)
-			}
 			existing = i
-			id = item.ID
 			continue
 		}
-		if item.ID == id || PathsOverlap(abs, root) {
-			return nil, fmt.Errorf("resource %s conflicts with tracked resource %s", logical, item.ID)
+		if PathsOverlap(abs, root) {
+			return nil, fmt.Errorf("resource %s conflicts with tracked resource %s", abs, item.ID)
 		}
 	}
-	if p.ProfileDir != "" && PathsOverlap(abs, p.ProfileDir) {
+	logical := ""
+	id := options.ID
+	if existing >= 0 {
+		item := saved.Items[existing]
+		logical, id = item.Path, item.ID
+		if options.ID != "" && options.ID != item.ID {
+			return nil, fmt.Errorf("resource %s is already tracked as %s", logical, item.ID)
+		}
+	} else {
+		logical, err = LogicalHomePath(p.HomeDir, abs)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" {
+			id = ResourceIDForPath(abs)
+		}
+		if err := ValidateResourceID(id); err != nil {
+			return nil, err
+		}
+		for _, item := range saved.Items {
+			if item.ID == id {
+				return nil, fmt.Errorf("resource %s conflicts with tracked resource %s", logical, item.ID)
+			}
+		}
+	}
+	profileDir, err := canonicalPath(p.ProfileDir)
+	if err != nil {
+		return nil, err
+	}
+	if profileDir != "" && PathsOverlap(abs, profileDir) {
 		return nil, fmt.Errorf("resource %s overlaps active profile directory", logical)
 	}
 	if conflicts := p.Ownership.TrackConflict(abs); len(conflicts) != 0 {
@@ -205,6 +219,20 @@ func (p Provider) PrepareTrack(ctx context.Context, saved profile.Resources, pat
 		}
 	}
 	return p.PrepareCapture(ctx, next, CaptureOptions{})
+}
+
+func canonicalPath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	return filepath.Clean(abs), nil
 }
 
 func (p Provider) Capture(ctx context.Context, saved profile.Resources) (profile.Resources, []model.Change, error) {

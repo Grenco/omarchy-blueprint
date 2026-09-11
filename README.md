@@ -196,14 +196,19 @@ capture, status, restore, and dependent links; it never changes the portable
 Resource path or its saved content.
 
 ```sh
-omarchy-blueprint --profile ~/omarchy-profile machine add framework
+omarchy-blueprint --profile ~/omarchy-profile machine add
 omarchy-blueprint --profile ~/omarchy-profile machine map resource:projects ~/Code
 omarchy-blueprint --profile ~/omarchy-profile machine use framework
+omarchy-blueprint --profile ~/omarchy-profile machine rename framework work-laptop
 omarchy-blueprint --profile ~/omarchy-profile --machine desktop restore resources
+omarchy-blueprint --profile ~/omarchy-profile machine remove work-laptop
 ```
 
-`--machine` selects an overlay for one command and does not change the local
-binding. `machine clear` returns the profile to its portable Resource paths.
+An omitted `machine add` name prompts with a hostname-based suggestion; pass a
+name for non-interactive use (required with `--json`). `--machine` selects an
+overlay for one command and does not change the local binding. `machine clear`
+returns the profile to its portable Resource paths. Rename and remove change
+only portable placement policy, never live Resource bytes.
 Mappings accept `~/...` or absolute paths and apply only to complete Resource
 roots.
 

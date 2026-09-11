@@ -162,7 +162,7 @@ During `profile.Save`, ensure `machines/` exists and atomically write each in-me
 filepath.Join(dir, "machines", machine.Name+".toml")
 ```
 
-Use `toml.Marshal(machine)` after canonical sorting. Do not implement rename/delete pruning in this task.
+Use `toml.Marshal(machine)` after canonical sorting, then remove stale regular `*.toml` files not represented by `Data.Machines` and fsync `machines/`; preserve non-TOML files.
 
 - [ ] **Step 6: Add round-trip tests**
 
@@ -515,6 +515,8 @@ machine list
 machine current
 machine use <name>
 machine clear
+machine rename <old> <new>
+machine remove <name>
 machine map <resource-ref> <path>
 machine unmap <resource-ref>
 ```
@@ -528,7 +530,7 @@ func ValidateEffectiveOwnership(roots map[string]string, claims ownership.Index)
 
 - [ ] **Step 1: Write command tests for add/list/use/current/clear**
 
-Use injected `Hostname` and `StateHome`.
+Use injected `Hostname`, `In`/`Out`, and `StateHome`. Omitted human-mode add prompts for the hostname suggestion; blank accepts, typed input overrides, EOF makes no mutation, and JSON mode requires an explicit name. Cover rename/remove TOML and binding lifecycle plus no-mutation failures.
 
 Required sequence:
 
@@ -592,6 +594,8 @@ other default ~/Code/other
 → reject overlap
 
 projects → <profileDir>/nested
+
+Canonicalize `--profile .` before comparisons and cover a direct Resource provider whose `ProfileDir` is `.`.
 → reject profile overlap
 
 projects → <stateHome>/omarchy-blueprint/nested

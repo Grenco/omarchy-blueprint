@@ -80,7 +80,7 @@ func (s BindingStore) Clear(profileDir string) error {
 }
 
 func (s BindingStore) bindingPath(profileDir string) (string, string, error) {
-	profile, err := canonicalProfileRoot(profileDir)
+	profile, err := CanonicalProfileRoot(profileDir)
 	if err != nil {
 		return "", "", err
 	}
@@ -88,7 +88,9 @@ func (s BindingStore) bindingPath(profileDir string) (string, string, error) {
 	return profile, filepath.Join(s.StateHome, "omarchy-blueprint", "profiles", key, "machine.toml"), nil
 }
 
-func canonicalProfileRoot(profileDir string) (string, error) {
+// CanonicalProfileRoot returns the absolute, clean profile root, resolving
+// symlinks when the profile already exists.
+func CanonicalProfileRoot(profileDir string) (string, error) {
 	profile, err := filepath.Abs(profileDir)
 	if err != nil {
 		return "", err

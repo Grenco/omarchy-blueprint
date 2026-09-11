@@ -206,7 +206,7 @@ func TestMachineCommandsManageOverlayAndBinding(t *testing.T) {
 	}
 	var out, stderr bytes.Buffer
 	deps := Dependencies{
-		Out: &out, Err: &stderr, Now: func() time.Time { return now.Add(time.Minute) },
+		In: strings.NewReader("\n"), Out: &out, Err: &stderr, Now: func() time.Time { return now.Add(time.Minute) },
 		Hostname:  func() (string, error) { return "Framework", nil },
 		HomeDir:   func() (string, error) { return home, nil },
 		StateHome: func() (string, error) { return stateHome, nil },
@@ -268,12 +268,76 @@ func TestMachineCommandsManageOverlayAndBinding(t *testing.T) {
 	if err != nil || len(loaded.Machines.Items[0].ResourcePaths) != 0 || len(loaded.Machines.Items[1].ResourcePaths) != 0 {
 		t.Fatalf("unmapped machines = %#v, err=%v", loaded.Machines, err)
 	}
+	run("machine", "rename", "desktop", "work-laptop")
+	if bound, _ := store.Load(profileDir); bound != "work-laptop" {
+		t.Fatalf("binding after rename = %q", bound)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "machines", "desktop.toml")); !os.IsNotExist(err) {
+		t.Fatalf("old machine file remains: %v", err)
+	}
+	run("machine", "remove", "work-laptop")
+	if bound, _ := store.Load(profileDir); bound != "" {
+		t.Fatalf("binding after remove = %q", bound)
+	}
 	run("machine", "clear")
 	if bound, err := store.Load(profileDir); err != nil || bound != "" {
 		t.Fatalf("binding after clear = %q, %v", bound, err)
 	}
 	if output := run("--json", "machine", "current"); !strings.Contains(output, `"source": "default"`) || strings.Contains(output, stateHome) {
 		t.Fatalf("current JSON = %s", output)
+	}
+}
+
+func TestMachineAddPromptAndJSONRequirement(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, profile.New("test", time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	run := func(input string, args ...string) (int, string, string) {
+		var out, stderr bytes.Buffer
+		deps := Dependencies{In: strings.NewReader(input), Out: &out, Err: &stderr, StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "Framework", nil }}
+		return Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps), out.String(), stderr.String()
+	}
+	if code, out, stderr := run("\n", "machine", "add"); code != 0 || !strings.Contains(out, "Machine name [framework]:") || stderr != "" {
+		t.Fatalf("blank add code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	if code, _, stderr := run("work-laptop\n", "machine", "add"); code != 0 || stderr != "" {
+		t.Fatalf("typed add code=%d stderr=%q", code, stderr)
+	}
+	if code, out, _ := run("ignored\n", "machine", "add", "explicit-name"); code != 0 || strings.Contains(out, "Machine name") {
+		t.Fatalf("explicit add code=%d out=%q", code, out)
+	}
+	if code, out, stderr := run("", "--json", "machine", "add"); code == 0 || out != "" || !strings.Contains(stderr, "explicit name") {
+		t.Fatalf("JSON add code=%d out=%q stderr=%q", code, out, stderr)
+	}
+	loaded, err := profile.Load(profileDir)
+	if err != nil || len(loaded.Machines.Items) != 3 {
+		t.Fatalf("machines=%#v err=%v", loaded.Machines, err)
+	}
+}
+
+func TestMachineRenameAndRemoveFailuresDoNotMutate(t *testing.T) {
+	profileDir := t.TempDir()
+	d := profile.New("test", time.Now())
+	d.Machines.Items = []profile.Machine{{Name: "one"}, {Name: "two"}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	deps := Dependencies{Err: &stderr}
+	run := func(args ...string) int {
+		stderr.Reset()
+		return Execute(context.Background(), append([]string{"--profile", profileDir}, args...), deps)
+	}
+	if code := run("machine", "rename", "one", "two"); code == 0 {
+		t.Fatal("rename to existing succeeded")
+	}
+	if code := run("machine", "remove", "missing"); code == 0 {
+		t.Fatal("remove unknown succeeded")
+	}
+	loaded, err := profile.Load(profileDir)
+	if err != nil || !reflect.DeepEqual(loaded.Machines.Items, d.Machines.Items) {
+		t.Fatalf("machines=%#v err=%v", loaded.Machines, err)
 	}
 }
 
@@ -454,7 +518,7 @@ func TestMachineMapAndCaptureAreIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, stderr bytes.Buffer
-	deps := Dependencies{Out: &out, Err: &stderr, Now: time.Now, HomeDir: func() (string, error) { return home, nil }, StateHome: func() (string, error) { return stateHome, nil }}
+	deps := Dependencies{Runner: &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}, Out: &out, Err: &stderr, Now: time.Now, HomeDir: func() (string, error) { return home, nil }, StateHome: func() (string, error) { return stateHome, nil }}
 	run := func(args ...string) {
 		out.Reset()
 		stderr.Reset()

@@ -72,7 +72,6 @@ The overlay must never replace the portable `Resource.Path` in captured state.
 - machine-specific package/config/defaults state;
 - monitor/hardware providers;
 - hardware-driven automatic selection;
-- machine rename/delete;
 - mount management;
 - path variables other than HOME;
 - TUI.
@@ -131,6 +130,8 @@ No vendor/model/chassis probe is required in v1. Later UX may display such infor
 - `--no-use` creates it without changing local selection;
 - never overwrites an existing overlay.
 
+With no name in human mode, it prompts `Machine name [suggestion]:`; blank input accepts the collision-free hostname suggestion and typed input is used directly. JSON mode requires an explicit name and never prompts. EOF before a response makes no change. `machine rename <old> <new>` preserves mappings and updates this installation's matching binding; `machine remove <name>` removes the overlay and matching local binding without touching live Resource bytes.
+
 ## 6. Portable storage
 
 ### 6.1 Schema
@@ -187,9 +188,9 @@ type MachineResourcePath struct {
 
 `profile.Data` gains `Machines Machines`.
 
-`profile.Load` reads `machines/*.toml` for schema 11, verifies each filename matches `Machine.Name`, normalizes ordering, and rejects duplicate machine names or duplicate mappings for the same Resource within one machine.
+`profile.Load` reads `machines/*.toml` for schema 11, verifies each filename matches `Machine.Name`, validates every machine name, mapping Resource ID, and stored mapping path, normalizes ordering, and rejects duplicates.
 
-`profile.Save` writes canonical machine files already represented by `Data.Machines`. Machine rename/delete is out of scope, so v1 does not need to remove unrelated machine files automatically.
+`profile.Save` atomically writes all desired machine TOMLs, removes stale regular `*.toml` files not represented by `Data.Machines`, preserves unrelated non-TOML files, then fsyncs the machines directory.
 
 ### 6.4 Dormant mappings
 

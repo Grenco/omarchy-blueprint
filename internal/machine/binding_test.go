@@ -21,7 +21,7 @@ func TestBindingSaveLoadPathAndPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	canonical, err := canonicalProfileRoot(profile)
+	canonical, err := CanonicalProfileRoot(profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestBindingClearAndInvalidBindings(t *testing.T) {
 	if _, err := store.Load(profile); err == nil {
 		t.Error("Load accepted mismatched profile binding")
 	}
-	canonical, err := canonicalProfileRoot(profile)
+	canonical, err := CanonicalProfileRoot(profile)
 	if err != nil {
 		t.Fatal(err)
 	}

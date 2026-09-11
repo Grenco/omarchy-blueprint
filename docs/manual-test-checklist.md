@@ -15,6 +15,8 @@
 
 ### Machine Resource path mappings
 
+- Run `machine add` without a name, accept or edit the hostname suggestion, and confirm it creates and binds the overlay; confirm `--json machine add` requires an explicit name.
+- Rename an overlay, confirm its mappings and matching local binding move with it, then remove it and confirm only its placement policy and matching binding are removed.
 - Create and bind a machine overlay, then map a HOME-local Resource root and confirm capture and status use the mapped root.
 - Map a Resource to an external absolute root and confirm its saved `path` remains the portable default in `resources/resources.toml`.
 - Remove a mapped `git+diff` destination and restore it; confirm the checkout, saved local state, and dependent link are reconstructed at the mapped root.

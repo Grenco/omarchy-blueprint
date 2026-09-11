@@ -6,6 +6,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -479,7 +480,38 @@ func Save(dir string, d Data) error {
 			return err
 		}
 	}
-	return nil
+	return pruneMachineFiles(filepath.Join(dir, "machines"), d.Machines.Items)
+}
+
+func pruneMachineFiles(dir string, machines []Machine) error {
+	desired := make(map[string]bool, len(machines))
+	for _, item := range machines {
+		desired[item.Name+".toml"] = true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".toml" || desired[entry.Name()] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	dirHandle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer dirHandle.Close()
+	return dirHandle.Sync()
 }
 
 func loadMachines(dir string, machines *Machines) error {
@@ -518,14 +550,10 @@ func loadMachines(dir string, machines *Machines) error {
 			return fmt.Errorf("duplicate machine name %q", machine.Name)
 		}
 		seen[machine.Name] = true
-		resourcePaths := map[string]bool{}
-		for _, resourcePath := range machine.ResourcePaths {
-			if resourcePaths[resourcePath.Resource] {
-				return fmt.Errorf("machine %q has duplicate resource path %q", machine.Name, resourcePath.Resource)
-			}
-			resourcePaths[resourcePath.Resource] = true
-		}
 		machines.Items = append(machines.Items, machine)
+	}
+	if err := validateMachines(machines.Items); err != nil {
+		return err
 	}
 	return normalizeMachines(machines)
 }
@@ -546,6 +574,9 @@ func Validate(d Data) error {
 	}
 	if strings.TrimSpace(d.Manifest.Profile.Name) == "" {
 		return errors.New("profile name is empty")
+	}
+	if err := validateMachines(d.Machines.Items); err != nil {
+		return err
 	}
 	for _, file := range d.Config.Files {
 		if err := ValidateConfigPath(file.Path); err != nil {
@@ -571,6 +602,49 @@ func Validate(d Data) error {
 				return fmt.Errorf("config include %q is below excluded path %q", included, excluded)
 			}
 		}
+	}
+	return nil
+}
+
+var validMachineIdentifier = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+func validateMachines(machines []Machine) error {
+	seen := make(map[string]bool, len(machines))
+	for _, item := range machines {
+		if item.Name == "" || item.Name == "." || item.Name == ".." || !validMachineIdentifier.MatchString(item.Name) {
+			return fmt.Errorf("invalid machine name %q", item.Name)
+		}
+		if seen[item.Name] {
+			return fmt.Errorf("duplicate machine name %q", item.Name)
+		}
+		seen[item.Name] = true
+		mapped := make(map[string]bool, len(item.ResourcePaths))
+		for _, mapping := range item.ResourcePaths {
+			if mapping.Resource == "" || mapping.Resource == "." || mapping.Resource == ".." || !validMachineIdentifier.MatchString(mapping.Resource) {
+				return fmt.Errorf("machine %q has invalid resource path %q", item.Name, mapping.Resource)
+			}
+			if mapped[mapping.Resource] {
+				return fmt.Errorf("machine %q has duplicate resource path %q", item.Name, mapping.Resource)
+			}
+			mapped[mapping.Resource] = true
+			if err := validateMachineMappingPath(mapping.Path); err != nil {
+				return fmt.Errorf("machine %q mapping for resource %q: %w", item.Name, mapping.Resource, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateMachineMappingPath(path string) error {
+	if strings.HasPrefix(path, "~/") {
+		clean := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(path, "~/")))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("mapping path escapes home: %s", path)
+		}
+		return nil
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) == string(filepath.Separator) {
+		return fmt.Errorf("mapping path must use ~/... or a non-root absolute path: %s", path)
 	}
 	return nil
 }

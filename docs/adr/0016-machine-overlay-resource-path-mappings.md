@@ -128,11 +128,15 @@ omarchy-blueprint machine list
 omarchy-blueprint machine current
 omarchy-blueprint machine use <name>
 omarchy-blueprint machine clear
+omarchy-blueprint machine rename <old> <new>
+omarchy-blueprint machine remove <name>
 omarchy-blueprint machine map resource:<id> <path>
 omarchy-blueprint machine unmap resource:<id>
 ```
 
-`machine add` accepts an explicit name. When omitted, Blueprint derives a conservative suggestion from the hostname and uses it as the new name. The command binds the newly created overlay to the current profile unless `--no-use` is supplied.
+`machine add` accepts an explicit name without prompting. When omitted in human mode, Blueprint derives a conservative hostname suggestion and prompts `Machine name [suggestion]:`; blank input accepts it and typed input is validated as the name. JSON mode requires an explicit name. EOF before input makes no change. The command binds the newly created overlay unless `--no-use` is supplied.
+
+`machine rename <old> <new>` preserves mappings, renames the portable TOML, and updates this installation's binding only when it names `old`. `machine remove <name>` removes only portable placement policy and its TOML, never live Resource bytes; it clears this installation's matching binding. Other installations with an old binding receive the existing `machine use` / `machine clear` guidance.
 
 `machine map` and `machine unmap` operate on the effective machine selected by `--machine` or local binding and fail when there is no selected machine.
 
@@ -192,6 +196,8 @@ The mapping is not copied into the ResourceLink and the ResourceLink remains por
 
 Machine names use the same conservative identifier character set as Resource IDs: letters, digits, `.`, `_`, and `-`; empty, `.` and `..` are invalid.
 
+All persisted overlays are validated when loaded, including dormant and unselected mappings: machine names, Resource-style mapping IDs, and `~/...` or safe absolute mapping paths must be valid. Active-root overlap and ownership checks remain contextual. The active profile root is canonicalized (absolute, clean, and symlink-resolved when possible) before overlap checks.
+
 A mapping created through the CLI must reference an existing Resource ID.
 
 For an effective machine selection, all Resource roots are resolved before provider work begins. The resolved roots must not overlap one another. A mapping that would make two Resources equal, ancestor/descendant, or otherwise overlap is rejected.
@@ -220,7 +226,6 @@ This ADR does not add:
 - subtree Resource path mappings;
 - automatic mount creation;
 - machine overlay inheritance;
-- machine rename/delete workflows;
 - path variables beyond `~/...` expansion;
 - TUI screens.
 

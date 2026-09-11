@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
@@ -110,7 +111,11 @@ func (p resourcesStateProvider) provider(d profile.Data) (resourcesprovider.Prov
 	if err != nil {
 		return resourcesprovider.Provider{}, err
 	}
-	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
+	profileDir, err := machine.CanonicalProfileRoot(p.opt.profileDir)
+	if err != nil {
+		return resourcesprovider.Provider{}, err
+	}
+	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: profileDir, Recursive: true}, {Provider: "state", Path: state, Recursive: true}}}
 	if _, user, err := p.deps.ConfigDirs(); err == nil {
 		for _, spec := range configprovider.DefaultSpecs {
 			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "config", Path: filepath.Join(user, spec.Path)})
@@ -141,7 +146,7 @@ func (p resourcesStateProvider) provider(d profile.Data) (resourcesprovider.Prov
 			overrides[mapping.Resource] = mapping.Path
 		}
 	}
-	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: p.opt.profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims, ResourcePaths: resourcesprovider.ResourcePaths{Home: home, Overrides: overrides}}, nil
+	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims, ResourcePaths: resourcesprovider.ResourcePaths{Home: home, Overrides: overrides}}, nil
 }
 func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {

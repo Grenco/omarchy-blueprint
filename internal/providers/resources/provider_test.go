@@ -677,6 +677,46 @@ func TestPrepareTrackUpdatesMappedExistingResourceWithoutRewritingPortablePath(t
 	}
 }
 
+func TestPrepareTrackUpdatesExternalMappedExistingResourceWithoutRewritingPortablePath(t *testing.T) {
+	home, profileDir, mapped := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "fast", "repo")
+	if err := os.MkdirAll(mapped, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mapped, "current"), []byte("mapped"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Resources{Items: []profile.Resource{{ID: "projects", Path: "~/Projects/repo", Kind: "directory", Strategy: "copy"}}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"projects": mapped}}}
+	prepared, err := p.PrepareTrack(context.Background(), saved, mapped, TrackOptions{Strategy: "copy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Rollback()
+	if len(prepared.State.Items) != 1 || prepared.State.Items[0].ID != "projects" || prepared.State.Items[0].Path != "~/Projects/repo" {
+		t.Fatalf("tracked=%#v", prepared.State.Items)
+	}
+}
+
+func TestPrepareTrackRejectsRelativeProfileRootOverlap(t *testing.T) {
+	profileDir := t.TempDir()
+	resource := filepath.Join(profileDir, "nested")
+	if err := os.Mkdir(resource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(workingDir)
+	if err := os.Chdir(profileDir); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{HomeDir: profileDir, ProfileDir: "."}
+	if _, err := p.PrepareTrack(context.Background(), profile.Resources{}, resource, TrackOptions{Strategy: "copy"}); err == nil || !strings.Contains(err.Error(), "overlaps active profile directory") {
+		t.Fatalf("track err=%v", err)
+	}
+}
+
 func TestCheckValidatesEffectiveMappedRoots(t *testing.T) {
 	home := t.TempDir()
 	p := Provider{HomeDir: home, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"one": "~/Code", "two": "~/Code/nested"}}}

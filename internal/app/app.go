@@ -119,7 +119,14 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 
 func newRoot(deps Dependencies) *cobra.Command {
 	opt := &options{}
-	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true}
+	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		profileDir, err := machine.CanonicalProfileRoot(opt.profileDir)
+		if err != nil {
+			return err
+		}
+		opt.profileDir = profileDir
+		return nil
+	}}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
 	root.PersistentFlags().StringVar(&opt.machine, "machine", "", "use machine overlay for this invocation")
@@ -156,7 +163,7 @@ type machineContext struct {
 
 func machineCommand(deps Dependencies, opt *options) *cobra.Command {
 	command := &cobra.Command{Use: "machine", Short: "Manage machine resource path overlays"}
-	command.AddCommand(machineAddCommand(deps, opt), machineListCommand(deps, opt), machineCurrentCommand(deps, opt), machineUseCommand(deps, opt), machineClearCommand(deps, opt), machineMapCommand(deps, opt), machineUnmapCommand(deps, opt))
+	command.AddCommand(machineAddCommand(deps, opt), machineListCommand(deps, opt), machineCurrentCommand(deps, opt), machineUseCommand(deps, opt), machineClearCommand(deps, opt), machineRenameCommand(deps, opt), machineRemoveCommand(deps, opt), machineMapCommand(deps, opt), machineUnmapCommand(deps, opt))
 	return command
 }
 
@@ -171,11 +178,23 @@ func machineAddCommand(deps Dependencies, opt *options) *cobra.Command {
 		if len(args) == 1 {
 			name = args[0]
 		} else {
+			if opt.json {
+				return errors.New("machine add requires an explicit name with --json")
+			}
 			hostname, err := deps.Hostname()
 			if err != nil {
 				return err
 			}
-			name = machine.SuggestName(hostname, d.Machines.Items)
+			suggestion := machine.SuggestName(hostname, d.Machines.Items)
+			fmt.Fprintf(deps.Out, "Machine name [%s]: ", suggestion)
+			line, err := bufio.NewReader(deps.In).ReadString('\n')
+			if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+				return errors.New("machine add cancelled: no name provided")
+			}
+			name = strings.TrimSpace(line)
+			if name == "" {
+				name = suggestion
+			}
 		}
 		if err := machine.ValidateName(name); err != nil {
 			return err
@@ -205,6 +224,87 @@ func machineAddCommand(deps Dependencies, opt *options) *cobra.Command {
 	}}
 	cmd.Flags().BoolVar(&noUse, "no-use", false, "create without selecting locally")
 	return cmd
+}
+
+func machineRenameCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "rename <old> <new>", Args: cobra.ExactArgs(2), Short: "Rename a machine overlay", RunE: func(_ *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		if err := machine.ValidateName(args[1]); err != nil {
+			return err
+		}
+		old := -1
+		for i, item := range d.Machines.Items {
+			if item.Name == args[0] {
+				old = i
+			}
+			if item.Name == args[1] {
+				return fmt.Errorf("machine %q already exists", args[1])
+			}
+		}
+		if old < 0 {
+			return fmt.Errorf("machine %q does not exist", args[0])
+		}
+		d.Machines.Items[old].Name = args[1]
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
+		store, err := machineBindingStore(deps)
+		if err != nil {
+			return err
+		}
+		bound, err := store.Load(opt.profileDir)
+		if err != nil {
+			return err
+		}
+		if bound == args[0] {
+			if err := store.Save(opt.profileDir, args[1]); err != nil {
+				return err
+			}
+		}
+		return emit(deps.Out, opt.json, "machine rename", true, map[string]any{"machine": machineOutput{Name: args[1], Source: "binding"}}, fmt.Sprintf("Renamed machine %s to %s.\n", args[0], args[1]))
+	}}
+}
+
+func machineRemoveCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "remove <name>", Args: cobra.ExactArgs(1), Short: "Remove a machine overlay", RunE: func(_ *cobra.Command, args []string) error {
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		index := -1
+		for i, item := range d.Machines.Items {
+			if item.Name == args[0] {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return fmt.Errorf("machine %q does not exist", args[0])
+		}
+		d.Machines.Items = append(d.Machines.Items[:index], d.Machines.Items[index+1:]...)
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
+		store, err := machineBindingStore(deps)
+		if err != nil {
+			return err
+		}
+		bound, err := store.Load(opt.profileDir)
+		if err != nil {
+			return err
+		}
+		if bound == args[0] {
+			if err := store.Clear(opt.profileDir); err != nil {
+				return err
+			}
+		}
+		return emit(deps.Out, opt.json, "machine remove", true, map[string]any{"machine": machineOutput{Source: "default"}}, fmt.Sprintf("Removed machine %s.\n", args[0]))
+	}}
 }
 
 func machineListCommand(deps Dependencies, opt *options) *cobra.Command {
@@ -341,7 +441,11 @@ func machineMapCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		roots, _, err := machine.ResolveEffectiveRoots(home, opt.profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, &candidate)
+		profileDir, err := machine.CanonicalProfileRoot(opt.profileDir)
+		if err != nil {
+			return err
+		}
+		roots, _, err := machine.ResolveEffectiveRoots(home, profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, &candidate)
 		if err != nil {
 			return err
 		}
@@ -436,7 +540,11 @@ func resolveMachineContext(deps Dependencies, opt *options, d profile.Data) (mac
 	if err != nil {
 		return machineContext{}, err
 	}
-	roots, dormant, err := machine.ResolveEffectiveRoots(home, opt.profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, selection.Machine)
+	profileDir, err := machine.CanonicalProfileRoot(opt.profileDir)
+	if err != nil {
+		return machineContext{}, err
+	}
+	roots, dormant, err := machine.ResolveEffectiveRoots(home, profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, selection.Machine)
 	if err != nil {
 		return machineContext{}, err
 	}

@@ -198,6 +198,57 @@ func TestSaveRejectsNonCanonicalAndOverlappingConfigState(t *testing.T) {
 	}
 }
 
+func TestSavePrunesStaleMachineFiles(t *testing.T) {
+	dir := t.TempDir()
+	d := New("test", time.Now())
+	d.Machines.Items = []Machine{{Name: "old"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "machines", "README"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.Machines.Items = []Machine{{Name: "new"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "machines", "old.toml")); !os.IsNotExist(err) {
+		t.Fatalf("old=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "machines", "new.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "machines", "README")); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir)
+	if err != nil || !reflect.DeepEqual(loaded.Machines.Items, d.Machines.Items) {
+		t.Fatalf("machines=%#v err=%v", loaded.Machines, err)
+	}
+}
+
+func TestLoadRejectsInvalidMachineDefinitions(t *testing.T) {
+	for _, machineTOML := range []string{
+		"name = 'bad name'\n",
+		"name = 'desktop'\n[[resource_path]]\nresource = 'projects'\npath = 'relative'\n",
+		"name = 'desktop'\n[[resource_path]]\nresource = ''\npath = '~/Code'\n",
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte("schema = 11\n[profile]\nname = 'test'\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "machines"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "machines", "desktop.toml"), []byte(machineTOML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(dir); err == nil {
+			t.Fatalf("invalid machine accepted: %s", machineTOML)
+		}
+	}
+}
+
 func TestLoadSchema7MigratesLegacyConfigPaths(t *testing.T) {
 	dir := t.TempDir()
 	manifest := "schema = 7\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-09T00:00:00Z\nupdated_at = 2026-09-09T00:00:00Z\n\n[capture]\nconfig = true\n"
