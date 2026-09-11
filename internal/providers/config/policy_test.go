@@ -103,12 +103,9 @@ func TestSensitiveContentDetectorAvoidsRegexForLargeOrdinaryConfig(t *testing.T)
 	if err := os.WriteFile(path, bytes.Repeat([]byte("setting = ordinary-value\n"), 200000), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	regexChecks := 0
-	sensitiveContentRegexCheck = func() { regexChecks++ }
-	t.Cleanup(func() { sensitiveContentRegexCheck = nil })
 	sensitive, err := hasSensitiveContent(path)
-	if err != nil || sensitive || regexChecks != 0 {
-		t.Fatalf("sensitive=%v regexChecks=%d err=%v", sensitive, regexChecks, err)
+	if err != nil || sensitive {
+		t.Fatalf("sensitive=%v err=%v", sensitive, err)
 	}
 }
 

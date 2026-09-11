@@ -139,6 +139,7 @@ hooks/files/<event>
 hooks/files/<event>.d/<hook>
 resources/resources.toml
 resources/files/<resource-id>/
+resources/git-state/<resource-id>/
 ```
 
 Machine-specific entries retain provenance, for example
@@ -153,20 +154,33 @@ preserves target-only tools and conflicting target declarations, then runs
 
 ## Portable resources
 
-Track an explicit file, directory, or clean Git worktree under your home
-directory:
+Track an explicit file, directory, or Git worktree under your home directory.
+Choose the reconstruction policy explicitly when its semantics matter:
 
 ```sh
-omarchy-blueprint --profile ~/omarchy-profile track ~/dotfiles
+omarchy-blueprint --profile ~/omarchy-profile track ~/dotfiles --strategy git
+omarchy-blueprint --profile ~/omarchy-profile track ~/dev/hacky-repo --strategy git+diff --include-untracked notes.md
+omarchy-blueprint --profile ~/omarchy-profile track ~/some-local-tree --strategy copy
 omarchy-blueprint --profile ~/omarchy-profile tracked
 omarchy-blueprint --profile ~/omarchy-profile untrack dotfiles
 ```
 
-Copied resources are stored under `resources/files/`; clean Git worktrees store
-their portable origin and captured revision instead. Tracking a resource also
-adopts symlinks in `$HOME`, `$HOME/.config`, and `$HOME/.local/bin` that point
-into it. For example, `~/.config/hypr/overrides.lua ->
-~/dotfiles/hypr/overrides.lua` is restored as a target-machine-relative link.
+Omitting `--strategy` keeps the safe default: a portable Git worktree uses
+`git`; other supported resources use `copy`. `git` stores only the portable
+origin and exact HEAD. Local staged, unstaged, and untracked state is reported
+as informational but is not drift or captured. `git+diff` also preserves staged
+and unstaged tracked changes as separate patches plus only explicitly selected
+untracked regular files; it never auto-selects untracked files. `copy` stores
+filesystem content under `resources/files/`; when copying a Git worktree it
+excludes `.git` administration data.
+
+Git-state artifacts for `git+diff` are stored under `resources/git-state/`.
+Missing Git resources can be reconstructed from their pinned remote/HEAD and,
+for `git+diff`, their saved overlay. Existing differing destinations are
+reported as conflicts and left untouched. Tracking a resource also adopts
+symlinks in `$HOME`, `$HOME/.config`, and `$HOME/.local/bin` that point into it.
+For example, `~/.config/hypr/overrides.lua -> ~/dotfiles/hypr/overrides.lua` is
+restored as a target-machine-relative link.
 
 `capture resources`, `status resources`, and `restore resources` participate
 in the normal provider lifecycle. Restore is additive: existing differing
@@ -206,8 +220,8 @@ rejected during local-theme capture. Config restore never overwrites a target
 that differs from both the desired content and the current Omarchy baseline,
 and cross-version baseline changes are reported as migration-required rather
 than auto-merged. Defaults restore is additive: it never unsets a
-machine-selected default. The TUI, monitors/input config, dirty-Git patch
-preservation, path mappings, migrations, and AI remain postponed.
+machine-selected default. The TUI, monitors/input config, path mappings,
+migrations, and AI remain postponed.
 
 Capture and inspect theme state explicitly with:
 

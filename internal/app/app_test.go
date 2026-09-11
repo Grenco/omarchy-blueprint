@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
@@ -425,7 +426,7 @@ func TestResourceInboundHookLinkHandoff(t *testing.T) {
 }
 
 func TestConfigOverlayAcceptance(t *testing.T) {
-	t.Run("schema 7 loads restores and recaptures as schema 8", func(t *testing.T) {
+	t.Run("schema 7 loads restores and recaptures at the current schema", func(t *testing.T) {
 		profileDir, deps, home, baseline := overlaySandbox(t)
 		userRoot := filepath.Join(home, ".config")
 		paths := []string{"hypr/hyprland.lua", "hypr/bindings.lua", "hypr/looknfeel.lua", "hypr/autostart.lua"}
@@ -453,7 +454,7 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 			t.Fatalf("recapture code=%d out=%s", code, out)
 		}
 		d, err := profile.Load(profileDir)
-		if err != nil || d.Manifest.Schema != 9 || len(d.Config.Files) != 0 {
+		if err != nil || d.Manifest.Schema != profile.Schema || len(d.Config.Files) != 0 {
 			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
 		}
 		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); !os.IsNotExist(err) {
@@ -2158,6 +2159,82 @@ func TestTrackTrackedAndUntrackResources(t *testing.T) {
 	}
 	if code, out := configRun(t, deps, profileDir, "track", link); code != 1 || !strings.Contains(out, "is a symlink") {
 		t.Fatalf("symlink track code=%d out=%s", code, out)
+	}
+}
+
+type gitMachineRunner struct{ machineRunner }
+
+func (r *gitMachineRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	if name == "git" {
+		return command.SystemRunner{}.Run(ctx, name, args...)
+	}
+	return r.machineRunner.Run(ctx, name, args...)
+}
+
+func TestTrackResourceStrategyAndUntrackedFlags(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := t.TempDir()
+	deps.HomeDir = func() (string, error) { return home, nil }
+	deps.Runner = &gitMachineRunner{machineRunner: machineRunner{official: map[string]bool{}, aur: map[string]bool{}}}
+	root := filepath.Join(home, "dotfiles")
+	for _, args := range [][]string{{"init", root}, {"-C", root, "config", "user.email", "test@example.invalid"}, {"-C", root, "config", "user.name", "Blueprint Test"}} {
+		if _, err := deps.Runner.Run(context.Background(), "git", args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAppFile(t, filepath.Join(root, "tracked.txt"), "base\n")
+	if _, err := deps.Runner.Run(context.Background(), "git", "-C", root, "add", "tracked.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Runner.Run(context.Background(), "git", "-C", root, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Runner.Run(context.Background(), "git", "-C", root, "remote", "add", "origin", "https://github.com/example/dotfiles.git"); err != nil {
+		t.Fatal(err)
+	}
+	writeAppFile(t, filepath.Join(root, "notes,one.md"), "notes\n")
+	writeAppFile(t, filepath.Join(root, "another.txt"), "another\n")
+
+	if code, out := configRun(t, deps, profileDir, "track", root, "--strategy", "git+diff", "--include-untracked", "notes,one.md"); code != 0 {
+		t.Fatalf("track git+diff code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil || len(d.Resources.Items) != 1 || d.Resources.Items[0].Strategy != "git+diff" || len(d.Resources.Items[0].Untracked) != 1 || d.Resources.Items[0].Untracked[0].Path != "notes,one.md" {
+		t.Fatalf("saved resources=%#v err=%v", d.Resources, err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", root, "--include-untracked", "another.txt"); code != 0 {
+		t.Fatalf("add untracked code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", root, "--exclude-untracked", "notes,one.md"); code != 0 {
+		t.Fatalf("remove untracked code=%d out=%s", code, out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || len(d.Resources.Items[0].Untracked) != 1 || d.Resources.Items[0].Untracked[0].Path != "another.txt" {
+		t.Fatalf("updated resources=%#v err=%v", d.Resources, err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", root, "--strategy", "copy"); code != 0 {
+		t.Fatalf("track copy code=%d out=%s", code, out)
+	}
+	d, err = profile.Load(profileDir)
+	if err != nil || d.Resources.Items[0].Strategy != "copy" {
+		t.Fatalf("copy resources=%#v err=%v", d.Resources, err)
+	}
+	for _, args := range [][]string{{"track", root, "--include-untracked", "another.txt"}, {"track", root, "--exclude-untracked", "another.txt"}, {"track", root, "--strategy", "invalid"}, {"track", root, "--id", "other"}} {
+		if code, out := configRun(t, deps, profileDir, args...); code != 1 {
+			t.Fatalf("args=%v code=%d out=%s", args, code, out)
+		}
+	}
+	writeAppFile(t, filepath.Join(root, "tracked.txt"), "dirty\n")
+	if code, out := configRun(t, deps, profileDir, "track", root, "--strategy", "git"); code != 0 || !strings.Contains(out, "strategy: git") || !strings.Contains(out, "Local Git state is not captured by strategy git") || !strings.Contains(out, "Use --strategy git+diff") {
+		t.Fatalf("dirty git track code=%d out=%s", code, out)
+	}
+	for _, args := range [][]string{{"track", root, "--include-untracked", "another.txt"}, {"track", root, "--exclude-untracked", "another.txt"}} {
+		if code, out := configRun(t, deps, profileDir, args...); code != 1 {
+			t.Fatalf("git args=%v code=%d out=%s", args, code, out)
+		}
+	}
+	if code, out := configRun(t, deps, profileDir, "--json", "track", root, "--strategy", "git"); code != 0 || !strings.Contains(out, "\"strategy\": \"git\"") || strings.Contains(out, "Local Git state is not captured") {
+		t.Fatalf("JSON track code=%d out=%s", code, out)
 	}
 }
 

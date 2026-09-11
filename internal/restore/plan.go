@@ -1,6 +1,7 @@
 package restore
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -62,14 +63,36 @@ func validateOperationAction(op model.Operation) error {
 	if op.Symlink != nil {
 		actions++
 	}
+	if op.GitPatch != nil {
+		actions++
+	}
 	if actions != 1 {
-		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, or symlink action", op.ID)
+		return fmt.Errorf("operation %s must contain exactly one command, copy, file, delete, directory, symlink, or git patch action", op.ID)
 	}
 	if op.Delete != nil {
 		return validateFileDelete(op.ID, *op.Delete)
 	}
 	if op.File != nil {
 		return validateFileWrite(op.ID, *op.File)
+	}
+	if op.GitPatch != nil {
+		return validateGitPatch(op.ID, *op.GitPatch)
+	}
+	return nil
+}
+
+func validateGitPatch(operation string, action model.GitPatchApply) error {
+	if strings.TrimSpace(action.Repository) == "" {
+		return fmt.Errorf("git patch repository is required: %s", operation)
+	}
+	if strings.TrimSpace(action.Source) == "" {
+		return fmt.Errorf("git patch source is required: %s", operation)
+	}
+	if len(action.SourceHash) != 64 {
+		return fmt.Errorf("git patch source hash is invalid: %s", operation)
+	}
+	if _, err := hex.DecodeString(action.SourceHash); err != nil {
+		return fmt.Errorf("git patch source hash is invalid: %s", operation)
 	}
 	return nil
 }

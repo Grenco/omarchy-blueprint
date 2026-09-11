@@ -24,11 +24,11 @@ func TestDetectCleanGitResource(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "dotfiles")
 	revision := strings.Repeat("a", 40)
 	runner := gitRunner{output: map[string]string{
-		"git -C " + root + " rev-parse --show-toplevel":                root + "\n",
-		"git -C " + root + " status --porcelain --untracked-files=all": "",
-		"git -C " + root + " remote get-url origin":                    "git@github.com:example/dotfiles.git\n",
-		"git -C " + root + " rev-parse HEAD":                           revision + "\n",
-		"git -C " + root + " symbolic-ref --quiet --short HEAD":        "main\n",
+		"git -C " + root + " rev-parse --show-toplevel":                                               root + "\n",
+		"git -C " + root + " status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none": "",
+		"git -C " + root + " remote get-url origin":                                                   "git@github.com:example/dotfiles.git\n",
+		"git -C " + root + " rev-parse HEAD":                                                          revision + "\n",
+		"git -C " + root + " symbolic-ref --quiet --short HEAD":                                       "main\n",
 	}}
 	state, isGit, err := DetectGitResource(context.Background(), runner, root)
 	if err != nil || !isGit || state != (GitState{Remote: "github.com/example/dotfiles", Branch: "main", Revision: revision}) {
@@ -42,10 +42,10 @@ func TestDetectCleanGitResource(t *testing.T) {
 func TestDetectGitResourceMarksDirtyAndRejectsNestedWorktree(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "dotfiles")
 	base := gitRunner{output: map[string]string{
-		"git -C " + root + " rev-parse --show-toplevel":                root + "\n",
-		"git -C " + root + " status --porcelain --untracked-files=all": " M config\n",
-		"git -C " + root + " remote get-url origin":                    "https://github.com/example/dotfiles.git\n",
-		"git -C " + root + " rev-parse HEAD":                           strings.Repeat("b", 40),
+		"git -C " + root + " rev-parse --show-toplevel":                                               root + "\n",
+		"git -C " + root + " status --porcelain=v2 -z --untracked-files=all --ignore-submodules=none": "1 .M N... 100644 100644 100644 a a config\x00",
+		"git -C " + root + " remote get-url origin":                                                   "https://github.com/example/dotfiles.git\n",
+		"git -C " + root + " rev-parse HEAD":                                                          strings.Repeat("b", 40),
 	}}
 	state, isGit, err := DetectGitResource(context.Background(), base, root)
 	if err != nil || !isGit || !state.Dirty {

@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,7 +147,7 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 	if resourceSatisfied(saved, current) {
 		return resourcePlanState{Satisfied: true}, nil, "", nil
 	}
-	missing := current.ID == "" || (saved.Strategy == "copy" && current.Hash == "") || (saved.Strategy == "git" && current.Revision == "")
+	missing := current.ID == "" || (saved.Strategy == "copy" && current.Hash == "") || ((saved.Strategy == "git" || saved.Strategy == "git+diff") && current.Revision == "")
 	if !missing {
 		return resourcePlanState{Conflict: "existing resource differs"}, nil, "existing resource differs; overwrite disabled", nil
 	}
@@ -185,7 +186,30 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 	ops = append(ops, model.Operation{ID: clone, Provider: "resources", Action: "git clone", Resource: "resource:" + saved.ID, Command: command, DependsOn: nonEmpty(mkdir), Risk: model.RiskLow})
 	checkout := "resources.git.checkout." + saved.ID
 	ops = append(ops, model.Operation{ID: checkout, Provider: "resources", Action: "git checkout", Resource: "resource:" + saved.ID, Command: []string{"git", "-C", path, "checkout", "--detach", saved.Revision}, DependsOn: []string{clone}, Risk: model.RiskLow})
-	return resourcePlanState{Satisfied: true, ReadyOpID: checkout}, ops, "", nil
+	ready := checkout
+	if saved.Strategy == "git+diff" {
+		stateRoot := filepath.Join(p.ProfileDir, "resources", "git-state", saved.ID)
+		if saved.IndexPatchHash != "" {
+			id := "resources.git.apply-index." + saved.ID
+			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "apply staged Git state", Resource: "resource:" + saved.ID, GitPatch: &model.GitPatchApply{Repository: path, Source: filepath.Join(stateRoot, "index.patch"), SourceHash: saved.IndexPatchHash, ToIndex: true}, DependsOn: []string{ready}, Risk: model.RiskLow})
+			ready = id
+		}
+		if saved.WorktreePatchHash != "" {
+			id := "resources.git.apply-worktree." + saved.ID
+			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "apply unstaged Git state", Resource: "resource:" + saved.ID, GitPatch: &model.GitPatchApply{Repository: path, Source: filepath.Join(stateRoot, "worktree.patch"), SourceHash: saved.WorktreePatchHash}, DependsOn: []string{ready}, Risk: model.RiskLow})
+			ready = id
+		}
+		for _, file := range saved.Untracked {
+			mode, err := parseResourceMode(file.Mode)
+			if err != nil {
+				return resourcePlanState{}, nil, "", err
+			}
+			id := "resources.git.untracked." + saved.ID + "." + safeOperationID(file.Path) + "." + fmt.Sprintf("%x", sha256.Sum256([]byte(file.Path)))[:12]
+			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "restore untracked Git file", Resource: "resource:" + saved.ID, File: &model.FileWrite{Source: filepath.Join(stateRoot, "untracked", filepath.FromSlash(file.Path)), Destination: filepath.Join(path, filepath.FromSlash(file.Path)), SourceHash: file.Hash, ExpectedMissing: true, Mode: &mode, RejectSymlinkParents: true}, DependsOn: []string{ready}, Risk: model.RiskLow})
+			ready = id
+		}
+	}
+	return resourcePlanState{Satisfied: true, ReadyOpID: ready}, ops, "", nil
 }
 func (p Provider) resourcePath(resources profile.Resources, id string) (string, error) {
 	for _, item := range resources.Items {

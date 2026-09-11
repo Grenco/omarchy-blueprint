@@ -104,3 +104,58 @@ func TestStageCopyResourcePreservesModesDespiteUmask(t *testing.T) {
 		}
 	}
 }
+
+func TestStageCopyResourceWithOptionsExcludesGitAdministration(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".git", "objects", "object"), []byte("admin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".gitignore"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "nested", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "nested", ".git", "config"), []byte("admin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "snapshot")
+	if _, err := StageCopyResourceWithOptions(source, destination, SnapshotOptions{ExcludeGitAdmin: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(destination, ".git"), filepath.Join(destination, "nested", ".git")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("Git administration copied at %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(destination, ".gitignore")); err != nil {
+		t.Fatalf(".gitignore was excluded: %v", err)
+	}
+}
+
+func TestScanCopyResourceWithOptionsMatchesGitAdminExclusion(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".git", "objects", "object"), []byte("admin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "tracked"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withoutAdmin, err := ScanCopyResourceWithOptions(source, SnapshotOptions{ExcludeGitAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := StageCopyResourceWithOptions(source, filepath.Join(t.TempDir(), "snapshot"), SnapshotOptions{ExcludeGitAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutAdmin.Hash != staged.Hash || withoutAdmin.FileCount != staged.FileCount {
+		t.Fatalf("scan=%#v staged=%#v", withoutAdmin, staged)
+	}
+}

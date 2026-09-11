@@ -2,14 +2,19 @@ package resources
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 func TestPlanMissingCopiedFileUsesContentSnapshot(t *testing.T) {
@@ -189,6 +194,165 @@ func TestPlanForceReplacesOnlyConflictingResourceLink(t *testing.T) {
 	if len(plan.Operations) != 1 || plan.Operations[0].Risk != model.RiskHigh || plan.Operations[0].Symlink == nil || !plan.Operations[0].Symlink.ReplaceExisting || !plan.Operations[0].Symlink.Backup || plan.Operations[0].Symlink.ExpectedExisting.Type != "file" {
 		t.Fatalf("plan=%#v", plan)
 	}
+}
+
+func TestPlanMissingGitDiffReconstructionChainsArtifactsAndLinks(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	index, worktree, note := hashPlanBytes("index"), hashPlanBytes("worktree"), hashPlanBytes("note")
+	item := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/dotfiles.git", Revision: strings.Repeat("a", 40), IndexPatchHash: index, WorktreePatchHash: worktree, Untracked: []profile.GitUntrackedFile{{Path: "notes.md", Hash: note, Mode: "0600"}}}
+	saved := profile.Resources{Items: []profile.Resource{item}, Links: []profile.ResourceLink{{Source: "~/.config/nvim", TargetResource: "dotfiles", Target: "nvim", Origin: "inbound"}}}
+	current := profile.Resources{Items: []profile.Resource{{ID: item.ID, Path: item.Path, Kind: item.Kind, Strategy: item.Strategy}}}
+	plan, err := p.Plan(context.Background(), saved, current, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"resources.git.clone.dotfiles", "resources.git.checkout.dotfiles", "resources.git.apply-index.dotfiles", "resources.git.apply-worktree.dotfiles", "resources.git.untracked.dotfiles.notes-md.754b6dc3f872", "resources.link.home----config-nvim"}
+	got := make([]string, len(plan.Operations))
+	for i, op := range plan.Operations {
+		got[i] = op.ID
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("operations=%v want=%v", got, want)
+	}
+	for i := 1; i < len(plan.Operations); i++ {
+		if !reflect.DeepEqual(plan.Operations[i].DependsOn, []string{plan.Operations[i-1].ID}) {
+			t.Fatalf("%s dependencies=%v", plan.Operations[i].ID, plan.Operations[i].DependsOn)
+		}
+	}
+	if op := plan.Operations[2]; op.GitPatch == nil || !op.GitPatch.ToIndex || op.GitPatch.SourceHash != index {
+		t.Fatalf("index operation=%#v", op)
+	}
+	if op := plan.Operations[4]; op.File == nil || op.File.SourceHash != note || op.File.Mode == nil || *op.File.Mode != 0o600 || !op.File.ExpectedMissing {
+		t.Fatalf("untracked operation=%#v", op)
+	}
+}
+
+func TestPlanGitDiffUntrackedOperationIDsDoNotCollide(t *testing.T) {
+	home := t.TempDir()
+	p := Provider{HomeDir: home, ProfileDir: t.TempDir()}
+	item := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/dotfiles.git", Revision: strings.Repeat("a", 40), Untracked: []profile.GitUntrackedFile{{Path: "a/b", Hash: hashPlanBytes("first"), Mode: "0600"}, {Path: "a-b", Hash: hashPlanBytes("second"), Mode: "0600"}}}
+	plan, err := p.Plan(context.Background(), profile.Resources{Items: []profile.Resource{item}}, profile.Resources{}, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restore.ValidatePlan(plan); err != nil {
+		t.Fatalf("plan has colliding operation IDs: %v", err)
+	}
+	if got, want := []string{plan.Operations[2].ID, plan.Operations[3].ID}, []string{"resources.git.untracked.dotfiles.a-b.c14cddc033f6", "resources.git.untracked.dotfiles.a-b.d44362d67d92"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("operation IDs=%v want=%v", got, want)
+	}
+}
+
+func TestPlanGitDiffReconstructsRealGitState(t *testing.T) {
+	home, profileDir, source, origin := t.TempDir(), t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "origin.git")
+	runGitLifecycle(t, "init", "--bare", origin)
+	runGitLifecycle(t, "init", source)
+	runGitLifecycle(t, "-C", source, "config", "user.email", "test@example.invalid")
+	runGitLifecycle(t, "-C", source, "config", "user.name", "Blueprint Test")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitLifecycle(t, "-C", source, "add", "file.txt")
+	runGitLifecycle(t, "-C", source, "commit", "-m", "initial")
+	runGitLifecycle(t, "-C", source, "remote", "add", "origin", origin)
+	runGitLifecycle(t, "-C", source, "push", "origin", "HEAD")
+	// Capture validates portable provenance; the plan uses the offline origin.
+	runGitLifecycle(t, "-C", source, "remote", "set-url", "origin", "https://example.invalid/fixture.git")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("B\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitLifecycle(t, "-C", source, "add", "file.txt")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("C\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "notes.md"), []byte("notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	capture, err := CaptureGitWorkingState(context.Background(), command.SystemRunner{}, source, []string{"notes.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	working, ok, err := InspectGitWorkingState(context.Background(), command.SystemRunner{}, source)
+	if err != nil || !ok {
+		t.Fatalf("working=%#v ok=%t err=%v", working, ok, err)
+	}
+	stateRoot := filepath.Join(profileDir, "resources", "git-state", "dotfiles")
+	if err := os.MkdirAll(filepath.Join(stateRoot, "untracked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateRoot, "index.patch"), capture.IndexPatch, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateRoot, "worktree.patch"), capture.WorktreePatch, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateRoot, "untracked", "notes.md"), []byte("notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Resources{Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: origin, Revision: working.Revision, IndexPatchHash: capture.IndexPatchHash, WorktreePatchHash: capture.WorktreePatchHash, Untracked: capture.Untracked}}}
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	plan, err := p.Plan(context.Background(), saved, profile.Resources{}, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := restore.NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	result, err := restore.Execute(context.Background(), command.SystemRunner{}, plan, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 0 || len(result.Blocked) != 0 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	destination := filepath.Join(home, "dotfiles")
+	if got := runGitLifecycle(t, "-C", destination, "rev-parse", "HEAD"); got != working.Revision {
+		t.Fatalf("HEAD=%q want=%q", got, working.Revision)
+	}
+	if got := runGitLifecycle(t, "-C", destination, "show", ":file.txt"); got != "B" {
+		t.Fatalf("index=%q want=B", got)
+	}
+	if got := runGitLifecycle(t, "-C", destination, "diff", "--cached"); !strings.Contains(got, "+B") {
+		t.Fatalf("cached diff=%q", got)
+	}
+	if got := runGitLifecycle(t, "-C", destination, "diff"); !strings.Contains(got, "+C") {
+		t.Fatalf("worktree diff=%q", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, "notes.md")); err != nil || string(got) != "notes\n" {
+		t.Fatalf("notes=%q err=%v", got, err)
+	}
+}
+
+func runGitLifecycle(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := (command.SystemRunner{}).Run(context.Background(), "git", args...)
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(out)
+}
+
+func TestPlanGitDiffExistingOverlayMismatchIsSkipped(t *testing.T) {
+	home := t.TempDir()
+	p := Provider{HomeDir: home, ProfileDir: t.TempDir()}
+	item := profile.Resource{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/dotfiles.git", Revision: strings.Repeat("a", 40), IndexPatchHash: strings.Repeat("b", 64)}
+	current := item
+	current.IndexPatchHash = ""
+	if err := os.Mkdir(filepath.Join(home, "dotfiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(context.Background(), profile.Resources{Items: []profile.Resource{item}}, profile.Resources{Items: []profile.Resource{current}}, 10, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "existing resource differs") {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
+func hashPlanBytes(value string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
 
 func plannedCopyFile(t *testing.T) (Provider, profile.Resources) {

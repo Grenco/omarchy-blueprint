@@ -51,12 +51,16 @@ type scanDiffProvider interface {
 	DiffWithScan(context.Context, profile.Data) ([]model.Change, configprovider.ScanSummary, error)
 }
 
+type resourceDiffProvider interface {
+	DiffWithGitWorkingState(context.Context, profile.Data) ([]model.Change, map[string]resourcesprovider.GitWorkingSummary, error)
+}
+
 func stateProviders(deps Dependencies, opt *options) []stateProvider {
 	return []stateProvider{
 		packagesStateProvider{deps: deps},
 		themesStateProvider{deps: deps, opt: opt},
 		pluginsStateProvider{deps: deps, opt: opt},
-		resourcesStateProvider{deps: deps, opt: opt},
+		&resourcesStateProvider{deps: deps, opt: opt},
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
 		shellStateProvider{deps: deps, opt: opt},
@@ -85,8 +89,9 @@ func categoryProvider(providers []stateProvider, id string) (stateProvider, bool
 }
 
 type resourcesStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps     Dependencies
+	opt      *options
+	prepared *resourcesprovider.PreparedCapture
 }
 
 func (resourcesStateProvider) ID() string                     { return "resources" }
@@ -125,7 +130,7 @@ func (p resourcesStateProvider) provider() (resourcesprovider.Provider, error) {
 	}
 	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: p.opt.profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims}, nil
 }
-func (p resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
 	}
@@ -133,24 +138,56 @@ func (p resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (a
 	if err != nil {
 		return nil, nil, err
 	}
-	current, changes, err := provider.Capture(ctx, d.Resources)
+	prepared, err := provider.PrepareCapture(ctx, d.Resources, resourcesprovider.CaptureOptions{})
 	if err != nil {
 		return nil, nil, err
 	}
-	d.Resources = current
+	if err := prepared.Install(); err != nil {
+		return nil, nil, err
+	}
+	p.prepared = prepared
+	d.Resources = prepared.State
 	d.Manifest.Capture.Resources = true
-	return current, changes, nil
+	return prepared.State, prepared.Changes, nil
+}
+
+func (p *resourcesStateProvider) FinalizeCapture() error {
+	if p.prepared == nil {
+		return nil
+	}
+	err := p.prepared.Finalize()
+	p.prepared = nil
+	return err
+}
+func (p *resourcesStateProvider) CommitCapture() error {
+	if p.prepared == nil {
+		return nil
+	}
+	return p.prepared.Commit()
+}
+
+func (p *resourcesStateProvider) RollbackCapture() error {
+	if p.prepared == nil {
+		return nil
+	}
+	err := p.prepared.Rollback()
+	p.prepared = nil
+	return err
 }
 func (p resourcesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	changes, _, err := p.DiffWithGitWorkingState(ctx, d)
+	return changes, err
+}
+func (p resourcesStateProvider) DiffWithGitWorkingState(ctx context.Context, d profile.Data) ([]model.Change, map[string]resourcesprovider.GitWorkingSummary, error) {
 	provider, err := p.provider()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	current, _, err := provider.Detect(ctx, d.Resources)
+	detection, err := provider.DetectDetailed(ctx, d.Resources)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resourcesprovider.Diff(d.Resources, current), nil
+	return resourcesprovider.Diff(d.Resources, detection.Resources), detection.Git, nil
 }
 func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
 	provider, err := p.provider()

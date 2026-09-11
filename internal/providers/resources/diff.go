@@ -3,9 +3,14 @@ package resources
 import (
 	"context"
 	"fmt"
+	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -24,10 +29,8 @@ func Diff(saved, current profile.Resources) []model.Change {
 			continue
 		}
 		delete(savedItems, id)
-		if item.Dirty {
-			changes = append(changes, resourceChange(model.ChangeModify, "resource", id, "~ resource "+id+" has uncommitted Git changes; local changes are not captured"))
-		} else if !resourceSatisfied(desired, item) {
-			changes = append(changes, resourceChange(model.ChangeModify, "resource", id, "~ resource "+id+" differs"))
+		if !resourceSatisfied(desired, item) {
+			changes = append(changes, resourceDiffChanges(desired, item)...)
 		}
 	}
 	for id := range savedItems {
@@ -92,7 +95,28 @@ func (p Provider) Check(ctx context.Context, saved profile.Resources) error {
 		}
 	}
 	for _, item := range saved.Items {
-		if item.Strategy == "git" {
+		if item.Strategy != "git+diff" {
+			continue
+		}
+		if err := validateGitStateMetadata(item, true); err != nil {
+			return err
+		}
+		stateRoot := filepath.Join(p.ProfileDir, "resources", "git-state", item.ID)
+		if err := validateGitStateArtifact(filepath.Join(stateRoot, "index.patch"), item.IndexPatchHash); err != nil {
+			return fmt.Errorf("Git state index patch %q: %w", item.ID, err)
+		}
+		if err := validateGitStateArtifact(filepath.Join(stateRoot, "worktree.patch"), item.WorktreePatchHash); err != nil {
+			return fmt.Errorf("Git state worktree patch %q: %w", item.ID, err)
+		}
+		for _, file := range item.Untracked {
+			artifact := filepath.Join(stateRoot, "untracked", filepath.FromSlash(file.Path))
+			if err := validateGitStateArtifact(artifact, file.Hash); err != nil {
+				return fmt.Errorf("Git state untracked file %q (%s): %w", item.ID, file.Path, err)
+			}
+		}
+	}
+	for _, item := range saved.Items {
+		if item.Strategy == "git" || item.Strategy == "git+diff" {
 			if p.Runner == nil {
 				return fmt.Errorf("Git resource %s requires a command runner", item.ID)
 			}
@@ -103,7 +127,7 @@ func (p Provider) Check(ctx context.Context, saved profile.Resources) error {
 		}
 	}
 	for _, item := range saved.Items {
-		if item.Strategy == "git" && isGitHubRepo(item.Remote) {
+		if (item.Strategy == "git" || item.Strategy == "git+diff") && isGitHubRepo(item.Remote) {
 			if _, err := p.Runner.Run(ctx, "gh", "--version"); err != nil {
 				return fmt.Errorf("GitHub CLI is required for resource %s: %w", item.ID, err)
 			}
@@ -151,6 +175,16 @@ func validateMetadata(home string, resources profile.Resources) error {
 			if _, err := PortableGitRemote(item.Remote); err != nil {
 				return err
 			}
+		case "git+diff":
+			if item.Kind != "directory" || item.Hash != "" || item.Mode != "" || !validGitRevision(item.Revision) {
+				return fmt.Errorf("Git resource %s has invalid metadata", item.ID)
+			}
+			if _, err := PortableGitRemote(item.Remote); err != nil {
+				return err
+			}
+			if err := validateGitStateMetadata(item, false); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("resource %s has invalid strategy", item.ID)
 		}
@@ -183,6 +217,70 @@ func validateMetadata(home string, resources profile.Resources) error {
 	return nil
 }
 
+func validateGitStateMetadata(item profile.Resource, requireContent bool) error {
+	for _, hash := range []string{item.IndexPatchHash, item.WorktreePatchHash} {
+		if hash != "" && !validSHA256(hash) {
+			return fmt.Errorf("Git resource %s has invalid patch hash", item.ID)
+		}
+	}
+	seen := map[string]bool{}
+	for _, file := range item.Untracked {
+		if !safeGitStatePath(file.Path) || seen[file.Path] || (requireContent && !validSHA256(file.Hash)) || (!requireContent && file.Hash != "" && !validSHA256(file.Hash)) {
+			return fmt.Errorf("Git resource %s has invalid untracked metadata", item.ID)
+		}
+		seen[file.Path] = true
+		if !requireContent && file.Mode == "" {
+			continue
+		}
+		mode, err := strconv.ParseUint(file.Mode, 8, 16)
+		if err != nil || mode > 0o777 {
+			return fmt.Errorf("Git resource %s has invalid untracked mode", item.ID)
+		}
+	}
+	return nil
+}
+
+func validateGitStateArtifact(filename, expected string) error {
+	_, err := os.Lstat(filename)
+	if expected == "" {
+		if err == nil {
+			return fmt.Errorf("unexpected artifact")
+		}
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	got, err := content.HashRegularFile(filename)
+	if err != nil {
+		return err
+	}
+	if got != expected {
+		return fmt.Errorf("hash mismatch")
+	}
+	return nil
+}
+
+func safeGitStatePath(value string) bool {
+	clean := pathpkg.Clean(value)
+	return value != "" && clean == value && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") && !pathpkg.IsAbs(clean) && !strings.Contains("/"+clean+"/", "/.git/")
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 func resourceMap(items []profile.Resource) map[string]profile.Resource {
 	result := make(map[string]profile.Resource, len(items))
 	for _, item := range items {
@@ -197,12 +295,57 @@ func resourceSatisfied(saved, current profile.Resource) bool {
 	}
 	switch saved.Strategy {
 	case "git":
-		return !current.Dirty && saved.Remote == current.Remote && saved.Revision == current.Revision
+		return saved.Remote == current.Remote && saved.Revision == current.Revision
+	case "git+diff":
+		return saved.Remote == current.Remote && saved.Revision == current.Revision &&
+			saved.IndexPatchHash == current.IndexPatchHash && saved.WorktreePatchHash == current.WorktreePatchHash &&
+			equalUntracked(saved.Untracked, current.Untracked)
 	case "copy":
 		return saved.Hash == current.Hash && saved.Mode == current.Mode
 	default:
 		return false
 	}
+}
+
+func equalUntracked(a, b []profile.GitUntrackedFile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func resourceDiffChanges(saved, current profile.Resource) []model.Change {
+	if saved.Strategy != "git+diff" {
+		return []model.Change{resourceChange(model.ChangeModify, "resource", current.ID, "~ resource "+current.ID+" differs")}
+	}
+	changes := []model.Change{}
+	if saved.Remote != current.Remote || saved.Revision != current.Revision {
+		changes = append(changes, resourceChange(model.ChangeModify, "resource", current.ID, "~ resource "+current.ID+" differs"))
+	}
+	if saved.IndexPatchHash != current.IndexPatchHash {
+		changes = append(changes, resourceChange(model.ChangeModify, "resource", current.ID, "~ resource "+current.ID+" staged Git state differs"))
+	}
+	if saved.WorktreePatchHash != current.WorktreePatchHash {
+		changes = append(changes, resourceChange(model.ChangeModify, "resource", current.ID, "~ resource "+current.ID+" unstaged Git state differs"))
+	}
+	currentFiles := map[string]profile.GitUntrackedFile{}
+	for _, file := range current.Untracked {
+		currentFiles[file.Path] = file
+	}
+	for _, file := range saved.Untracked {
+		got, ok := currentFiles[file.Path]
+		if !ok {
+			changes = append(changes, resourceChange(model.ChangeRemove, "resource", current.ID, "- resource "+current.ID+" untracked:"+file.Path+" missing"))
+		} else if got != file {
+			changes = append(changes, resourceChange(model.ChangeModify, "resource", current.ID, "~ resource "+current.ID+" untracked:"+file.Path+" differs"))
+		}
+	}
+	return changes
 }
 func linkKey(link profile.ResourceLink) string {
 	if link.SourceResource != "" {

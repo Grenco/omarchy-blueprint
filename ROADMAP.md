@@ -2486,7 +2486,7 @@ Git reconstruction
 mixed directories
 path mapping
 secret scanning
-dirty repository preservation
+dirty repository preservation (delivered in schema 10; see ADR 0015 and Dirty Git State v2)
 ```
 
 ---
@@ -3002,9 +3002,16 @@ Omarchy baseline change, text configuration uses a three-way merge; conflicts
 preserve unknown target work unless a recoverable `--force` replacement is
 approved.
 
-The next major Resources feature is **Git Resource Policies / Dirty Git State
-v2**, covering `git`, `git+diff`, and `copy` reconstruction policies. Dirty-Git
-implementation remains out of the baseline-aware Config scope.
+Schema-10 **Git Resource Policies / Dirty Git State v2** is delivered. Resources
+now supports `git` (portable remote + exact HEAD with local state informational),
+`git+diff` (separate staged/unstaged patches plus explicitly selected untracked
+regular files), and `copy` (filesystem snapshots that exclude `.git`
+administration data for Git worktrees). Missing resources can be reconstructed;
+existing differing destinations remain untouched. See
+[ADR 0015](docs/adr/0015-dirty-git-resource-policies.md) and the [Dirty Git
+State v2 design](docs/superpowers/specs/2026-09-10-dirty-git-state-v2-design.md).
+Path mappings, TUI workflows, and Git workflow helpers remain separate future
+work.
 
 ---
 

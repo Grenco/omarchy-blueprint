@@ -82,6 +82,29 @@ func TestValidatePlanRejectsMultipleActionsIncludingFileDelete(t *testing.T) {
 	}
 }
 
+func TestValidatePlanValidatesGitPatchActions(t *testing.T) {
+	validHash := strings.Repeat("a", 64)
+	valid := model.RestorePlan{Operations: []model.Operation{{
+		ID:       "resources.git.apply-index.dotfiles",
+		GitPatch: &model.GitPatchApply{Repository: "/tmp/dotfiles", Source: "/tmp/index.patch", SourceHash: validHash, ToIndex: true},
+	}}}
+	if err := ValidatePlan(valid); err != nil {
+		t.Fatalf("valid git patch rejected: %v", err)
+	}
+
+	for _, operation := range []model.Operation{
+		{ID: "multiple", Command: []string{"true"}, GitPatch: &model.GitPatchApply{Repository: "/tmp/repo", Source: "/tmp/patch", SourceHash: validHash}},
+		{ID: "repository", GitPatch: &model.GitPatchApply{Source: "/tmp/patch", SourceHash: validHash}},
+		{ID: "source", GitPatch: &model.GitPatchApply{Repository: "/tmp/repo", SourceHash: validHash}},
+		{ID: "empty-hash", GitPatch: &model.GitPatchApply{Repository: "/tmp/repo", Source: "/tmp/patch"}},
+		{ID: "invalid-hash", GitPatch: &model.GitPatchApply{Repository: "/tmp/repo", Source: "/tmp/patch", SourceHash: "not-a-hash"}},
+	} {
+		if err := ValidatePlan(model.RestorePlan{Operations: []model.Operation{operation}}); err == nil {
+			t.Fatalf("invalid git patch accepted: %#v", operation)
+		}
+	}
+}
+
 func TestValidatePlanRejectsInvalidFileDelete(t *testing.T) {
 	cases := []model.FileDelete{
 		{},

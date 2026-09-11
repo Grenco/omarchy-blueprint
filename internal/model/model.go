@@ -37,6 +37,7 @@ type Operation struct {
 	Delete     *FileDelete      `json:"delete,omitempty"`
 	Directory  *DirectoryCreate `json:"directory,omitempty"`
 	Symlink    *SymlinkWrite    `json:"symlink,omitempty"`
+	GitPatch   *GitPatchApply   `json:"git_patch,omitempty"`
 	DependsOn  []string         `json:"depends_on,omitempty"`
 	Risk       Risk             `json:"risk"`
 	Reversible bool             `json:"reversible"`
@@ -94,6 +95,13 @@ type FileDelete struct {
 	ExpectedMissing      bool                    `json:"expected_missing,omitempty"`
 	Backup               bool                    `json:"backup,omitempty"`
 	RejectSymlinkParents bool                    `json:"reject_symlink_parents,omitempty"`
+}
+
+type GitPatchApply struct {
+	Repository string `json:"repository"`
+	Source     string `json:"source"`
+	SourceHash string `json:"source_hash"`
+	ToIndex    bool   `json:"to_index"`
 }
 
 type RestorePlan struct {

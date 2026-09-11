@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,7 +14,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 9
+const Schema = 10
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -26,6 +27,7 @@ const (
 	misePackagesSchema  = 6
 	resourcesSchema     = 7
 	configOverlaySchema = 8
+	gitStateSchema      = 10
 )
 
 type Manifest struct {
@@ -155,7 +157,17 @@ type Resource struct {
 	Remote   string `json:"remote,omitempty" toml:"remote,omitempty"`
 	Branch   string `json:"branch,omitempty" toml:"branch,omitempty"`
 	Revision string `json:"revision,omitempty" toml:"revision,omitempty"`
-	Dirty    bool   `json:"-" toml:"-"`
+
+	IndexPatchHash    string             `json:"index_patch_hash,omitempty" toml:"index_patch_hash,omitempty"`
+	WorktreePatchHash string             `json:"worktree_patch_hash,omitempty" toml:"worktree_patch_hash,omitempty"`
+	Untracked         []GitUntrackedFile `json:"untracked,omitempty" toml:"untracked,omitempty"`
+	Dirty             bool               `json:"-" toml:"-"`
+}
+
+type GitUntrackedFile struct {
+	Path string `json:"path" toml:"path"`
+	Hash string `json:"hash" toml:"hash"`
+	Mode string `json:"mode" toml:"mode"`
 }
 
 type ResourceLink struct {
@@ -324,6 +336,9 @@ func Load(dir string) (Data, error) {
 			if err := toml.Unmarshal(resources, &d.Resources); err != nil {
 				return d, fmt.Errorf("parse resources/resources.toml: %w", err)
 			}
+			if err := normalizeGitUntracked(&d.Resources); err != nil {
+				return d, err
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return d, err
 		}
@@ -338,6 +353,9 @@ func Save(dir string, d Data) error {
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
 	if err := normalizeConfigs(&d.Config); err != nil {
+		return err
+	}
+	if err := normalizeGitUntracked(&d.Resources); err != nil {
 		return err
 	}
 	sortHooks(d.Hooks.Items)
@@ -398,7 +416,7 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
-	resources, err := toml.Marshal(d.Resources)
+	resources, err := MarshalResources(d.Resources)
 	if err != nil {
 		return err
 	}
@@ -426,6 +444,16 @@ func Save(dir string, d Data) error {
 		}
 	}
 	return nil
+}
+
+// MarshalResources returns the canonical on-disk representation used by Save.
+func MarshalResources(resources Resources) ([]byte, error) {
+	copy := resources
+	if err := normalizeGitUntracked(&copy); err != nil {
+		return nil, err
+	}
+	sortResources(&copy)
+	return toml.Marshal(copy)
 }
 
 func Validate(d Data) error {
@@ -633,6 +661,27 @@ func sortResources(resources *Resources) {
 		return resources.Links[i].SourceResource < resources.Links[j].SourceResource
 	})
 	resources.IgnoredLinks = normalize(resources.IgnoredLinks)
+}
+
+func normalizeGitUntracked(resources *Resources) error {
+	for i := range resources.Items {
+		files := resources.Items[i].Untracked
+		for j := range files {
+			clean := pathpkg.Clean(strings.ReplaceAll(files[j].Path, "\\", "/"))
+			if files[j].Path == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || pathpkg.IsAbs(clean) || strings.Contains("/"+clean+"/", "/.git/") {
+				return fmt.Errorf("invalid git untracked path %q", files[j].Path)
+			}
+			files[j].Path = clean
+		}
+		sort.Slice(files, func(a, b int) bool { return files[a].Path < files[b].Path })
+		for j := 1; j < len(files); j++ {
+			if files[j-1].Path == files[j].Path {
+				return fmt.Errorf("duplicate git untracked path %q", files[j].Path)
+			}
+		}
+		resources.Items[i].Untracked = files
+	}
+	return nil
 }
 
 func joinList(items []string) string {
