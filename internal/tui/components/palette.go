@@ -8,7 +8,11 @@ type PaletteItem struct {
 }
 
 func Palette(query string, items []PaletteItem, selected int) string {
-	lines := []string{"Command palette: " + query}
+	return "Command palette: " + query + "\n" + PaletteItems(items, selected)
+}
+
+func PaletteItems(items []PaletteItem, selected int) string {
+	lines := []string{}
 	for index, item := range items {
 		prefix := " "
 		if index == selected {

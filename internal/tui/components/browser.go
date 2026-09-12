@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -58,6 +59,10 @@ type Browser struct {
 	entries        []BrowserEntry
 	bookmarks      []Bookmark
 	selected       int
+	list           Selectable
+	cursors        map[string]int
+	width, height  int
+	styles         Styles
 	filter         string
 	filtering      bool
 	bookmarksOpen  bool
@@ -78,9 +83,14 @@ func NewBrowser(mode BrowserMode, config BrowserConfig) Browser {
 		path:           filepath.Clean(config.Home),
 		bookmarks:      BuildBookmarks(config),
 		inspectPathCmd: config.InspectPathCmd,
+		cursors:        make(map[string]int),
 	}
 	return b
 }
+
+// SetSize bounds the current-directory viewport without reading beyond it.
+func (b *Browser) SetSize(width, height int) { b.width, b.height = width, height }
+func (b *Browser) SetStyles(styles Styles)   { b.styles = styles }
 
 // BuildBookmarks returns the stable, existing locations useful to resource picking.
 func BuildBookmarks(config BrowserConfig) []Bookmark {
@@ -134,7 +144,10 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 		if result.Generation != b.directoryID || result.Path != b.path {
 			return nil
 		}
-		b.entries, b.readErr, b.selected = result.Entries, result.Err, 0
+		b.entries, b.readErr = result.Entries, result.Err
+		b.selected = b.cursors[b.path]
+		b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
+		b.selected = b.list.Selected
 		if result.Err == nil {
 			b.addRecent(result.Path)
 		}
@@ -164,7 +177,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			b.bookmark = max(0, b.bookmark-1)
 		case "enter", "l", "right":
 			if b.bookmark < len(b.bookmarks) {
-				b.path, b.selected, b.filter, b.bookmarksOpen = b.bookmarks[b.bookmark].Path, 0, "", false
+				b.path, b.filter, b.bookmarksOpen = b.bookmarks[b.bookmark].Path, "", false
 				return b.readDir()
 			}
 		}
@@ -197,16 +210,21 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 	case "j", "down":
 		if b.selected < len(b.filteredEntries())-1 {
 			b.selected++
+			b.cursors[b.path] = b.selected
+			b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
 			return b.inspectSelected()
 		}
 	case "k", "up":
 		if b.selected > 0 {
 			b.selected--
+			b.cursors[b.path] = b.selected
+			b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
 			return b.inspectSelected()
 		}
 	case "enter", "l", "right":
 		if entry, ok := b.selectedEntry(); ok && entry.Type == "directory" {
-			b.path, b.selected, b.filter = entry.Path, 0, ""
+			b.cursors[b.path] = b.selected
+			b.path, b.filter = entry.Path, ""
 			return b.readDir()
 		}
 	case "g":
@@ -240,12 +258,19 @@ func (b Browser) View() string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	for i, entry := range b.filteredEntries() {
-		prefix := " "
-		if i == b.selected {
-			prefix = ">"
-		}
-		lines = append(lines, fmt.Sprintf("%s %s %s", prefix, browserIcon(entry.Type), entry.Name))
+	if b.width == 0 {
+		lines = append(lines, b.currentView())
+	} else if b.width >= 90 {
+		parent := b.parentView()
+		current := b.currentView()
+		preview := b.DetailView()
+		pane := max(18, b.width/3-1)
+		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(parent), " ",
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(current), " ",
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(preview)))
+	} else {
+		lines = append(lines, b.currentView(), b.DetailView())
 	}
 	if b.filtering || b.filter != "" {
 		lines = append(lines, "Filter: "+b.filter)
@@ -328,7 +353,8 @@ func (b *Browser) goParent() tea.Cmd {
 	if parent == b.path {
 		return nil
 	}
-	b.path, b.selected, b.filter = parent, 0, ""
+	b.cursors[b.path] = b.selected
+	b.path, b.filter = parent, ""
 	return b.readDir()
 }
 
@@ -376,6 +402,55 @@ func (b *Browser) addRecent(path string) {
 		}
 	}
 	b.bookmarks = append(b.bookmarks, Bookmark{Label: "Recent", Path: path})
+}
+
+func (b Browser) currentView() string {
+	lines := []string{"Current"}
+	entries := b.filteredEntries()
+	b.list.SetSelected(b.selected, len(entries), b.listHeight())
+	start := b.list.offset
+	end := min(len(entries), start+b.listHeight())
+	for i := start; i < end; i++ {
+		entry := entries[i]
+		line := fmt.Sprintf("  %s %s", browserIcon(entry.Type), entry.Name)
+		if i == b.selected {
+			if !b.styles.Palette.ColorEnabled {
+				line = Icons.Selected + line[1:]
+			}
+			line = b.styles.Selection(line, true)
+		}
+		lines = append(lines, line)
+	}
+	if len(entries) == 0 {
+		lines = append(lines, "  (empty)")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (b Browser) parentView() string {
+	parent := filepath.Dir(b.path)
+	lines := []string{"Parent"}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return strings.Join(append(lines, "  "+err.Error()), "\n")
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if filepath.Join(parent, name) == b.path {
+			lines = append(lines, Icons.Selected+" "+name)
+		}
+	}
+	if len(lines) == 1 {
+		lines = append(lines, "  /")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (b Browser) listHeight() int {
+	if b.height == 0 {
+		return len(b.filteredEntries()) + 1
+	}
+	return max(1, b.height-6)
 }
 
 func browserIcon(kind string) string {

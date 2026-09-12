@@ -6,12 +6,13 @@ import "charm.land/lipgloss/v2"
 // Colour-disabled styles deliberately render unchanged text so semantic markers
 // remain the source of meaning under NO_COLOR.
 type ThemePalette struct {
-	Foreground, Background, Muted, Accent string
-	Success, Warning, Error, Info         string
-	Added, Removed                        string
-	Border, BorderFocused, Selection      string
-	Overlay, Disabled                     string
-	ColorEnabled                          bool
+	SelectionBackground, Foreground, DarkForeground, BrightForeground string
+	Muted, Accent, Red, Yellow, Green, Cyan, Blue, Magenta            string
+	// Compatibility roles are derived from the semantic colours by the loader.
+	Background, Success, Warning, Error, Info                             string
+	Added, Removed, Border, BorderFocused, Selection, SelectionForeground string
+	Overlay, Disabled                                                     string
+	ColorEnabled                                                          bool
 }
 
 type Styles struct{ Palette ThemePalette }
@@ -26,6 +27,16 @@ func (s Styles) Error(value string) string    { return s.color(value, s.Palette.
 func (s Styles) Added(value string) string    { return s.color(value, s.Palette.Added) }
 func (s Styles) Removed(value string) string  { return s.color(value, s.Palette.Removed) }
 func (s Styles) Disabled(value string) string { return s.color(value, s.Palette.Disabled) }
+func (s Styles) Selection(value string, focused bool) string {
+	if !s.Palette.ColorEnabled || s.Palette.SelectionBackground == "" {
+		return value
+	}
+	foreground := s.Palette.SelectionForeground
+	if !focused {
+		foreground = s.Palette.Muted
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(foreground)).Background(lipgloss.Color(s.Palette.SelectionBackground)).Render(value)
+}
 func (s Styles) Border(value string, focused bool) string {
 	color := s.Palette.Border
 	if focused {

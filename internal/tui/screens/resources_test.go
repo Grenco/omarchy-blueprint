@@ -49,11 +49,11 @@ func TestResourceScreenBrowseStrategyConfirmStartsOneTrack(t *testing.T) {
 
 func TestResourceActionsAreContextual(t *testing.T) {
 	screen := &Resources{phase: resourceBrowse, items: []profile.Resource{{ID: "projects", Path: "~/Projects", Strategy: "copy"}}}
-	if got := resourceActionIDs(screen.Actions()); !reflect.DeepEqual(got, []string{"discover", "strategy", "untrack", "edit", "open", "copy"}) {
+	if got := resourceActionIDs(screen.Actions()); !reflect.DeepEqual(got, []string{"strategy", "untrack", "edit", "open", "copy"}) {
 		t.Fatalf("tracked actions=%v", got)
 	}
 	screen.discover = true
-	if got := resourceActionIDs(screen.Actions()); !reflect.DeepEqual(got, []string{"discover"}) {
+	if got := resourceActionIDs(screen.Actions()); len(got) != 0 {
 		t.Fatalf("discover actions=%v", got)
 	}
 }

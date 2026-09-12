@@ -223,6 +223,29 @@ func TestBrowserAddsVisitedDirectoriesToBookmarks(t *testing.T) {
 	}
 }
 
+func TestBrowserRestoresCursorForParentAndChildDirectories(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "alpha"))
+	mustMkdir(t, filepath.Join(home, "beta"))
+	mustWrite(t, filepath.Join(home, "beta", "first"))
+	mustWrite(t, filepath.Join(home, "beta", "second"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyDown}))
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyDown}))
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyBackspace}))
+	entry, _ := browser.Selected()
+	if entry.Name != "beta" {
+		t.Fatalf("parent cursor = %q, want beta", entry.Name)
+	}
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	entry, _ = browser.Selected()
+	if entry.Name != "second" {
+		t.Fatalf("child cursor = %q, want second", entry.Name)
+	}
+}
+
 func entryNames(entries []BrowserEntry) []string {
 	names := make([]string, len(entries))
 	for i, entry := range entries {

@@ -40,6 +40,7 @@ type Resources struct {
 	confirm                 string
 	focusID                 string
 	list                    components.Selectable
+	styles                  components.Styles
 	err                     error
 }
 
@@ -69,9 +70,20 @@ func NewResources(session *workflow.Session) *Resources {
 func NewResourcesContext(ctx context.Context, session *workflow.Session) *Resources {
 	return &Resources{ctx: ctx, session: session, phase: resourceBrowse}
 }
-func (s *Resources) Focus(id string) tea.Cmd   { s.focusID = id; return s.rescan() }
-func (s *Resources) SetSize(width, height int) { s.width, s.height = width, height }
-func (s *Resources) Init() tea.Cmd             { return s.rescan() }
+func (s *Resources) Focus(id string) tea.Cmd { s.focusID = id; return s.rescan() }
+func (s *Resources) SetSize(width, height int) {
+	s.width, s.height = width, height
+	if s.browser != nil {
+		s.browser.SetSize(width, height)
+	}
+}
+func (s *Resources) SetStyles(styles components.Styles) {
+	s.styles = styles
+	if s.browser != nil {
+		s.browser.SetStyles(styles)
+	}
+}
+func (s *Resources) Init() tea.Cmd { return s.rescan() }
 func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
@@ -81,10 +93,10 @@ func (s *Resources) Actions() []ResourceAction {
 		return nil
 	}
 	if s.discover {
-		return []ResourceAction{{ID: "discover", Label: "Browse resource", Shortcut: "n", Enabled: true}}
+		return nil
 	}
 	item := s.selectedResource()
-	actions := []ResourceAction{{ID: "discover", Label: "Discover resource", Shortcut: "n", Enabled: true}}
+	actions := []ResourceAction{}
 	if item.ID == "" {
 		return actions
 	}
@@ -242,18 +254,24 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	}
 	switch key.String() {
 	case "tab":
-		s.discover = !s.discover
+		if !s.discover {
+			s.discover, s.err = true, nil
+			if s.session == nil {
+				return nil
+			}
+			browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
+			browser.SetSize(s.width, s.height)
+			browser.SetStyles(s.styles)
+			s.browser = &browser
+			return s.browser.Init()
+		}
+		s.resetDiscovery()
 	case "j", "down":
 		s.list.Move(1, len(s.items), s.listHeight())
 		s.selected = s.list.Selected
 	case "k", "up":
 		s.list.Move(-1, len(s.items), s.listHeight())
 		s.selected = s.list.Selected
-	case "n":
-		s.discover, s.err = true, nil
-		browser := components.NewBrowser(components.BrowseResource, components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath})
-		s.browser = &browser
-		return s.browser.Init()
 	case "u", "x":
 		if !s.discover && s.selectedResource().ID != "" {
 			s.confirm = "untrack"
@@ -298,7 +316,7 @@ func (s *Resources) View() string {
 		return "Candidate: " + s.candidate.Path
 	}
 	if s.phase == resourceStrategy {
-		return "Choose a strategy\n( ) copy: snapshot files\n( ) git: repository only\n( ) git+diff: repository plus local changes\nSelected: " + s.strategy
+		return components.Confirm("Choose tracking strategy\n\ncopy: snapshot files and directories\ngit: portable repository provenance only\ngit+diff: repository plus selected local changes\n\n1 copy   2 git   3 git+diff\nSelected: " + s.strategy)
 	}
 	if s.phase == resourceUntracked {
 		lines := []string{"Select eligible untracked files"}
@@ -314,7 +332,13 @@ func (s *Resources) View() string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	lines := []string{"[Tracked " + fmt.Sprint(len(s.items)) + "] [Discover]"}
+	tracked, discover := "Tracked "+fmt.Sprint(len(s.items)), "Discover"
+	if !s.discover {
+		tracked = s.styles.Selection("["+tracked+"]", true)
+	} else {
+		discover = s.styles.Selection("["+discover+"]", true)
+	}
+	lines := []string{tracked + "  " + discover}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+s.err.Error())
 	}
@@ -454,4 +478,11 @@ func (s *Resources) setCandidateInspection() {
 	}
 	s.chosen = make(map[string]bool)
 	s.selected = 0
+	if s.strategy == "" {
+		s.strategy = inspection.SuggestedStrategy
+	}
+}
+
+func (s *Resources) browserConfig() components.BrowserConfig {
+	return components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath}
 }

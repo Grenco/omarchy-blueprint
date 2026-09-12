@@ -135,7 +135,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	}
 	configScreen := m.activeScreen().(*configScreen)
 	consumeScreenCmd(t, &m, configScreen.Init())
-	if view := configScreen.View(); !strings.Contains(view, "> .config/example/settings.toml  ambiguous-baseline") || !strings.Contains(view, "Reason: ambiguous baseline") {
+	if view := configScreen.View(); !strings.Contains(view, "Needs a decision") || !strings.Contains(view, ".config/example/settings.toml") || !strings.Contains(view, "automatic") {
 		t.Fatalf("config semantic markers missing: %q", view)
 	}
 	consumeScreenCmd(t, &m, configScreen.Update(tea.KeyPressMsg{Code: 'i'}))
@@ -151,7 +151,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 		t.Fatalf("resource inspection lost shared profile data: %q", resourcesScreen.View())
 	}
 	m = updateModel(t, m, screens.OverviewTarget{Target: "machines", Ref: "desktop:projects"})
-	if view := m.activeScreen().View(); !strings.Contains(view, "notes          ~/Notes              ~/Code/Notes         override") {
+	if view := m.activeScreen().View(); !strings.Contains(view, "notes") || !strings.Contains(view, "~/Notes") || !strings.Contains(view, "~/Code/Notes") || !strings.Contains(view, "override") {
 		t.Fatalf("machine mapping lost shared profile data: %q", view)
 	}
 
@@ -322,12 +322,12 @@ func TestFooterTracksResourceStateAndModalInput(t *testing.T) {
 	m.selectScreen(ScreenResources)
 	resources := m.activeScreen().(*resourcesScreen)
 	consumeScreenCmd(t, &m, resources.Init())
-	// A tracked item exposes its contextual actions, while Discover exposes only browsing.
+	// A tracked item exposes contextual actions; Discover is entered directly by Tab.
 	if footer := m.footer(); !strings.Contains(footer, "s Change strategy") || !strings.Contains(footer, "u Untrack resource") {
 		t.Fatalf("tracked footer=%q", footer)
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if footer := m.footer(); strings.Contains(footer, "Change strategy") || !strings.Contains(footer, "n Browse resource") {
+	if footer := m.footer(); strings.Contains(footer, "Change strategy") || strings.Contains(footer, "Browse resource") {
 		t.Fatalf("discover footer=%q", footer)
 	}
 	m.requestedModal = &ModalRequest{Title: "Confirm", Content: "confirm"}

@@ -40,7 +40,21 @@ func NewMachines(session *workflow.Session) *Machines {
 func NewMachinesContext(ctx context.Context, session *workflow.Session) *Machines {
 	return &Machines{ctx: ctx, session: session}
 }
-func (s *Machines) SetStyles(styles components.Styles) { s.styles = styles }
+func (s *Machines) SetStyles(styles components.Styles) {
+	s.styles = styles
+	if s.browser != nil {
+		s.browser.SetStyles(styles)
+	}
+}
+
+// HandlesKey reserves workspace navigation for the two machine subpanels.
+func (s *Machines) HandlesKey(key string) bool {
+	switch key {
+	case "tab", "h", "left", "l", "right", "j", "down", "k", "up":
+		return true
+	}
+	return false
+}
 func (s *Machines) Focus(mapping string) {
 	s.focusMapping = mapping
 	for i, item := range s.machines() {
@@ -57,9 +71,14 @@ func (s *Machines) Focus(mapping string) {
 		}
 	}
 }
-func (s *Machines) SetSize(width, height int) { s.width, s.height = width, height }
-func (s *Machines) Init() tea.Cmd             { return nil }
-func (s *Machines) TransientActive() bool     { return s.browser != nil || s.confirm != "" || s.mode != "" }
+func (s *Machines) SetSize(width, height int) {
+	s.width, s.height = width, height
+	if s.browser != nil {
+		s.browser.SetSize(width, height)
+	}
+}
+func (s *Machines) Init() tea.Cmd         { return nil }
+func (s *Machines) TransientActive() bool { return s.browser != nil || s.confirm != "" || s.mode != "" }
 
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	if result, ok := msg.(MachineMutationComplete); ok {
@@ -178,6 +197,8 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	case "m":
 		if s.focusMappings && s.selectedMachine().Name != "" && s.selectedMapping().id != "" {
 			browser := components.NewBrowser(components.PickDirectory, components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath})
+			browser.SetSize(s.width, s.height)
+			browser.SetStyles(s.styles)
 			s.browser = &browser
 			return s.browser.Init()
 		}
@@ -210,23 +231,23 @@ func (s *Machines) View() string {
 	if len(machineLines) == 0 {
 		machineLines = append(machineLines, "No machine overlays.")
 	}
-	rows := []string{"Resource       Portable             Effective             Source"}
+	rows := []components.Row{}
 	for i, row := range s.mappingRows() {
-		marker := " "
-		if i == s.resource {
-			marker = ">"
-		}
-		rows = append(rows, fmt.Sprintf("%s %-14s %-20s %-20s %s", marker, row.id, row.portable, row.effective, row.source))
+		rows = append(rows, components.Row{Cells: []string{row.id, row.portable, row.effective, row.source}, Selected: i == s.resource})
 	}
-	if len(rows) == 1 {
-		rows = append(rows, "No resource mappings.")
+	if len(rows) == 0 {
+		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
 	}
 	leftWidth := max(20, s.width/3)
 	if s.width == 0 {
 		leftWidth = 28
 	}
 	left := s.machineList.View(machineLines, leftWidth, s.listHeight())
-	right := s.mappingTable.View(rows, s.tableHeight()+1)
+	rightWidth := s.width - leftWidth - 2
+	if s.width == 0 {
+		rightWidth = 80
+	}
+	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
 	return lipgloss.JoinHorizontal(lipgloss.Top, "Machines\n"+left, "  ", "Resource paths\n"+right)
 }
 
@@ -301,13 +322,13 @@ func (s *Machines) listHeight() int {
 	if s.height == 0 {
 		return len(s.machines()) + 2
 	}
-	return max(1, s.height/2-2)
+	return max(1, s.height-2)
 }
 func (s *Machines) tableHeight() int {
 	if s.height == 0 {
 		return len(s.mappingRows()) + 1
 	}
-	return max(1, s.height/2-3)
+	return max(1, s.height-3)
 }
 func (s *Machines) confirmModal() tea.Cmd {
 	prompt := "Rename machine to " + s.name + "?"

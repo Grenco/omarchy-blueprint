@@ -12,6 +12,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -50,6 +51,37 @@ func TestSyncScreenActionsCoverProfileGitStates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSyncScreenSetAndChangeOriginUseSharedInputModal(t *testing.T) {
+	screen := &Sync{status: profilegit.Status{Repository: true}}
+	actions := syncActionsByID(screen.Actions())
+	if action := actions["sync.set-remote"]; !action.Enabled || action.Label != "Set origin" {
+		t.Fatalf("set-origin action=%#v", action)
+	}
+	modal := screen.Update(tea.KeyPressMsg{Code: 'o'})()
+	request, ok := modal.(components.ModalRequest)
+	if !ok || request.Title != "Set origin" || request.Placeholder == "" {
+		t.Fatalf("origin modal=%#v", modal)
+	}
+	screen.confirm = ""
+	screen.status.Origin = "git@example.test:me/profile.git"
+	if action := syncActionsByID(screen.Actions())["sync.set-remote"]; action.Label != "Change origin" {
+		t.Fatalf("change-origin action=%#v", action)
+	}
+}
+
+func TestSyncScreenOriginSubmissionUsesProfileGitService(t *testing.T) {
+	session, root := newSyncSession(t)
+	git(t, root, "init", "-b", "main")
+	screen := NewSync(session)
+	screen.Update(screen.Init()())
+	screen.confirm = "origin"
+	cmd := screen.Update(components.TextInputSubmitted{Value: "git@example.test:me/profile.git"})
+	screen.Update(cmd())
+	if screen.err != nil || screen.status.Origin != "git@example.test:me/profile.git" {
+		t.Fatalf("origin result=%#v err=%v", screen.status, screen.err)
 	}
 }
 

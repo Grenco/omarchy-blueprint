@@ -24,7 +24,7 @@ func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"desktop *", "Resource       Portable", "projects       ~/Projects           ~/Code               override", "retired        -                    /mnt/retired         dormant"} {
+	for _, want := range []string{"desktop *", "Resource", "Portable", "> projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -74,5 +74,17 @@ func TestMachineScreenDownSelectsMachineAndMapping(t *testing.T) {
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if mapping := screen.selectedMapping(); mapping.id != "projects" {
 		t.Fatalf("selected mapping=%#v", mapping)
+	}
+}
+
+func TestMachineScreenOwnsWorkspaceNavigationKeys(t *testing.T) {
+	screen := &Machines{}
+	for _, key := range []string{"tab", "h", "left", "l", "right", "j", "down", "k", "up"} {
+		if !screen.HandlesKey(key) {
+			t.Errorf("Machines must own %q in its workspace", key)
+		}
+	}
+	if screen.HandlesKey(":") {
+		t.Fatal("root command palette key must remain root-owned")
 	}
 }

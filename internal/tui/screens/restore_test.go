@@ -78,3 +78,19 @@ func TestRestoreScreenComparisonTableAndDetailFollowSelection(t *testing.T) {
 		t.Fatalf("detail did not follow selected consequence: %q", detail)
 	}
 }
+
+func TestRestoreScreenShowsAllCapturedScopeAndSemanticDifference(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.comparison = workflow.RestoreComparison{
+		Normal:       model.RestorePlan{Operations: []model.Operation{{Provider: "config", Resource: "target", File: &model.FileWrite{ExpectedMissing: true}}}},
+		Forced:       model.RestorePlan{Operations: []model.Operation{{Provider: "config", Resource: "target", File: &model.FileWrite{ReplaceExisting: true}}}},
+		Consequences: []workflow.Consequence{{Provider: "config", Resource: "target", Normal: workflow.OutcomeCreate, Forced: workflow.OutcomeReplace}},
+	}
+	view := screen.View()
+	if !strings.Contains(view, "Scope: All captured providers") || !strings.Contains(view, "[diff]") || !strings.Contains(view, "Active normal plan") {
+		t.Fatalf("restore scope or semantic outcome missing: %q", view)
+	}
+	if confirmation := screen.confirmation(); !strings.Contains(confirmation, "Restore all captured providers (normal mode)") {
+		t.Fatalf("confirmation=%q", confirmation)
+	}
+}

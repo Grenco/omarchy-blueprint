@@ -20,7 +20,7 @@ color8 = "#888888"
 `)
 
 	palette := ThemeLoader{StateHome: func() (string, error) { return stateHome, nil }}.Load()
-	if palette.Foreground != "#f0f0f0" || palette.Accent != "#00aaff" || palette.Selection != "#224466" {
+	if palette.Foreground != "#f0f0f0" || palette.Accent != "#00aaff" || palette.SelectionBackground != "#224466" {
 		t.Errorf("base palette = %#v", palette)
 	}
 	if palette.Error != "#ff0000" || palette.Removed != "#ff0000" || palette.Success != "#00ff00" || palette.Added != "#00ff00" || palette.Warning != "#ffff00" || palette.Muted != "#888888" || palette.Border != "#888888" || palette.BorderFocused != "#00aaff" {
@@ -78,8 +78,20 @@ func TestThemeFingerprintChangesWhenPaletteChanges(t *testing.T) {
 
 func assertFallbackPalette(t *testing.T, palette Palette) {
 	t.Helper()
-	if !palette.ColorEnabled || palette.Foreground != "" || palette.Accent != "6" || palette.Success != "2" || palette.Warning != "3" || palette.Error != "1" || palette.Muted != "8" || palette.Selection != "6" {
+	if !palette.ColorEnabled || palette.Foreground != "7" || palette.Accent != "6" || palette.Success != "2" || palette.Warning != "3" || palette.Error != "1" || palette.Muted != "8" || palette.SelectionBackground != "6" {
 		t.Errorf("palette = %#v, want ANSI/default fallback", palette)
+	}
+}
+
+func TestSelectionForegroundHasContrastForDarkAndLightThemes(t *testing.T) {
+	for _, palette := range []Palette{
+		{SelectionBackground: "#33467c", Foreground: "#c0caf5", DarkForeground: "#1a1b26", BrightForeground: "#ffffff"}, // Tokyo Night
+		{SelectionBackground: "#d8e2ff", Foreground: "#202020", DarkForeground: "#111111", BrightForeground: "#ffffff"}, // White
+	} {
+		foreground := selectionForeground(palette.SelectionBackground, palette.Foreground, palette.DarkForeground, palette.BrightForeground)
+		if contrastRatio(palette.SelectionBackground, foreground) < 4.5 {
+			t.Fatalf("selection contrast is insufficient: background=%s foreground=%s", palette.SelectionBackground, foreground)
+		}
 	}
 }
 

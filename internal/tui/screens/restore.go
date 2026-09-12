@@ -28,6 +28,8 @@ type Restore struct {
 	err                     error
 }
 
+const restoreScopeAll = ""
+
 type restoreComparisonMsg struct {
 	comparison workflow.RestoreComparison
 	err        error
@@ -144,28 +146,28 @@ func (s *Restore) View() string {
 		mode = "Forced"
 	}
 	counts := outcomeCounts(s.plan())
-	lines := []string{fmt.Sprintf("Restore comparison  active: [%s]", mode), fmt.Sprintf("active counts: create:%d modify:%d replace:%d delete:%d commands:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands), "Normal and Forced are both previewed. Enter applies only the active mode."}
-	rows := []string{"  PROVIDER  RESOURCE  NORMAL   FORCED   RISK"}
+	lines := []string{"Scope: All captured providers", fmt.Sprintf("Restore comparison  active: [%s]", mode), fmt.Sprintf("Active %s plan: create:%d modify:%d replace:%d delete:%d commands:%d", strings.ToLower(mode), counts.create, counts.modify, counts.replace, counts.delete, counts.commands), "Normal and Forced are both previewed. Enter applies only the active mode."}
+	rows := []components.Row{}
 	for i, item := range s.comparison.Consequences {
-		marker := " "
-		if i == s.selected {
-			marker = ">"
-		}
-		changed := " "
+		changed := "[same]"
 		if item.Normal != item.Forced {
-			changed = "*"
+			changed = "[diff]"
 		}
 		risk := string(item.Risk)
 		if risk == "" {
 			risk = "low"
 		}
 		risk = s.risk(risk)
-		rows = append(rows, fmt.Sprintf("%s %-9s %-9s %-8s %-8s %s%s", marker, item.Provider, item.Resource, item.Normal, item.Forced, risk, changed))
+		rows = append(rows, components.Row{Cells: []string{item.Provider, item.Resource, s.outcome(item.Normal), s.outcome(item.Forced), risk + " " + changed}, Selected: i == s.selected})
 	}
-	if len(s.comparison.Consequences) == 0 {
-		rows = append(rows, "  No restore operations required.")
+	if len(rows) == 0 {
+		rows = append(rows, components.Row{Cells: []string{"No restore operations required."}})
 	}
-	lines = append(lines, s.table.View(rows, s.tableHeight()+1))
+	tableWidth := s.width
+	if tableWidth == 0 {
+		tableWidth = 80
+	}
+	lines = append(lines, s.table.Render([]components.Column{{Title: "PROVIDER", Width: 9, MinWidth: 8}, {Title: "RESOURCE", Width: 9, MinWidth: 8}, {Title: "NORMAL", Width: 8, MinWidth: 7}, {Title: "FORCED", Width: 8, MinWidth: 7}, {Title: "RISK", MinWidth: 5}}, rows, tableWidth, s.tableHeight()+1, s.styles))
 	return strings.Join(lines, "\n")
 }
 func (s *Restore) DetailView() string {
@@ -174,9 +176,12 @@ func (s *Restore) DetailView() string {
 	}
 	item := s.selectedConsequence()
 	if item.Resource == "" {
-		return "Restore details\nSelect a consequence to inspect the Normal and Forced effects."
+		return "Restore details\nNo consequence selected."
 	}
-	lines := []string{"Restore consequence", "Provider: " + item.Provider, "Resource: " + item.Resource, "Normal: " + string(item.Normal), "Forced: " + string(item.Forced), "Risk: " + string(item.Risk), "", item.Difference}
+	lines := []string{"Restore consequence", "Provider: " + item.Provider, "Resource: " + item.Resource, "Normal: " + string(item.Normal), "Forced: " + string(item.Forced), "Risk: " + string(item.Risk)}
+	if item.Difference != "" {
+		lines = append(lines, "", item.Difference)
+	}
 	if item.Diff != nil && item.Diff.Kind != inspection.DiffText {
 		lines = append(lines, "Detail is metadata-only: "+string(item.Diff.Kind))
 	}
@@ -192,6 +197,19 @@ func (s *Restore) risk(value string) string {
 		return s.styles.Success(value)
 	}
 }
+func (s *Restore) outcome(value workflow.Outcome) string {
+	label := string(value)
+	switch value {
+	case workflow.OutcomeCreate:
+		return s.styles.Success(label)
+	case workflow.OutcomeDelete:
+		return s.styles.Error(label)
+	case workflow.OutcomeReplace:
+		return s.styles.Warning(label)
+	default:
+		return s.styles.Muted(label)
+	}
+}
 func (s *Restore) tableHeight() int {
 	if s.height == 0 {
 		return max(1, len(s.comparison.Consequences)+1)
@@ -201,14 +219,14 @@ func (s *Restore) tableHeight() int {
 
 func (s *Restore) compare() tea.Cmd {
 	return func() tea.Msg {
-		comparison, err := s.session.CompareRestore(s.ctx, "")
+		comparison, err := s.session.CompareRestore(s.ctx, restoreScopeAll)
 		return restoreComparisonMsg{comparison, err}
 	}
 }
 func (s *Restore) apply() tea.Cmd {
 	mode := s.mode
 	return func() tea.Msg {
-		result, err := s.session.ApplyRestore(s.ctx, "", mode)
+		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, mode)
 		return restoreAppliedMsg{result, err}
 	}
 }
@@ -224,8 +242,9 @@ func (s *Restore) selectedConsequence() workflow.Consequence {
 	}
 	return workflow.Consequence{}
 }
-func (s *Restore) CanDetail() bool { return s.selectedConsequence().Diff != nil }
-func (s *Restore) CanApply() bool  { return len(s.plan().Operations) > 0 }
+func (s *Restore) CanDetail() bool            { return s.selectedConsequence().Diff != nil }
+func (s *Restore) CanApply() bool             { return len(s.plan().Operations) > 0 }
+func (s *Restore) Mode() workflow.RestoreMode { return s.mode }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }
 
@@ -283,5 +302,5 @@ func (s *Restore) confirmation() string {
 			high++
 		}
 	}
-	return fmt.Sprintf("Apply %s restore? create:%d modify:%d replace:%d delete:%d commands:%d high-risk:%d", s.mode, counts.create, counts.modify, counts.replace, counts.delete, counts.commands, high)
+	return fmt.Sprintf("Restore all captured providers (%s mode)? create:%d modify:%d replace:%d delete:%d commands:%d high-risk:%d", s.mode, counts.create, counts.modify, counts.replace, counts.delete, counts.commands, high)
 }

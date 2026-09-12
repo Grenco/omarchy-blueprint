@@ -19,11 +19,11 @@ func SidebarWithStyles(items []NavItem, selected int, width int, styles Styles) 
 	for index, item := range items {
 		marker := " "
 		if index == selected {
-			marker = ">"
+			marker = Icons.Selected
 		}
 		line := pad(marker+" "+item.Label, width)
 		if index == selected && styles.Palette.ColorEnabled {
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(styles.Palette.Foreground)).Background(lipgloss.Color(styles.Palette.Selection)).Render(line)
+			line = styles.Selection(line, true)
 		}
 		lines = append(lines, line)
 	}

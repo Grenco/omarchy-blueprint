@@ -106,6 +106,11 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 			s.diff = &viewer
 		}
 		return nil
+	case components.TextInputSubmitted:
+		if s.confirm == "origin" {
+			return s.setRemote(msg.Value)
+		}
+		return nil
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -180,6 +185,11 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		if s.allowed("remove-remote") {
 			return s.removeRemote()
 		}
+	case "o":
+		if s.allowed("set-remote") {
+			s.confirm = "origin"
+			return s.originModal()
+		}
 	case "y":
 		if s.status.Origin != "" {
 			return func() tea.Msg {
@@ -221,39 +231,32 @@ func (s *Sync) View() string {
 	if !s.lastFetched.IsZero() {
 		fetched = s.lastFetched.Local().Format(time.Kitchen)
 	}
-	lines := []string{fmt.Sprintf("Sync dashboard  %s  ahead:%d behind:%d  last fetched: %s", branch, s.status.Ahead, s.status.Behind, fetched)}
+	lines := []string{"Repository", fmt.Sprintf("  Branch    %s", branch), fmt.Sprintf("  Origin    %s", valueOr(s.status.Origin, "not configured")), fmt.Sprintf("  Upstream  %s", valueOr(s.status.Upstream, "not configured")), fmt.Sprintf("  HEAD      %s", valueOr(s.status.Head, "unborn")), "", "Remote (last fetched)", fmt.Sprintf("  Ahead     %d", s.status.Ahead), fmt.Sprintf("  Behind    %d", s.status.Behind), fmt.Sprintf("  Checked   %s", fetched), "", "Working tree"}
 	if s.err != nil {
 		lines = append(lines, s.styles.Warning("! Last refresh failed; showing last successful status."))
 	}
-	if s.status.Origin == "" {
-		lines = append(lines, "Origin: not configured")
-	} else {
-		lines = append(lines, "Origin: "+s.status.Origin)
-	}
-	rows := []string{"  STATE  SCOPE       PATH"}
+	rows := []components.Row{}
 	for i, change := range s.status.Changes {
-		marker := " "
-		if i == s.selected {
-			marker = ">"
-		}
-		managed := "unmanaged"
+		managed := "[unmanaged]"
 		if change.Managed {
-			managed = "managed"
+			managed = "[managed]"
 		}
 		state := strings.TrimSpace(change.Index + change.Worktree)
 		if state == "" {
 			state = "?"
 		}
-		rows = append(rows, fmt.Sprintf("%s %-6s %-11s %s", marker, state, managed, change.Path))
+		rows = append(rows, components.Row{Cells: []string{"[" + state + "]", managed, change.Path}, Selected: i == s.selected})
 	}
-	if len(s.status.Changes) == 0 {
-		rows = append(rows, "  Working tree clean.")
+	if len(rows) == 0 {
+		rows = append(rows, components.Row{Cells: []string{"[clean]", "", "No changes."}})
 	}
-	lines = append(lines, s.table.View(rows, s.tableHeight()+1))
+	tableWidth := s.width
+	if tableWidth == 0 {
+		tableWidth = 80
+	}
+	lines = append(lines, s.table.Render([]components.Column{{Title: "State", Width: 6, MinWidth: 6}, {Title: "Scope", Width: 11, MinWidth: 9}, {Title: "Path", MinWidth: 12}}, rows, tableWidth, s.tableHeight()+1, s.styles))
 	if s.complex() {
-		lines = append(lines, "Complex Git state: z LazyGit  y copy origin  v copy profile path")
-	} else {
-		lines = append(lines, "Use the contextual footer for available actions.")
+		lines = append(lines, "Complex Git state. Use the available handoff actions.")
 	}
 	if s.hasUnmanagedChanges() {
 		lines = append(lines, "Warning: unmanaged working-tree changes will not be included in Blueprint commits.")
@@ -262,7 +265,11 @@ func (s *Sync) View() string {
 }
 
 func (s *Sync) Actions() []SyncAction {
-	actions := []SyncAction{{"sync.init", "Initialize profile repository", "i", "profile is already a Git repository", s.allowed("init")}, {"sync.fetch", "Fetch origin", "f", s.reason("fetch"), s.allowed("fetch")}, {"sync.commit", "Commit managed changes", "c", s.reason("commit"), s.allowed("commit")}, {"sync.commit-push", "Commit & Push", "g", s.reason("commit-push"), s.allowed("commit-push")}, {"sync.pull", "Pull fast-forward", "l", s.reason("pull"), s.allowed("pull")}, {"sync.push", "Push", "p", s.reason("push"), s.allowed("push")}, {"sync.remove-remote", "Remove origin", "x", s.reason("remove-remote"), s.allowed("remove-remote")}}
+	originLabel := "Set origin"
+	if s.status.Origin != "" {
+		originLabel = "Change origin"
+	}
+	actions := []SyncAction{{"sync.init", "Initialize profile repository", "i", "profile is already a Git repository", s.allowed("init")}, {"sync.set-remote", originLabel, "o", s.reason("set-remote"), s.allowed("set-remote")}, {"sync.fetch", "Fetch origin", "f", s.reason("fetch"), s.allowed("fetch")}, {"sync.commit", "Commit managed changes", "c", s.reason("commit"), s.allowed("commit")}, {"sync.commit-push", "Commit & Push", "g", s.reason("commit-push"), s.allowed("commit-push")}, {"sync.pull", "Pull fast-forward", "l", s.reason("pull"), s.allowed("pull")}, {"sync.push", "Push", "p", s.reason("push"), s.allowed("push")}, {"sync.remove-remote", "Remove origin", "x", s.reason("remove-remote"), s.allowed("remove-remote")}}
 	if s.status.Origin != "" {
 		_, known := profilegit.BrowserURL(s.status.Origin)
 		actions = append(actions, SyncAction{"sync.copy-remote", "Copy origin", "y", "origin is not configured", true})
@@ -298,6 +305,9 @@ func (s *Sync) reason(action string) string {
 	}
 	if !s.status.Repository {
 		return "profile is not a Git repository"
+	}
+	if action == "set-remote" {
+		return ""
 	}
 	if s.complex() {
 		return "complex Git state; use LazyGit or copy the profile path"
@@ -414,6 +424,14 @@ func (s *Sync) removeRemote() tea.Cmd {
 		return syncResultMsg{status: result.Status, err: err}
 	}
 }
+func (s *Sync) setRemote(rawURL string) tea.Cmd {
+	s.confirm = ""
+	s.busy = true
+	return func() tea.Msg {
+		result, err := s.session.ProfileGitSetRemote(s.ctx, rawURL)
+		return syncResultMsg{status: result.Status, err: err}
+	}
+}
 func (s *Sync) pull() tea.Cmd {
 	s.busy = true
 	return func() tea.Msg {
@@ -460,6 +478,15 @@ func (s *Sync) confirmModal() tea.Cmd {
 		return components.ModalRequest{Title: "Profile sync", Content: components.Confirm(label + " with message: " + s.message + "?")}
 	}
 }
+func (s *Sync) originModal() tea.Cmd {
+	label := "Set origin"
+	if s.status.Origin != "" {
+		label = "Change origin"
+	}
+	return func() tea.Msg {
+		return components.ModalRequest{Title: label, Content: "Origin URL", Input: s.status.Origin, Placeholder: "git@host:owner/repository.git"}
+	}
+}
 func (s *Sync) DetailView() string {
 	if s.diff != nil {
 		return "Profile Git diff\n" + s.diff.View()
@@ -477,6 +504,12 @@ func (s *Sync) DetailView() string {
 func emptyChange(value string) string {
 	if value == "" {
 		return "-"
+	}
+	return value
+}
+func valueOr(value, fallback string) string {
+	if value == "" {
+		return fallback
 	}
 	return value
 }
