@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -26,6 +27,8 @@ import (
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
+	"github.com/Grenco/omarchy-blueprint/internal/tui"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 type Dependencies struct {
@@ -45,6 +48,8 @@ type Dependencies struct {
 	HomeDir           func() (string, error)
 	Hostname          func() (string, error)
 	ResourceLinkRoots func(string) []resourcesprovider.LinkSearchRoot
+	IsTTY             func() bool
+	RunTUI            func(context.Context, tui.Options, tui.Dependencies) error
 }
 
 type options struct {
@@ -103,6 +108,12 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	if deps.ResourceLinkRoots == nil {
 		deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
 	}
+	if deps.IsTTY == nil {
+		deps.IsTTY = defaultIsTTY
+	}
+	if deps.RunTUI == nil {
+		deps.RunTUI = tui.Run
+	}
 	root := newRoot(deps)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
@@ -126,12 +137,41 @@ func newRoot(deps Dependencies) *cobra.Command {
 		}
 		opt.profileDir = profileDir
 		return nil
+	}, RunE: func(cmd *cobra.Command, _ []string) error {
+		if !deps.IsTTY() {
+			return cmd.Help()
+		}
+		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
+			if _, err := workflow.CreateProfile(ctx, workflowDependencies(deps), dir, name); err != nil {
+				return nil, err
+			}
+			return openWorkflow(deps, opt)
+		}})
 	}}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
 	root.PersistentFlags().StringVar(&opt.machine, "machine", "", "use machine overlay for this invocation")
-	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), machineCommand(deps, opt), profileCommand(deps, opt))
+	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), inspectCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), configAutoCommand(deps, opt), machineCommand(deps, opt), profileCommand(deps, opt), tuiCommand(deps, opt))
+	root.SetOut(deps.Out)
 	return root
+}
+
+func defaultIsTTY() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+func tuiCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "tui", Args: cobra.NoArgs, Short: "Open the interactive interface", RunE: func(cmd *cobra.Command, _ []string) error {
+		if !deps.IsTTY() {
+			return errors.New("tui requires an interactive terminal")
+		}
+		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
+			if _, err := workflow.CreateProfile(ctx, workflowDependencies(deps), dir, name); err != nil {
+				return nil, err
+			}
+			return openWorkflow(deps, opt)
+		}})
+	}}
 }
 
 type machineOutput struct {
@@ -196,25 +236,12 @@ func machineAddCommand(deps Dependencies, opt *options) *cobra.Command {
 				name = suggestion
 			}
 		}
-		if err := machine.ValidateName(name); err != nil {
+		session, err := openWorkflow(deps, opt)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		if err := session.AddMachine(context.Background(), name, !noUse); err != nil {
 			return err
-		}
-		if _, err := machine.Select(name, "", d.Machines.Items); err == nil {
-			return fmt.Errorf("machine %q already exists", name)
-		}
-		d.Machines.Items = append(d.Machines.Items, profile.Machine{Name: name})
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
-		}
-		if !noUse {
-			store, err := machineBindingStore(deps)
-			if err != nil {
-				return err
-			}
-			if err := store.Save(opt.profileDir, name); err != nil {
-				return err
-			}
 		}
 		source := "default"
 		if !noUse {
@@ -228,42 +255,12 @@ func machineAddCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func machineRenameCommand(deps Dependencies, opt *options) *cobra.Command {
 	return &cobra.Command{Use: "rename <old> <new>", Args: cobra.ExactArgs(2), Short: "Rename a machine overlay", RunE: func(_ *cobra.Command, args []string) error {
-		d, err := profile.Load(opt.profileDir)
+		session, err := openWorkflow(deps, opt)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		if err := machine.ValidateName(args[1]); err != nil {
+		if err := session.RenameMachine(context.Background(), args[0], args[1]); err != nil {
 			return err
-		}
-		old := -1
-		for i, item := range d.Machines.Items {
-			if item.Name == args[0] {
-				old = i
-			}
-			if item.Name == args[1] {
-				return fmt.Errorf("machine %q already exists", args[1])
-			}
-		}
-		if old < 0 {
-			return fmt.Errorf("machine %q does not exist", args[0])
-		}
-		d.Machines.Items[old].Name = args[1]
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
-		}
-		store, err := machineBindingStore(deps)
-		if err != nil {
-			return err
-		}
-		bound, err := store.Load(opt.profileDir)
-		if err != nil {
-			return err
-		}
-		if bound == args[0] {
-			if err := store.Save(opt.profileDir, args[1]); err != nil {
-				return err
-			}
 		}
 		return emit(deps.Out, opt.json, "machine rename", true, map[string]any{"machine": machineOutput{Name: args[1], Source: "binding"}}, fmt.Sprintf("Renamed machine %s to %s.\n", args[0], args[1]))
 	}}
@@ -271,37 +268,12 @@ func machineRenameCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func machineRemoveCommand(deps Dependencies, opt *options) *cobra.Command {
 	return &cobra.Command{Use: "remove <name>", Args: cobra.ExactArgs(1), Short: "Remove a machine overlay", RunE: func(_ *cobra.Command, args []string) error {
-		d, err := profile.Load(opt.profileDir)
+		session, err := openWorkflow(deps, opt)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		index := -1
-		for i, item := range d.Machines.Items {
-			if item.Name == args[0] {
-				index = i
-				break
-			}
-		}
-		if index < 0 {
-			return fmt.Errorf("machine %q does not exist", args[0])
-		}
-		d.Machines.Items = append(d.Machines.Items[:index], d.Machines.Items[index+1:]...)
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
-		}
-		store, err := machineBindingStore(deps)
-		if err != nil {
+		if err := session.RemoveMachine(context.Background(), args[0]); err != nil {
 			return err
-		}
-		bound, err := store.Load(opt.profileDir)
-		if err != nil {
-			return err
-		}
-		if bound == args[0] {
-			if err := store.Clear(opt.profileDir); err != nil {
-				return err
-			}
 		}
 		return emit(deps.Out, opt.json, "machine remove", true, map[string]any{"machine": machineOutput{Source: "default"}}, fmt.Sprintf("Removed machine %s.\n", args[0]))
 	}}
@@ -369,18 +341,11 @@ func machineCurrentCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func machineUseCommand(deps Dependencies, opt *options) *cobra.Command {
 	return &cobra.Command{Use: "use <name>", Args: cobra.ExactArgs(1), Short: "Select a machine overlay locally", RunE: func(_ *cobra.Command, args []string) error {
-		d, err := profile.Load(opt.profileDir)
+		session, err := openWorkflow(deps, opt)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		if _, err := machine.Select(args[0], "", d.Machines.Items); err != nil {
-			return err
-		}
-		store, err := machineBindingStore(deps)
-		if err != nil {
-			return err
-		}
-		if err := store.Save(opt.profileDir, args[0]); err != nil {
+		if err := session.UseMachine(context.Background(), args[0]); err != nil {
 			return err
 		}
 		return emit(deps.Out, opt.json, "machine use", true, map[string]any{"machine": machineOutput{Name: args[0], Source: "binding"}}, fmt.Sprintf("Using machine %s.\n", args[0]))
@@ -389,11 +354,11 @@ func machineUseCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func machineClearCommand(deps Dependencies, opt *options) *cobra.Command {
 	return &cobra.Command{Use: "clear", Args: cobra.NoArgs, Short: "Clear the local machine selection", RunE: func(_ *cobra.Command, _ []string) error {
-		store, err := machineBindingStore(deps)
+		session, err := openWorkflow(deps, opt)
 		if err != nil {
-			return err
+			return profileError(opt.profileDir, err)
 		}
-		if err := store.Clear(opt.profileDir); err != nil {
+		if err := session.ClearMachine(context.Background()); err != nil {
 			return err
 		}
 		return emit(deps.Out, opt.json, "machine clear", true, map[string]any{"machine": machineOutput{Source: "default"}}, "Machine selection cleared.\n")
@@ -402,69 +367,18 @@ func machineClearCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func machineMapCommand(deps Dependencies, opt *options) *cobra.Command {
 	return &cobra.Command{Use: "map <resource-ref> <path>", Args: cobra.ExactArgs(2), Short: "Map a resource root for the active machine", RunE: func(_ *cobra.Command, args []string) error {
-		d, err := profile.Load(opt.profileDir)
+		session, err := openWorkflow(deps, opt)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		selection, err := selectedMachine(deps, opt, d)
-		if err != nil {
-			return err
-		}
-		if selection.Machine == nil {
-			return errors.New("no machine selected; use `machine use <name>` or pass `--machine <name>`")
-		}
+		selection := session.Machine()
 		id := strings.TrimPrefix(args[0], "resource:")
-		if _, found := resourceByID(d.Resources.Items, id); !found {
-			return fmt.Errorf("resource %q is not tracked", id)
-		}
-		home, err := deps.HomeDir()
-		if err != nil {
+		if err := session.MapResource(context.Background(), selection.Name, id, args[1]); err != nil {
 			return err
 		}
-		path, err := machine.NormalizeMappingPath(home, args[1])
-		if err != nil {
-			return err
-		}
-		candidate := *selection.Machine
-		candidate.ResourcePaths = append([]profile.MachineResourcePath(nil), selection.Machine.ResourcePaths...)
-		mapped := false
-		for i := range candidate.ResourcePaths {
-			if candidate.ResourcePaths[i].Resource == id {
-				candidate.ResourcePaths[i].Path = path
-				mapped = true
-			}
-		}
-		if !mapped {
-			candidate.ResourcePaths = append(candidate.ResourcePaths, profile.MachineResourcePath{Resource: id, Path: path})
-		}
-		state, err := deps.StateHome()
-		if err != nil {
-			return err
-		}
-		profileDir, err := machine.CanonicalProfileRoot(opt.profileDir)
-		if err != nil {
-			return err
-		}
-		roots, _, err := machine.ResolveEffectiveRoots(home, profileDir, filepath.Join(state, "omarchy-blueprint"), d.Resources, &candidate)
-		if err != nil {
-			return err
-		}
-		provider, err := (resourcesStateProvider{deps: deps, opt: opt}).provider(d)
-		if err != nil {
-			return err
-		}
-		if err := resourcesprovider.ValidateEffectiveOwnership(roots, provider.Ownership); err != nil {
-			return err
-		}
-		for i := range d.Machines.Items {
-			if d.Machines.Items[i].Name == candidate.Name {
-				d.Machines.Items[i] = candidate
-				break
-			}
-		}
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
+		path := args[1]
+		if home, err := deps.HomeDir(); err == nil {
+			path, _ = machine.NormalizeMappingPath(home, args[1])
 		}
 		return emit(deps.Out, opt.json, "machine map", true, map[string]any{"machine": machineOutput{Name: selection.Name, Source: selection.Source}, "resource": id, "path": path}, fmt.Sprintf("Mapped resource %s to %s on %s.\n", id, path, selection.Name))
 	}}
@@ -472,36 +386,14 @@ func machineMapCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func machineUnmapCommand(deps Dependencies, opt *options) *cobra.Command {
 	return &cobra.Command{Use: "unmap <resource-ref>", Args: cobra.ExactArgs(1), Short: "Remove a resource mapping from the active machine", RunE: func(_ *cobra.Command, args []string) error {
-		d, err := profile.Load(opt.profileDir)
+		session, err := openWorkflow(deps, opt)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
-		selection, err := selectedMachine(deps, opt, d)
-		if err != nil {
-			return err
-		}
-		if selection.Machine == nil {
-			return errors.New("no machine selected; use `machine use <name>` or pass `--machine <name>`")
-		}
+		selection := session.Machine()
 		id := strings.TrimPrefix(args[0], "resource:")
-		candidate := *selection.Machine
-		candidate.ResourcePaths = nil
-		for _, mapping := range selection.Machine.ResourcePaths {
-			if mapping.Resource != id {
-				candidate.ResourcePaths = append(candidate.ResourcePaths, mapping)
-			}
-		}
-		if len(candidate.ResourcePaths) != len(selection.Machine.ResourcePaths) {
-			for i := range d.Machines.Items {
-				if d.Machines.Items[i].Name == candidate.Name {
-					d.Machines.Items[i] = candidate
-					break
-				}
-			}
-			d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-			if err := profile.Save(opt.profileDir, d); err != nil {
-				return fmt.Errorf("save profile: %w", err)
-			}
+		if err := session.UnmapResource(context.Background(), selection.Name, id); err != nil {
+			return err
 		}
 		return emit(deps.Out, opt.json, "machine unmap", true, map[string]any{"machine": machineOutput{Name: selection.Name, Source: selection.Source}, "resource": id}, fmt.Sprintf("Unmapped resource %s from %s.\n", id, selection.Name))
 	}}
@@ -755,25 +647,12 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 		if len(args) == 1 {
 			dir = args[0]
 		}
-		abs, err := filepath.Abs(dir)
+		abs, err := workflow.CreateProfile(cmd.Context(), workflowDependencies(deps), dir, name)
 		if err != nil {
 			return err
-		}
-		if _, err := os.Stat(filepath.Join(abs, "profile.toml")); err == nil {
-			return fmt.Errorf("profile already exists at %s", abs)
 		}
 		if name == "" {
 			name = filepath.Base(abs)
-		}
-		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
-		if err != nil {
-			return err
-		}
-		d := profile.New(name, deps.Now())
-		d.Manifest.Omarchy.CapturedVersion = info.Version
-		d.Manifest.Omarchy.Channel = info.Channel
-		if err := profile.Save(abs, d); err != nil {
-			return fmt.Errorf("create profile: %w", err)
 		}
 		return emit(deps.Out, opt.json, "init", true, map[string]any{"profile": abs, "name": name}, fmt.Sprintf("Created profile %q at %s\n", name, abs))
 	}}
@@ -961,6 +840,33 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 	}}
 }
 
+func configAutoCommand(deps Dependencies, opt *options) *cobra.Command {
+	return &cobra.Command{Use: "auto <config-reference>", Args: cobra.ExactArgs(1), Short: "Return a Config path to automatic discovery policy", RunE: func(_ *cobra.Command, refs []string) error {
+		if !strings.HasPrefix(refs[0], "config:") {
+			return fmt.Errorf("auto accepts exactly one config:<path> reference")
+		}
+		d, err := profile.Load(opt.profileDir)
+		if err != nil {
+			return profileError(opt.profileDir, err)
+		}
+		path := strings.TrimPrefix(refs[0], "config:")
+		var changed bool
+		d.Config, changed, err = configprovider.ClearPolicy(d.Config, path)
+		if err != nil {
+			return err
+		}
+		path, err = configprovider.NormalizeConfigPolicyPath(path)
+		if err != nil {
+			return err
+		}
+		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
+		if err := profile.Save(opt.profileDir, d); err != nil {
+			return fmt.Errorf("save profile: %w", err)
+		}
+		return emit(deps.Out, opt.json, "auto", true, map[string]any{"kind": "config", "path": path, "policy": "auto", "changed": changed}, fmt.Sprintf("Automatic config policy restored for %s.\n", path))
+	}}
+}
+
 func supportedCategory(providers []stateProvider) cobra.PositionalArgs {
 	allowedIDs := categoryProviderIDs(providers)
 	allowed := strings.Join(allowedIDs, ", ")
@@ -1039,6 +945,156 @@ func defaultConfigDirs() (string, string, error) {
 	}
 	return filepath.Join(omarchyRoot, "config"), filepath.Join(home, ".config"), nil
 }
+
+func workflowDependencies(d Dependencies) workflow.Dependencies {
+	return workflow.Dependencies{
+		Runner: d.Runner, Now: d.Now, StateHome: d.StateHome, ThemeDirs: d.ThemeDirs,
+		PluginDir: d.PluginDir, ConfigDirs: d.ConfigDirs, BaselineHistory: d.BaselineHistory,
+		ShellPaths: d.ShellPaths, HooksDir: d.HooksDir, MiseGlobalConfig: d.MiseGlobalConfig,
+		HomeDir: d.HomeDir, Hostname: d.Hostname, ResourceLinkRoots: d.ResourceLinkRoots,
+	}
+}
+
+func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
+	session, err := workflow.Open(workflowDependencies(deps), workflow.Options{ProfileDir: opt.profileDir, ExplicitMachine: opt.machine})
+	if err != nil {
+		return nil, err
+	}
+	providers := stateProviders(deps, opt)
+	adapters := make([]workflow.Provider, len(providers))
+	for i, provider := range providers {
+		adapter := restoreProviderAdapter{stateProvider: provider}
+		switch provider.ID() {
+		case "config":
+			adapters[i] = configWorkflowProvider{adapter}
+		case "resources":
+			adapters[i] = resourcesWorkflowProvider{adapter}
+		default:
+			adapters[i] = adapter
+		}
+	}
+	session.SetProviders(adapters)
+	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, mode workflow.RestoreMode) error {
+		state := make([]stateProvider, 0, len(selected))
+		for _, provider := range selected {
+			if adapter, ok := provider.(interface{ StateProvider() stateProvider }); ok {
+				state = append(state, adapter.StateProvider())
+			}
+		}
+		return finalizeRestorePlan(ctx, deps, opt, data, state, plan, restorePlanOptions{Force: mode == workflow.RestoreForced})
+	})
+	return session, nil
+}
+
+type restoreProviderAdapter struct{ stateProvider }
+
+func (p restoreProviderAdapter) StateProvider() stateProvider { return p.stateProvider }
+
+func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, mode workflow.RestoreMode) (model.RestorePlan, error) {
+	return p.stateProvider.Plan(ctx, data, info, restorePlanOptions{Force: mode == workflow.RestoreForced})
+}
+
+// The workflow layer discovers these optional capabilities by interface. Keep
+// them visible through the restore adapter so wrapping does not alter provider
+// lifecycle or UI behavior.
+func (p restoreProviderAdapter) CategoryEnabled() bool {
+	provider, ok := p.stateProvider.(categoryStateProvider)
+	return ok && provider.CategoryEnabled()
+}
+
+type configWorkflowProvider struct{ restoreProviderAdapter }
+
+func (p configWorkflowProvider) DiffWithScan(ctx context.Context, data profile.Data) ([]model.Change, configprovider.ScanSummary, error) {
+	provider, ok := p.stateProvider.(scanDiffProvider)
+	if !ok {
+		return nil, configprovider.ScanSummary{}, errors.New("config status is unavailable")
+	}
+	return provider.DiffWithScan(ctx, data)
+}
+
+func (p configWorkflowProvider) InspectConfig(ctx context.Context, data profile.Data, path string) (workflow.ConfigInspection, error) {
+	provider, ok := p.stateProvider.(interface {
+		InspectConfig(context.Context, profile.Data, string) (workflow.ConfigInspection, error)
+	})
+	if !ok {
+		return workflow.ConfigInspection{}, errors.New("config inspection is unavailable")
+	}
+	return provider.InspectConfig(ctx, data, path)
+}
+
+type resourcesWorkflowProvider struct{ restoreProviderAdapter }
+
+func (p resourcesWorkflowProvider) CommitCapture() error {
+	provider, ok := p.stateProvider.(interface{ CommitCapture() error })
+	if !ok {
+		return nil
+	}
+	return provider.CommitCapture()
+}
+
+func (p resourcesWorkflowProvider) FinalizeCapture() error {
+	provider, ok := p.stateProvider.(interface{ FinalizeCapture() error })
+	if !ok {
+		return nil
+	}
+	return provider.FinalizeCapture()
+}
+
+func (p resourcesWorkflowProvider) RollbackCapture() error {
+	provider, ok := p.stateProvider.(interface{ RollbackCapture() error })
+	if !ok {
+		return nil
+	}
+	return provider.RollbackCapture()
+}
+
+func (p resourcesWorkflowProvider) DiffWithGitWorkingState(ctx context.Context, data profile.Data) ([]model.Change, map[string]resourcesprovider.GitWorkingSummary, error) {
+	provider, ok := p.stateProvider.(resourceDiffProvider)
+	if !ok {
+		return nil, nil, errors.New("resources status is unavailable")
+	}
+	return provider.DiffWithGitWorkingState(ctx, data)
+}
+
+func (p resourcesWorkflowProvider) InspectPath(ctx context.Context, data profile.Data, path string) (workflow.PathInspection, error) {
+	provider, ok := p.stateProvider.(interface {
+		InspectPath(context.Context, profile.Data, string) (workflow.PathInspection, error)
+	})
+	if !ok {
+		return workflow.PathInspection{}, errors.New("resources inspection is unavailable")
+	}
+	return provider.InspectPath(ctx, data, path)
+}
+
+func (p resourcesWorkflowProvider) InspectResource(ctx context.Context, data profile.Data, id string) (workflow.ResourceInspection, error) {
+	provider, ok := p.stateProvider.(interface {
+		InspectResource(context.Context, profile.Data, string) (workflow.ResourceInspection, error)
+	})
+	if !ok {
+		return workflow.ResourceInspection{}, errors.New("resources inspection is unavailable")
+	}
+	return provider.InspectResource(ctx, data, id)
+}
+
+func (p resourcesWorkflowProvider) TrackResource(ctx context.Context, data profile.Data, request workflow.TrackRequest) (profile.Data, profile.Resource, []model.Change, error) {
+	provider, ok := p.stateProvider.(interface {
+		TrackResource(context.Context, profile.Data, workflow.TrackRequest) (profile.Data, profile.Resource, []model.Change, error)
+	})
+	if !ok {
+		return data, profile.Resource{}, nil, errors.New("resources tracking is unavailable")
+	}
+	return provider.TrackResource(ctx, data, request)
+}
+
+func (p resourcesWorkflowProvider) UntrackResource(ctx context.Context, data profile.Data, id string) (profile.Data, []string, error) {
+	provider, ok := p.stateProvider.(interface {
+		UntrackResource(context.Context, profile.Data, string) (profile.Data, []string, error)
+	})
+	if !ok {
+		return data, nil, errors.New("resources tracking is unavailable")
+	}
+	return provider.UntrackResource(ctx, data, id)
+}
 func pluginProvider(deps Dependencies, opt *options) (pluginsprovider.Provider, error) {
 	dir, err := deps.PluginDir()
 	return pluginsprovider.Provider{Runner: deps.Runner, UserDir: dir, ProfileDir: opt.profileDir}, err
@@ -1054,71 +1110,59 @@ func captureAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 }
 
 func captureProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider) error {
-	info, err := omarchy.Detect(ctx, deps.Runner)
+	session, err := openWorkflow(deps, opt)
+	if err != nil {
+		return profileError(opt.profileDir, err)
+	}
+	result, err := session.Capture(ctx, captureOnlyProvider(providers, stateProviders(deps, opt)))
 	if err != nil {
 		return err
 	}
 	data := map[string]any{}
-	var changes []model.Change
-	var captured []string
+	for _, id := range result.Providers {
+		switch id {
+		case "packages":
+			data[id] = result.Profile.Packages
+		case "themes":
+			data[id] = result.Profile.Themes
+		case "plugins":
+			data[id] = result.Profile.Plugins
+		case "resources":
+			if len(result.Profile.Resources.Items) > 0 {
+				data[id] = result.Profile.Resources
+			}
+		case "config":
+			if result.ConfigScan != nil {
+				data[id] = configCaptureOutput{Configs: result.Profile.Config, Scan: configScanOutput{Counts: result.ConfigScan.Counts(), Candidates: result.ConfigScan.Candidates, Surfaces: result.ConfigScan.Surfaces}}
+			}
+		case "defaults":
+			if result.Profile.Defaults != (profile.Defaults{}) {
+				data[id] = result.Profile.Defaults
+			}
+		case "shell":
+			if result.Profile.Shell.Hash != "" {
+				data[id] = result.Profile.Shell
+			}
+		case "hooks":
+			if len(result.Profile.Hooks.Items) > 0 {
+				data[id] = result.Profile.Hooks
+			}
+		}
+	}
+	data["changes"] = result.Changes
 	var configResult *configprovider.CaptureResult
-	var transactions []interface {
-		CommitCapture() error
-		FinalizeCapture() error
-		RollbackCapture() error
+	if result.ConfigScan != nil {
+		configResult = &configprovider.CaptureResult{State: result.Profile.Config, Scan: *result.ConfigScan}
 	}
-	for _, provider := range providers {
-		state, providerChanges, err := captureProvider(ctx, provider, &d)
-		if err != nil {
-			for _, transaction := range transactions {
-				_ = transaction.RollbackCapture()
-			}
-			return err
-		}
-		if transaction, ok := provider.(interface {
-			CommitCapture() error
-			FinalizeCapture() error
-			RollbackCapture() error
-		}); ok {
-			transactions = append(transactions, transaction)
-		}
-		if state == nil {
-			continue
-		}
-		captured = append(captured, provider.ID())
-		if result, ok := state.(configprovider.CaptureResult); ok {
-			data[provider.ID()] = configCaptureOutput{Configs: result.State, Scan: configScanOutput{Counts: result.Scan.Counts(), Candidates: result.Scan.Candidates, Surfaces: result.Scan.Surfaces}}
-		} else if emptyProvider, ok := provider.(stateEmptyer); !ok || !emptyProvider.Empty(state) {
-			data[provider.ID()] = state
-		}
-		if result, ok := state.(configprovider.CaptureResult); ok {
-			configResult = &result
-		}
-		changes = append(changes, providerChanges...)
-	}
-	data["changes"] = changes
-	if len(captured) > 0 {
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		d.Manifest.Omarchy.CapturedVersion, d.Manifest.Omarchy.Channel = info.Version, info.Channel
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			for _, transaction := range transactions {
-				_ = transaction.RollbackCapture()
-			}
-			return fmt.Errorf("save profile: %w", err)
-		}
-		for _, transaction := range transactions {
-			if err := transaction.CommitCapture(); err != nil {
-				return err
-			}
-		}
-		for _, transaction := range transactions {
-			if err := transaction.FinalizeCapture(); err != nil {
-				return err
-			}
-		}
-	}
-	human := renderCaptureChanges("Captured "+providerStateLabel(captured)+" state", changes, configResult)
+	human := renderCaptureChanges("Captured "+providerStateLabel(result.Providers)+" state", result.Changes, configResult)
 	return emit(deps.Out, opt.json, "capture", true, data, human)
+}
+
+func captureOnlyProvider(selected, all []stateProvider) string {
+	if len(selected) != 1 || len(all) == 1 {
+		return ""
+	}
+	return selected[0].ID()
 }
 
 func renderCaptureChanges(title string, changes []model.Change, result *configprovider.CaptureResult) string {
@@ -1282,26 +1326,29 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	if err != nil {
 		return err
 	}
-	providers = capturedProviders(providers, d)
+	session, err := openWorkflow(deps, opt)
+	if err != nil {
+		return profileError(opt.profileDir, err)
+	}
+	onlyProvider := ""
+	if len(providers) == 1 && len(stateProviders(deps, opt)) != 1 {
+		onlyProvider = providers[0].ID()
+	}
+	report, err := session.Status(ctx, onlyProvider)
+	if err != nil {
+		return err
+	}
 	var changes []model.Change
 	var configScan *configprovider.ScanSummary
 	var gitWorking map[string]resourcesprovider.GitWorkingSummary
-	for _, provider := range providers {
-		var providerChanges []model.Change
-		var err error
-		if scanner, ok := provider.(scanDiffProvider); ok {
-			var scan configprovider.ScanSummary
-			providerChanges, scan, err = scanner.DiffWithScan(ctx, d)
-			configScan = &scan
-		} else if scanner, ok := provider.(resourceDiffProvider); ok {
-			providerChanges, gitWorking, err = scanner.DiffWithGitWorkingState(ctx, d)
-		} else {
-			providerChanges, err = provider.Diff(ctx, d)
+	for _, provider := range report.Providers {
+		changes = append(changes, provider.Changes...)
+		if provider.ConfigScan != nil {
+			configScan = provider.ConfigScan
 		}
-		if err != nil {
-			return fmt.Errorf("diff %s: %w", provider.ID(), err)
+		if provider.ResourceGit != nil {
+			gitWorking = provider.ResourceGit
 		}
-		changes = append(changes, providerChanges...)
 	}
 	driftCount := 0
 	for _, change := range changes {
@@ -1315,7 +1362,7 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	} else if driftCount > 0 {
 		title = fmt.Sprintf("%d profile difference(s)", driftCount)
 	}
-	if len(providers) == 1 && providers[0].ID() == "packages" {
+	if len(report.Providers) == 1 && report.Providers[0].ID == "packages" {
 		title = "Profile matches this machine"
 		if diff {
 			title = "Package differences"
@@ -1327,7 +1374,7 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	if diff {
 		commandName = "diff"
 	}
-	data := map[string]any{"drift": driftCount > 0, "changes": changes, "machine": machineContextOutput(machineContext), "resources": runtimeResources(d.Resources, machineContext)}
+	data := map[string]any{"drift": driftCount > 0, "changes": changes, "providers": report.Providers, "machine": machineContextOutput(machineContext), "resources": runtimeResources(d.Resources, machineContext)}
 	human := renderMachineContext(machineContext) + renderChanges(title, changes)
 	if len(gitWorking) > 0 {
 		data["git_working_state"] = gitWorking
@@ -1458,22 +1505,23 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 }
 
 func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
-	info, err := omarchy.Detect(ctx, deps.Runner)
+	session, err := openWorkflow(deps, opt)
+	if err != nil {
+		return profileError(opt.profileDir, err)
+	}
+	onlyProvider := ""
+	if len(providers) == 1 {
+		onlyProvider = providers[0].ID()
+	}
+	mode := workflow.RestoreNormal
+	if planOptions.Force {
+		mode = workflow.RestoreForced
+	}
+	plan, err := session.PlanRestore(ctx, onlyProvider, mode)
 	if err != nil {
 		return err
 	}
-	plan := model.RestorePlan{ProfileVersion: d.Manifest.Schema, OmarchyFrom: d.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
-	for _, provider := range providers {
-		providerPlan, err := provider.Plan(ctx, d, info, planOptions)
-		if err != nil {
-			return fmt.Errorf("plan %s restore: %w", provider.ID(), err)
-		}
-		plan.Operations = append(plan.Operations, providerPlan.Operations...)
-		plan.Skipped = append(plan.Skipped, providerPlan.Skipped...)
-	}
-	if err := finalizeRestorePlan(ctx, deps, opt, d, providers, &plan, planOptions); err != nil {
-		return fmt.Errorf("finalize restore plan: %w", err)
-	}
+	d = session.Profile()
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}

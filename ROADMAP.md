@@ -2443,21 +2443,32 @@ This is the first genuinely useful release.
 
 # 61. Phase 3 — TUI
 
-Build Bubble Tea UI.
+**Delivered: TUI v1.** Bubble Tea now provides the primary interactive client
+while the CLI remains fully functional without it.
 
-Screens:
+Current interaction clarification: the stable sidebar begins Overview → Capture
+→ Packages. Capture is a dedicated screen: `Space` toggles the highlighted
+provider, `a` selects changed providers, `c` captures the selection, and `C`
+runs aggregate Capture All. Capture requires confirmation (`Enter`) and can be
+cancelled with `Esc`; success refreshes Overview, provider status, and local
+Profile Git/Sync state without automatically committing or pushing.
+
+Screens include:
 
 ```text id="n10a9c"
-dashboard
-capture browser
-diff viewer
-restore planner
-history
-profile settings
-machine selection
+Overview decision inbox
+Config review and policy
+Resource discovery and inspection
+machine selection and resource mapping
+restore planner and Normal/Forced consequence comparison
+profile Git Sync
 ```
 
-The CLI remains fully functional without it.
+The delivered TUI uses shared native workflows rather than invoking the CLI as
+a subprocess, respects Omarchy palette fallback and `NO_COLOR`, and adapts at
+140, 100, 80, and too-small terminal widths. Generic backup providers,
+advanced Git/history editing, broader machine-specific state, migration UI,
+and agent assistance remain future work.
 
 ---
 
@@ -3022,7 +3033,7 @@ future work. See [ADR 0016](docs/adr/0016-machine-overlay-resource-path-mappings
 commit managed profile paths, and explicitly fetch, fast-forward pull, and push
 the profile repository. It deliberately excludes automatic commits, cloud
 backup, conflict resolution, history editing, and general Git workflows; those
-remain Git/LazyGit work. The TUI Sync screen remains future work under
+remain Git/LazyGit work. TUI v1 presents this same safe workflow under
 [ADR 0017](docs/adr/0017-tui-interactive-client-architecture.md).
 
 ---

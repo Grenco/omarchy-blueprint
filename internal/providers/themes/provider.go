@@ -170,6 +170,11 @@ func installID(raw string) string {
 
 func Diff(saved, current profile.Themes) []model.Change {
 	saved = legacy(saved)
+	excluded := saved.Excluded
+	saved, current = includedThemes(saved, excluded), includedThemes(current, excluded)
+	if saved.Current == "" {
+		current.Current = ""
+	}
 	want, have := themeMap(saved.Items), themeMap(current.Items)
 	var changes []model.Change
 	for id, desired := range want {
@@ -198,6 +203,11 @@ func Diff(saved, current profile.Themes) []model.Change {
 
 func (p Provider) Plan(saved, current profile.Themes, schema int, from, to string) model.RestorePlan {
 	saved = legacy(saved)
+	excluded := saved.Excluded
+	saved, current = includedThemes(saved, excluded), includedThemes(current, excluded)
+	if saved.Current == "" {
+		current.Current = ""
+	}
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	have := themeMap(current.Items)
 	needsActivation := saved.Current != "" && saved.Current != current.Current
@@ -252,6 +262,11 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 
 func Verify(saved, current profile.Themes) model.VerificationResult {
 	saved = legacy(saved)
+	excluded := saved.Excluded
+	saved, current = includedThemes(saved, excluded), includedThemes(current, excluded)
+	if saved.Current == "" {
+		current.Current = ""
+	}
 	have := themeMap(current.Items)
 	var missing []string
 	for _, desired := range saved.Items {
@@ -265,6 +280,27 @@ func Verify(saved, current profile.Themes) model.VerificationResult {
 	}
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+}
+func includedThemes(state profile.Themes, excluded []string) profile.Themes {
+	filtered := make([]profile.Theme, 0, len(state.Items))
+	for _, item := range state.Items {
+		if !containsThemeID(excluded, item.ID) {
+			filtered = append(filtered, item)
+		}
+	}
+	state.Items = filtered
+	if containsThemeID(excluded, state.Current) {
+		state.Current = ""
+	}
+	return state
+}
+func containsThemeID(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func legacy(state profile.Themes) profile.Themes {

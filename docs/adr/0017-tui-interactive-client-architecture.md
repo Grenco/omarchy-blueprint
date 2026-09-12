@@ -35,6 +35,7 @@ The stable top-level navigation is:
 
 ```text
 Overview
+Capture
 Packages
 Config
 Resources
@@ -49,6 +50,15 @@ Restore
 ```
 
 Screens may be hidden or marked unavailable when the associated provider is unsupported, but navigation order remains stable.
+
+Implementation clarification: the dedicated Capture screen is the second sidebar
+entry, between Overview and Packages. It provides aggregate capture without
+replacing provider-specific capture actions. `Space` toggles the highlighted
+provider, `a` selects changed providers, `c` confirms capture of the selection,
+and `C` confirms aggregate Capture All. `Enter` confirms the modal and `Esc`
+cancels it. On success, reload the profile and refresh Overview, the affected
+provider status, and local Profile Git/Sync status; Capture All does not commit
+or push.
 
 ### 2. Bare interactive invocation launches the TUI
 
@@ -296,6 +306,11 @@ Space           toggle selection/policy where applicable
 Esc             close/back/cancel current transient UI
 q               quit when no modal/transient view consumes it
 ```
+
+On the Capture screen specifically, `Space` toggles the highlighted provider,
+`a` selects changed providers, `c` captures the selected providers after
+confirmation, and `C` runs confirmed aggregate Capture All. `Enter` accepts a
+confirmation and `Esc` cancels it.
 
 Contextual actions such as edit/open/copy/diff/LazyGit appear in the bottom key-hint bar and command palette instead of being required knowledge.
 

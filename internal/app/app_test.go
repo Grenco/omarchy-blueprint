@@ -22,6 +22,7 @@ import (
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
+	"github.com/Grenco/omarchy-blueprint/internal/tui"
 )
 
 type machineRunner struct {
@@ -193,6 +194,130 @@ func TestRootMachineFlag(t *testing.T) {
 	}
 	if flag.Usage != "use machine overlay for this invocation" {
 		t.Errorf("machine usage = %q", flag.Usage)
+	}
+}
+
+func TestAutoConfigPolicyHumanAndJSON(t *testing.T) {
+	profileDir := t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Config.Included = []string{".config/nvim", ".config/nvim/lua"}
+	data.Config.Excluded = []string{".config/nvim/cache"}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	var human bytes.Buffer
+	deps := Dependencies{Out: &human, Now: func() time.Time { return time.Unix(1, 0) }}
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "auto", "config:~/.config/nvim"}, deps); code != 0 {
+		t.Fatalf("human code=%d", code)
+	}
+	if !strings.Contains(human.String(), "Automatic config policy restored for .config/nvim.") {
+		t.Fatalf("human=%q", human.String())
+	}
+	data, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(data.Config.Included, []string{".config/nvim/lua"}) || !reflect.DeepEqual(data.Config.Excluded, []string{".config/nvim/cache"}) {
+		t.Fatalf("policy=%#v", data.Config)
+	}
+	var jsonOut bytes.Buffer
+	deps.Out = &jsonOut
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "--json", "auto", "config:.config/nvim/lua"}, deps); code != 0 {
+		t.Fatalf("json code=%d", code)
+	}
+	var result struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Path   string `json:"path"`
+			Policy string `json:"policy"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Data.Path != ".config/nvim/lua" || result.Data.Policy != "auto" {
+		t.Fatalf("json=%s", jsonOut.String())
+	}
+}
+
+func TestBareInteractiveInvocationLaunchesTUI(t *testing.T) {
+	var got tui.Options
+	var gotDeps tui.Dependencies
+	calls := 0
+	deps := Dependencies{
+		IsTTY: func() bool { return true },
+		RunTUI: func(_ context.Context, opts tui.Options, tuiDeps tui.Dependencies) error {
+			calls++
+			got = opts
+			gotDeps = tuiDeps
+			return nil
+		},
+	}
+	profileDir := t.TempDir()
+	if code := Execute(context.Background(), []string{"--profile", filepath.Join(profileDir, "."), "--machine", "desktop"}, deps); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if calls != 1 {
+		t.Fatalf("TUI calls = %d", calls)
+	}
+	if got != (tui.Options{ProfileDir: profileDir, Machine: "desktop"}) {
+		t.Errorf("options = %#v", got)
+	}
+	if gotDeps.Workflow.Runner == nil || gotDeps.Workflow.StateHome == nil || gotDeps.Workflow.ResourceLinkRoots == nil {
+		t.Errorf("workflow dependencies = %#v", gotDeps.Workflow)
+	}
+}
+
+func TestBareNonTTYInvocationPrintsHelp(t *testing.T) {
+	var out bytes.Buffer
+	called := false
+	deps := Dependencies{
+		Out:   &out,
+		IsTTY: func() bool { return false },
+		RunTUI: func(context.Context, tui.Options, tui.Dependencies) error {
+			called = true
+			return nil
+		},
+	}
+	if code := Execute(context.Background(), nil, deps); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if called {
+		t.Error("TUI was launched")
+	}
+	if !strings.Contains(out.String(), "Capture and restore portable Omarchy state") {
+		t.Errorf("help = %q", out.String())
+	}
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Errorf("non-TTY help contains ANSI escape bytes: %q", out.String())
+	}
+}
+
+func TestExplicitTUIRequiresTTY(t *testing.T) {
+	var stderr bytes.Buffer
+	deps := Dependencies{Err: &stderr, IsTTY: func() bool { return false }}
+	if code := Execute(context.Background(), []string{"tui"}, deps); code != 1 {
+		t.Fatalf("code = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "tui requires an interactive terminal") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestExplicitCLICommandNeverAutoLaunchesTUI(t *testing.T) {
+	called := false
+	deps := Dependencies{
+		IsTTY: func() bool { return true },
+		RunTUI: func(context.Context, tui.Options, tui.Dependencies) error {
+			called = true
+			return nil
+		},
+	}
+	if code := Execute(context.Background(), []string{"status"}, deps); code != 1 {
+		t.Fatalf("code = %d", code)
+	}
+	if called {
+		t.Error("TUI was launched")
 	}
 }
 

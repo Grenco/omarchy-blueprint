@@ -1,0 +1,354 @@
+package components
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
+)
+
+func TestBrowserNavigationAndListing(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "adir"))
+	mustMkdir(t, filepath.Join(home, "adir", "nested"))
+	mustWrite(t, filepath.Join(home, ".hidden"))
+	mustWrite(t, filepath.Join(home, "zfile"))
+	if err := os.Symlink(filepath.Join(home, "adir"), filepath.Join(home, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	if browser.Path() != home {
+		t.Fatalf("start path = %q, want home %q", browser.Path(), home)
+	}
+	if got := entryNames(browser.Entries()); !reflect.DeepEqual(got, []string{"adir", ".hidden", "linked-dir", "zfile"}) {
+		t.Fatalf("entries = %#v", got)
+	}
+	entry, _ := browser.Selected()
+	if entry.Type != "directory" {
+		t.Fatalf("first entry type = %q", entry.Type)
+	}
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	if browser.Path() != filepath.Join(home, "adir") {
+		t.Fatalf("entered path = %q", browser.Path())
+	}
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyBackspace}))
+	if browser.Path() != home {
+		t.Fatalf("parent path = %q", browser.Path())
+	}
+	for browser.Path() != string(filepath.Separator) {
+		deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: 'h'}))
+	}
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: 'h'}))
+	if browser.Path() != string(filepath.Separator) {
+		t.Fatalf("root parent = %q", browser.Path())
+	}
+
+	browser = NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	browser.Update(tea.KeyPressMsg{Code: '/'})
+	browser.Update(tea.KeyPressMsg{Code: 'z'})
+	if got := entryNames(browser.Entries()); !reflect.DeepEqual(got, []string{"zfile"}) {
+		t.Fatalf("filtered entries = %#v", got)
+	}
+	browser.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if browser.Closed() || browser.filter != "" {
+		t.Fatal("first escape must clear filter")
+	}
+	browser.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !browser.Closed() {
+		t.Fatal("second escape did not close browser")
+	}
+}
+
+func TestBrowserWideViewPreviewsSelectedDirectoryChildren(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "adir"))
+	mustWrite(t, filepath.Join(home, "adir", "nested.txt"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	browser.SetSize(100, 20)
+	deliverBrowser(t, &browser, browser.Init())
+	view := browser.View()
+	if !strings.Contains(view, "Next: adir") || !strings.Contains(view, "nested.txt") {
+		t.Fatalf("next-level preview missing: %q", view)
+	}
+}
+
+func TestBrowserWideViewLoadsSelectedDirectoryChildrenAsynchronously(t *testing.T) {
+	home := t.TempDir()
+	child := filepath.Join(home, "adir")
+	mustMkdir(t, child)
+	mustWrite(t, filepath.Join(child, "nested.txt"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	browser.SetSize(100, 20)
+	initial := browser.Init()()
+	cmd := browser.Update(initial)
+	if !strings.Contains(browser.View(), "Next: adir") || !strings.Contains(browser.View(), "Loading...") {
+		t.Fatalf("child preview was not pending: %q", browser.View())
+	}
+	deliverBrowser(t, &browser, cmd)
+	if !strings.Contains(browser.View(), "nested.txt") {
+		t.Fatalf("child preview missing after result: %q", browser.View())
+	}
+}
+
+func TestBrowserIgnoresStaleChildPreviewResult(t *testing.T) {
+	home := t.TempDir()
+	alpha, beta := filepath.Join(home, "alpha"), filepath.Join(home, "beta")
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	browser.SetSize(100, 20)
+	browser.Init()
+	browser.Update(BrowserReadDirMsg{Generation: 1, Path: home, Entries: []BrowserEntry{
+		{Name: "alpha", Path: alpha, Type: "directory"},
+		{Name: "beta", Path: beta, Type: "directory"},
+	}})
+	browser.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	browser.Update(BrowserChildReadDirMsg{Generation: 2, Path: alpha, Entries: []BrowserEntry{{Name: "stale", Path: filepath.Join(alpha, "stale"), Type: "file"}}})
+	if strings.Contains(browser.View(), "stale") {
+		t.Fatalf("stale child preview applied: %q", browser.View())
+	}
+	browser.Update(BrowserChildReadDirMsg{Generation: 3, Path: beta, Entries: []BrowserEntry{{Name: "current", Path: filepath.Join(beta, "current"), Type: "file"}}})
+	if !strings.Contains(browser.View(), "current") {
+		t.Fatalf("current child preview missing: %q", browser.View())
+	}
+}
+
+func TestBuildBookmarksDeterministicAndCanonical(t *testing.T) {
+	home := t.TempDir()
+	config, profileDir := filepath.Join(home, ".config"), filepath.Join(home, "profile")
+	projects, code, tracked := filepath.Join(home, "Projects"), filepath.Join(home, "Code"), filepath.Join(home, "tracked")
+	for _, path := range []string{config, profileDir, projects, code, tracked} {
+		mustMkdir(t, path)
+	}
+	if err := os.Symlink(tracked, filepath.Join(home, "effective")); err != nil {
+		t.Fatal(err)
+	}
+	configInput := BrowserConfig{
+		Home:           home,
+		ProfileDir:     profileDir,
+		Profile:        profile.Data{Resources: profile.Resources{Items: []profile.Resource{{ID: "z", Path: "~/tracked"}, {ID: "a", Path: "~/Code"}}}},
+		EffectiveRoots: map[string]string{"z": filepath.Join(home, "effective"), "a": code},
+		RecentDirs:     []string{projects, filepath.Join(home, "effective")},
+	}
+	bookmarks := BuildBookmarks(configInput)
+	paths := make([]string, len(bookmarks))
+	for i, bookmark := range bookmarks {
+		paths[i] = bookmark.Path
+	}
+	for _, want := range []string{home, config, profileDir, tracked, code, projects} {
+		if !contains(paths, want) {
+			t.Errorf("bookmarks missing %q: %#v", want, bookmarks)
+		}
+	}
+	if count(paths, tracked) != 1 || count(paths, code) != 1 || count(paths, projects) != 1 {
+		t.Fatalf("bookmarks were not canonically deduplicated: %#v", bookmarks)
+	}
+	if !reflect.DeepEqual(bookmarks, BuildBookmarks(configInput)) {
+		t.Fatal("bookmarks are not deterministic")
+	}
+}
+
+func TestBrowserIgnoresStalePreview(t *testing.T) {
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, "a"))
+	mustWrite(t, filepath.Join(home, "b"))
+	var requests []uint64
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home, InspectPathCmd: func(id uint64, _ string) tea.Cmd {
+		requests = append(requests, id)
+		return nil
+	}})
+	browser.Update(browser.Init()())
+	browser.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if !reflect.DeepEqual(requests, []uint64{1, 2}) {
+		t.Fatalf("requests = %#v", requests)
+	}
+	browser.Update(BrowserInspectionMsg{RequestID: 1, Inspection: workflow.PathInspection{Path: "stale"}})
+	if browser.inspection.Path != "" {
+		t.Fatalf("stale inspection applied: %#v", browser.inspection)
+	}
+	browser.Update(BrowserInspectionMsg{RequestID: 2, Inspection: workflow.PathInspection{Path: "current", OwnershipProvider: "resources", SuggestedStrategy: "copy"}})
+	if !strings.Contains(browser.DetailView(), "Preview: current") || !strings.Contains(browser.DetailView(), "Owner: resources") {
+		t.Fatalf("current inspection missing from detail: %s", browser.DetailView())
+	}
+}
+
+func TestBrowserIgnoresStaleDirectoryResult(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "child"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	initial := browser.Init()()
+	browser.Update(initial)
+	enter := browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	browser.Update(BrowserReadDirMsg{Generation: 1, Path: home, Entries: []BrowserEntry{{Name: "stale", Path: filepath.Join(home, "stale"), Type: "file"}}})
+	if browser.Path() != filepath.Join(home, "child") || entryNames(browser.Entries())[0] != "child" {
+		t.Fatalf("stale directory result replaced current state: path=%q entries=%#v", browser.Path(), browser.Entries())
+	}
+	browser.Update(enter())
+	if got := entryNames(browser.Entries()); len(got) != 0 {
+		t.Fatalf("child entries=%#v", got)
+	}
+}
+
+func TestBrowserSelectionModes(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "directory"))
+	mustWrite(t, filepath.Join(home, "file"))
+	for _, test := range []struct {
+		mode      BrowserMode
+		moveDown  bool
+		canSelect bool
+		blocked   bool
+	}{
+		{mode: PickDirectory, canSelect: true},
+		{mode: PickDirectory, moveDown: true, canSelect: false},
+		{mode: BrowseResource, moveDown: true, canSelect: true},
+		{mode: BrowseResource, canSelect: false, blocked: true},
+		{mode: BrowseReadOnly, canSelect: false},
+	} {
+		browser := NewBrowser(test.mode, BrowserConfig{Home: home, InspectPathCmd: func(id uint64, path string) tea.Cmd {
+			return func() tea.Msg {
+				return BrowserInspectionMsg{RequestID: id, Inspection: workflow.PathInspection{Path: path}}
+			}
+		}})
+		deliverBrowser(t, &browser, browser.Init())
+		if test.moveDown {
+			deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: 'j'}))
+		}
+		if test.blocked {
+			browser.inspection.BlockedReason = "owned"
+		}
+		if browser.CanSelect() != test.canSelect {
+			t.Errorf("mode=%s moveDown=%t blocked=%t CanSelect=%t", test.mode, test.moveDown, test.blocked, browser.CanSelect())
+		}
+	}
+}
+
+func TestBrowserCanSelectRequiresCurrentInspection(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "directory"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home, InspectPathCmd: func(uint64, string) tea.Cmd { return nil }})
+	deliverBrowser(t, &browser, browser.Init())
+	if browser.CanSelect() {
+		t.Fatal("selection was enabled before inspection completed")
+	}
+	browser.Update(BrowserInspectionMsg{RequestID: 1, Inspection: workflow.PathInspection{Path: filepath.Join(home, "directory")}})
+	if !browser.CanSelect() {
+		t.Fatal("selection remained disabled after current inspection")
+	}
+	browser.Update(tea.KeyPressMsg{Code: 'h'})
+	if browser.CanSelect() {
+		t.Fatal("stale inspection enabled selection after directory change")
+	}
+}
+
+func TestBrowserViewUsesIconsWithoutTypeSuffixes(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "directory"))
+	mustWrite(t, filepath.Join(home, "file"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	view := browser.View()
+	for _, want := range []string{"Parent: ", "Current: ", Icons.Folder + " directory", Icons.File + " file"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "directory  directory") || strings.Contains(view, "file  file") {
+		t.Fatalf("view retained type suffixes:\n%s", view)
+	}
+}
+
+func TestBrowserAddsVisitedDirectoriesToBookmarks(t *testing.T) {
+	home := t.TempDir()
+	child := filepath.Join(home, "child")
+	mustMkdir(t, child)
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	if !containsBookmark(browser.Bookmarks(), "Recent", child) {
+		t.Fatalf("visited directory missing from bookmarks: %#v", browser.Bookmarks())
+	}
+}
+
+func TestBrowserRestoresCursorForParentAndChildDirectories(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "alpha"))
+	mustMkdir(t, filepath.Join(home, "beta"))
+	mustWrite(t, filepath.Join(home, "beta", "first"))
+	mustWrite(t, filepath.Join(home, "beta", "second"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyDown}))
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyDown}))
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyBackspace}))
+	entry, _ := browser.Selected()
+	if entry.Name != "beta" {
+		t.Fatalf("parent cursor = %q, want beta", entry.Name)
+	}
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	entry, _ = browser.Selected()
+	if entry.Name != "second" {
+		t.Fatalf("child cursor = %q, want second", entry.Name)
+	}
+}
+
+func entryNames(entries []BrowserEntry) []string {
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name
+	}
+	return names
+}
+
+func mustMkdir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWrite(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func contains(values []string, want string) bool { return count(values, want) > 0 }
+func containsBookmark(bookmarks []Bookmark, label, path string) bool {
+	for _, bookmark := range bookmarks {
+		if bookmark.Label == label && bookmark.Path == path {
+			return true
+		}
+	}
+	return false
+}
+func count(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
+}
+
+func deliverBrowser(t *testing.T, browser *Browser, cmd tea.Cmd) {
+	t.Helper()
+	for cmd != nil {
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, batchCmd := range batch {
+				deliverBrowser(t, browser, batchCmd)
+			}
+			return
+		}
+		cmd = browser.Update(msg)
+	}
+}

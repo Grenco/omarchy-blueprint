@@ -137,6 +137,46 @@ func AddInclusion(saved profile.Configs, input string) (profile.Configs, bool, e
 	return result, true, nil
 }
 
+// ClearPolicy removes only explicit policy records for the canonical path.
+// Ancestor and descendant records deliberately remain in effect.
+func ClearPolicy(saved profile.Configs, input string) (profile.Configs, bool, error) {
+	path, err := NormalizeConfigPolicyPath(input)
+	if err != nil {
+		return saved, false, err
+	}
+	result := saved
+	result.Included = make([]string, 0, len(saved.Included))
+	result.Excluded = make([]string, 0, len(saved.Excluded))
+	changed := false
+	for _, item := range saved.Included {
+		item, err = NormalizeConfigPolicyPath(item)
+		if err != nil {
+			return saved, false, err
+		}
+		if item == path {
+			changed = true
+			continue
+		}
+		result.Included = append(result.Included, item)
+	}
+	for _, item := range saved.Excluded {
+		item, err = NormalizeConfigPolicyPath(item)
+		if err != nil {
+			return saved, false, err
+		}
+		if item == path {
+			changed = true
+			continue
+		}
+		result.Excluded = append(result.Excluded, item)
+	}
+	sort.Strings(result.Included)
+	sort.Strings(result.Excluded)
+	result.Included = uniquePaths(result.Included)
+	result.Excluded = uniquePaths(result.Excluded)
+	return result, changed, nil
+}
+
 func prunePolicyPaths(paths []string, parent string) []string {
 	result := paths[:0]
 	for _, item := range paths {

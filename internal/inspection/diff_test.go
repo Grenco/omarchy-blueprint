@@ -46,3 +46,14 @@ func TestBuildTextDiffMetadataAndSanitization(t *testing.T) {
 		t.Fatalf("sanitized line = %#v, metadata = %#v", line, doc.Metadata)
 	}
 }
+
+func TestBuildTextDiffLongLabelsAndEmptyFiles(t *testing.T) {
+	label := strings.Repeat("label/", 1_000)
+	doc := BuildTextDiff(label, nil, label, []byte{})
+	if doc.Kind != DiffMetadata || doc.OldLabel != label || doc.NewLabel != label {
+		t.Fatalf("empty document = %#v", doc)
+	}
+	if got := BuildTextDiff(label, nil, label, []byte("created\n")); got.Kind != DiffText || got.Hunks[0].Lines[0].Kind != "add" {
+		t.Fatalf("created document = %#v", got)
+	}
+}
