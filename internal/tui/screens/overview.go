@@ -14,6 +14,7 @@ import (
 type OverviewTarget struct{ Target, Ref string }
 
 type Overview struct {
+	ctx      context.Context
 	session  *workflow.Session
 	data     workflow.Overview
 	selected int
@@ -25,9 +26,14 @@ type overviewMsg struct {
 	err  error
 }
 
-func NewOverview(session *workflow.Session) *Overview { return &Overview{session: session} }
-func (s *Overview) SetSize(int, int)                  {}
-func (s *Overview) Init() tea.Cmd                     { return s.refresh() }
+func NewOverview(session *workflow.Session) *Overview {
+	return NewOverviewContext(context.Background(), session)
+}
+func NewOverviewContext(ctx context.Context, session *workflow.Session) *Overview {
+	return &Overview{ctx: ctx, session: session}
+}
+func (s *Overview) SetSize(int, int) {}
+func (s *Overview) Init() tea.Cmd    { return s.refresh() }
 func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	if result, ok := msg.(overviewMsg); ok {
 		s.data, s.err, s.busy = result.data, result.err, false
@@ -89,6 +95,13 @@ func (s *Overview) View() string {
 	lines = append(lines, "", "enter open  r refresh  j/k select")
 	return strings.Join(lines, "\n")
 }
+func (s *Overview) DetailView() string {
+	item := s.selectedItem()
+	if item.Summary == "" {
+		return "Overview details\nSelect an item to see its destination and reason."
+	}
+	return strings.Join([]string{"Attention item", "Severity: " + string(item.Severity), "Provider: " + item.Provider, "Kind: " + item.Kind, "Reference: " + item.Ref, "", item.Summary, "", "Enter opens: " + item.Target}, "\n")
+}
 func (s *Overview) selectedItem() workflow.AttentionItem {
 	items := s.orderedItems()
 	if s.selected >= 0 && s.selected < len(items) {
@@ -127,5 +140,5 @@ func (s *Overview) HeaderState() string {
 }
 func (s *Overview) refresh() tea.Cmd {
 	s.busy = true
-	return func() tea.Msg { data, err := s.session.Overview(context.Background()); return overviewMsg{data, err} }
+	return func() tea.Msg { data, err := s.session.Overview(s.ctx); return overviewMsg{data, err} }
 }

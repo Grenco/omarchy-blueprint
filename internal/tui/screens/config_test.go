@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -18,6 +19,31 @@ func TestConfigScreenShowsProviderClassificationAndExactReason(t *testing.T) {
 	view := screen.View()
 	if !strings.Contains(view, "> .config/gh/hosts.yml  sensitive (sensitive)") || !strings.Contains(view, "Reason: sensitive") {
 		t.Fatalf("view=%q", view)
+	}
+}
+
+func TestConfigScreenCollapsesSelectedClassificationGroup(t *testing.T) {
+	screen := &Config{width: 80, candidates: []config.Candidate{
+		{Path: ".config/a", Classification: config.ConfigAdded, Reason: "added"},
+		{Path: ".config/b", Classification: config.ConfigAdded, Reason: "added"},
+		{Path: ".config/c", Classification: config.ConfigSensitive, Reason: "sensitive"},
+	}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	view := screen.View()
+	if !strings.Contains(view, "[+ added]") || strings.Contains(view, ".config/a") || !strings.Contains(view, ".config/c") {
+		t.Fatalf("collapsed view=%q", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if view = screen.View(); !strings.Contains(view, "[- added]") || !strings.Contains(view, ".config/a") {
+		t.Fatalf("expanded view=%q", view)
+	}
+}
+
+func TestConfigScreenDownSelectsNextCandidate(t *testing.T) {
+	screen := &Config{candidates: []config.Candidate{{Path: ".config/first"}, {Path: ".config/second"}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if candidate := screen.selectedCandidate(); candidate.Path != ".config/second" {
+		t.Fatalf("selected candidate=%#v", candidate)
 	}
 }
 

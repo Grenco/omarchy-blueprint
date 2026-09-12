@@ -64,3 +64,28 @@ func TestMachineWorkflowLifecycleAndUnmapDoesNotDuplicateMappings(t *testing.T) 
 		t.Fatalf("machines=%#v", session.Profile().Machines)
 	}
 }
+
+func TestMachineMappingsRemainIndependent(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects", Kind: "directory", Strategy: "copy"}}
+	data.Machines.Items = []profile.Machine{{Name: "desktop"}, {Name: "laptop"}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{Now: time.Now, StateHome: func() (string, error) { return stateHome, nil }, HomeDir: func() (string, error) { return home, nil }}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.MapResource(context.Background(), "desktop", "projects", "~/DesktopProjects"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.MapResource(context.Background(), "laptop", "projects", "~/LaptopProjects"); err != nil {
+		t.Fatal(err)
+	}
+	for _, machine := range session.Profile().Machines.Items {
+		if len(machine.ResourcePaths) != 1 || machine.ResourcePaths[0].Path != map[string]string{"desktop": "~/DesktopProjects", "laptop": "~/LaptopProjects"}[machine.Name] {
+			t.Fatalf("machine mappings=%#v", session.Profile().Machines.Items)
+		}
+	}
+}

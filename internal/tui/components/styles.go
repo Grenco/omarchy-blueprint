@@ -6,24 +6,33 @@ import "charm.land/lipgloss/v2"
 // Colour-disabled styles deliberately render unchanged text so semantic markers
 // remain the source of meaning under NO_COLOR.
 type ThemePalette struct {
-	Foreground, Muted, Accent        string
-	Success, Warning, Error          string
-	Added, Removed                   string
-	Border, BorderFocused, Selection string
-	ColorEnabled                     bool
+	Foreground, Background, Muted, Accent string
+	Success, Warning, Error, Info         string
+	Added, Removed                        string
+	Border, BorderFocused, Selection      string
+	Overlay, Disabled                     string
+	ColorEnabled                          bool
 }
 
 type Styles struct{ Palette ThemePalette }
 
 func NewStyles(palette ThemePalette) Styles { return Styles{Palette: palette} }
 
-func (s Styles) Accent(value string) string  { return s.color(value, s.Palette.Accent) }
-func (s Styles) Muted(value string) string   { return s.color(value, s.Palette.Muted) }
-func (s Styles) Success(value string) string { return s.color(value, s.Palette.Success) }
-func (s Styles) Warning(value string) string { return s.color(value, s.Palette.Warning) }
-func (s Styles) Error(value string) string   { return s.color(value, s.Palette.Error) }
-func (s Styles) Added(value string) string   { return s.color(value, s.Palette.Added) }
-func (s Styles) Removed(value string) string { return s.color(value, s.Palette.Removed) }
+func (s Styles) Accent(value string) string   { return s.color(value, s.Palette.Accent) }
+func (s Styles) Muted(value string) string    { return s.color(value, s.Palette.Muted) }
+func (s Styles) Success(value string) string  { return s.color(value, s.Palette.Success) }
+func (s Styles) Warning(value string) string  { return s.color(value, s.Palette.Warning) }
+func (s Styles) Error(value string) string    { return s.color(value, s.Palette.Error) }
+func (s Styles) Added(value string) string    { return s.color(value, s.Palette.Added) }
+func (s Styles) Removed(value string) string  { return s.color(value, s.Palette.Removed) }
+func (s Styles) Disabled(value string) string { return s.color(value, s.Palette.Disabled) }
+func (s Styles) Border(value string, focused bool) string {
+	color := s.Palette.Border
+	if focused {
+		color = s.Palette.BorderFocused
+	}
+	return s.color(value, color)
+}
 
 func (s Styles) color(value, color string) string {
 	if !s.Palette.ColorEnabled || color == "" {

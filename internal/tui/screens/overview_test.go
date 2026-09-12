@@ -37,3 +37,11 @@ func TestOverviewSelectionFollowsDisplayedSectionOrder(t *testing.T) {
 		t.Fatalf("selected item followed source order instead of display order: %#v", message)
 	}
 }
+
+func TestOverviewScreenDownSelectsNextItem(t *testing.T) {
+	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{{Severity: workflow.AttentionDecision, Summary: "first"}, {Severity: workflow.AttentionDecision, Summary: "second"}}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if item := screen.selectedItem(); item.Summary != "second" {
+		t.Fatalf("selected item=%#v", item)
+	}
+}

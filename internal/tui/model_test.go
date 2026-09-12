@@ -108,9 +108,13 @@ func TestScreenKeyOwnershipPrecedesRootFocusAndOverlays(t *testing.T) {
 
 func TestModalLeavesBaseViewVisibleAndViewportScrolls(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	base := m.View().Content
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
 	if !strings.Contains(m.View().Content, "Command palette") || !strings.Contains(m.View().Content, "Overview") {
 		t.Fatal("modal did not retain base view")
+	}
+	if got, want := len(strings.Split(m.View().Content, "\n")), len(strings.Split(base, "\n")); got != want {
+		t.Fatalf("modal appended to the base: rows=%d want=%d", got, want)
 	}
 	var viewport verticalViewport
 	viewport.move(100, 30, 4)
@@ -154,7 +158,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	m.selectScreen(ScreenRestore)
 	restoreScreen := m.activeScreen().(*restoreScreen)
 	consumeScreenCmd(t, &m, restoreScreen.Update(tea.KeyPressMsg{Code: 'f'}))
-	if !strings.Contains(restoreScreen.View(), "Restore [Forced]") {
+	if !strings.Contains(restoreScreen.View(), "active: [Forced]") {
 		t.Fatalf("restore mode did not toggle: %q", restoreScreen.View())
 	}
 	m.selectScreen(ScreenSync)
@@ -207,6 +211,23 @@ func (s *inputScreen) View() string          { return "input" }
 func (s *inputScreen) Actions() []Action     { return nil }
 func (s *inputScreen) TransientActive() bool { return s.active }
 
+type countingScreen struct {
+	id   ScreenID
+	down int
+}
+
+func (s *countingScreen) ID() ScreenID     { return s.id }
+func (s *countingScreen) SetSize(int, int) {}
+func (s *countingScreen) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "down" {
+		s.down++
+	}
+	return nil
+}
+func (s *countingScreen) View() string           { return "counting" }
+func (s *countingScreen) Actions() []Action      { return nil }
+func (s *countingScreen) HandlesKey(string) bool { return true }
+
 func TestNoColorViewsKeepSemanticMarkers(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -254,13 +275,65 @@ func TestNavigation(t *testing.T) {
 		t.Fatal("escape did not close the palette")
 	}
 	_, command := m.Update(tea.KeyPressMsg{Code: 'q'})
-	if command != nil {
-		t.Fatal("q quit outside navigation focus")
-	}
-	m.focus = focusSidebar
-	_, command = m.Update(tea.KeyPressMsg{Code: 'q'})
 	if command == nil || command() != tea.Quit() {
-		t.Fatal("q did not quit from navigation focus")
+		t.Fatal("q did not quit without a transient")
+	}
+}
+
+func TestKeyIsDeliveredToClaimingScreenOnce(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	for _, id := range screenOrder {
+		screen := &countingScreen{id: id}
+		m.screens[id] = screen
+		m.selectScreen(id)
+		m.focus = focusWorkspace
+		m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+		if screen.down != 1 {
+			t.Fatalf("%s down deliveries = %d, want 1", id, screen.down)
+		}
+	}
+}
+
+func TestQuitDefersToTransientInput(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	input := &inputScreen{id: ScreenOverview, active: true}
+	m.screens[ScreenOverview] = input
+	_, command := m.Update(tea.KeyPressMsg{Code: 'q'})
+	if command != nil || input.keys != "q" {
+		t.Fatalf("transient q was not screen-owned: command=%v keys=%q", command != nil, input.keys)
+	}
+}
+
+func TestPanelsAndSidebarSelectionRender(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := m.View().Content
+	for _, want := range []string{"┌ Navigation", "┌ Overview", "> Overview"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing panel/sidebar marker %q", want)
+		}
+	}
+	if !strings.Contains(view, "Overview details") {
+		t.Fatal("overview did not render its details pane")
+	}
+}
+
+func TestFooterTracksResourceStateAndModalInput(t *testing.T) {
+	m := updateModel(t, newModelWithSession(ThemeLoader{NoColor: true}, integrationSession(t)), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.selectScreen(ScreenResources)
+	resources := m.activeScreen().(*resourcesScreen)
+	consumeScreenCmd(t, &m, resources.Init())
+	// A tracked item exposes its contextual actions, while Discover exposes only browsing.
+	if footer := m.footer(); !strings.Contains(footer, "s Change strategy") || !strings.Contains(footer, "u Untrack resource") {
+		t.Fatalf("tracked footer=%q", footer)
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if footer := m.footer(); strings.Contains(footer, "Change strategy") || !strings.Contains(footer, "n Browse resource") {
+		t.Fatalf("discover footer=%q", footer)
+	}
+	m.requestedModal = &ModalRequest{Title: "Confirm", Content: "confirm"}
+	m.openModal(modalHelp)
+	if footer := m.footer(); footer != "enter confirm   esc cancel" {
+		t.Fatalf("modal footer=%q", footer)
 	}
 }
 

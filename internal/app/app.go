@@ -141,7 +141,12 @@ func newRoot(deps Dependencies) *cobra.Command {
 		if !deps.IsTTY() {
 			return cmd.Help()
 		}
-		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }})
+		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
+			if _, err := workflow.CreateProfile(ctx, workflowDependencies(deps), dir, name); err != nil {
+				return nil, err
+			}
+			return openWorkflow(deps, opt)
+		}})
 	}}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
@@ -160,7 +165,12 @@ func tuiCommand(deps Dependencies, opt *options) *cobra.Command {
 		if !deps.IsTTY() {
 			return errors.New("tui requires an interactive terminal")
 		}
-		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }})
+		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
+			if _, err := workflow.CreateProfile(ctx, workflowDependencies(deps), dir, name); err != nil {
+				return nil, err
+			}
+			return openWorkflow(deps, opt)
+		}})
 	}}
 }
 
@@ -637,25 +647,12 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 		if len(args) == 1 {
 			dir = args[0]
 		}
-		abs, err := filepath.Abs(dir)
+		abs, err := workflow.CreateProfile(cmd.Context(), workflowDependencies(deps), dir, name)
 		if err != nil {
 			return err
-		}
-		if _, err := os.Stat(filepath.Join(abs, "profile.toml")); err == nil {
-			return fmt.Errorf("profile already exists at %s", abs)
 		}
 		if name == "" {
 			name = filepath.Base(abs)
-		}
-		info, err := omarchy.Detect(cmd.Context(), deps.Runner)
-		if err != nil {
-			return err
-		}
-		d := profile.New(name, deps.Now())
-		d.Manifest.Omarchy.CapturedVersion = info.Version
-		d.Manifest.Omarchy.Channel = info.Channel
-		if err := profile.Save(abs, d); err != nil {
-			return fmt.Errorf("create profile: %w", err)
 		}
 		return emit(deps.Out, opt.json, "init", true, map[string]any{"profile": abs, "name": name}, fmt.Sprintf("Created profile %q at %s\n", name, abs))
 	}}

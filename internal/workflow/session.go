@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -70,8 +69,7 @@ func (s *Session) HomeDir() string {
 			return filepath.Clean(home)
 		}
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Clean(home)
+	return ""
 }
 
 // Profile Git operations remain owned by profilegit; workflow only exposes the

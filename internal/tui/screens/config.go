@@ -21,12 +21,17 @@ type HandoffRequest struct {
 }
 
 type Config struct {
+	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
 	candidates              []config.Candidate
 	inspection              workflow.ConfigInspection
 	diff                    *components.DiffViewer
 	confirm                 string
+	filter                  string
+	filtering               bool
+	collapsed               map[config.Classification]bool
+	list                    components.Selectable
 	focusPath               string
 	statusID, inspectionID  uint64
 	busy                    bool
@@ -48,8 +53,13 @@ type configPolicyMsg struct {
 	err       error
 }
 
-func NewConfig(session *workflow.Session) *Config { return &Config{session: session} }
-func (s *Config) Focus(path string) tea.Cmd       { s.focusPath = path; return s.rescan() }
+func NewConfig(session *workflow.Session) *Config {
+	return NewConfigContext(context.Background(), session)
+}
+func NewConfigContext(ctx context.Context, session *workflow.Session) *Config {
+	return &Config{ctx: ctx, session: session}
+}
+func (s *Config) Focus(path string) tea.Cmd { s.focusPath = path; return s.rescan() }
 func (s *Config) SetSize(width, height int) {
 	s.width, s.height = width, height
 	if s.diff != nil {
@@ -77,6 +87,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 				break
 			}
 		}
+		s.list.SetSelected(s.selected, len(s.filteredCandidates()), s.listHeight())
 		s.focusPath = ""
 		return s.inspectSelected()
 	case configInspectionMsg:
@@ -134,28 +145,58 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		}
 		return s.diff.Update(msg)
 	}
+	if s.filtering {
+		switch key.String() {
+		case "esc", "enter":
+			s.filtering = false
+		case "backspace":
+			if len(s.filter) > 0 {
+				s.filter = s.filter[:len(s.filter)-1]
+			}
+		default:
+			if len(key.String()) == 1 {
+				s.filter += key.String()
+			}
+		}
+		s.list.SetSelected(0, len(s.filteredCandidates()), s.listHeight())
+		return s.inspectSelected()
+	}
 	switch key.String() {
 	case "j", "down":
-		if s.selected < len(s.candidates)-1 {
-			s.selected++
+		if s.list.Move(1, len(s.filteredCandidates()), s.listHeight()) {
+			s.selected = s.list.Selected
 			return s.inspectSelected()
 		}
 	case "k", "up":
-		if s.selected > 0 {
-			s.selected--
+		if s.list.Move(-1, len(s.filteredCandidates()), s.listHeight()) {
+			s.selected = s.list.Selected
 			return s.inspectSelected()
 		}
+	case "/":
+		s.filtering = true
 	case "d":
 		if candidate := s.selectedCandidate(); candidate.Path != "" {
 			s.diff = &components.DiffViewer{}
 			return s.inspectForDiff(candidate.Path)
 		}
+	case "enter":
+		if candidate := s.selectedCandidate(); candidate.Path != "" {
+			if s.collapsed == nil {
+				s.collapsed = map[config.Classification]bool{}
+			}
+			s.collapsed[candidate.Classification] = !s.collapsed[candidate.Classification]
+			s.list.SetSelected(0, len(s.filteredCandidates()), s.listHeight())
+			return s.inspectSelected()
+		}
 	case "space", " ", "i":
 		s.confirm = "include"
+		return s.confirmModal()
 	case "x":
 		s.confirm = "exclude"
+		return s.confirmModal()
 	case "a":
 		s.confirm = "auto"
+		return s.confirmModal()
 	case "e", "o", "y":
 		if s.validLive() {
 			kind := map[string]string{"e": "editor", "o": "open", "y": "copy"}[key.String()]
@@ -168,9 +209,6 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (s *Config) View() string {
-	if s.confirm != "" {
-		return components.Confirm(fmt.Sprintf("Set %s policy for %s?", s.confirm, s.selectedCandidate().Path))
-	}
 	if s.diff != nil {
 		if s.inspection.BaselineToLive == nil && s.inspection.ProfileToLive == nil {
 			return "Loading diff..."
@@ -184,31 +222,47 @@ func (s *Config) View() string {
 		}
 		return "Config diff: " + document.OldLabel + " <-> " + document.NewLabel + "\n" + s.diff.View()
 	}
-	lines := []string{"Config review"}
+	lines := []string{"Review  " + s.reviewCounts()}
 	if s.busy {
 		lines = append(lines, "Working...")
 	}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+s.err.Error())
 	}
-	for i, candidate := range s.candidates {
+	currentGroup := ""
+	for i, candidate := range s.filteredCandidates() {
+		group := string(candidate.Classification)
+		if group != currentGroup {
+			marker := "-"
+			if s.collapsed[candidate.Classification] {
+				marker = "+"
+			}
+			lines = append(lines, "", "["+marker+" "+group+"]")
+			currentGroup = group
+		}
+		if s.collapsed[candidate.Classification] {
+			continue
+		}
 		marker := " "
-		if i == s.selected {
+		if i == s.list.Selected {
 			marker = ">"
 		}
-		label := string(candidate.Classification)
-		if candidate.Reason != "" {
-			label += " (" + candidate.Reason + ")"
-		}
-		lines = append(lines, fmt.Sprintf("%s %s  %s", marker, candidate.Path, label))
+		lines = append(lines, fmt.Sprintf("%s %s  %s (%s)", marker, candidate.Path, candidate.Classification, candidate.Reason))
 	}
 	if len(s.candidates) == 0 {
 		lines = append(lines, "No Config candidates.")
 	}
-	if candidate := s.selectedCandidate(); candidate.Path != "" {
-		lines = append(lines, "", "Reason: "+candidate.Reason, "d diff  i include  x exclude  a auto  e edit  o open  y copy")
+	if s.filtering || s.filter != "" {
+		lines = append(lines, "", "Filter: "+s.filter)
 	}
-	return strings.Join(lines, "\n")
+	if candidate := s.selectedCandidate(); candidate.Path != "" {
+		lines = append(lines, "", "Reason: "+candidate.Reason)
+	}
+	width := s.width
+	if width == 0 {
+		width = 120
+	}
+	return s.list.View(lines, width, s.listHeight())
 }
 
 func ptrDiff(document inspection.DiffDocument, width, height int) *components.DiffViewer {
@@ -217,17 +271,56 @@ func ptrDiff(document inspection.DiffDocument, width, height int) *components.Di
 	return &viewer
 }
 func (s *Config) selectedCandidate() config.Candidate {
-	if s.selected >= 0 && s.selected < len(s.candidates) {
-		return s.candidates[s.selected]
+	items := s.filteredCandidates()
+	if s.list.Selected >= 0 && s.list.Selected < len(items) {
+		return items[s.list.Selected]
 	}
 	return config.Candidate{}
+}
+func (s *Config) filteredCandidates() []config.Candidate {
+	items := make([]config.Candidate, 0, len(s.candidates))
+	filter := strings.ToLower(s.filter)
+	for _, candidate := range s.candidates {
+		if filter == "" || strings.Contains(strings.ToLower(candidate.Path+" "+string(candidate.Classification)+" "+candidate.Reason), filter) {
+			items = append(items, candidate)
+		}
+	}
+	return items
+}
+func (s *Config) reviewCounts() string {
+	counts := map[config.Classification]int{}
+	for _, candidate := range s.candidates {
+		counts[candidate.Classification]++
+	}
+	parts := make([]string, 0, len(counts))
+	for _, classification := range []config.Classification{config.ConfigModifiedBaseline, config.ConfigDeletedBaseline, config.ConfigAdded, config.ConfigAmbiguousBaseline, config.ConfigAmbiguousDeletion, config.ConfigSensitive, config.ConfigOversized, config.ConfigExcluded, config.ConfigDelegated, config.ConfigHistoricalBaseline} {
+		if counts[classification] > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d", classification, counts[classification]))
+		}
+	}
+	if len(parts) == 0 {
+		return "clean:0"
+	}
+	return strings.Join(parts, "  ")
+}
+func (s *Config) listHeight() int {
+	if s.height == 0 {
+		return len(s.candidates) + 8
+	}
+	return max(1, s.height-4)
+}
+func (s *Config) confirmModal() tea.Cmd {
+	prompt := fmt.Sprintf("Set %s policy for %s?", s.confirm, s.selectedCandidate().Path)
+	return func() tea.Msg {
+		return components.ModalRequest{Title: "Config policy", Content: components.Confirm(prompt)}
+	}
 }
 func (s *Config) rescan() tea.Cmd {
 	s.statusID++
 	requestID := s.statusID
 	s.busy = true
 	return func() tea.Msg {
-		report, err := s.session.Status(context.Background(), "config")
+		report, err := s.session.Status(s.ctx, "config")
 		if err != nil {
 			return configStatusMsg{requestID: requestID, err: err}
 		}
@@ -247,7 +340,7 @@ func (s *Config) inspectForDiff(logical string) tea.Cmd {
 	s.inspectionID++
 	requestID := s.inspectionID
 	return func() tea.Msg {
-		inspection, err := s.session.InspectConfig(context.Background(), logical)
+		inspection, err := s.session.InspectConfig(s.ctx, logical)
 		return configInspectionMsg{requestID: requestID, inspection: inspection, err: err}
 	}
 }
@@ -255,7 +348,7 @@ func (s *Config) setPolicy(logical, policy string) tea.Cmd {
 	s.busy = true
 	requestID := s.statusID
 	return func() tea.Msg {
-		return configPolicyMsg{requestID: requestID, err: s.session.SetConfigPolicy(context.Background(), logical, policy)}
+		return configPolicyMsg{requestID: requestID, err: s.session.SetConfigPolicy(s.ctx, logical, policy)}
 	}
 }
 func (s *Config) validLive() bool {

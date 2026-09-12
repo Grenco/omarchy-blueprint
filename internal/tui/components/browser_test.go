@@ -111,7 +111,7 @@ func TestBrowserIgnoresStalePreview(t *testing.T) {
 		return nil
 	}})
 	browser.Update(browser.Init()())
-	browser.Update(tea.KeyPressMsg{Code: 'j'})
+	browser.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if !reflect.DeepEqual(requests, []uint64{1, 2}) {
 		t.Fatalf("requests = %#v", requests)
 	}
@@ -158,10 +158,14 @@ func TestBrowserSelectionModes(t *testing.T) {
 		{mode: BrowseResource, canSelect: false, blocked: true},
 		{mode: BrowseReadOnly, canSelect: false},
 	} {
-		browser := NewBrowser(test.mode, BrowserConfig{Home: home})
+		browser := NewBrowser(test.mode, BrowserConfig{Home: home, InspectPathCmd: func(id uint64, path string) tea.Cmd {
+			return func() tea.Msg {
+				return BrowserInspectionMsg{RequestID: id, Inspection: workflow.PathInspection{Path: path}}
+			}
+		}})
 		deliverBrowser(t, &browser, browser.Init())
 		if test.moveDown {
-			browser.Update(tea.KeyPressMsg{Code: 'j'})
+			deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: 'j'}))
 		}
 		if test.blocked {
 			browser.inspection.BlockedReason = "owned"
@@ -169,6 +173,53 @@ func TestBrowserSelectionModes(t *testing.T) {
 		if browser.CanSelect() != test.canSelect {
 			t.Errorf("mode=%s moveDown=%t blocked=%t CanSelect=%t", test.mode, test.moveDown, test.blocked, browser.CanSelect())
 		}
+	}
+}
+
+func TestBrowserCanSelectRequiresCurrentInspection(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "directory"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home, InspectPathCmd: func(uint64, string) tea.Cmd { return nil }})
+	deliverBrowser(t, &browser, browser.Init())
+	if browser.CanSelect() {
+		t.Fatal("selection was enabled before inspection completed")
+	}
+	browser.Update(BrowserInspectionMsg{RequestID: 1, Inspection: workflow.PathInspection{Path: filepath.Join(home, "directory")}})
+	if !browser.CanSelect() {
+		t.Fatal("selection remained disabled after current inspection")
+	}
+	browser.Update(tea.KeyPressMsg{Code: 'h'})
+	if browser.CanSelect() {
+		t.Fatal("stale inspection enabled selection after directory change")
+	}
+}
+
+func TestBrowserViewUsesIconsWithoutTypeSuffixes(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "directory"))
+	mustWrite(t, filepath.Join(home, "file"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	view := browser.View()
+	for _, want := range []string{"Parent: ", "Current: ", "[D] directory", "[F] file"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "directory  directory") || strings.Contains(view, "file  file") {
+		t.Fatalf("view retained type suffixes:\n%s", view)
+	}
+}
+
+func TestBrowserAddsVisitedDirectoriesToBookmarks(t *testing.T) {
+	home := t.TempDir()
+	child := filepath.Join(home, "child")
+	mustMkdir(t, child)
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	if !containsBookmark(browser.Bookmarks(), "Recent", child) {
+		t.Fatalf("visited directory missing from bookmarks: %#v", browser.Bookmarks())
 	}
 }
 
@@ -195,6 +246,14 @@ func mustWrite(t *testing.T, path string) {
 }
 
 func contains(values []string, want string) bool { return count(values, want) > 0 }
+func containsBookmark(bookmarks []Bookmark, label, path string) bool {
+	for _, bookmark := range bookmarks {
+		if bookmark.Label == label && bookmark.Path == path {
+			return true
+		}
+	}
+	return false
+}
 func count(values []string, want string) int {
 	count := 0
 	for _, value := range values {
@@ -207,7 +266,7 @@ func count(values []string, want string) int {
 
 func deliverBrowser(t *testing.T, browser *Browser, cmd tea.Cmd) {
 	t.Helper()
-	if cmd != nil {
-		browser.Update(cmd())
+	for cmd != nil {
+		cmd = browser.Update(cmd())
 	}
 }

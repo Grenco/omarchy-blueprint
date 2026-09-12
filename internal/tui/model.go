@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -49,12 +52,19 @@ type headerStateScreen interface{ HeaderState() string }
 // DetailView is optional: screens that provide it own the third pane preview.
 type DetailView interface{ DetailView() string }
 
+// ModalRequest lets any screen ask the root to render transient content over
+// the unchanged workspace. Screens retain ownership of the response message.
+type ModalRequest struct {
+	Title, Content string
+}
+
 type modalKind uint8
 
 const (
 	modalNone modalKind = iota
 	modalPalette
 	modalHelp
+	modalWelcome
 )
 
 type focusArea uint8
@@ -73,6 +83,9 @@ type model struct {
 	selected              int
 	focus                 focusArea
 	modal                 modalKind
+	modalStack            []modalKind
+	requestedModal        *ModalRequest
+	requestedModalScreen  ScreenID
 	paletteOpen, helpOpen bool // Kept for package-local compatibility; modal is canonical.
 	paletteQuery          string
 	paletteSelected       int
@@ -83,26 +96,45 @@ type model struct {
 	notification          string
 	screens               map[ScreenID]screen
 	session               *workflow.Session
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	profileDir            string
+	createProfile         func(context.Context, string, string) (*workflow.Session, error)
+	welcomeName           textinput.Model
+	welcomeError          error
+	welcomeBusy           bool
+}
+
+type profileCreatedMsg struct {
+	session *workflow.Session
+	err     error
 }
 
 func newModel(loader ThemeLoader) model {
-	return newModelWithSession(loader, nil)
+	return newModelWithContext(context.Background(), func() {}, loader, nil, "", nil)
 }
 
 func newModelWithSession(loader ThemeLoader, session *workflow.Session) model {
+	return newModelWithContext(context.Background(), func() {}, loader, session, "", nil)
+}
+
+func newModelWithContext(ctx context.Context, cancel context.CancelFunc, loader ThemeLoader, session *workflow.Session, profileDir string, createProfile func(context.Context, string, string) (*workflow.Session, error)) model {
+	if abs, err := filepath.Abs(profileDir); err == nil {
+		profileDir = abs
+	}
 	screenMap := make(map[ScreenID]screen, len(screenOrder))
 	for _, id := range screenOrder {
 		screenMap[id] = &placeholderScreen{id: id}
 	}
 	if session != nil {
-		screenMap[ScreenOverview] = &overviewScreen{Overview: screens.NewOverview(session)}
-		screenMap[ScreenConfig] = &configScreen{Config: screens.NewConfig(session)}
-		screenMap[ScreenResources] = &resourcesScreen{Resources: screens.NewResources(session)}
-		screenMap[ScreenMachines] = &machinesScreen{Machines: screens.NewMachines(session)}
-		screenMap[ScreenRestore] = &restoreScreen{Restore: screens.NewRestore(session)}
-		screenMap[ScreenSync] = &syncScreen{Sync: screens.NewSync(session)}
+		screenMap[ScreenOverview] = &overviewScreen{Overview: screens.NewOverviewContext(ctx, session)}
+		screenMap[ScreenConfig] = &configScreen{Config: screens.NewConfigContext(ctx, session)}
+		screenMap[ScreenResources] = &resourcesScreen{Resources: screens.NewResourcesContext(ctx, session)}
+		screenMap[ScreenMachines] = &machinesScreen{Machines: screens.NewMachinesContext(ctx, session)}
+		screenMap[ScreenRestore] = &restoreScreen{Restore: screens.NewRestoreContext(ctx, session)}
+		screenMap[ScreenSync] = &syncScreen{Sync: screens.NewSyncContext(ctx, session)}
 		for _, id := range []ScreenID{ScreenPackages, ScreenThemes, ScreenPlugins, ScreenShell, ScreenHooks, ScreenDefaults} {
-			screenMap[id] = &providerScreen{Provider: screens.NewProvider(session, string(id)), id: id}
+			screenMap[id] = &providerScreen{Provider: screens.NewProviderContext(ctx, session, string(id)), id: id}
 		}
 	}
 	palette := loader.Load()
@@ -111,11 +143,22 @@ func newModelWithSession(loader ThemeLoader, session *workflow.Session) model {
 			styled.SetStyles(components.NewStyles(palette))
 		}
 	}
-	return model{palette: palette, themeLoader: loader, fingerprint: loader.Fingerprint(), screens: screenMap, session: session}
+	m := model{palette: palette, themeLoader: loader, fingerprint: loader.Fingerprint(), screens: screenMap, session: session, ctx: ctx, cancel: cancel, profileDir: profileDir, createProfile: createProfile}
+	if session == nil && createProfile != nil {
+		input := textinput.New()
+		input.SetValue(filepath.Base(profileDir))
+		input.Placeholder = "Profile name"
+		m.welcomeName = input
+		m.openModal(modalWelcome)
+	}
+	return m
 }
 
 func (m model) Init() tea.Cmd {
 	commands := []tea.Cmd{themeTickCmd()}
+	if m.modal == modalWelcome {
+		commands = append(commands, m.welcomeName.Focus())
+	}
 	for id, current := range m.screens {
 		if initializable, ok := current.(initializableScreen); ok {
 			commands = append(commands, wrapScreenCmd(id, initializable.Init()))
@@ -135,6 +178,11 @@ func (m model) updateScreenMsg(wrapped screenMsg) (tea.Model, tea.Cmd) {
 	// Root-owned requests are still identified by their originating screen.
 	switch msg := wrapped.Msg.(type) {
 	case showHelpMsg:
+		m.openModal(modalHelp)
+		return m, nil
+	case components.ModalRequest:
+		m.requestedModal = &ModalRequest{Title: msg.Title, Content: msg.Content}
+		m.requestedModalScreen = wrapped.Screen
 		m.openModal(modalHelp)
 		return m, nil
 	case screens.OverviewTarget:
@@ -166,6 +214,8 @@ func (m model) updateScreenMsg(wrapped screenMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notification = "Machine update failed: " + msg.Err.Error()
 		}
+	case screens.Notice:
+		m.notification = msg.Message
 	}
 	if current := m.screens[wrapped.Screen]; current != nil {
 		return m, wrapScreenCmd(wrapped.Screen, current.Update(wrapped.Msg))
@@ -175,10 +225,10 @@ func (m model) updateScreenMsg(wrapped screenMsg) (tea.Model, tea.Cmd) {
 
 // newInspectPathCmd binds browser inspection to the workflow session without
 // making the reusable component depend on session construction.
-func newInspectPathCmd(session *workflow.Session) func(uint64, string) tea.Cmd {
+func newInspectPathCmd(ctx context.Context, session *workflow.Session) func(uint64, string) tea.Cmd {
 	return func(requestID uint64, path string) tea.Cmd {
 		return func() tea.Msg {
-			inspection, err := session.InspectPath(context.Background(), path)
+			inspection, err := session.InspectPath(ctx, path)
 			return pathInspectedMsg{RequestID: requestID, Inspection: inspection, Err: err}
 		}
 	}
@@ -188,6 +238,20 @@ func (m model) activeScreen() screen { return m.screens[m.screenID()] }
 func (m model) screenID() ScreenID   { return screenOrder[m.selected] }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if created, ok := msg.(profileCreatedMsg); ok {
+		m.welcomeBusy = false
+		if created.err != nil {
+			m.welcomeError = created.err
+			return m, nil
+		}
+		fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, m.profileDir, m.createProfile)
+		fresh.width, fresh.height = m.width, m.height
+		fresh.notification = "Profile created at " + m.profileDir
+		for _, current := range fresh.screens {
+			current.SetSize(layoutForSize(fresh.width, fresh.height).workspaceWidth, layoutForSize(fresh.width, fresh.height).contentHeight)
+		}
+		return fresh, fresh.Init()
+	}
 	if wrapped, ok := msg.(screenMsg); ok {
 		return m.updateScreenMsg(wrapped)
 	}
@@ -224,6 +288,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			commands = append(commands, provider.Refresh())
 		}
 		return m, tea.Batch(commands...)
+	}
+	if notice, ok := msg.(screens.Notice); ok {
+		m.notification = notice.Message
+		return m, nil
 	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = size.Width, size.Height
@@ -300,12 +368,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	key, isKey := keyName(msg)
 	if isKey && key == "ctrl+c" {
+		m.stop()
 		return m, tea.Quit
+	}
+	if m.modal == modalWelcome {
+		return m.updateWelcome(msg, key, isKey)
 	}
 	if m.modal == modalPalette {
 		return m.updatePalette(key, isKey)
 	}
 	if m.modal == modalHelp {
+		if m.requestedModal != nil && isKey && (key == "enter" || key == "esc") {
+			screenID := m.requestedModalScreen
+			m.closeModal()
+			_, cmd := m.updateScreenMsg(screenMsg{Screen: screenID, Msg: tea.KeyPressMsg{Code: map[bool]rune{true: tea.KeyEnter, false: tea.KeyEsc}[key == "enter"]}})
+			return m, cmd
+		}
 		if isKey && (key == "esc" || key == "?" || key == "q") {
 			m.closeModal()
 		}
@@ -317,31 +395,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if isKey && m.focus != focusSidebar {
-		// Give screen-local text, confirmations, and transient views priority.
-		if current := m.activeScreen(); current != nil {
-			transient := false
-			if owner, ok := current.(transientScreen); ok {
-				transient = owner.TransientActive()
-			}
-			handled := false
-			if owner, ok := current.(keyHandlingScreen); ok {
-				handled = owner.HandlesKey(key)
-			}
-			if cmd := current.Update(msg); cmd != nil {
-				return m, wrapScreenCmd(m.screenID(), cmd)
-			}
-			if transient || handled {
-				return m, nil
-			}
-		}
-	}
 	if isKey {
+		transient := m.activeTransient()
+		// q is global unless a screen has an active transient/input that owns it.
+		if key == "q" && !transient {
+			m.stop()
+			return m, tea.Quit
+		}
+		if (transient || m.focus != focusSidebar) && m.screenOwnsKey(key, transient) {
+			return m, m.updateActiveScreen(msg)
+		}
 		switch key {
-		case "q":
-			if m.focus == focusSidebar {
-				return m, tea.Quit
-			}
 		case ":":
 			m.openModal(modalPalette)
 			m.paletteQuery, m.paletteSelected = "", 0
@@ -378,10 +442,66 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if current := m.activeScreen(); current != nil {
-		return m, wrapScreenCmd(m.screenID(), current.Update(msg))
+	if !isKey {
+		return m, m.updateActiveScreen(msg)
 	}
 	return m, nil
+}
+
+func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, tea.Cmd) {
+	if isKey {
+		switch key {
+		case "q", "esc":
+			m.stop()
+			return m, tea.Quit
+		case "enter":
+			name := strings.TrimSpace(m.welcomeName.Value())
+			if name == "" {
+				m.welcomeError = fmt.Errorf("profile name is required")
+				return m, nil
+			}
+			if !m.welcomeBusy {
+				m.welcomeBusy, m.welcomeError = true, nil
+				return m, func() tea.Msg {
+					session, err := m.createProfile(m.ctx, m.profileDir, name)
+					return profileCreatedMsg{session: session, err: err}
+				}
+			}
+		}
+	}
+	var cmd tea.Cmd
+	m.welcomeName, cmd = m.welcomeName.Update(msg)
+	return m, cmd
+}
+
+func (m model) stop() {
+	if m.cancel != nil {
+		m.cancel()
+	}
+}
+
+func (m model) activeTransient() bool {
+	owner, ok := m.activeScreen().(transientScreen)
+	return ok && owner.TransientActive()
+}
+
+// screenOwnsKey is a nonmutating ownership check. Root navigation and modal
+// shortcuts stay root-owned; a transient always owns all input.
+func (m model) screenOwnsKey(key string, transient bool) bool {
+	if transient {
+		return true
+	}
+	if owner, ok := m.activeScreen().(keyHandlingScreen); ok {
+		return owner.HandlesKey(key)
+	}
+	return false
+}
+
+func (m model) updateActiveScreen(msg tea.Msg) tea.Cmd {
+	if current := m.activeScreen(); current != nil {
+		return wrapScreenCmd(m.screenID(), current.Update(msg))
+	}
+	return nil
 }
 
 func (m model) handleCaptureComplete(complete screens.CaptureComplete) (tea.Model, tea.Cmd) {
@@ -441,12 +561,23 @@ func (m model) handleHandoffRequest(request screens.HandoffRequest) (tea.Model, 
 }
 
 func (m *model) openModal(kind modalKind) {
+	if m.modal != modalNone {
+		m.modalStack = append(m.modalStack, m.modal)
+	}
 	m.modal = kind
 	m.paletteOpen, m.helpOpen = kind == modalPalette, kind == modalHelp
 }
 
 func (m *model) closeModal() {
-	m.modal, m.paletteOpen, m.helpOpen = modalNone, false, false
+	if len(m.modalStack) > 0 {
+		m.modal = m.modalStack[len(m.modalStack)-1]
+		m.modalStack = m.modalStack[:len(m.modalStack)-1]
+	} else {
+		m.modal = modalNone
+	}
+	m.paletteOpen, m.helpOpen = m.modal == modalPalette, m.modal == modalHelp
+	m.requestedModal = nil
+	m.requestedModalScreen = ""
 }
 
 func (m *model) updatePalette(key string, isKey bool) (tea.Model, tea.Cmd) {
@@ -524,6 +655,9 @@ func (m model) actions() []Action {
 	actions := make([]Action, 0, len(screenOrder)+4)
 	if current := m.activeScreen(); current != nil {
 		for _, action := range current.Actions() {
+			if !action.Visible {
+				continue
+			}
 			action.Screen = m.screenID()
 			if action.Group == "" {
 				action.Group = "Actions"
@@ -532,9 +666,9 @@ func (m model) actions() []Action {
 		}
 	}
 	for _, id := range screenOrder {
-		actions = append(actions, Action{ID: "screen." + string(id), Label: screenLabel(id), Group: "Navigate", Keywords: "screen tab", Enabled: true, Screen: id})
+		actions = append(actions, Action{ID: "screen." + string(id), Label: screenLabel(id), Group: "Navigate", Keywords: "screen tab", Enabled: true, Visible: true, Screen: id})
 	}
-	actions = append(actions, Action{ID: "help", Label: "Show help", Group: "Help", Keywords: "commands keys", Shortcut: "?", Enabled: true, Run: func() tea.Cmd { return func() tea.Msg { return showHelpMsg{} } }}, Action{ID: "quit", Label: "Quit", Group: "Application", Enabled: true, Run: func() tea.Cmd { return tea.Quit }})
+	actions = append(actions, Action{ID: "help", Label: "Show help", Group: "Help", Keywords: "commands keys", Shortcut: "?", Enabled: true, Visible: true, Run: func() tea.Cmd { return func() tea.Msg { return showHelpMsg{} } }}, Action{ID: "quit", Label: "Quit", Group: "Application", Enabled: true, Visible: true, Run: func() tea.Cmd { return tea.Quit }})
 	return actions
 }
 
@@ -551,7 +685,7 @@ func (m model) View() tea.View {
 		return view
 	}
 	header := m.header()
-	footer := m.muted(components.Statusbar(statusActions(m.activeScreen())))
+	footer := m.muted(m.footer())
 	if m.notification != "" {
 		footer += "  " + m.notification
 	}
@@ -562,6 +696,23 @@ func (m model) View() tea.View {
 	view := tea.NewView(strings.Join([]string{boundedLine(header, m.width), strings.Repeat("─", max(1, m.width)), content, strings.Repeat("─", max(1, m.width)), boundedLine(footer, m.width)}, "\n"))
 	view.AltScreen = true
 	return view
+}
+
+func (m model) footer() string {
+	if m.modal != modalNone {
+		switch m.modal {
+		case modalPalette:
+			return "enter select   esc close"
+		case modalWelcome:
+			return "enter create   esc quit"
+		default:
+			if m.requestedModal != nil {
+				return "enter confirm   esc cancel"
+			}
+			return "esc close"
+		}
+	}
+	return components.Statusbar(statusActions(m.activeScreen()))
 }
 
 func (m model) header() string {
@@ -602,22 +753,24 @@ func (m model) contentView(layout layout) string {
 		items = append(items, components.NavItem{ID: string(id), Label: screenLabel(id)})
 	}
 	workspace := m.activeScreen().View()
+	styles := components.NewStyles(m.palette)
 	if layout.mode == LayoutCompact {
 		if m.sidebarOpen {
-			return m.sidebarScroll.render(strings.Split(components.Sidebar(items, m.selected, layout.workspaceWidth), "\n"), layout.workspaceWidth, layout.contentHeight)
+			return components.Panel("Navigation", m.focus == focusSidebar, layout.workspaceWidth, layout.contentHeight, m.sidebarScroll.render(strings.Split(components.SidebarWithStyles(items, m.selected, layout.workspaceWidth-2, styles), "\n"), layout.workspaceWidth-2, layout.contentHeight-2), styles)
 		}
-		return boundedBox(workspace, layout.workspaceWidth, layout.contentHeight)
+		return components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
 	}
-	sidebar := m.sidebarScroll.render(strings.Split(components.Sidebar(items, m.selected, layout.sidebarWidth), "\n"), layout.sidebarWidth, layout.contentHeight)
-	workspace = boundedBox(workspace, layout.workspaceWidth, layout.contentHeight)
+	sidebar := components.Panel("Navigation", m.focus == focusSidebar, layout.sidebarWidth, layout.contentHeight, m.sidebarScroll.render(strings.Split(components.SidebarWithStyles(items, m.selected, layout.sidebarWidth-2, styles), "\n"), layout.sidebarWidth-2, layout.contentHeight-2), styles)
+	workspace = components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
 	if layout.mode == LayoutTwoPane {
 		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace)
 	}
-	details := "Details / preview"
-	if detailed, ok := m.activeScreen().(DetailView); ok {
-		details = detailed.DetailView()
+	detailed, ok := m.activeScreen().(DetailView)
+	if !ok {
+		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace, "│", boundedBox(details, layout.detailsWidth, layout.contentHeight))
+	details := components.Panel("Details", m.focus == focusDetails, layout.detailsWidth, layout.contentHeight, detailed.DetailView(), styles)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace, "│", details)
 }
 
 func boundedBox(content string, width, height int) string {
@@ -628,18 +781,68 @@ func boundedLine(content string, width int) string {
 	return lipgloss.NewStyle().Width(max(0, width)).MaxWidth(max(0, width)).Render(content)
 }
 
+// composeOverlay replaces cells in the centered overlay rectangle rather than
+// appending it below the base view. The dimmed base remains visible around it.
+func composeOverlay(base, overlay string, width, height int, color bool) string {
+	baseLines, overlayLines := strings.Split(base, "\n"), strings.Split(overlay, "\n")
+	for len(baseLines) < height {
+		baseLines = append(baseLines, "")
+	}
+	overlayWidth, overlayHeight := 0, len(overlayLines)
+	for _, line := range overlayLines {
+		overlayWidth = max(overlayWidth, lipgloss.Width(line))
+	}
+	x, y := max(0, (width-overlayWidth)/2), max(0, (height-overlayHeight)/2)
+	for row := 0; row < height; row++ {
+		line := boundedLine(baseLines[row], width)
+		if color {
+			line = lipgloss.NewStyle().Faint(true).Render(line)
+		}
+		if row < y || row >= y+overlayHeight {
+			baseLines[row] = line
+			continue
+		}
+		// Panels use bounded ASCII/Unicode cells; retain the base margins and
+		// replace the central rectangle without adding rows to the base.
+		prefix := lipgloss.NewStyle().MaxWidth(x).Render(line)
+		suffixWidth := max(0, width-x-lipgloss.Width(overlayLines[row-y]))
+		suffix := strings.Repeat(" ", suffixWidth)
+		baseLines[row] = prefix + overlayLines[row-y] + suffix
+	}
+	return strings.Join(baseLines[:height], "\n")
+}
+
 func (m model) modalView(base string, layout layout) string {
 	width, height := max(30, min(layout.workspaceWidth, m.width-8)), max(4, layout.contentHeight-2)
 	var overlay string
+	styles := components.NewStyles(m.palette)
+	title := ""
 	switch m.modal {
 	case modalPalette:
+		title = "Command palette"
 		items := filterActions(m.actions(), m.paletteQuery)
 		lines := strings.Split(components.Palette(m.paletteQuery, paletteItems(items), m.paletteSelected), "\n")
 		overlay = m.paletteScroll.render(lines, width, height)
 	case modalHelp:
-		overlay = m.helpScroll.render(m.helpLines(), width, height)
+		title = "Help"
+		lines := m.helpLines()
+		if m.requestedModal != nil {
+			title, lines = m.requestedModal.Title, strings.Split(m.requestedModal.Content, "\n")
+		}
+		overlay = m.helpScroll.render(lines, width, height)
+	case modalWelcome:
+		title = "Welcome to Omarchy Blueprint"
+		lines := []string{"No profile exists at:", m.profileDir, "", "Create a new profile to begin.", "", "Profile name: " + m.welcomeName.View(), "", "enter create  esc quit"}
+		if m.welcomeBusy {
+			lines = append(lines, "Creating profile...")
+		}
+		if m.welcomeError != nil {
+			lines = append(lines, "Error: "+m.welcomeError.Error())
+		}
+		overlay = strings.Join(lines, "\n")
 	}
-	return lipgloss.Place(m.width, layout.contentHeight, lipgloss.Center, lipgloss.Center, overlay, lipgloss.WithWhitespaceChars(" ")) + "\n" + base
+	overlay = components.Panel(title, true, width, height, overlay, styles)
+	return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
 }
 
 func (m model) helpLines() []string {
@@ -651,7 +854,9 @@ func (m model) helpLines() []string {
 func statusActions(current screen) []components.StatusAction {
 	actions := []components.StatusAction{}
 	if current != nil {
-		for _, action := range current.Actions() {
+		available := visibleActions(current.Actions())
+		sort.SliceStable(available, func(i, j int) bool { return available[i].FooterPriority < available[j].FooterPriority })
+		for _, action := range available {
 			actions = append(actions, components.StatusAction{Label: action.Label, Shortcut: action.Shortcut, Enabled: action.Enabled})
 		}
 	}
@@ -679,7 +884,10 @@ func (s *placeholderScreen) ID() ScreenID              { return s.id }
 func (s *placeholderScreen) SetSize(width, height int) { s.width, s.height = width, height }
 func (s *placeholderScreen) Update(tea.Msg) tea.Cmd    { return nil }
 func (s *placeholderScreen) View() string              { return screenLabel(s.id) + "\n\n✓ Screen is ready." }
-func (s *placeholderScreen) Actions() []Action         { return nil }
+func (s *placeholderScreen) DetailView() string {
+	return screenLabel(s.id) + " details\nThis screen is ready when a profile session is available."
+}
+func (s *placeholderScreen) Actions() []Action { return nil }
 
 type configScreen struct{ *screens.Config }
 
@@ -699,58 +907,83 @@ type providerScreen struct {
 }
 
 func (s *resourcesScreen) ID() ScreenID { return ScreenResources }
+func (s *resourcesScreen) HandlesKey(key string) bool {
+	if key == "tab" {
+		return true
+	}
+	return screenKey(key)
+}
 func (s *resourcesScreen) Actions() []Action {
-	return []Action{
-		{ID: "resources.discover", Label: "Discover resource", Group: "Resources", Shortcut: "n", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'n'}) }},
-		{ID: "resources.untrack", Label: "Untrack resource", Group: "Resources", Shortcut: "x", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
-	}
-}
-
-func (s *machinesScreen) ID() ScreenID { return ScreenMachines }
-func (s *machinesScreen) Actions() []Action {
-	return []Action{
-		{ID: "machines.add", Label: "Add machine", Group: "Machines", Shortcut: "a", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
-		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Shortcut: "m", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
-	}
-}
-
-func (s *restoreScreen) ID() ScreenID { return ScreenRestore }
-func (s *restoreScreen) Actions() []Action {
-	return []Action{{ID: "restore.force", Label: "Toggle forced restore", Group: "Restore", Shortcut: "f", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.apply", Label: "Apply restore", Group: "Restore", Shortcut: "enter", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
-}
-
-func (s *syncScreen) ID() ScreenID { return ScreenSync }
-func (s *syncScreen) Actions() []Action {
-	states := s.Sync.Actions()
+	states := s.Resources.Actions()
 	actions := make([]Action, 0, len(states))
 	for _, state := range states {
 		state := state
-		actions = append(actions, Action{ID: state.ID, Label: state.Label, Shortcut: state.Shortcut, Enabled: state.Enabled, DisabledReason: state.DisabledReason, Run: func() tea.Cmd {
+		actions = append(actions, Action{ID: "resources." + state.ID, Label: state.Label, Group: "Resources", Shortcut: state.Shortcut, Enabled: state.Enabled, Visible: true, DisabledReason: state.DisabledReason, Run: func() tea.Cmd {
 			return s.Update(tea.KeyPressMsg{Code: rune(state.Shortcut[0])})
 		}})
 	}
 	return actions
 }
 
-func (s *providerScreen) ID() ScreenID { return s.id }
-func (s *providerScreen) Actions() []Action {
-	return []Action{{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Shortcut: "c", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }}}
-}
-
-func (s *configScreen) ID() ScreenID { return ScreenConfig }
-func (s *configScreen) Actions() []Action {
+func (s *machinesScreen) ID() ScreenID               { return ScreenMachines }
+func (s *machinesScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *machinesScreen) Actions() []Action {
 	return []Action{
-		{ID: "config.diff", Label: "View Config diff", Group: "Config", Shortcut: "d", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
-		{ID: "config.include", Label: "Include Config path", Group: "Config", Shortcut: "i", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'i'}) }},
-		{ID: "config.exclude", Label: "Exclude Config path", Group: "Config", Shortcut: "x", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
-		{ID: "config.auto", Label: "Use automatic Config policy", Group: "Config", Shortcut: "a", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
-		{ID: "config.edit", Label: "Edit Config file", Group: "Config", Shortcut: "e", Enabled: s.CanHandoff(), DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
-		{ID: "config.open", Label: "Open Config location", Group: "Config", Shortcut: "o", Enabled: s.CanHandoff(), DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
-		{ID: "config.copy", Label: "Copy Config path", Group: "Config", Shortcut: "y", Enabled: s.CanHandoff(), DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'y'}) }},
+		{ID: "machines.add", Label: "Add machine", Group: "Machines", Shortcut: "a", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
+		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Shortcut: "m", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
 	}
 }
 
-func (s *overviewScreen) ID() ScreenID { return ScreenOverview }
+func (s *restoreScreen) ID() ScreenID               { return ScreenRestore }
+func (s *restoreScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *restoreScreen) Actions() []Action {
+	return []Action{{ID: "restore.force", Label: "Toggle forced restore", Group: "Restore", Shortcut: "f", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.detail", Label: "View restore detail", Group: "Restore", Shortcut: "d", Enabled: s.CanDetail(), Visible: true, DisabledReason: "selected consequence has no diff", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }}, {ID: "restore.apply", Label: "Apply active restore", Group: "Restore", Shortcut: "enter", Enabled: s.CanApply(), Visible: true, DisabledReason: "active restore plan has no operations", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
+}
+
+func (s *syncScreen) ID() ScreenID               { return ScreenSync }
+func (s *syncScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *syncScreen) Actions() []Action {
+	states := s.Sync.Actions()
+	actions := make([]Action, 0, len(states))
+	for _, state := range states {
+		state := state
+		actions = append(actions, Action{ID: state.ID, Label: state.Label, Shortcut: state.Shortcut, Enabled: state.Enabled, Visible: true, DisabledReason: state.DisabledReason, Run: func() tea.Cmd {
+			return s.Update(tea.KeyPressMsg{Code: rune(state.Shortcut[0])})
+		}})
+	}
+	return actions
+}
+
+func (s *providerScreen) ID() ScreenID               { return s.id }
+func (s *providerScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *providerScreen) Actions() []Action {
+	return []Action{{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Shortcut: "c", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }}}
+}
+
+func (s *configScreen) ID() ScreenID               { return ScreenConfig }
+func (s *configScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *configScreen) Actions() []Action {
+	return []Action{
+		{ID: "config.diff", Label: "View Config diff", Group: "Config", Shortcut: "d", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
+		{ID: "config.include", Label: "Include Config path", Group: "Config", Shortcut: "i", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'i'}) }},
+		{ID: "config.exclude", Label: "Exclude Config path", Group: "Config", Shortcut: "x", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
+		{ID: "config.auto", Label: "Use automatic Config policy", Group: "Config", Shortcut: "a", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
+		{ID: "config.edit", Label: "Edit Config file", Group: "Config", Shortcut: "e", Enabled: s.CanHandoff(), Visible: true, DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
+		{ID: "config.open", Label: "Open Config location", Group: "Config", Shortcut: "o", Enabled: s.CanHandoff(), Visible: true, DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
+		{ID: "config.copy", Label: "Copy Config path", Group: "Config", Shortcut: "y", Enabled: s.CanHandoff(), Visible: true, DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'y'}) }},
+	}
+}
+
+func (s *overviewScreen) ID() ScreenID               { return ScreenOverview }
+func (s *overviewScreen) HandlesKey(key string) bool { return screenKey(key) }
 func (s *overviewScreen) Actions() []Action {
-	return []Action{{ID: "overview.refresh", Label: "Refresh Overview", Shortcut: "r", Enabled: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }}}
+	return []Action{{ID: "overview.refresh", Label: "Refresh Overview", Shortcut: "r", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }}}
+}
+
+func screenKey(key string) bool {
+	switch key {
+	case ":", "?", "tab", "shift+tab", "h", "left", "l", "right":
+		return false
+	}
+	return true
 }

@@ -63,21 +63,19 @@ type Browser struct {
 	bookmarksOpen  bool
 	bookmark       int
 	closed         bool
-	err            error
+	readErr        error
+	inspectErr     error
 	inspectPathCmd func(requestID uint64, path string) tea.Cmd
 	requestID      uint64
 	directoryID    uint64
 	inspection     workflow.PathInspection
+	inspectionPath string
 }
 
 func NewBrowser(mode BrowserMode, config BrowserConfig) Browser {
-	home := config.Home
-	if home == "" {
-		home, _ = os.UserHomeDir()
-	}
 	b := Browser{
 		mode:           mode,
-		path:           filepath.Clean(home),
+		path:           filepath.Clean(config.Home),
 		bookmarks:      BuildBookmarks(config),
 		inspectPathCmd: config.InspectPathCmd,
 	}
@@ -87,9 +85,6 @@ func NewBrowser(mode BrowserMode, config BrowserConfig) Browser {
 // BuildBookmarks returns the stable, existing locations useful to resource picking.
 func BuildBookmarks(config BrowserConfig) []Bookmark {
 	home := filepath.Clean(config.Home)
-	if home == "." || home == "" {
-		home, _ = os.UserHomeDir()
-	}
 	candidates := []Bookmark{{"Home", home}, {"Config", filepath.Join(home, ".config")}}
 	if config.ProfileDir != "" {
 		candidates = append(candidates, Bookmark{"Profile", config.ProfileDir})
@@ -139,12 +134,19 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 		if result.Generation != b.directoryID || result.Path != b.path {
 			return nil
 		}
-		b.entries, b.err, b.selected = result.Entries, result.Err, 0
+		b.entries, b.readErr, b.selected = result.Entries, result.Err, 0
+		if result.Err == nil {
+			b.addRecent(result.Path)
+		}
+		b.clearInspection()
 		return b.inspectSelected()
 	}
 	if result, ok := msg.(BrowserInspectionMsg); ok {
 		if result.RequestID == b.requestID {
-			b.inspection, b.err = result.Inspection, result.Err
+			b.inspection, b.inspectErr, b.inspectionPath = result.Inspection, result.Err, ""
+			if result.Err == nil {
+				b.inspectionPath = result.Inspection.Path
+			}
 		}
 		return nil
 	}
@@ -223,9 +225,9 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (b Browser) View() string {
-	lines := []string{b.path}
-	if b.err != nil {
-		lines = append(lines, "Unable to read directory: "+b.err.Error())
+	lines := []string{"Parent: " + filepath.Dir(b.path), "Current: " + b.path}
+	if b.readErr != nil {
+		lines = append(lines, "Unable to read directory: "+b.readErr.Error())
 	}
 	if b.bookmarksOpen {
 		lines = append(lines, "Bookmarks")
@@ -243,7 +245,7 @@ func (b Browser) View() string {
 		if i == b.selected {
 			prefix = ">"
 		}
-		lines = append(lines, fmt.Sprintf("%s %s  %s", prefix, entry.Name, entry.Type))
+		lines = append(lines, fmt.Sprintf("%s %s %s", prefix, browserIcon(entry.Type), entry.Name))
 	}
 	if b.filtering || b.filter != "" {
 		lines = append(lines, "Filter: "+b.filter)
@@ -260,8 +262,11 @@ func (b Browser) Selected() (BrowserEntry, bool) {
 }
 func (b Browser) Inspection() workflow.PathInspection { return b.inspection }
 func (b Browser) DetailView() string {
-	if b.err != nil {
-		return "Unable to read directory: " + b.err.Error()
+	if b.readErr != nil {
+		return "Unable to read directory: " + b.readErr.Error()
+	}
+	if b.inspectErr != nil {
+		return "Unable to inspect selection: " + b.inspectErr.Error()
 	}
 	if b.inspection.Path == "" {
 		return "Loading selection details..."
@@ -272,7 +277,7 @@ func (b Browser) DetailView() string {
 // CanSelect reports whether the current selection may cause a mutation.
 func (b Browser) CanSelect() bool {
 	entry, ok := b.selectedEntry()
-	if !ok || b.mode == BrowseReadOnly || b.inspection.BlockedReason != "" {
+	if !ok || b.mode == BrowseReadOnly || b.inspectErr != nil || b.inspectionPath != entry.Path || b.inspection.BlockedReason != "" {
 		return false
 	}
 	if b.mode == PickDirectory {
@@ -282,6 +287,7 @@ func (b Browser) CanSelect() bool {
 }
 
 func (b *Browser) readDir() tea.Cmd {
+	b.clearInspection()
 	b.directoryID++
 	generation, path := b.directoryID, b.path
 	return func() tea.Msg {
@@ -352,8 +358,37 @@ func (b *Browser) inspectSelected() tea.Cmd {
 	if !ok || b.inspectPathCmd == nil {
 		return nil
 	}
+	b.clearInspection()
 	b.requestID++
 	return b.inspectPathCmd(b.requestID, entry.Path)
+}
+
+func (b *Browser) clearInspection() {
+	b.inspection = workflow.PathInspection{}
+	b.inspectionPath = ""
+	b.inspectErr = nil
+}
+
+func (b *Browser) addRecent(path string) {
+	for _, bookmark := range b.bookmarks {
+		if bookmark.Path == path {
+			return
+		}
+	}
+	b.bookmarks = append(b.bookmarks, Bookmark{Label: "Recent", Path: path})
+}
+
+func browserIcon(kind string) string {
+	switch kind {
+	case "directory":
+		return "[D]"
+	case "file":
+		return "[F]"
+	case "symlink":
+		return "[@]"
+	default:
+		return "[?]"
+	}
 }
 
 func browserPreview(inspection workflow.PathInspection) string {

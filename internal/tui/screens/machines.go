@@ -3,10 +3,10 @@ package screens
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -14,12 +14,16 @@ import (
 
 // Machines manages overlay metadata only; mappings never move resource bytes.
 type Machines struct {
+	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
 	name, mode, confirm     string
 	browser                 *components.Browser
 	resource                int
 	focusMapping            string
+	focusMappings           bool
+	machineList             components.Selectable
+	mappingTable            components.Table
 	styles                  components.Styles
 	busy                    bool
 	err                     error
@@ -30,16 +34,21 @@ type MachineMutationComplete struct {
 	Err    error
 }
 
-func NewMachines(session *workflow.Session) *Machines  { return &Machines{session: session} }
+func NewMachines(session *workflow.Session) *Machines {
+	return NewMachinesContext(context.Background(), session)
+}
+func NewMachinesContext(ctx context.Context, session *workflow.Session) *Machines {
+	return &Machines{ctx: ctx, session: session}
+}
 func (s *Machines) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Machines) Focus(mapping string) {
 	s.focusMapping = mapping
 	for i, item := range s.machines() {
 		if strings.HasPrefix(mapping, item.Name+":") {
-			s.selected = i
+			s.selected, s.machineList.Selected = i, i
 			resource := strings.TrimPrefix(mapping, item.Name+":")
-			for j, candidate := range s.session.Profile().Resources.Items {
-				if candidate.ID == resource {
+			for j, candidate := range s.mappingRows() {
+				if candidate.id == resource {
 					s.resource = j
 					break
 				}
@@ -55,16 +64,19 @@ func (s *Machines) TransientActive() bool     { return s.browser != nil || s.con
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	if result, ok := msg.(MachineMutationComplete); ok {
 		s.err, s.busy = result.Err, false
-		if s.selected >= len(s.machines()) {
-			s.selected = max(0, len(s.machines())-1)
-		}
+		s.machineList.SetSelected(s.machineList.Selected, len(s.machines()), s.listHeight())
+		s.selected = s.machineList.Selected
+		s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
 		return nil
+	}
+	if inspection, ok := msg.(components.BrowserInspectionMsg); ok && s.browser != nil {
+		return s.browser.Update(inspection)
+	}
+	if listing, ok := msg.(components.BrowserReadDirMsg); ok && s.browser != nil {
+		return s.browser.Update(listing)
 	}
 	key, ok := msg.(tea.KeyPressMsg)
-	if !ok {
-		return nil
-	}
-	if s.busy {
+	if !ok || s.busy {
 		return nil
 	}
 	if s.browser != nil {
@@ -95,70 +107,79 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	if s.mode != "" {
-		if key.String() == "esc" {
+		switch key.String() {
+		case "esc":
 			s.mode, s.name = "", ""
-			return nil
-		}
-		if key.String() == "enter" {
+		case "enter":
 			mode := s.mode
 			s.mode = ""
 			if mode == "add" {
 				return s.add()
 			}
 			s.confirm = "rename"
-			return nil
-		}
-		if key.String() == "backspace" && len(s.name) > 0 {
-			s.name = s.name[:len(s.name)-1]
-			return nil
-		}
-		if len(key.String()) == 1 {
-			s.name += key.String()
+			return s.confirmModal()
+		case "backspace":
+			if len(s.name) > 0 {
+				s.name = s.name[:len(s.name)-1]
+			}
+		default:
+			if len(key.String()) == 1 {
+				s.name += key.String()
+			}
 		}
 		return nil
 	}
 	switch key.String() {
+	case "tab":
+		s.focusMappings = !s.focusMappings
+	case "h", "left":
+		s.focusMappings = false
+	case "l", "right":
+		s.focusMappings = true
 	case "j", "down":
-		if s.selected < len(s.machines())-1 {
-			s.selected++
+		if s.focusMappings {
+			s.resource = min(len(s.mappingRows())-1, s.resource+1)
+			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
+		} else if s.machineList.Move(1, len(s.machines()), s.listHeight()) {
+			s.selected = s.machineList.Selected
+			s.resource = 0
 		}
 	case "k", "up":
-		if s.selected > 0 {
-			s.selected--
+		if s.focusMappings {
+			s.resource = max(0, s.resource-1)
+			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
+		} else if s.machineList.Move(-1, len(s.machines()), s.listHeight()) {
+			s.selected = s.machineList.Selected
+			s.resource = 0
 		}
 	case "a":
 		s.mode = "add"
 		s.name, _ = s.session.SuggestedMachineName()
 	case "u":
-		if !s.busy {
+		if !s.focusMappings {
 			return s.use()
 		}
+		if s.selectedMapping().override {
+			return s.unmapResource()
+		}
 	case "c":
-		if !s.busy {
+		if !s.focusMappings {
 			return s.clear()
 		}
 	case "r":
-		if current := s.selectedMachine(); current.Name != "" {
-			s.mode, s.name = "rename", current.Name
+		if !s.focusMappings && s.selectedMachine().Name != "" {
+			s.mode, s.name = "rename", s.selectedMachine().Name
 		}
 	case "x":
-		if s.selectedMachine().Name != "" {
+		if !s.focusMappings && s.selectedMachine().Name != "" {
 			s.confirm = "remove"
+			return s.confirmModal()
 		}
 	case "m":
-		if len(s.session.Profile().Resources.Items) > 0 && s.selectedMachine().Name != "" {
-			home, _ := os.UserHomeDir()
-			browser := components.NewBrowser(components.PickDirectory, components.BrowserConfig{Home: home, ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile()})
+		if s.focusMappings && s.selectedMachine().Name != "" && s.selectedMapping().id != "" {
+			browser := components.NewBrowser(components.PickDirectory, components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath})
 			s.browser = &browser
 			return s.browser.Init()
-		}
-	case "n":
-		if len(s.session.Profile().Resources.Items) > 0 {
-			s.resource = (s.resource + 1) % len(s.session.Profile().Resources.Items)
-		}
-	case "d":
-		if !s.busy && s.selectedMachine().Name != "" && s.selectedResource().ID != "" {
-			return s.unmapResource()
 		}
 	}
 	return nil
@@ -166,64 +187,100 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 
 func (s *Machines) View() string {
 	if s.err != nil {
-		return s.styles.Error("Machines\n\n! Unable to update machine: " + s.err.Error())
+		return s.styles.Error("Unable to update machine: " + s.err.Error())
 	}
 	if s.browser != nil {
-		return "Map " + s.selectedResource().ID + " to a directory\n\n" + s.browser.View()
-	}
-	if s.confirm == "remove" {
-		return components.Confirm("Remove " + s.selectedMachine().Name + "? Resource files remain untouched.")
-	}
-	if s.confirm == "rename" {
-		return components.Confirm("Rename machine to " + s.name + "?")
+		return s.browser.View()
 	}
 	if s.mode != "" {
-		return "Machine name: " + s.name + "\nPress Enter to confirm."
+		return "Machine name: " + s.name
 	}
-	lines := []string{"Machines"}
-	if s.busy {
-		lines = append(lines, "Loading...")
-	}
+	machineLines := make([]string, 0, len(s.machines()))
 	for i, item := range s.machines() {
 		marker := " "
-		if i == s.selected {
+		if i == s.machineList.Selected {
 			marker = ">"
 		}
 		active := ""
 		if item.Name == s.session.Machine().Name {
 			active = " *"
 		}
-		lines = append(lines, marker+" "+item.Name+active)
+		machineLines = append(machineLines, marker+" "+item.Name+active)
 	}
-	if len(s.machines()) == 0 {
-		lines = append(lines, "No machine overlays.")
+	if len(machineLines) == 0 {
+		machineLines = append(machineLines, "No machine overlays.")
 	}
-	if current := s.selectedMachine(); current.Name != "" {
-		lines = append(lines, "", "Resource       Portable             Effective             Source")
-		for i, resource := range s.session.Profile().Resources.Items {
-			effective, source := resource.Path, "portable"
-			for _, mapping := range current.ResourcePaths {
-				if mapping.Resource == resource.ID {
-					effective, source = mapping.Path, "override"
-					break
-				}
-			}
-			marker := " "
-			if i == s.resource {
-				marker = ">"
-			}
-			lines = append(lines, fmt.Sprintf("%s %-14s %-20s %-20s %s", marker, resource.ID, resource.Path, effective, source))
+	rows := []string{"Resource       Portable             Effective             Source"}
+	for i, row := range s.mappingRows() {
+		marker := " "
+		if i == s.resource {
+			marker = ">"
 		}
-		for _, mapping := range current.ResourcePaths {
-			if !s.resourceExists(mapping.Resource) {
-				lines = append(lines, fmt.Sprintf("  %-14s %-20s %-20s dormant", mapping.Resource, "-", mapping.Path))
-			}
-		}
+		rows = append(rows, fmt.Sprintf("%s %-14s %-20s %-20s %s", marker, row.id, row.portable, row.effective, row.source))
 	}
-	lines = append(lines, "a add  u use  c clear  r rename  x remove  n resource  m map  d unmap")
-	return strings.Join(lines, "\n")
+	if len(rows) == 1 {
+		rows = append(rows, "No resource mappings.")
+	}
+	leftWidth := max(20, s.width/3)
+	if s.width == 0 {
+		leftWidth = 28
+	}
+	left := s.machineList.View(machineLines, leftWidth, s.listHeight())
+	right := s.mappingTable.View(rows, s.tableHeight()+1)
+	return lipgloss.JoinHorizontal(lipgloss.Top, "Machines\n"+left, "  ", "Resource paths\n"+right)
 }
 
+func (s *Machines) DetailView() string {
+	if s.browser != nil {
+		return s.browser.DetailView()
+	}
+	if s.focusMappings {
+		row := s.selectedMapping()
+		return "Mapping\nMachine: " + s.selectedMachine().Name + "\nResource: " + row.id + "\nPortable: " + row.portable + "\nEffective: " + row.effective + "\nSource: " + row.source
+	}
+	item := s.selectedMachine()
+	if item.Name == "" {
+		return "Machine overlays\nPortable paths are active."
+	}
+	state := "inactive"
+	if item.Name == s.session.Machine().Name {
+		state = "active"
+	}
+	return "Machine: " + item.Name + "\nState: " + state + "\nMappings: " + fmt.Sprint(len(item.ResourcePaths)) + "\nMappings change placement policy only; resource bytes are never moved."
+}
+
+type mappingRow struct {
+	id, portable, effective, source string
+	override                        bool
+}
+
+func (s *Machines) mappingRows() []mappingRow {
+	current := s.selectedMachine()
+	rows := make([]mappingRow, 0, len(s.session.Profile().Resources.Items)+len(current.ResourcePaths))
+	for _, resource := range s.session.Profile().Resources.Items {
+		row := mappingRow{id: resource.ID, portable: resource.Path, effective: resource.Path, source: "portable"}
+		for _, mapping := range current.ResourcePaths {
+			if mapping.Resource == resource.ID {
+				row.effective, row.source, row.override = mapping.Path, "override", true
+				break
+			}
+		}
+		rows = append(rows, row)
+	}
+	for _, mapping := range current.ResourcePaths {
+		if !s.resourceExists(mapping.Resource) {
+			rows = append(rows, mappingRow{id: mapping.Resource, portable: "-", effective: mapping.Path, source: "dormant", override: true})
+		}
+	}
+	return rows
+}
+func (s *Machines) selectedMapping() mappingRow {
+	rows := s.mappingRows()
+	if s.resource >= 0 && s.resource < len(rows) {
+		return rows[s.resource]
+	}
+	return mappingRow{}
+}
 func (s *Machines) machines() []profile.Machine { return s.session.Profile().Machines.Items }
 func (s *Machines) selectedMachine() profile.Machine {
 	items := s.machines()
@@ -231,13 +288,6 @@ func (s *Machines) selectedMachine() profile.Machine {
 		return items[s.selected]
 	}
 	return profile.Machine{}
-}
-func (s *Machines) selectedResource() profile.Resource {
-	items := s.session.Profile().Resources.Items
-	if s.resource >= 0 && s.resource < len(items) {
-		return items[s.resource]
-	}
-	return profile.Resource{}
 }
 func (s *Machines) resourceExists(id string) bool {
 	for _, item := range s.session.Profile().Resources.Items {
@@ -247,34 +297,59 @@ func (s *Machines) resourceExists(id string) bool {
 	}
 	return false
 }
+func (s *Machines) listHeight() int {
+	if s.height == 0 {
+		return len(s.machines()) + 2
+	}
+	return max(1, s.height/2-2)
+}
+func (s *Machines) tableHeight() int {
+	if s.height == 0 {
+		return len(s.mappingRows()) + 1
+	}
+	return max(1, s.height/2-3)
+}
+func (s *Machines) confirmModal() tea.Cmd {
+	prompt := "Rename machine to " + s.name + "?"
+	if s.confirm == "remove" {
+		prompt = "Remove " + s.selectedMachine().Name + "? Resource files remain untouched."
+	}
+	return func() tea.Msg { return components.ModalRequest{Title: "Machines", Content: components.Confirm(prompt)} }
+}
+func (s *Machines) inspectPath(requestID uint64, path string) tea.Cmd {
+	return func() tea.Msg {
+		inspection, err := s.session.InspectPath(s.ctx, path)
+		return components.BrowserInspectionMsg{RequestID: requestID, Inspection: inspection, Err: err}
+	}
+}
 func (s *Machines) mutate(notice string, run func() error) tea.Cmd {
 	s.busy = true
 	return func() tea.Msg { return MachineMutationComplete{Notice: notice, Err: run()} }
 }
 func (s *Machines) add() tea.Cmd {
 	name := s.name
-	return s.mutate("Machine added.", func() error { return s.session.AddMachine(context.Background(), name, true) })
+	return s.mutate("Machine added.", func() error { return s.session.AddMachine(s.ctx, name, true) })
 }
 func (s *Machines) use() tea.Cmd {
-	name := s.selectedMachine().Name
-	return s.mutate("Machine selected.", func() error { return s.session.UseMachine(context.Background(), name) })
+	return s.mutate("Machine selected.", func() error { return s.session.UseMachine(s.ctx, s.selectedMachine().Name) })
 }
 func (s *Machines) clear() tea.Cmd {
-	return s.mutate("Using portable resource paths.", func() error { return s.session.ClearMachine(context.Background()) })
+	return s.mutate("Using portable resource paths.", func() error { return s.session.ClearMachine(s.ctx) })
 }
 func (s *Machines) rename() tea.Cmd {
 	old, name := s.selectedMachine().Name, s.name
-	return s.mutate("Machine renamed.", func() error { return s.session.RenameMachine(context.Background(), old, name) })
+	return s.mutate("Machine renamed.", func() error { return s.session.RenameMachine(s.ctx, old, name) })
 }
 func (s *Machines) remove() tea.Cmd {
-	name := s.selectedMachine().Name
-	return s.mutate("Machine removed.", func() error { return s.session.RemoveMachine(context.Background(), name) })
+	return s.mutate("Machine removed.", func() error { return s.session.RemoveMachine(s.ctx, s.selectedMachine().Name) })
 }
 func (s *Machines) mapResource(path string) tea.Cmd {
-	name, resource := s.selectedMachine().Name, s.selectedResource().ID
-	return s.mutate("Resource mapping updated.", func() error { return s.session.MapResource(context.Background(), name, resource, path) })
+	return s.mutate("Resource mapping updated.", func() error {
+		return s.session.MapResource(s.ctx, s.selectedMachine().Name, s.selectedMapping().id, path)
+	})
 }
 func (s *Machines) unmapResource() tea.Cmd {
-	name, resource := s.selectedMachine().Name, s.selectedResource().ID
-	return s.mutate("Resource mapping removed.", func() error { return s.session.UnmapResource(context.Background(), name, resource) })
+	return s.mutate("Resource mapping removed.", func() error {
+		return s.session.UnmapResource(s.ctx, s.selectedMachine().Name, s.selectedMapping().id)
+	})
 }

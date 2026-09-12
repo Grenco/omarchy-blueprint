@@ -25,6 +25,7 @@ const (
 )
 
 type Resources struct {
+	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
 	discover                bool
@@ -38,7 +39,15 @@ type Resources struct {
 	chosen                  map[string]bool
 	confirm                 string
 	focusID                 string
+	list                    components.Selectable
 	err                     error
+}
+
+// ResourceAction describes an action currently meaningful for the resources view.
+// The TUI root adapts this screen-local contract to its shared action primitive.
+type ResourceAction struct {
+	ID, Label, Shortcut, DisabledReason string
+	Enabled                             bool
 }
 
 type resourcesStatusMsg struct {
@@ -48,9 +57,17 @@ type resourcesStatusMsg struct {
 }
 type resourceTrackedMsg struct{ err error }
 type resourceUntrackedMsg struct{ err error }
+type resourceExistingInspectMsg struct {
+	item       profile.Resource
+	inspection workflow.ResourceInspection
+	err        error
+}
 
 func NewResources(session *workflow.Session) *Resources {
-	return &Resources{session: session, phase: resourceBrowse}
+	return NewResourcesContext(context.Background(), session)
+}
+func NewResourcesContext(ctx context.Context, session *workflow.Session) *Resources {
+	return &Resources{ctx: ctx, session: session, phase: resourceBrowse}
 }
 func (s *Resources) Focus(id string) tea.Cmd   { s.focusID = id; return s.rescan() }
 func (s *Resources) SetSize(width, height int) { s.width, s.height = width, height }
@@ -59,6 +76,26 @@ func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
 func (s *Resources) HandlesKey(key string) bool { return key == "tab" }
+func (s *Resources) Actions() []ResourceAction {
+	if s.phase != resourceBrowse || s.browser != nil {
+		return nil
+	}
+	if s.discover {
+		return []ResourceAction{{ID: "discover", Label: "Browse resource", Shortcut: "n", Enabled: true}}
+	}
+	item := s.selectedResource()
+	actions := []ResourceAction{{ID: "discover", Label: "Discover resource", Shortcut: "n", Enabled: true}}
+	if item.ID == "" {
+		return actions
+	}
+	return append(actions,
+		ResourceAction{ID: "strategy", Label: "Change strategy", Shortcut: "s", Enabled: true},
+		ResourceAction{ID: "untrack", Label: "Untrack resource", Shortcut: "u", Enabled: true},
+		ResourceAction{ID: "edit", Label: "Edit resource", Shortcut: "e", Enabled: true},
+		ResourceAction{ID: "open", Label: "Open resource", Shortcut: "o", Enabled: true},
+		ResourceAction{ID: "copy", Label: "Copy effective path", Shortcut: "y", Enabled: true},
+	)
+}
 
 func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -83,6 +120,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.focusID = ""
 		s.selected = min(s.selected, max(0, len(s.items)-1))
+		s.list.SetSelected(s.selected, len(s.items), s.listHeight())
 		return nil
 	case resourceTrackedMsg:
 		s.err = msg.err
@@ -98,6 +136,18 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return s.rescan()
+	case resourceExistingInspectMsg:
+		if msg.err != nil {
+			s.err, s.phase = msg.err, resourceResult
+			return nil
+		}
+		s.candidate = components.BrowserEntry{Path: msg.inspection.EffectivePath, Type: msg.inspection.Resource.Kind}
+		s.strategy, s.phase = msg.item.Strategy, resourceStrategy
+		if msg.inspection.Git != nil {
+			s.untracked = append([]string(nil), msg.inspection.Git.Untracked...)
+		}
+		s.chosen, s.selected = make(map[string]bool), 0
+		return nil
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -194,30 +244,32 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	case "tab":
 		s.discover = !s.discover
 	case "j", "down":
-		if s.selected < len(s.items)-1 {
-			s.selected++
-		}
+		s.list.Move(1, len(s.items), s.listHeight())
+		s.selected = s.list.Selected
 	case "k", "up":
-		if s.selected > 0 {
-			s.selected--
-		}
+		s.list.Move(-1, len(s.items), s.listHeight())
+		s.selected = s.list.Selected
 	case "n":
 		s.discover, s.err = true, nil
 		browser := components.NewBrowser(components.BrowseResource, components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath})
 		s.browser = &browser
 		return s.browser.Init()
-	case "x":
+	case "u", "x":
 		if !s.discover && s.selectedResource().ID != "" {
 			s.confirm = "untrack"
 		}
 	case "e", "o", "y":
 		if item := s.selectedResource(); item.ID != "" {
-			inspection, err := s.session.InspectResource(context.Background(), item.ID)
+			inspection, err := s.session.InspectResource(s.ctx, item.ID)
 			if err == nil {
 				return func() tea.Msg {
 					return HandoffRequest{Source: "resources", Kind: map[string]string{"e": "editor", "o": "open", "y": "copy"}[key.String()], Path: inspection.EffectivePath, IsDir: inspection.Resource.Kind == "directory", Refresh: "resources"}
 				}
 			}
+		}
+	case "s":
+		if item := s.selectedResource(); item.ID != "" {
+			return s.inspectExisting(item)
 		}
 	}
 	return nil
@@ -240,16 +292,16 @@ func (s *Resources) View() string {
 		return "Resource tracked. Press Esc to continue."
 	}
 	if s.browser != nil && s.phase == resourceBrowse {
-		return "Resources: Discover\n" + s.browser.View()
+		return s.browser.View()
 	}
 	if s.phase == resourceCandidateInspect {
-		return "Candidate: " + s.candidate.Path + "\nPress Enter to choose a strategy, Esc to browse again."
+		return "Candidate: " + s.candidate.Path
 	}
 	if s.phase == resourceStrategy {
-		return "Choose a strategy: 1 copy (snapshot files), 2 git (repository only), 3 git+diff (repository plus local changes).\nSelected: " + s.strategy + ". Press Enter to continue."
+		return "Choose a strategy\n( ) copy: snapshot files\n( ) git: repository only\n( ) git+diff: repository plus local changes\nSelected: " + s.strategy
 	}
 	if s.phase == resourceUntracked {
-		lines := []string{"Select untracked files: Space toggle, a all, Enter confirm"}
+		lines := []string{"Select eligible untracked files"}
 		for i, path := range s.untracked {
 			marker, selected := " ", " "
 			if i == s.selected {
@@ -262,17 +314,14 @@ func (s *Resources) View() string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	tab := "Tracked"
-	if s.discover {
-		tab = "Discover"
-	}
-	lines := []string{"Resources  [" + tab + "]", "tab switch subtabs"}
+	lines := []string{"[Tracked " + fmt.Sprint(len(s.items)) + "] [Discover]"}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+s.err.Error())
 	}
 	if s.discover {
-		return strings.Join(append(lines, "Press n to browse a resource."), "\n")
+		return strings.Join(lines, "\n")
 	}
+	rows := make([]string, 0, len(s.items))
 	for i, item := range s.items {
 		marker, label := " ", item.Strategy
 		if i == s.selected {
@@ -285,12 +334,17 @@ func (s *Resources) View() string {
 			state := s.git[item.ID]
 			label += fmt.Sprintf(" (staged:%d unstaged:%d untracked:%d selected:%d)", state.StagedTracked, state.UnstagedTracked, len(state.Untracked), len(state.SelectedUntracked))
 		}
-		lines = append(lines, fmt.Sprintf("%s %s  %s  %s", marker, item.ID, item.Path, label))
+		rows = append(rows, fmt.Sprintf("%s %s  %s  %s", marker, item.ID, item.Path, label))
 	}
 	if len(s.items) == 0 {
-		lines = append(lines, "No tracked resources.")
+		rows = append(rows, "No tracked resources.")
 	}
-	return strings.Join(append(lines, "n discover  x untrack  e edit  o open  y copy"), "\n")
+	width := s.width
+	if width == 0 {
+		width = 120
+	}
+	lines = append(lines, s.list.View(rows, width, s.listHeight()))
+	return strings.Join(lines, "\n")
 }
 
 func (s *Resources) DetailView() string {
@@ -301,7 +355,12 @@ func (s *Resources) DetailView() string {
 		return resourceDetail(s.candidate.Path, s.browserInspection())
 	}
 	if item := s.selectedResource(); item.ID != "" {
-		return "Resource: " + item.ID + "\nSaved path: " + item.Path + "\nStrategy: " + item.Strategy
+		lines := []string{"Resource: " + item.ID, "Saved path: " + item.Path, "Kind: " + item.Kind, "Strategy: " + item.Strategy, "Hash: " + item.Hash, "Mode: " + item.Mode, "Remote: " + item.Remote, "Branch: " + item.Branch, "Revision: " + item.Revision}
+		if item.Strategy == "git+diff" {
+			state := s.git[item.ID]
+			lines = append(lines, fmt.Sprintf("Staged: %d", state.StagedTracked), fmt.Sprintf("Unstaged: %d", state.UnstagedTracked), "Selected untracked: "+strings.Join(state.SelectedUntracked, ", "), "Other untracked: "+strings.Join(state.Untracked, ", "))
+		}
+		return strings.Join(lines, "\n")
 	}
 	return "Resources details"
 }
@@ -332,26 +391,35 @@ func (s *Resources) selectedResource() profile.Resource {
 }
 func (s *Resources) inspectPath(requestID uint64, path string) tea.Cmd {
 	return func() tea.Msg {
-		inspection, err := s.session.InspectPath(context.Background(), path)
+		inspection, err := s.session.InspectPath(s.ctx, path)
 		return components.BrowserInspectionMsg{RequestID: requestID, Inspection: inspection, Err: err}
 	}
 }
 func (s *Resources) track() tea.Cmd {
 	request := workflow.TrackRequest{Path: s.candidate.Path, Strategy: s.strategy}
+	if current := s.selectedResource(); current.ID != "" && s.browser == nil {
+		request.ID = current.ID
+	}
 	for _, path := range s.untracked {
 		if s.chosen[path] {
 			request.IncludeUntracked = append(request.IncludeUntracked, path)
 		}
 	}
 	return func() tea.Msg {
-		_, _, err := s.session.TrackResource(context.Background(), request)
+		_, _, err := s.session.TrackResource(s.ctx, request)
 		return resourceTrackedMsg{err}
+	}
+}
+func (s *Resources) inspectExisting(item profile.Resource) tea.Cmd {
+	return func() tea.Msg {
+		inspection, err := s.session.InspectResource(s.ctx, item.ID)
+		return resourceExistingInspectMsg{item: item, inspection: inspection, err: err}
 	}
 }
 func (s *Resources) untrack() tea.Cmd {
 	id := s.selectedResource().ID
 	return func() tea.Msg {
-		_, err := s.session.UntrackResource(context.Background(), id)
+		_, err := s.session.UntrackResource(s.ctx, id)
 		return resourceUntrackedMsg{err}
 	}
 }
@@ -361,7 +429,7 @@ func (s *Resources) resetDiscovery() {
 }
 func (s *Resources) rescan() tea.Cmd {
 	return func() tea.Msg {
-		report, err := s.session.Status(context.Background(), "resources")
+		report, err := s.session.Status(s.ctx, "resources")
 		if err != nil {
 			return resourcesStatusMsg{err: err}
 		}
@@ -372,6 +440,12 @@ func (s *Resources) rescan() tea.Cmd {
 		}
 		return resourcesStatusMsg{}
 	}
+}
+func (s *Resources) listHeight() int {
+	if s.height == 0 {
+		return len(s.items) + 1
+	}
+	return max(1, s.height-4)
 }
 func (s *Resources) setCandidateInspection() {
 	inspection := s.browserInspection()

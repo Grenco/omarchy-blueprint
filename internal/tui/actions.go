@@ -5,9 +5,21 @@ import tea "charm.land/bubbletea/v2"
 type Action struct {
 	ID, Label, Group, Keywords, Shortcut string
 	Enabled                              bool
+	Visible                              bool
 	DisabledReason                       string
+	FooterPriority                       int
 	Run                                  func() tea.Cmd
 	Screen                               ScreenID
+}
+
+func visibleActions(actions []Action) []Action {
+	visible := make([]Action, 0, len(actions))
+	for _, action := range actions {
+		if action.Visible {
+			visible = append(visible, action)
+		}
+	}
+	return visible
 }
 
 func subsequenceMatch(query, value string) bool {

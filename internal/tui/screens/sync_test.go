@@ -24,8 +24,8 @@ func TestSyncScreenActionsCoverProfileGitStates(t *testing.T) {
 		enabled, disabled []string
 	}{
 		{"not repository", profilegit.Status{}, []string{"sync.init"}, []string{"sync.fetch", "sync.commit", "sync.pull", "sync.push"}},
-		{"repo no origin", profilegit.Status{Repository: true, Branch: "main"}, []string{"sync.set-remote"}, []string{"sync.fetch", "sync.push"}},
-		{"clean tracked", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Upstream: "origin/main"}, []string{"sync.fetch", "sync.set-remote", "sync.remove-remote", "sync.push"}, []string{"sync.commit", "sync.pull"}},
+		{"repo no origin", profilegit.Status{Repository: true, Branch: "main"}, nil, []string{"sync.fetch", "sync.push"}},
+		{"clean tracked", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Upstream: "origin/main"}, []string{"sync.fetch", "sync.remove-remote", "sync.push"}, []string{"sync.commit", "sync.pull"}},
 		{"managed dirty", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Changes: []profilegit.Change{managed}}, []string{"sync.commit", "sync.commit-push"}, nil},
 		{"unmanaged dirty", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Changes: []profilegit.Change{unmanaged}}, []string{"sync.push"}, []string{"sync.commit", "sync.pull"}},
 		{"no upstream", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git"}, []string{"sync.push"}, []string{"sync.pull"}},
@@ -78,11 +78,13 @@ func TestSyncScreenCommitMessageFlow(t *testing.T) {
 	appendFile(t, filepath.Join(root, "profile.toml"), "# changed\n")
 	screen := NewSync(session)
 	screen.Update(screen.Init()())
-	screen.Update(tea.KeyPressMsg{Code: 'c'})
-	if want := profilegit.SuggestedCommitMessage(screen.status); screen.textInput.Value() != want {
-		t.Fatalf("message=%q want=%q", screen.textInput.Value(), want)
+	modal := screen.Update(tea.KeyPressMsg{Code: 'c'})()
+	if want := profilegit.SuggestedCommitMessage(screen.status); screen.message != want {
+		t.Fatalf("message=%q want=%q", screen.message, want)
 	}
-	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if modal == nil {
+		t.Fatal("commit did not request shared confirmation modal")
+	}
 	if screen.confirm != "commit" {
 		t.Fatalf("confirm=%q", screen.confirm)
 	}
@@ -93,23 +95,15 @@ func TestSyncScreenCommitMessageFlow(t *testing.T) {
 	}
 }
 
-func TestSyncScreenTextInputAcceptsGitPunctuation(t *testing.T) {
-	screen := NewSync(nil)
-	screen.beginInput("commit", "")
-	for _, key := range []tea.KeyPressMsg{{Text: "q"}, {Text: ":"}, {Text: "?"}} {
-		screen.Update(key)
-	}
-	if got := screen.textInput.Value(); got != "q:?" {
-		t.Fatalf("input=%q", got)
-	}
-}
-
 func TestSyncScreenKeepsLastGoodStatusAndUpdatesFetchTimeFromResult(t *testing.T) {
 	good := profilegit.Status{Repository: true, Branch: "main"}
 	screen := &Sync{status: good, busy: true}
-	screen.Update(syncStatusMsg{err: context.DeadlineExceeded})
+	notice := screen.Update(syncStatusMsg{err: context.DeadlineExceeded})()
 	if screen.status.Repository != good.Repository || screen.status.Branch != good.Branch {
 		t.Fatalf("status changed after refresh error: %#v", screen.status)
+	}
+	if got, ok := notice.(Notice); !ok || !strings.Contains(got.Message, "last successful status") {
+		t.Fatalf("error did not emit last-good toast: %#v", notice)
 	}
 	screen.Update(syncResultMsg{status: good, fetched: true})
 	if screen.busy || screen.lastFetched.IsZero() {
@@ -123,6 +117,14 @@ func TestSyncScreenBusyDisablesActions(t *testing.T) {
 		if action.Enabled {
 			t.Fatalf("%s enabled while busy", action.ID)
 		}
+	}
+}
+
+func TestSyncScreenDownSelectsNextChange(t *testing.T) {
+	screen := &Sync{status: profilegit.Status{Repository: true, Changes: []profilegit.Change{{Path: "first"}, {Path: "second"}}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if change := screen.selectedChange(); change.Path != "second" {
+		t.Fatalf("selected change=%#v", change)
 	}
 }
 
