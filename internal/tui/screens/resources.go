@@ -40,6 +40,7 @@ type Resources struct {
 	confirm                 string
 	focusID                 string
 	list                    components.Selectable
+	table                   components.Table
 	styles                  components.Styles
 	err                     error
 }
@@ -132,6 +133,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		s.focusID = ""
 		s.selected = min(s.selected, max(0, len(s.items)-1))
 		s.list.SetSelected(s.selected, len(s.items), s.listHeight())
+		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
 		return nil
 	case resourceTrackedMsg:
 		s.err = msg.err
@@ -182,6 +184,10 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	if s.phase == resourcePending {
 		return nil
 	}
+	if key.String() == "tab" && s.discover {
+		s.resetDiscovery()
+		return nil
+	}
 	if s.browser != nil && s.phase == resourceBrowse {
 		if key.String() == "enter" && s.phase == resourceBrowse && s.browser.CanSelect() {
 			s.candidate, _ = s.browser.Selected()
@@ -190,10 +196,15 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		cmd := s.browser.Update(msg)
 		if s.browser.Closed() {
-			s.browser = nil
-			s.phase = resourceBrowse
+			// Esc exits Discover directly; it must never leave an empty tab behind.
+			s.resetDiscovery()
 		}
 		return cmd
+	}
+	if s.phase == resourceBrowse && !s.discover && s.list.Vim(key.String(), len(s.items), s.listHeight()) {
+		s.selected = s.list.Selected
+		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		return nil
 	}
 	if s.phase == resourceCandidateInspect {
 		switch key.String() {
@@ -268,9 +279,11 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	case "j", "down":
 		s.list.Move(1, len(s.items), s.listHeight())
 		s.selected = s.list.Selected
+		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
 	case "k", "up":
 		s.list.Move(-1, len(s.items), s.listHeight())
 		s.selected = s.list.Selected
+		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
 	case "u", "x":
 		if !s.discover && s.selectedResource().ID != "" {
 			s.confirm = "untrack"
@@ -321,7 +334,7 @@ func (s *Resources) View() string {
 		lines := []string{"Select eligible untracked files"}
 		for i, path := range s.untracked {
 			marker, selected := " ", " "
-			if i == s.selected {
+			if i == s.selected && !s.styles.Palette.ColorEnabled {
 				marker = ">"
 			}
 			if s.chosen[path] {
@@ -332,41 +345,33 @@ func (s *Resources) View() string {
 		return strings.Join(lines, "\n")
 	}
 	tracked, discover := "Tracked "+fmt.Sprint(len(s.items)), "Discover"
-	if !s.discover {
-		tracked = s.styles.Selection("["+tracked+"]", true)
-	} else {
-		discover = s.styles.Selection("["+discover+"]", true)
+	active := tracked
+	if s.discover {
+		active = discover
 	}
-	lines := []string{tracked + "  " + discover}
+	lines := []string{components.TabBar([]string{tracked, discover}, active, s.styles)}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+s.err.Error())
 	}
 	if s.discover {
 		return strings.Join(lines, "\n")
 	}
-	rows := make([]string, 0, len(s.items))
+	rows := make([]components.Row, 0, len(s.items))
 	for i, item := range s.items {
-		marker, label := " ", item.Strategy
-		if i == s.selected {
-			marker = ">"
+		state := "clean"
+		if item.Dirty {
+			state = "modified"
 		}
-		if item.Strategy == "git" && item.Dirty {
-			label += " (dirty: local changes are not captured)"
-		}
-		if item.Strategy == "git+diff" {
-			state := s.git[item.ID]
-			label += fmt.Sprintf(" (staged:%d unstaged:%d untracked:%d selected:%d)", state.StagedTracked, state.UnstagedTracked, len(state.Untracked), len(state.SelectedUntracked))
-		}
-		rows = append(rows, fmt.Sprintf("%s %s  %s  %s", marker, item.ID, item.Path, label))
+		rows = append(rows, components.Row{Cells: []string{item.ID, item.Strategy, item.Path, state}, Selected: i == s.selected, Focused: true})
 	}
 	if len(s.items) == 0 {
-		rows = append(rows, "No tracked resources.")
+		rows = append(rows, components.Row{Cells: []string{"No tracked resources."}})
 	}
 	width := s.width
 	if width == 0 {
 		width = 120
 	}
-	lines = append(lines, s.list.View(rows, width, s.listHeight()))
+	lines = append(lines, s.table.Render([]components.Column{{Title: "Resource", MinWidth: 10}, {Title: "Strategy", MinWidth: 8}, {Title: "Path", MinWidth: 16}, {Title: "State", MinWidth: 7}}, rows, width, s.listHeight(), s.styles))
 	return strings.Join(lines, "\n")
 }
 

@@ -136,6 +136,7 @@ type Semantics struct {
 }
 
 func Diff(saved, current profile.Plugins, semantics Semantics) []model.Change {
+	saved, current = includedPlugins(saved, saved.Excluded), includedPlugins(current, saved.Excluded)
 	have := pluginMap(current.Items)
 	var out []model.Change
 	for _, want := range saved.Items {
@@ -160,6 +161,7 @@ func Diff(saved, current profile.Plugins, semantics Semantics) []model.Change {
 }
 
 func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to string, semantics Semantics) model.RestorePlan {
+	saved, current = includedPlugins(saved, saved.Excluded), includedPlugins(current, saved.Excluded)
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	have := pluginMap(current.Items)
 	wantMap := pluginMap(saved.Items)
@@ -226,6 +228,7 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 }
 
 func Verify(saved, current profile.Plugins, semantics Semantics) model.VerificationResult {
+	saved, current = includedPlugins(saved, saved.Excluded), includedPlugins(current, saved.Excluded)
 	have := pluginMap(current.Items)
 	var missing []string
 	for _, want := range saved.Items {
@@ -240,6 +243,24 @@ func Verify(saved, current profile.Plugins, semantics Semantics) model.Verificat
 	}
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+}
+func includedPlugins(state profile.Plugins, excluded []string) profile.Plugins {
+	filtered := make([]profile.Plugin, 0, len(state.Items))
+	for _, item := range state.Items {
+		if !containsPluginID(excluded, item.ID) {
+			filtered = append(filtered, item)
+		}
+	}
+	state.Items = filtered
+	return state
+}
+func containsPluginID(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 // Equivalent reports whether a discovered plugin is the same captured source.

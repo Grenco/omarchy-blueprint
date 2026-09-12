@@ -16,6 +16,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/screens"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -290,7 +291,7 @@ func TestNavigation(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
-	if m.screenID() != ScreenPackages {
+	if m.screenID() != ScreenCapture {
 		t.Fatalf("screen = %s", m.screenID())
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -392,9 +393,19 @@ func TestFooterTracksResourceStateAndModalInput(t *testing.T) {
 	}
 }
 
+func TestScreenModalRequestUsesConfirmationOverlay(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	updated, _ := m.updateScreenMsg(screenMsg{Screen: ScreenOverview, Msg: components.ModalRequest{Title: "Confirm capture", Content: "Capture changes?"}})
+	m = updated.(model)
+	if m.modal != modalConfirm || !strings.Contains(m.View().Content, "Confirm capture") {
+		t.Fatalf("modal=%d view=%q", m.modal, m.View().Content)
+	}
+}
+
 func TestCommandPalette(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
 	for _, key := range "sync" {
 		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
 	}
@@ -426,6 +437,7 @@ func TestPaletteDoesNotRunDisabledAction(t *testing.T) {
 	m.screens[ScreenConfig] = &configScreen{Config: screens.NewConfig(nil)}
 	m.selectScreen(ScreenConfig)
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
 	for _, key := range "config.edit" {
 		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
 	}
@@ -436,6 +448,29 @@ func TestPaletteDoesNotRunDisabledAction(t *testing.T) {
 	m = updated.(model)
 	if cmd != nil || m.modal != modalPalette {
 		t.Fatal("disabled palette action ran or closed the palette")
+	}
+}
+
+func TestPaletteSearchStartsWithSlashAndAcceptsActionKeys(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	if m.paletteFiltering || strings.Contains(m.View().Content, "Search:") {
+		t.Fatal("palette opened in search mode")
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
+	if m.paletteQuery != "" || m.paletteSelected == 0 {
+		t.Fatalf("navigation query=%q selected=%d", m.paletteQuery, m.paletteSelected)
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
+	for _, key := range "jk" {
+		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
+	}
+	if m.paletteQuery != "jk" {
+		t.Fatalf("search query=%q", m.paletteQuery)
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !m.paletteOpen || m.paletteFiltering || m.paletteQuery != "" {
+		t.Fatalf("escape did not clear search: open=%t filtering=%t query=%q", m.paletteOpen, m.paletteFiltering, m.paletteQuery)
 	}
 }
 

@@ -66,6 +66,19 @@ func TestBrowserNavigationAndListing(t *testing.T) {
 	}
 }
 
+func TestBrowserWideViewPreviewsSelectedDirectoryChildren(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "adir"))
+	mustWrite(t, filepath.Join(home, "adir", "nested.txt"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	browser.SetSize(100, 20)
+	deliverBrowser(t, &browser, browser.Init())
+	view := browser.View()
+	if !strings.Contains(view, "Next: adir") || !strings.Contains(view, "nested.txt") {
+		t.Fatalf("next-level preview missing: %q", view)
+	}
+}
+
 func TestBuildBookmarksDeterministicAndCanonical(t *testing.T) {
 	home := t.TempDir()
 	config, profileDir := filepath.Join(home, ".config"), filepath.Join(home, "profile")

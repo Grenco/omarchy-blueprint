@@ -13,7 +13,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-type providerRow struct{ group, value string }
+type providerRow struct{ group, section, value, key, state string }
 
 // Provider presents typed saved state and semantic changes without inventing
 // provider-specific policy.
@@ -27,6 +27,7 @@ type Provider struct {
 	list                    components.Selectable
 	styles                  components.Styles
 	busy, confirm           bool
+	collapsed               map[string]bool
 	err                     error
 }
 type providerStatusMsg struct {
@@ -34,6 +35,7 @@ type providerStatusMsg struct {
 	err    error
 }
 type providerCaptureMsg struct{ err error }
+type providerToggleMsg struct{ err error }
 type CaptureComplete struct {
 	Provider string
 	Err      error
@@ -65,9 +67,19 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			return func() tea.Msg { return CaptureComplete{Provider: s.id} }
 		}
 		return nil
+	case providerToggleMsg:
+		s.err, s.busy = msg.err, false
+		if msg.err == nil {
+			return s.refresh()
+		}
+		return nil
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
+		return nil
+	}
+	if s.list.Vim(key.String(), len(s.rows()), s.listHeight()) {
+		s.selected = s.list.Selected
 		return nil
 	}
 	switch key.String() {
@@ -89,17 +101,34 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	case "k", "up":
 		s.list.Move(-1, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
+	case "enter":
+		if s.confirm {
+			s.confirm, s.busy = false, true
+			return s.capture()
+		}
+		if row := s.selectedSavedRow(); row.group != "" {
+			if s.collapsed == nil {
+				s.collapsed = map[string]bool{}
+			}
+			s.collapsed[row.group] = !s.collapsed[row.group]
+			s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
+			s.selected = s.list.Selected
+		}
+	case "space", " ":
+		if row := s.selectedSavedRow(); s.activeTab() == "Saved" && row.value != "" && providerItemCanToggle(s.id, row.section) && !s.busy {
+			s.busy = true
+			return s.toggleItem(row)
+		}
+		if s.activeTab() == "Saved" && providerCanToggle(s.id) && !s.busy {
+			s.busy = true
+			return s.toggleCaptured()
+		}
 	case "c":
 		if !s.busy {
 			s.confirm = true
 			return func() tea.Msg {
 				return components.ModalRequest{Title: "Capture " + titleFor(s.id), Content: components.Confirm("Capture the currently observed " + titleFor(s.id) + " changes into the profile?")}
 			}
-		}
-	case "enter":
-		if s.confirm {
-			s.confirm, s.busy = false, true
-			return s.capture()
 		}
 	case "esc":
 		s.confirm = false
@@ -110,11 +139,13 @@ func (s *Provider) View() string {
 	if s.tab == "" {
 		s.tab = "Saved"
 	}
-	title := titleFor(s.id)
 	if s.err != nil {
-		return s.styles.Error(title + "\n\n! Unable to load " + title + ": " + s.err.Error())
+		return s.styles.Error("! Unable to load " + titleFor(s.id) + ": " + s.err.Error())
 	}
-	lines := []string{title, "[Changes" + countLabel(len(s.status.Changes)) + "] [Saved" + selectedTab(s.tab == "Saved") + "]"}
+	lines := []string{components.TabBar([]string{"Changes" + countLabel(len(s.status.Changes)), "Saved"}, s.tabLabel(), s.styles)}
+	if s.tab == "Saved" && providerItemCanToggleID(s.id) {
+		lines = append(lines, "+ included in Blueprint   - not included in Blueprint")
+	}
 	if s.busy {
 		lines = append(lines, "Loading...")
 	}
@@ -127,14 +158,33 @@ func (s *Provider) View() string {
 	}
 	rendered := make([]string, len(rows))
 	for i, row := range rows {
-		cursor := " "
-		if i == s.list.Selected {
-			cursor = ">"
-		}
 		if row.group != "" {
-			rendered[i] = cursor + " " + row.group
+			icon := components.Icons.Expanded
+			if s.collapsed[row.group] {
+				icon = components.Icons.Collapsed
+			}
+			rendered[i] = s.styles.Accent(icon + " " + row.group)
+			if i == s.list.Selected {
+				if !s.styles.Palette.ColorEnabled {
+					rendered[i] = components.Icons.Selected + rendered[i]
+				}
+				rendered[i] = s.styles.Selection(rendered[i], true)
+			}
 		} else {
-			rendered[i] = cursor + " " + row.value
+			marker := "  "
+			if row.state == "included" {
+				marker = s.styles.Added("+ ")
+			}
+			if row.state == "not included" {
+				marker = s.styles.Removed("- ")
+			}
+			rendered[i] = marker + row.value
+			if i == s.list.Selected {
+				if !s.styles.Palette.ColorEnabled {
+					rendered[i] = components.Icons.Selected + rendered[i][1:]
+				}
+				rendered[i] = s.styles.Selection(rendered[i], true)
+			}
 		}
 	}
 	width := s.width
@@ -145,11 +195,11 @@ func (s *Provider) View() string {
 	return strings.Join(lines, "\n")
 }
 func countLabel(count int) string { return fmt.Sprintf(" %d", count) }
-func selectedTab(selected bool) string {
-	if selected {
-		return " *"
+func (s *Provider) tabLabel() string {
+	if s.tab == "Changes" {
+		return "Changes" + countLabel(len(s.status.Changes))
 	}
-	return ""
+	return "Saved"
 }
 func emptyTabMessage(tab string, captured bool) string {
 	if !captured && tab == "Saved" {
@@ -168,7 +218,23 @@ func (s *Provider) rows() []providerRow {
 		}
 		return rows
 	}
-	return savedRows(s.status.Snapshot)
+	rows := savedRows(s.status.Snapshot)
+	if len(s.collapsed) == 0 {
+		return rows
+	}
+	visible := make([]providerRow, 0, len(rows))
+	collapsed := false
+	for _, row := range rows {
+		if row.group != "" {
+			collapsed = s.collapsed[row.group]
+			visible = append(visible, row)
+			continue
+		}
+		if !collapsed {
+			visible = append(visible, row)
+		}
+	}
+	return visible
 }
 func (s *Provider) activeTab() string {
 	if s.tab == "Changes" {
@@ -183,42 +249,121 @@ func savedRows(snapshot any) []providerRow {
 		}
 		*rows = append(*rows, providerRow{group: name})
 		for _, value := range values {
-			*rows = append(*rows, providerRow{value: value})
+			*rows = append(*rows, providerRow{section: name, value: value, key: value})
 		}
 	}
 	rows := []providerRow{}
 	switch value := snapshot.(type) {
 	case profile.Packages:
-		group("Official packages", value.Official, &rows)
-		group("AUR packages", value.AUR, &rows)
+		packageRows := func(section, kind string, values []string) {
+			items, states := append([]string{}, values...), map[string]string{}
+			for _, ref := range value.Excluded {
+				if strings.HasPrefix(ref, kind+":") {
+					name := strings.TrimPrefix(ref, kind+":")
+					present := false
+					for _, item := range items {
+						if item == name {
+							present = true
+							break
+						}
+					}
+					if !present {
+						items = append(items, name)
+					}
+					states[name] = "not included"
+				}
+			}
+			sort.SliceStable(items, func(i, j int) bool { return states[items[i]] != "not included" && states[items[j]] == "not included" })
+			group(section, items, &rows)
+			for i := range rows {
+				if rows[i].section == section {
+					rows[i].state = "included"
+					if states[rows[i].key] != "" {
+						rows[i].state = states[rows[i].key]
+					}
+				}
+			}
+		}
+		packageRows("Official packages", "official", value.Official)
+		packageRows("AUR packages", "aur", value.AUR)
 		tools := make([]string, 0, len(value.Mise))
 		for tool := range value.Mise {
 			tools = append(tools, tool)
 		}
 		sort.Strings(tools)
-		group("Mise tools", tools, &rows)
+		packageRows("Mise tools", "mise", tools)
 		group("Machine-specific packages", value.MachineSpecific, &rows)
-		group("Excluded packages", value.Excluded, &rows)
+		for i := range rows {
+			if rows[i].section == "Machine-specific packages" {
+				rows[i].state = "included"
+			}
+		}
 	case profile.Themes:
 		group("Current theme", []string{empty(value.Current)}, &rows)
-		if value.Source != "" {
-			group("Source", []string{value.Source}, &rows)
+		themes := make([]string, 0, len(value.Items))
+		for _, item := range value.Items {
+			if !containsValue(value.Excluded, item.ID) {
+				themes = append(themes, item.ID+valueSuffix(item.Type, item.Revision))
+			}
 		}
 		for _, item := range value.Items {
-			group("Saved themes", []string{item.ID + valueSuffix(item.Type, item.Revision)}, &rows)
+			if containsValue(value.Excluded, item.ID) {
+				themes = append(themes, item.ID+valueSuffix(item.Type, item.Revision))
+			}
+		}
+		group("Saved themes", themes, &rows)
+		for i := range rows {
+			if rows[i].group == "" {
+				rows[i].key = strings.Split(rows[i].value, " (")[0]
+				if rows[i].section == "Saved themes" {
+					for _, item := range value.Items {
+						if item.ID == rows[i].key {
+							rows[i].state = map[bool]string{true: "not included", false: "included"}[containsValue(value.Excluded, item.ID)]
+						}
+					}
+				}
+			}
 		}
 	case profile.Plugins:
-		for _, item := range value.Items {
-			group("Saved plugins", []string{item.ID + valueSuffix(item.Source, item.Revision)}, &rows)
+		pluginRows := func(label, source string) {
+			plugins := make([]string, 0)
+			for _, item := range value.Items {
+				if item.Source == source && !containsValue(value.Excluded, item.ID) {
+					plugins = append(plugins, item.ID+valueSuffix(item.Revision))
+				}
+			}
+			for _, item := range value.Items {
+				if item.Source == source && containsValue(value.Excluded, item.ID) {
+					plugins = append(plugins, item.ID+valueSuffix(item.Revision))
+				}
+			}
+			group(label, plugins, &rows)
+		}
+		pluginRows("Git plugins", "git")
+		pluginRows("Local plugins", "local")
+		pluginRows("Built-in plugins", "builtin")
+		for i := range rows {
+			if rows[i].group == "" {
+				rows[i].key = strings.Split(rows[i].value, " (")[0]
+				if strings.HasSuffix(rows[i].section, " plugins") {
+					for _, item := range value.Items {
+						if item.ID == rows[i].key {
+							rows[i].state = map[bool]string{true: "not included", false: "included"}[containsValue(value.Excluded, item.ID)]
+						}
+					}
+				}
+			}
 		}
 	case profile.Defaults:
 		group("Applications", []string{"Terminal: " + empty(value.Terminal), "Browser: " + empty(value.Browser), "Editor: " + empty(value.Editor), "Agent: " + empty(value.Agent)}, &rows)
 	case profile.Shell:
 		group("Saved shell state", []string{fmt.Sprintf("Format version: %d", value.Version), "Snapshot: " + empty(value.Hash), "Baseline: " + empty(value.BaselineHash)}, &rows)
 	case profile.Hooks:
+		hooks := make([]string, 0, len(value.Items))
 		for _, item := range value.Items {
-			group("Saved hooks", []string{item.Path}, &rows)
+			hooks = append(hooks, item.Path)
 		}
+		group("Saved hooks", hooks, &rows)
 	}
 	return rows
 }
@@ -250,6 +395,42 @@ func (s *Provider) refresh() tea.Cmd {
 }
 func (s *Provider) capture() tea.Cmd {
 	return func() tea.Msg { _, err := s.session.Capture(s.ctx, s.id); return providerCaptureMsg{err} }
+}
+func (s *Provider) toggleCaptured() tea.Cmd {
+	captured := !providerCaptured(s.session.Profile(), s.id)
+	return func() tea.Msg { return providerToggleMsg{err: s.session.SetProviderCaptured(s.ctx, s.id, captured)} }
+}
+func (s *Provider) toggleItem(row providerRow) tea.Cmd {
+	return func() tea.Msg {
+		return providerToggleMsg{err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
+	}
+}
+func providerCanToggle(id string) bool {
+	switch id {
+	case "themes", "plugins", "shell", "hooks", "defaults":
+		return true
+	}
+	return false
+}
+func providerItemCanToggle(id, section string) bool {
+	if id == "packages" {
+		return section == "Official packages" || section == "AUR packages" || section == "Mise tools" || section == "Machine-specific packages" || section == "Excluded packages"
+	}
+	if id == "themes" {
+		return section == "Saved themes"
+	}
+	return id == "plugins" && strings.HasSuffix(section, " plugins")
+}
+func providerItemCanToggleID(id string) bool {
+	return id == "packages" || id == "themes" || id == "plugins"
+}
+func containsValue(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 func (s *Provider) DetailView() string {
 	title := titleFor(s.id)

@@ -23,6 +23,7 @@ type Machines struct {
 	focusMapping            string
 	focusMappings           bool
 	machineList             components.Selectable
+	mappingNavigation       components.Selectable
 	mappingTable            components.Table
 	styles                  components.Styles
 	busy                    bool
@@ -86,6 +87,20 @@ func (s *Machines) Init() tea.Cmd         { return nil }
 func (s *Machines) TransientActive() bool { return s.browser != nil || s.confirm != "" || s.mode != "" }
 
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
+	if submitted, ok := msg.(components.TextInputSubmitted); ok {
+		s.name = strings.TrimSpace(submitted.Value)
+		if s.name == "" {
+			return nil
+		}
+		if s.mode == "add" {
+			s.mode = ""
+			return s.add()
+		}
+		if s.mode == "rename" {
+			s.mode, s.confirm = "", "rename"
+			return s.confirmModal()
+		}
+	}
 	if result, ok := msg.(MachineMutationComplete); ok {
 		s.err, s.busy = result.Err, false
 		s.machineList.SetSelected(s.machineList.Selected, len(s.machines()), s.listHeight())
@@ -153,6 +168,18 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	}
+	if s.focusMappings {
+		s.mappingNavigation.Selected = s.resource
+		if s.mappingNavigation.Vim(key.String(), len(s.mappingRows()), s.tableHeight()) {
+			s.resource = s.mappingNavigation.Selected
+			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
+			return nil
+		}
+	} else if s.machineList.Vim(key.String(), len(s.machines()), s.listHeight()) {
+		s.selected = s.machineList.Selected
+		s.resource = 0
+		return nil
+	}
 	switch key.String() {
 	case "tab":
 		s.focusMappings = !s.focusMappings
@@ -179,6 +206,7 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	case "a":
 		s.mode = "add"
 		s.name, _ = s.session.SuggestedMachineName()
+		return s.nameModal("Add machine")
 	case "u":
 		if !s.focusMappings {
 			return s.use()
@@ -193,6 +221,7 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	case "r":
 		if !s.focusMappings && s.selectedMachine().Name != "" {
 			s.mode, s.name = "rename", s.selectedMachine().Name
+			return s.nameModal("Rename machine")
 		}
 	case "x":
 		if !s.focusMappings && s.selectedMachine().Name != "" {
@@ -341,6 +370,11 @@ func (s *Machines) confirmModal() tea.Cmd {
 		prompt = "Remove " + s.selectedMachine().Name + "? Resource files remain untouched."
 	}
 	return func() tea.Msg { return components.ModalRequest{Title: "Machines", Content: components.Confirm(prompt)} }
+}
+func (s *Machines) nameModal(title string) tea.Cmd {
+	return func() tea.Msg {
+		return components.ModalRequest{Title: title, Content: "Enter a machine overlay name.", Input: s.name, Placeholder: "Machine name"}
+	}
 }
 func (s *Machines) inspectPath(requestID uint64, path string) tea.Cmd {
 	return func() tea.Msg {

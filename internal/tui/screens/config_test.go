@@ -14,7 +14,7 @@ import (
 func TestConfigScreenRendersFlattenedTableWithUserFacingStateAndPolicy(t *testing.T) {
 	screen := &Config{width: 80, candidates: []config.Candidate{{Path: ".config/gh/hosts.yml", Classification: config.ConfigSensitive, Reason: "sensitive"}, {Path: ".config/nvim/init.lua", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}}
 	view := screen.View()
-	for _, want := range []string{"State", "Path", "Policy", "Changed from baseline", "Sensitive", ".config/nvim/init.lua", "managed", "not eligible"} {
+	for _, want := range []string{"Path", "Policy", "Changed from baseline", "Sensitive", ".config/nvim/init.lua", "managed", "not eligible"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -28,7 +28,7 @@ func TestConfigScreenCollapsesSelectedGroupAndKeepsOtherGroups(t *testing.T) {
 	screen := &Config{width: 80, candidates: []config.Candidate{{Path: ".config/a", Classification: config.ConfigAdded, Reason: "added"}, {Path: ".config/b", Classification: config.ConfigAdded, Reason: "added"}, {Path: ".config/c", Classification: config.ConfigSensitive, Reason: "sensitive"}}}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	view := screen.View()
-	if !strings.Contains(view, "[+] New configuration") || strings.Contains(view, ".config/a") || !strings.Contains(view, ".config/c") {
+	if !strings.Contains(view, "▶ New configuration") || strings.Contains(view, ".config/a") || !strings.Contains(view, ".config/c") {
 		t.Fatalf("collapsed view=%q", view)
 	}
 }

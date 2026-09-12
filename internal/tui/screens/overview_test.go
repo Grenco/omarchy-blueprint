@@ -10,7 +10,7 @@ import (
 
 func TestOverviewScreenFlattensExpandedSectionsAndRoutesDecision(t *testing.T) {
 	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{{Severity: workflow.AttentionDecision, Provider: "config", Summary: "choose config", Target: "config", Ref: ".config/nvim"}, {Severity: workflow.AttentionDrift, Summary: "package differs"}, {Severity: workflow.AttentionInfo, Provider: "profile-git", Summary: "profile changes"}}, Healthy: []string{"themes"}}}
-	for _, want := range []string{"[-] Needs review", "[-] Drift", "[-] Profile sync", "[-] Healthy", "Config: choose config", "✓ themes"} {
+	for _, want := range []string{"▼ Needs review", "▼ Drift", "▼ Profile sync", "▼ Healthy", "Config: choose config", "✓ themes"} {
 		if !strings.Contains(screen.View(), want) {
 			t.Fatalf("view missing %q:\n%s", want, screen.View())
 		}
@@ -30,7 +30,7 @@ func TestOverviewSectionCollapseAndViewportKeepCursorVisible(t *testing.T) {
 	}
 	screen := &Overview{height: 3, data: workflow.Overview{Items: items}}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if view := screen.View(); !strings.Contains(view, "[+] Needs review") || strings.Contains(view, "decision a") {
+	if view := screen.View(); !strings.Contains(view, "▶ Needs review") || strings.Contains(view, "decision a") {
 		t.Fatalf("collapsed view=%q", view)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

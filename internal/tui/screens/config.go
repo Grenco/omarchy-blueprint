@@ -32,6 +32,7 @@ type Config struct {
 	filtering               bool
 	collapsed               map[config.Classification]bool
 	table                   components.Table
+	navigation              components.Selectable
 	styles                  components.Styles
 	focusPath               string
 	statusID, inspectionID  uint64
@@ -164,6 +165,16 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		s.ensureSelection()
 		return s.inspectSelected()
 	}
+	s.navigation.Selected = s.selected
+	if s.navigation.Vim(key.String(), len(s.rows()), max(1, s.listHeight()-1)) {
+		before := s.selected
+		s.selected = s.navigation.Selected
+		s.ensureSelection()
+		if before != s.selected {
+			return s.inspectSelected()
+		}
+		return nil
+	}
 	switch key.String() {
 	case "j", "down":
 		before := s.selected
@@ -199,20 +210,21 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		if s.selectedCandidate().Path == "" {
 			return nil
 		}
-		s.confirm = "include"
-		return s.confirmModal()
+		policy := "include"
+		if key.String() == " " || key.String() == "space" {
+			policy = s.nextPolicy(s.selectedCandidate().Path)
+		}
+		return s.setPolicy(s.selectedCandidate().Path, policy)
 	case "x":
 		if s.selectedCandidate().Path == "" {
 			return nil
 		}
-		s.confirm = "exclude"
-		return s.confirmModal()
+		return s.setPolicy(s.selectedCandidate().Path, "exclude")
 	case "a":
 		if s.selectedCandidate().Path == "" {
 			return nil
 		}
-		s.confirm = "auto"
-		return s.confirmModal()
+		return s.setPolicy(s.selectedCandidate().Path, "auto")
 	case "e", "o", "y":
 		if s.validLive() {
 			kind := map[string]string{"e": "editor", "o": "open", "y": "copy"}[key.String()]
@@ -249,19 +261,19 @@ func (s *Config) View() string {
 	tableRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
 		if row.group != "" {
-			marker := "-"
+			marker := components.Icons.Expanded
 			if s.collapsed[row.group] {
-				marker = "+"
+				marker = components.Icons.Collapsed
 			}
-			tableRows = append(tableRows, components.Row{Cells: []string{"[" + marker + "] " + configState(row.group), "", ""}, Selected: i == s.selected})
+			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + configState(row.group)), ""}, Selected: i == s.selected, Focused: true})
 			continue
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{configState(row.candidate.Classification), row.candidate.Path, candidatePolicy(row.candidate)}, Selected: i == s.selected})
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + row.candidate.Path, candidatePolicy(row.candidate)}, Selected: i == s.selected, Focused: true})
 	}
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
 	} else {
-		lines = append(lines, s.table.Render([]components.Column{{Title: "State", Width: 23, MinWidth: 8}, {Title: "Path", Width: 0, MinWidth: 12}, {Title: "Policy", Width: 14, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "Policy", Width: 14, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	}
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)
@@ -398,6 +410,19 @@ func (s *Config) setPolicy(logical, policy string) tea.Cmd {
 	return func() tea.Msg {
 		return configPolicyMsg{requestID: requestID, err: s.session.SetConfigPolicy(s.ctx, logical, policy)}
 	}
+}
+func (s *Config) nextPolicy(path string) string {
+	for _, excluded := range s.session.Profile().Config.Excluded {
+		if excluded == path {
+			return "auto"
+		}
+	}
+	for _, included := range s.session.Profile().Config.Included {
+		if included == path {
+			return "exclude"
+		}
+	}
+	return "include"
 }
 func (s *Config) validLive() bool {
 	info, err := os.Lstat(s.inspection.LivePath)

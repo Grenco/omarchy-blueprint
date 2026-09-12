@@ -81,9 +81,10 @@ type misePackagesFile struct {
 }
 
 type Themes struct {
-	Current string  `json:"current" toml:"current"`
-	Source  string  `json:"source,omitempty" toml:"source,omitempty"`
-	Items   []Theme `json:"themes" toml:"theme"`
+	Current  string   `json:"current" toml:"current"`
+	Source   string   `json:"source,omitempty" toml:"source,omitempty"`
+	Items    []Theme  `json:"themes" toml:"theme"`
+	Excluded []string `json:"excluded,omitempty" toml:"excluded,omitempty"`
 }
 
 type Theme struct {
@@ -96,7 +97,8 @@ type Theme struct {
 }
 
 type Plugins struct {
-	Items []Plugin `json:"plugins" toml:"plugin"`
+	Items    []Plugin `json:"plugins" toml:"plugin"`
+	Excluded []string `json:"excluded,omitempty" toml:"excluded,omitempty"`
 }
 
 type Configs struct {
@@ -374,6 +376,8 @@ func Save(dir string, d Data) error {
 	d.Packages.AUR = normalize(d.Packages.AUR)
 	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
 	d.Packages.Excluded = normalize(d.Packages.Excluded)
+	d.Themes.Excluded = normalize(d.Themes.Excluded)
+	d.Plugins.Excluded = normalize(d.Plugins.Excluded)
 	if err := normalizeConfigs(&d.Config); err != nil {
 		return err
 	}

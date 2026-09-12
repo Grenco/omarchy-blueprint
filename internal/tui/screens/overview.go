@@ -32,6 +32,7 @@ type Overview struct {
 	selected  int
 	collapsed map[string]bool
 	list      components.Selectable
+	styles    components.Styles
 	err       error
 	busy      bool
 }
@@ -46,8 +47,9 @@ func NewOverview(session *workflow.Session) *Overview {
 func NewOverviewContext(ctx context.Context, session *workflow.Session) *Overview {
 	return &Overview{ctx: ctx, session: session}
 }
-func (s *Overview) SetSize(width, height int) { s.width, s.height = width, height }
-func (s *Overview) Init() tea.Cmd             { return s.refresh() }
+func (s *Overview) SetSize(width, height int)          { s.width, s.height = width, height }
+func (s *Overview) SetStyles(styles components.Styles) { s.styles = styles }
+func (s *Overview) Init() tea.Cmd                      { return s.refresh() }
 func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	if result, ok := msg.(overviewMsg); ok {
 		s.data, s.err, s.busy = result.data, result.err, false
@@ -57,6 +59,10 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
+		return nil
+	}
+	if s.list.Vim(key.String(), len(s.rows()), s.listHeight()) {
+		s.selected = s.list.Selected
 		return nil
 	}
 	switch key.String() {
@@ -91,21 +97,35 @@ func (s *Overview) View() string {
 	}
 	lines := make([]string, 0, len(s.rows()))
 	for i, row := range s.rows() {
-		cursor := " "
-		if i == s.list.Selected {
-			cursor = ">"
-		}
 		switch {
 		case row.isSection():
-			marker := "-"
+			marker := components.Icons.Expanded
 			if s.collapsed[row.section] {
-				marker = "+"
+				marker = components.Icons.Collapsed
 			}
-			lines = append(lines, cursor+" ["+marker+"] "+row.section)
+			line := s.styles.Accent(marker + " " + row.section)
+			if i == s.list.Selected {
+				if !s.styles.Palette.ColorEnabled {
+					line = components.Icons.Selected + line
+				}
+				line = s.styles.Selection(line, true)
+			}
+			lines = append(lines, line)
 		case row.isItem():
-			lines = append(lines, cursor+" "+decisionSummary(row.item))
+			line := "  " + decisionSummary(row.item)
+			if i == s.list.Selected {
+				if !s.styles.Palette.ColorEnabled {
+					line = components.Icons.Selected + line[1:]
+				}
+				line = s.styles.Selection(line, true)
+			}
+			lines = append(lines, line)
 		default:
-			lines = append(lines, cursor+" ✓ "+row.healthy)
+			line := "  " + components.Icons.Ready + " " + row.healthy
+			if i == s.list.Selected {
+				line = s.styles.Selection(line, true)
+			}
+			lines = append(lines, line)
 		}
 	}
 	if len(lines) == 0 {

@@ -10,6 +10,7 @@ import (
 type Selectable struct {
 	Selected int
 	offset   int
+	pendingG bool
 }
 
 func (s *Selectable) SetSelected(index, count, height int) {
@@ -25,6 +26,35 @@ func (s *Selectable) Move(delta, count, height int) bool {
 	before := s.Selected
 	s.SetSelected(s.Selected+delta, count, height)
 	return before != s.Selected
+}
+
+// Vim handles common whole-list and half-page movement keys.
+func (s *Selectable) Vim(key string, count, height int) bool {
+	switch key {
+	case "g":
+		if s.pendingG {
+			s.pendingG = false
+			s.SetSelected(0, count, height)
+		} else {
+			s.pendingG = true
+		}
+		return true
+	case "G", "shift+g":
+		s.pendingG = false
+		s.SetSelected(count-1, count, height)
+		return true
+	case "ctrl+u":
+		s.pendingG = false
+		s.Move(-max(1, height/2), count, height)
+		return true
+	case "ctrl+d":
+		s.pendingG = false
+		s.Move(max(1, height/2), count, height)
+		return true
+	default:
+		s.pendingG = false
+		return false
+	}
 }
 
 func (s *Selectable) View(lines []string, width, height int) string {

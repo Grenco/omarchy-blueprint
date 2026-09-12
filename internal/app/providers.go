@@ -510,6 +510,7 @@ func (p themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any,
 	if err != nil {
 		return nil, nil, err
 	}
+	current.Excluded = append([]string{}, d.Themes.Excluded...)
 	changes := themesprovider.Diff(d.Themes, current)
 	d.Themes = current
 	d.Manifest.Capture.Themes = true
@@ -592,6 +593,7 @@ func (p pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any
 	if err != nil {
 		return nil, nil, err
 	}
+	current.Excluded = append([]string{}, d.Plugins.Excluded...)
 	changes := pluginsprovider.Diff(d.Plugins, current, pluginSemantics(*d))
 	d.Plugins = current
 	d.Manifest.Capture.Plugins = true

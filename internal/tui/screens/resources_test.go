@@ -65,10 +65,19 @@ func TestResourceScreenTrackedStatusLabels(t *testing.T) {
 		{ID: "git-diff", Path: "~/Diff", Strategy: "git+diff"},
 	}, git: map[string]resourcesprovider.GitWorkingSummary{"git-diff": {StagedTracked: 1, UnstagedTracked: 2, Untracked: []string{"new.txt", "other.txt"}, SelectedUntracked: []string{"new.txt"}}}}
 	view := screen.View()
-	for _, want := range []string{"copy  ~/Copy  copy", "git  ~/Git  git (dirty: local changes are not captured)", "git-diff  ~/Diff  git+diff (staged:1 unstaged:2 untracked:2 selected:1)"} {
+	for _, want := range []string{"Resource", "Strategy", "Path", "State", "copy", "~/Copy", "git", "~/Git", "modified", "git-diff", "~/Diff", "clean"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestResourceTabReturnsFromActiveDiscoverBrowser(t *testing.T) {
+	browser := components.NewBrowser(components.BrowseResource, components.BrowserConfig{Home: t.TempDir()})
+	screen := &Resources{phase: resourceBrowse, discover: true, browser: &browser}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if screen.discover || screen.browser != nil {
+		t.Fatalf("discover=%t browser=%v", screen.discover, screen.browser)
 	}
 }
 
@@ -81,7 +90,7 @@ func TestResourceScreenDownKeepsLongTrackedListSelectionVisible(t *testing.T) {
 	for range items[1:] {
 		screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	if screen.selected != len(items)-1 || !strings.Contains(screen.View(), "> resource-7") {
+	if screen.selected != len(items)-1 || !strings.Contains(screen.View(), "resource-7") {
 		t.Fatalf("selection=%d view=%q", screen.selected, screen.View())
 	}
 }

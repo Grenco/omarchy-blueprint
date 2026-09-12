@@ -19,6 +19,7 @@ type ScreenID string
 
 const (
 	ScreenOverview  ScreenID = "overview"
+	ScreenCapture   ScreenID = "capture"
 	ScreenPackages  ScreenID = "packages"
 	ScreenConfig    ScreenID = "config"
 	ScreenResources ScreenID = "resources"
@@ -32,7 +33,7 @@ const (
 	ScreenRestore   ScreenID = "restore"
 )
 
-var screenOrder = []ScreenID{ScreenOverview, ScreenPackages, ScreenConfig, ScreenResources, ScreenThemes, ScreenPlugins, ScreenShell, ScreenHooks, ScreenDefaults, ScreenMachines, ScreenSync, ScreenRestore}
+var screenOrder = []ScreenID{ScreenOverview, ScreenCapture, ScreenPackages, ScreenConfig, ScreenResources, ScreenThemes, ScreenPlugins, ScreenShell, ScreenHooks, ScreenDefaults, ScreenMachines, ScreenSync, ScreenRestore}
 
 type screen interface {
 	ID() ScreenID
@@ -63,6 +64,7 @@ const (
 	modalNone modalKind = iota
 	modalPalette
 	modalHelp
+	modalConfirm
 	modalWelcome
 )
 
@@ -88,6 +90,7 @@ type model struct {
 	requestedModalInput   components.TextInputModal
 	paletteOpen, helpOpen bool // Kept for package-local compatibility; modal is canonical.
 	paletteQuery          string
+	paletteFiltering      bool
 	paletteSelected       int
 	paletteInput          components.TextInputModal
 	sidebarOpen           bool
@@ -130,6 +133,7 @@ func newModelWithContext(ctx context.Context, cancel context.CancelFunc, loader 
 	}
 	if session != nil {
 		screenMap[ScreenOverview] = &overviewScreen{Overview: screens.NewOverviewContext(ctx, session)}
+		screenMap[ScreenCapture] = &captureScreen{Capture: screens.NewCaptureContext(ctx, session)}
 		screenMap[ScreenConfig] = &configScreen{Config: screens.NewConfigContext(ctx, session)}
 		screenMap[ScreenResources] = &resourcesScreen{Resources: screens.NewResourcesContext(ctx, session)}
 		screenMap[ScreenMachines] = &machinesScreen{Machines: screens.NewMachinesContext(ctx, session)}
@@ -182,7 +186,7 @@ func (m model) updateScreenMsg(wrapped screenMsg) (tea.Model, tea.Cmd) {
 	case components.ModalRequest:
 		m.requestedModal = &ModalRequest{Title: msg.Title, Content: msg.Content, Input: msg.Input, Placeholder: msg.Placeholder}
 		m.requestedModalScreen = wrapped.Screen
-		m.openModal(modalHelp)
+		m.openModal(modalConfirm)
 		if msg.Input != "" || msg.Placeholder != "" {
 			m.requestedModalInput = components.NewTextInputModal(msg.Input, msg.Placeholder)
 			return m, m.requestedModalInput.Focus()
@@ -382,7 +386,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.modal == modalPalette {
 		return m.updatePalette(msg, key, isKey)
 	}
-	if m.modal == modalHelp {
+	if m.modal == modalHelp || m.modal == modalConfirm {
 		if m.requestedModal != nil && (m.requestedModal.Input != "" || m.requestedModal.Placeholder != "") && isKey {
 			if key == "esc" {
 				m.closeModal()
@@ -430,9 +434,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key {
 		case ":":
 			m.openModal(modalPalette)
-			m.paletteQuery, m.paletteSelected = "", 0
+			m.paletteQuery, m.paletteSelected, m.paletteFiltering = "", 0, false
 			m.paletteInput = components.NewTextInputModal("", "Search actions")
-			return m, m.paletteInput.Focus()
+			return m, nil
 		case "?":
 			m.openModal(modalHelp)
 			return m, nil
@@ -613,6 +617,51 @@ func (m *model) updatePalette(msg tea.Msg, key string, isKey bool) (tea.Model, t
 		return *m, nil
 	}
 	items := m.paletteActions()
+	if m.paletteFiltering {
+		switch key {
+		case "esc":
+			m.paletteFiltering, m.paletteQuery, m.paletteSelected = false, "", 0
+			m.paletteInput.Input.SetValue("")
+			return *m, nil
+		case "up":
+			if m.paletteSelected > 0 {
+				m.paletteSelected--
+			}
+			return *m, nil
+		case "down":
+			if m.paletteSelected < len(items)-1 {
+				m.paletteSelected++
+			}
+			return *m, nil
+		case "enter":
+			// Enter selects the current filtered action below.
+		case "backspace":
+			if len(m.paletteQuery) > 0 {
+				m.paletteQuery = m.paletteQuery[:len(m.paletteQuery)-1]
+			}
+			m.paletteInput.Input.SetValue(m.paletteQuery)
+			items = m.paletteActions()
+			if m.paletteSelected >= len(items) {
+				m.paletteSelected = max(0, len(items)-1)
+			}
+			return *m, nil
+		case "space", " ":
+			m.paletteQuery += " "
+			m.paletteInput.Input.SetValue(m.paletteQuery)
+			return *m, nil
+		default:
+			if len(key) != 1 {
+				return *m, nil
+			}
+			m.paletteQuery += key
+			m.paletteInput.Input.SetValue(m.paletteQuery)
+			items = m.paletteActions()
+			if m.paletteSelected >= len(items) {
+				m.paletteSelected = max(0, len(items)-1)
+			}
+			return *m, nil
+		}
+	}
 	switch key {
 	case "esc":
 		m.closeModal()
@@ -639,28 +688,10 @@ func (m *model) updatePalette(msg tea.Msg, key string, isKey bool) (tea.Model, t
 				return *m, wrapScreenCmd(action.Screen, action.Run())
 			}
 		}
-	case "backspace":
-		if len(m.paletteQuery) > 0 {
-			m.paletteQuery = m.paletteQuery[:len(m.paletteQuery)-1]
-		}
-		m.paletteInput.Input.SetValue(m.paletteQuery)
-		items = m.paletteActions()
-		if m.paletteSelected >= len(items) {
-			m.paletteSelected = max(0, len(items)-1)
-		}
-		return *m, nil
-	default:
-		if len(key) != 1 {
-			return *m, nil
-		}
-		m.paletteQuery += key
-		m.paletteInput.Input.SetValue(m.paletteQuery)
-		cmd := m.paletteInput.Update(msg)
-		items = m.paletteActions()
-		if m.paletteSelected >= len(items) {
-			m.paletteSelected = max(0, len(items)-1)
-		}
-		return *m, cmd
+	case "/":
+		m.paletteFiltering, m.paletteQuery, m.paletteSelected = true, "", 0
+		m.paletteInput.Input.SetValue("")
+		return *m, m.paletteInput.Focus()
 	}
 	items = m.paletteActions()
 	if m.paletteSelected >= len(items) {
@@ -753,7 +784,10 @@ func (m model) footer() string {
 	if m.modal != modalNone {
 		switch m.modal {
 		case modalPalette:
-			return "enter select   esc close"
+			if m.paletteFiltering {
+				return "type search   up/down select   enter run   esc clear"
+			}
+			return "/ search   enter run   esc close"
 		case modalWelcome:
 			return "enter create   esc quit"
 		default:
@@ -885,7 +919,11 @@ func (m model) modalView(base string, layout layout) string {
 	case modalPalette:
 		title = "Command palette"
 		items := m.paletteActions()
-		lines := strings.Split("Search: "+m.paletteInput.View()+"\n"+components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles), "\n")
+		content := "/ search\n" + components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
+		if m.paletteFiltering {
+			content = "Search: " + m.paletteInput.View() + "\n" + components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
+		}
+		lines := strings.Split(content, "\n")
 		overlay = m.paletteScroll.render(lines, width, height)
 	case modalHelp:
 		title = "Help"
@@ -907,8 +945,23 @@ func (m model) modalView(base string, layout layout) string {
 			lines = append(lines, "Error: "+m.welcomeError.Error())
 		}
 		overlay = strings.Join(lines, "\n")
+	case modalConfirm:
+		if m.requestedModal != nil {
+			title, overlay = m.requestedModal.Title, m.requestedModal.Content
+			if m.requestedModal.Input != "" || m.requestedModal.Placeholder != "" {
+				overlay += "\n\n" + m.requestedModalInput.View()
+			}
+		}
+	}
+	if m.modal == modalConfirm {
+		width = max(40, min(width, 68))
+		height = max(5, min(height, len(strings.Split(overlay, "\n"))+4))
 	}
 	overlay = components.Panel(title, true, width, height, overlay, styles)
+	if m.modal == modalConfirm {
+		// A confirmation must never be visually obscured by ANSI-styled workspace cells.
+		return lipgloss.Place(m.width, layout.contentHeight, lipgloss.Center, lipgloss.Center, overlay)
+	}
 	return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
 }
 
@@ -999,6 +1052,8 @@ func (s *placeholderScreen) Actions() []Action { return nil }
 type configScreen struct{ *screens.Config }
 
 type overviewScreen struct{ *screens.Overview }
+
+type captureScreen struct{ *screens.Capture }
 
 type resourcesScreen struct{ *screens.Resources }
 
@@ -1098,14 +1153,22 @@ func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *providerScreen) Actions() []Action {
-	return []Action{
+	actions := []Action{
 		{ID: string(s.id) + ".tab", Label: "Switch saved/changes", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: string(s.id) + ".refresh", Label: "Refresh " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 	}
+	if s.id == ScreenThemes || s.id == ScreenPlugins || s.id == ScreenShell || s.id == ScreenHooks || s.id == ScreenDefaults {
+		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: "Include or remove selected item", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
+	}
+	return actions
 }
 func (s *providerScreen) Bindings() []Binding {
-	return []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}}
+	bindings := []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}, {Label: "Collapse group", Key: "enter"}}
+	if s.id == ScreenThemes || s.id == ScreenPlugins || s.id == ScreenShell || s.id == ScreenHooks || s.id == ScreenDefaults {
+		bindings = append(bindings, Binding{ActionID: string(s.id) + ".toggle", Key: "space"})
+	}
+	return bindings
 }
 
 func (s *configScreen) ID() ScreenID { return ScreenConfig }
@@ -1131,6 +1194,25 @@ func (s *configScreen) Bindings() []Binding {
 }
 
 func (s *overviewScreen) ID() ScreenID { return ScreenOverview }
+func (s *captureScreen) ID() ScreenID  { return ScreenCapture }
+func (s *captureScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !screenKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
+func (s *captureScreen) Actions() []Action {
+	return []Action{
+		{ID: "capture.select", Label: "Toggle provider selection", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
+		{ID: "capture.select-all", Label: "Select changed providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
+		{ID: "capture.run", Label: "Capture selected providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
+		{ID: "capture.capture-all", Label: "Capture all changed providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'C'}) }},
+		{ID: "capture.refresh", Label: "Refresh capture status", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
+	}
+}
+func (s *captureScreen) Bindings() []Binding {
+	return []Binding{{ActionID: "capture.select", Key: "space"}, {ActionID: "capture.select-all", Key: "a"}, {ActionID: "capture.run", Key: "c"}, {ActionID: "capture.capture-all", Key: "shift+c"}, {ActionID: "capture.refresh", Key: "r"}}
+}
 func (s *overviewScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	if !screenKey(key.String()) {
 		return KeyResult{}

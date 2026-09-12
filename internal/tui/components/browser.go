@@ -183,6 +183,10 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	}
+	if b.list.Vim(key.String(), len(b.filteredEntries()), b.listHeight()) {
+		b.selected, b.cursors[b.path] = b.list.Selected, b.list.Selected
+		return b.inspectSelected()
+	}
 	switch key.String() {
 	case "esc":
 		if b.filtering {
@@ -263,7 +267,7 @@ func (b Browser) View() string {
 	} else if b.width >= 90 {
 		parent := b.parentView()
 		current := b.currentView()
-		preview := b.DetailView()
+		preview := b.childView()
 		pane := max(18, b.width/3-1)
 		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
 			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(parent), " ",
@@ -450,6 +454,35 @@ func (b Browser) parentView() string {
 	}
 	if len(lines) == 1 {
 		lines = append(lines, "  /")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// childView previews the next directory level without changing navigation.
+func (b Browser) childView() string {
+	entry, ok := b.selectedEntry()
+	if !ok || entry.Type != "directory" {
+		return b.DetailView()
+	}
+	lines := []string{"Next: " + entry.Name}
+	entries, err := os.ReadDir(entry.Path)
+	if err != nil {
+		return strings.Join(append(lines, "  "+err.Error()), "\n")
+	}
+	limit := max(1, b.listHeight()-1)
+	for i, child := range entries {
+		if i >= limit {
+			lines = append(lines, "  …")
+			break
+		}
+		kind := "file"
+		if child.IsDir() {
+			kind = "directory"
+		}
+		lines = append(lines, "  "+browserIcon(kind)+" "+child.Name())
+	}
+	if len(entries) == 0 {
+		lines = append(lines, "  (empty)")
 	}
 	return strings.Join(lines, "\n")
 }

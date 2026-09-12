@@ -22,6 +22,7 @@ type Restore struct {
 	mode                    workflow.RestoreMode
 	diff                    *components.DiffViewer
 	table                   components.Table
+	navigation              components.Selectable
 	styles                  components.Styles
 	confirm                 bool
 	busy                    bool
@@ -95,6 +96,12 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		return s.diff.Update(msg)
 	}
 	if s.busy {
+		return nil
+	}
+	s.navigation.Selected = s.selected
+	if s.navigation.Vim(key.String(), len(s.comparison.Consequences), s.tableHeight()) {
+		s.selected = s.navigation.Selected
+		s.table.Ensure(s.selected, len(s.comparison.Consequences), s.tableHeight())
 		return nil
 	}
 	switch key.String() {
