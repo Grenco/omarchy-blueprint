@@ -11,13 +11,14 @@ import (
 )
 
 type GitInspection struct {
-	Root      string `json:"root"`
-	Remote    string `json:"remote,omitempty"`
-	Revision  string `json:"revision,omitempty"`
-	Branch    string `json:"branch,omitempty"`
-	Staged    int    `json:"staged"`
-	Unstaged  int    `json:"unstaged"`
-	Untracked int    `json:"untracked"`
+	Root           string   `json:"root"`
+	Remote         string   `json:"remote,omitempty"`
+	Revision       string   `json:"revision,omitempty"`
+	Branch         string   `json:"branch,omitempty"`
+	Staged         int      `json:"staged"`
+	Unstaged       int      `json:"unstaged"`
+	Untracked      int      `json:"untracked"`
+	UntrackedPaths []string `json:"untracked_paths,omitempty"`
 }
 
 type PathInspection struct {

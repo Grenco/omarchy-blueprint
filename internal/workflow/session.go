@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -63,6 +64,15 @@ func (s *Session) Reload() error {
 func (s *Session) Profile() profile.Data      { return s.profile }
 func (s *Session) Machine() machine.Selection { return s.machine }
 func (s *Session) ProfileDir() string         { return filepath.Clean(s.opts.ProfileDir) }
+func (s *Session) HomeDir() string {
+	if s.deps.HomeDir != nil {
+		if home, err := s.deps.HomeDir(); err == nil && home != "" {
+			return filepath.Clean(home)
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Clean(home)
+}
 
 // Profile Git operations remain owned by profilegit; workflow only exposes the
 // active profile service to user interfaces.

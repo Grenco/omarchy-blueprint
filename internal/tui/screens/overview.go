@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,6 +18,7 @@ type Overview struct {
 	data     workflow.Overview
 	selected int
 	err      error
+	busy     bool
 }
 type overviewMsg struct {
 	data workflow.Overview
@@ -28,9 +30,9 @@ func (s *Overview) SetSize(int, int)                  {}
 func (s *Overview) Init() tea.Cmd                     { return s.refresh() }
 func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	if result, ok := msg.(overviewMsg); ok {
-		s.data, s.err = result.data, result.err
-		if s.selected >= len(s.data.Items) {
-			s.selected = max(0, len(s.data.Items)-1)
+		s.data, s.err, s.busy = result.data, result.err, false
+		if s.selected >= len(s.orderedItems()) {
+			s.selected = max(0, len(s.orderedItems())-1)
 		}
 		return nil
 	}
@@ -40,7 +42,7 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	}
 	switch key.String() {
 	case "j", "down":
-		if s.selected < len(s.data.Items)-1 {
+		if s.selected < len(s.orderedItems())-1 {
 			s.selected++
 		}
 	case "k", "up":
@@ -74,7 +76,7 @@ func (s *Overview) View() string {
 			}
 			continue
 		}
-		for i, item := range s.data.Items {
+		for i, item := range s.orderedItems() {
 			if group.show(item) {
 				marker := " "
 				if i == s.selected {
@@ -88,11 +90,42 @@ func (s *Overview) View() string {
 	return strings.Join(lines, "\n")
 }
 func (s *Overview) selectedItem() workflow.AttentionItem {
-	if s.selected >= 0 && s.selected < len(s.data.Items) {
-		return s.data.Items[s.selected]
+	items := s.orderedItems()
+	if s.selected >= 0 && s.selected < len(items) {
+		return items[s.selected]
 	}
 	return workflow.AttentionItem{}
 }
+func (s *Overview) orderedItems() []workflow.AttentionItem {
+	items := make([]workflow.AttentionItem, 0, len(s.data.Items))
+	for _, match := range []func(workflow.AttentionItem) bool{
+		func(item workflow.AttentionItem) bool {
+			return item.Severity == workflow.AttentionDecision || item.Severity == workflow.AttentionWarning || (item.Severity == workflow.AttentionInfo && item.Provider != "profile-git")
+		},
+		func(item workflow.AttentionItem) bool { return item.Severity == workflow.AttentionDrift },
+		func(item workflow.AttentionItem) bool { return item.Provider == "profile-git" },
+	} {
+		for _, item := range s.data.Items {
+			if match(item) {
+				items = append(items, item)
+			}
+		}
+	}
+	return items
+}
+func (s *Overview) HeaderState() string {
+	if s.busy {
+		return "~ overview loading"
+	}
+	if s.err != nil {
+		return "x overview error"
+	}
+	if len(s.data.Items) > 0 {
+		return fmt.Sprintf("! %d attention", len(s.data.Items))
+	}
+	return "✓ overview clean"
+}
 func (s *Overview) refresh() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg { data, err := s.session.Overview(context.Background()); return overviewMsg{data, err} }
 }

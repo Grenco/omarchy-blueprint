@@ -22,6 +22,7 @@ func TestBrowserNavigationAndListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
 	if browser.Path() != home {
 		t.Fatalf("start path = %q, want home %q", browser.Path(), home)
 	}
@@ -32,23 +33,25 @@ func TestBrowserNavigationAndListing(t *testing.T) {
 	if entry.Type != "directory" {
 		t.Fatalf("first entry type = %q", entry.Type)
 	}
-	browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	if browser.Path() != filepath.Join(home, "adir") {
 		t.Fatalf("entered path = %q", browser.Path())
 	}
-	browser.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: tea.KeyBackspace}))
 	if browser.Path() != home {
 		t.Fatalf("parent path = %q", browser.Path())
 	}
 	for browser.Path() != string(filepath.Separator) {
-		browser.Update(tea.KeyPressMsg{Code: 'h'})
+		deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: 'h'}))
 	}
-	browser.Update(tea.KeyPressMsg{Code: 'h'})
+	deliverBrowser(t, &browser, browser.Update(tea.KeyPressMsg{Code: 'h'}))
 	if browser.Path() != string(filepath.Separator) {
 		t.Fatalf("root parent = %q", browser.Path())
 	}
 
 	browser = NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	deliverBrowser(t, &browser, browser.Init())
+	browser.Update(tea.KeyPressMsg{Code: '/'})
 	browser.Update(tea.KeyPressMsg{Code: 'z'})
 	if got := entryNames(browser.Entries()); !reflect.DeepEqual(got, []string{"zfile"}) {
 		t.Fatalf("filtered entries = %#v", got)
@@ -107,7 +110,7 @@ func TestBrowserIgnoresStalePreview(t *testing.T) {
 		requests = append(requests, id)
 		return nil
 	}})
-	browser.Init()
+	browser.Update(browser.Init()())
 	browser.Update(tea.KeyPressMsg{Code: 'j'})
 	if !reflect.DeepEqual(requests, []uint64{1, 2}) {
 		t.Fatalf("requests = %#v", requests)
@@ -117,8 +120,25 @@ func TestBrowserIgnoresStalePreview(t *testing.T) {
 		t.Fatalf("stale inspection applied: %#v", browser.inspection)
 	}
 	browser.Update(BrowserInspectionMsg{RequestID: 2, Inspection: workflow.PathInspection{Path: "current", OwnershipProvider: "resources", SuggestedStrategy: "copy"}})
-	if !strings.Contains(browser.View(), "Preview: current") || !strings.Contains(browser.View(), "Owner: resources") {
-		t.Fatalf("current inspection missing from preview: %s", browser.View())
+	if !strings.Contains(browser.DetailView(), "Preview: current") || !strings.Contains(browser.DetailView(), "Owner: resources") {
+		t.Fatalf("current inspection missing from detail: %s", browser.DetailView())
+	}
+}
+
+func TestBrowserIgnoresStaleDirectoryResult(t *testing.T) {
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, "child"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	initial := browser.Init()()
+	browser.Update(initial)
+	enter := browser.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	browser.Update(BrowserReadDirMsg{Generation: 1, Path: home, Entries: []BrowserEntry{{Name: "stale", Path: filepath.Join(home, "stale"), Type: "file"}}})
+	if browser.Path() != filepath.Join(home, "child") || entryNames(browser.Entries())[0] != "child" {
+		t.Fatalf("stale directory result replaced current state: path=%q entries=%#v", browser.Path(), browser.Entries())
+	}
+	browser.Update(enter())
+	if got := entryNames(browser.Entries()); len(got) != 0 {
+		t.Fatalf("child entries=%#v", got)
 	}
 }
 
@@ -139,6 +159,7 @@ func TestBrowserSelectionModes(t *testing.T) {
 		{mode: BrowseReadOnly, canSelect: false},
 	} {
 		browser := NewBrowser(test.mode, BrowserConfig{Home: home})
+		deliverBrowser(t, &browser, browser.Init())
 		if test.moveDown {
 			browser.Update(tea.KeyPressMsg{Code: 'j'})
 		}
@@ -182,4 +203,11 @@ func count(values []string, want string) int {
 		}
 	}
 	return count
+}
+
+func deliverBrowser(t *testing.T, browser *Browser, cmd tea.Cmd) {
+	t.Helper()
+	if cmd != nil {
+		browser.Update(cmd())
+	}
 }

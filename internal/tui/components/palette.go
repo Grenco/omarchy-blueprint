@@ -3,8 +3,8 @@ package components
 import "strings"
 
 type PaletteItem struct {
-	ID, Label, Shortcut, DisabledReason string
-	Enabled                             bool
+	ID, Label, Group, Shortcut, DisabledReason string
+	Enabled                                    bool
 }
 
 func Palette(query string, items []PaletteItem, selected int) string {
@@ -14,7 +14,11 @@ func Palette(query string, items []PaletteItem, selected int) string {
 		if index == selected {
 			prefix = ">"
 		}
-		line := prefix + " " + item.Label
+		line := prefix + " "
+		if item.Group != "" {
+			line += item.Group + ": "
+		}
+		line += item.Label
 		if item.Shortcut != "" {
 			line += " (" + item.Shortcut + ")"
 		}

@@ -7,16 +7,11 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/pelletier/go-toml/v2"
 )
 
-type Palette struct {
-	Foreground, Muted, Accent        string
-	Success, Warning, Error          string
-	Added, Removed                   string
-	Border, BorderFocused, Selection string
-	ColorEnabled                     bool
-}
+type Palette = components.ThemePalette
 
 type ThemeLoader struct {
 	StateHome func() (string, error)
@@ -31,6 +26,10 @@ type omarchyColors struct {
 	Color2              string `toml:"color2"`
 	Color3              string `toml:"color3"`
 	Color8              string `toml:"color8"`
+	Muted               string `toml:"muted"`
+	Red                 string `toml:"red"`
+	Green               string `toml:"green"`
+	Yellow              string `toml:"yellow"`
 }
 
 func (l ThemeLoader) Load() Palette {
@@ -64,18 +63,18 @@ func (l ThemeLoader) Load() Palette {
 	if color := usableColor(colors.SelectionBackground); color != "" {
 		palette.Selection = color
 	}
-	if color := usableColor(colors.Color1); color != "" {
+	if color := firstColor(colors.Color1, colors.Red); color != "" {
 		palette.Error = color
 		palette.Removed = color
 	}
-	if color := usableColor(colors.Color2); color != "" {
+	if color := firstColor(colors.Color2, colors.Green); color != "" {
 		palette.Success = color
 		palette.Added = color
 	}
-	if color := usableColor(colors.Color3); color != "" {
+	if color := firstColor(colors.Color3, colors.Yellow); color != "" {
 		palette.Warning = color
 	}
-	if color := usableColor(colors.Color8); color != "" {
+	if color := firstColor(colors.Color8, colors.Muted); color != "" {
 		palette.Muted = color
 		palette.Border = color
 	}
@@ -120,4 +119,13 @@ func fallbackPalette() Palette {
 
 func usableColor(color string) string {
 	return strings.TrimSpace(color)
+}
+
+func firstColor(colors ...string) string {
+	for _, color := range colors {
+		if color = usableColor(color); color != "" {
+			return color
+		}
+	}
+	return ""
 }

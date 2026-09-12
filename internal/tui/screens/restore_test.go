@@ -51,3 +51,14 @@ func TestRestoreScreenMetadataDetailDoesNotRenderBytes(t *testing.T) {
 		t.Fatalf("metadata detail was not opened safely: %q", screen.View())
 	}
 }
+
+func TestRestoreScreenConfirmationDispatchesOneMutation(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.comparison.Normal.Operations = []model.Operation{{ID: "write", File: &model.FileWrite{ExpectedMissing: true}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	first := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	second := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if first == nil || second != nil || !screen.busy || screen.confirm {
+		t.Fatalf("restore confirmation dispatched more than once: first=%v second=%v busy=%v confirm=%v", first != nil, second != nil, screen.busy, screen.confirm)
+	}
+}

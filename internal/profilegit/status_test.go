@@ -160,6 +160,16 @@ func git(t *testing.T, dir string, args ...string) {
 	if _, err := (command.SystemRunner{}).Run(context.Background(), "git", append([]string{"-C", dir}, args...)...); err != nil {
 		t.Fatal(err)
 	}
+	if len(args) == 0 || args[0] != "init" {
+		return
+	}
+	for _, arg := range args {
+		if arg == "--bare" {
+			return
+		}
+	}
+	git(t, dir, "config", "user.name", "Blueprint Test")
+	git(t, dir, "config", "user.email", "blueprint@example.test")
 }
 
 func mustMkdir(t *testing.T, dir string) {

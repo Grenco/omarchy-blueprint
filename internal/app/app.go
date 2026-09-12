@@ -1377,7 +1377,7 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 	if diff {
 		commandName = "diff"
 	}
-	data := map[string]any{"drift": driftCount > 0, "changes": changes, "machine": machineContextOutput(machineContext), "resources": runtimeResources(d.Resources, machineContext)}
+	data := map[string]any{"drift": driftCount > 0, "changes": changes, "providers": report.Providers, "machine": machineContextOutput(machineContext), "resources": runtimeResources(d.Resources, machineContext)}
 	human := renderMachineContext(machineContext) + renderChanges(title, changes)
 	if len(gitWorking) > 0 {
 		data["git_working_state"] = gitWorking

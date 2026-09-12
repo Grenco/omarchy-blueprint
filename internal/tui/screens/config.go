@@ -14,7 +14,11 @@ import (
 )
 
 // HandoffRequest lets the parent TUI apply its centrally configured handoff.
-type HandoffRequest struct{ Kind, Path string }
+type HandoffRequest struct {
+	Source, Kind, Path string
+	IsDir              bool
+	Refresh            string
+}
 
 type Config struct {
 	session                 *workflow.Session
@@ -24,18 +28,25 @@ type Config struct {
 	diff                    *components.DiffViewer
 	confirm                 string
 	focusPath               string
+	statusID, inspectionID  uint64
+	busy                    bool
 	err                     error
 }
 
 type configStatusMsg struct {
+	requestID  uint64
 	candidates []config.Candidate
 	err        error
 }
 type configInspectionMsg struct {
+	requestID  uint64
 	inspection workflow.ConfigInspection
 	err        error
 }
-type configPolicyMsg struct{ err error }
+type configPolicyMsg struct {
+	requestID uint64
+	err       error
+}
 
 func NewConfig(session *workflow.Session) *Config { return &Config{session: session} }
 func (s *Config) Focus(path string) tea.Cmd       { s.focusPath = path; return s.rescan() }
@@ -45,12 +56,20 @@ func (s *Config) SetSize(width, height int) {
 		s.diff.SetSize(width, height)
 	}
 }
-func (s *Config) Init() tea.Cmd { return s.rescan() }
+func (s *Config) Init() tea.Cmd         { return s.rescan() }
+func (s *Config) TransientActive() bool { return s.confirm != "" || s.diff != nil }
 
 func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case configStatusMsg:
-		s.candidates, s.err = msg.candidates, msg.err
+		if msg.requestID != s.statusID {
+			return nil
+		}
+		if msg.err != nil {
+			s.err, s.busy = msg.err, false
+			return nil
+		}
+		s.candidates, s.err, s.busy = msg.candidates, nil, false
 		s.selected = 0
 		for i, candidate := range s.candidates {
 			if candidate.Path == s.focusPath {
@@ -61,7 +80,14 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		s.focusPath = ""
 		return s.inspectSelected()
 	case configInspectionMsg:
-		s.inspection, s.err = msg.inspection, msg.err
+		if msg.requestID != s.inspectionID {
+			return nil
+		}
+		if msg.err != nil {
+			s.err = msg.err
+			return nil
+		}
+		s.inspection, s.err = msg.inspection, nil
 		if msg.err == nil && s.diff != nil {
 			document := s.inspection.BaselineToLive
 			if s.inspection.Managed && s.inspection.ProfileToLive != nil {
@@ -73,6 +99,10 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case configPolicyMsg:
+		if msg.requestID != s.statusID {
+			return nil
+		}
+		s.busy = false
 		if msg.err != nil {
 			s.err = msg.err
 			return nil
@@ -92,6 +122,9 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			s.confirm, s.focusPath = "", logical
 			return s.setPolicy(logical, policy)
 		}
+		return nil
+	}
+	if s.busy {
 		return nil
 	}
 	if s.diff != nil {
@@ -117,7 +150,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			s.diff = &components.DiffViewer{}
 			return s.inspectForDiff(candidate.Path)
 		}
-	case " ", "i":
+	case "space", " ", "i":
 		s.confirm = "include"
 	case "x":
 		s.confirm = "exclude"
@@ -126,16 +159,15 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	case "e", "o", "y":
 		if s.validLive() {
 			kind := map[string]string{"e": "editor", "o": "open", "y": "copy"}[key.String()]
-			return func() tea.Msg { return HandoffRequest{Kind: kind, Path: s.inspection.LivePath} }
+			return func() tea.Msg {
+				return HandoffRequest{Source: "config", Kind: kind, Path: s.inspection.LivePath, Refresh: "config"}
+			}
 		}
 	}
 	return nil
 }
 
 func (s *Config) View() string {
-	if s.err != nil {
-		return "Config\n\nUnable to load Config: " + s.err.Error()
-	}
 	if s.confirm != "" {
 		return components.Confirm(fmt.Sprintf("Set %s policy for %s?", s.confirm, s.selectedCandidate().Path))
 	}
@@ -153,6 +185,12 @@ func (s *Config) View() string {
 		return "Config diff: " + document.OldLabel + " <-> " + document.NewLabel + "\n" + s.diff.View()
 	}
 	lines := []string{"Config review"}
+	if s.busy {
+		lines = append(lines, "Working...")
+	}
+	if s.err != nil {
+		lines = append(lines, "Last action failed: "+s.err.Error())
+	}
 	for i, candidate := range s.candidates {
 		marker := " "
 		if i == s.selected {
@@ -169,9 +207,6 @@ func (s *Config) View() string {
 	}
 	if candidate := s.selectedCandidate(); candidate.Path != "" {
 		lines = append(lines, "", "Reason: "+candidate.Reason, "d diff  i include  x exclude  a auto  e edit  o open  y copy")
-		if s.width >= 120 {
-			lines = append(lines, "Live: "+s.inspection.LivePath)
-		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -188,29 +223,39 @@ func (s *Config) selectedCandidate() config.Candidate {
 	return config.Candidate{}
 }
 func (s *Config) rescan() tea.Cmd {
+	s.statusID++
+	requestID := s.statusID
+	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(context.Background(), "config")
 		if err != nil {
-			return configStatusMsg{err: err}
+			return configStatusMsg{requestID: requestID, err: err}
 		}
 		for _, provider := range report.Providers {
 			if provider.ID == "config" && provider.ConfigScan != nil {
-				return configStatusMsg{candidates: provider.ConfigScan.Candidates}
+				return configStatusMsg{requestID: requestID, candidates: provider.ConfigScan.Candidates}
 			}
 		}
-		return configStatusMsg{err: fmt.Errorf("config scan is unavailable")}
+		return configStatusMsg{requestID: requestID, err: fmt.Errorf("config scan is unavailable")}
 	}
 }
 func (s *Config) inspectSelected() tea.Cmd { return s.inspectForDiff(s.selectedCandidate().Path) }
 func (s *Config) inspectForDiff(logical string) tea.Cmd {
+	if logical == "" {
+		return nil
+	}
+	s.inspectionID++
+	requestID := s.inspectionID
 	return func() tea.Msg {
 		inspection, err := s.session.InspectConfig(context.Background(), logical)
-		return configInspectionMsg{inspection: inspection, err: err}
+		return configInspectionMsg{requestID: requestID, inspection: inspection, err: err}
 	}
 }
 func (s *Config) setPolicy(logical, policy string) tea.Cmd {
+	s.busy = true
+	requestID := s.statusID
 	return func() tea.Msg {
-		return configPolicyMsg{err: s.session.SetConfigPolicy(context.Background(), logical, policy)}
+		return configPolicyMsg{requestID: requestID, err: s.session.SetConfigPolicy(context.Background(), logical, policy)}
 	}
 }
 func (s *Config) validLive() bool {
@@ -218,3 +263,26 @@ func (s *Config) validLive() bool {
 	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
 }
 func (s *Config) CanHandoff() bool { return s.validLive() }
+
+// DetailView supplies the root three-pane preview without duplicating it below the list.
+func (s *Config) DetailView() string {
+	candidate := s.selectedCandidate()
+	if candidate.Path == "" {
+		return "Config details"
+	}
+	lines := []string{"Path: " + candidate.Path, "Classification: " + string(candidate.Classification), "Reason: " + candidate.Reason}
+	if s.inspection.LivePath != "" {
+		lines = append(lines, "Live: "+s.inspection.LivePath, "Baseline: "+s.inspection.BaselinePath, "Profile: "+s.inspection.ProfilePath)
+	}
+	policy := "automatic"
+	if s.inspection.Managed {
+		policy = "managed"
+	}
+	lines = append(lines, "Effective policy: "+policy, "Actions: diff, include, exclude, auto")
+	if s.validLive() {
+		lines = append(lines, "Edit/open/copy: available")
+	} else {
+		lines = append(lines, "Edit/open/copy: unavailable (live path is not a regular file)")
+	}
+	return strings.Join(lines, "\n")
+}

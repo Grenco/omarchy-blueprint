@@ -1,12 +1,40 @@
 package screens
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 )
+
+func TestResourceScreenBrowseStrategyConfirmStartsOneTrack(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, "candidate"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	browser := components.NewBrowser(components.BrowseResource, components.BrowserConfig{Home: home})
+	if cmd := browser.Init(); cmd != nil {
+		browser.Update(cmd())
+	}
+	screen := &Resources{browser: &browser, phase: resourceBrowse}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	screen.Update(tea.KeyPressMsg{Code: '1'})
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if screen.phase != resourceConfirm || screen.confirm != "track" {
+		t.Fatalf("browse flow did not reach track confirmation: phase=%q confirm=%q", screen.phase, screen.confirm)
+	}
+	first := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	second := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if first == nil || second != nil || screen.phase != resourcePending {
+		t.Fatalf("track was not serialized: first=%v second=%v phase=%q", first != nil, second != nil, screen.phase)
+	}
+}
 
 func TestResourceScreenTrackedStatusLabels(t *testing.T) {
 	screen := &Resources{items: []profile.Resource{
@@ -19,6 +47,23 @@ func TestResourceScreenTrackedStatusLabels(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestResourceScreenUntrackedSelectorUsesSpaceAndAll(t *testing.T) {
+	screen := &Resources{phase: resourceUntracked, untracked: []string{"first.txt", "second.txt"}, chosen: map[string]bool{}}
+	screen.Update(tea.KeyPressMsg{Code: ' '})
+	if !screen.chosen["first.txt"] {
+		t.Fatal("space did not toggle the selected untracked file")
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'j'})
+	screen.Update(tea.KeyPressMsg{Code: 'a'})
+	if !screen.chosen["first.txt"] || !screen.chosen["second.txt"] {
+		t.Fatalf("a did not select all untracked files: %#v", screen.chosen)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if screen.phase != resourceConfirm || screen.confirm != "track" {
+		t.Fatalf("selector did not advance to confirmation: phase=%q confirm=%q", screen.phase, screen.confirm)
 	}
 }
 

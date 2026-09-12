@@ -3,11 +3,11 @@ package tui
 import tea "charm.land/bubbletea/v2"
 
 type Action struct {
-	ID, Label, Shortcut string
-	Enabled             bool
-	DisabledReason      string
-	Run                 func() tea.Cmd
-	Screen              ScreenID
+	ID, Label, Group, Keywords, Shortcut string
+	Enabled                              bool
+	DisabledReason                       string
+	Run                                  func() tea.Cmd
+	Screen                               ScreenID
 }
 
 func subsequenceMatch(query, value string) bool {
@@ -34,7 +34,7 @@ func lower(s string) string {
 func filterActions(actions []Action, query string) []Action {
 	filtered := make([]Action, 0, len(actions))
 	for _, action := range actions {
-		if subsequenceMatch(query, action.Label) || subsequenceMatch(query, action.ID) {
+		if subsequenceMatch(query, action.Label) || subsequenceMatch(query, action.ID) || subsequenceMatch(query, action.Group) || subsequenceMatch(query, action.Keywords) {
 			filtered = append(filtered, action)
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	blueprintmodel "github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
@@ -36,6 +37,85 @@ func TestViewRendersMultiPaneLayouts(t *testing.T) {
 		if view := m.View().Content; !strings.Contains(view, "Overview") {
 			t.Fatalf("%dx%d view did not contain active screen: %q", size.Width, size.Height, view)
 		}
+	}
+}
+
+func TestPaneRowsAreBoundedToTerminalWidth(t *testing.T) {
+	for _, size := range []tea.WindowSizeMsg{{Width: 140, Height: 40}, {Width: 100, Height: 30}} {
+		m := updateModel(t, newModel(ThemeLoader{NoColor: true}), size)
+		for _, line := range strings.Split(m.View().Content, "\n") {
+			if got := lipgloss.Width(line); got > size.Width {
+				t.Fatalf("%d-column view produced %d-cell row: %q", size.Width, got, line)
+			}
+		}
+	}
+}
+
+func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	owner := &recordingScreen{id: ScreenResources}
+	m.screens[ScreenResources] = owner
+	m.selectScreen(ScreenSync)
+	updated, followup := m.Update(screenMsg{Screen: ScreenResources, Msg: ownedTestMsg{step: 1}})
+	m = updated.(model)
+	if len(owner.steps) != 1 || owner.steps[0] != 1 {
+		t.Fatalf("non-active owner did not receive message: %#v", owner.steps)
+	}
+	if followup == nil {
+		t.Fatal("screen follow-up was not rewrapped")
+	}
+	if _, ok := followup().(screenMsg); !ok {
+		t.Fatal("screen follow-up lost its owner envelope")
+	}
+}
+
+func TestCompactSidebarIsVisibleWhenToggled(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.focus == focusSidebar {
+		t.Fatal("compact layout retained invisible sidebar focus")
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if !m.sidebarOpen || !strings.Contains(m.View().Content, "Overview") {
+		t.Fatal("compact sidebar did not open visibly")
+	}
+}
+
+func TestScreenKeyOwnershipPrecedesRootFocusAndOverlays(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.screens[ScreenResources] = &resourcesScreen{Resources: screens.NewResources(nil)}
+	m.selectScreen(ScreenResources)
+	m.focus = focusWorkspace
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.focus != focusWorkspace {
+		t.Fatal("resources tab was taken by root focus")
+	}
+
+	m.screens[ScreenSync] = &syncScreen{Sync: &screens.Sync{}}
+	m.selectScreen(ScreenSync)
+	m.focus = focusWorkspace
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'l'})
+	if m.focus != focusWorkspace {
+		t.Fatal("sync l was taken by root focus")
+	}
+
+	input := &inputScreen{id: ScreenSync, active: true}
+	m.screens[ScreenSync] = input
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
+	if m.modal != modalNone || input.keys != "?" {
+		t.Fatal("screen input did not retain question mark")
+	}
+}
+
+func TestModalLeavesBaseViewVisibleAndViewportScrolls(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	if !strings.Contains(m.View().Content, "Command palette") || !strings.Contains(m.View().Content, "Overview") {
+		t.Fatal("modal did not retain base view")
+	}
+	var viewport verticalViewport
+	viewport.move(100, 30, 4)
+	if viewport.offset != 26 {
+		t.Fatalf("viewport offset = %d, want 26", viewport.offset)
 	}
 }
 
@@ -67,7 +147,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 		t.Fatalf("resource inspection lost shared profile data: %q", resourcesScreen.View())
 	}
 	m = updateModel(t, m, screens.OverviewTarget{Target: "machines", Ref: "desktop:projects"})
-	if view := m.activeScreen().View(); !strings.Contains(view, "notes -> ~/Code/Notes (override)") {
+	if view := m.activeScreen().View(); !strings.Contains(view, "notes          ~/Notes              ~/Code/Notes         override") {
 		t.Fatalf("machine mapping lost shared profile data: %q", view)
 	}
 
@@ -91,10 +171,46 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	}
 }
 
+type ownedTestMsg struct{ step int }
+type recordingScreen struct {
+	id    ScreenID
+	steps []int
+}
+
+func (s *recordingScreen) ID() ScreenID     { return s.id }
+func (s *recordingScreen) SetSize(int, int) {}
+func (s *recordingScreen) Update(msg tea.Msg) tea.Cmd {
+	if owned, ok := msg.(ownedTestMsg); ok {
+		s.steps = append(s.steps, owned.step)
+		return func() tea.Msg { return ownedTestMsg{step: owned.step + 1} }
+	}
+	return nil
+}
+func (s *recordingScreen) View() string      { return "recording" }
+func (s *recordingScreen) Actions() []Action { return nil }
+
+type inputScreen struct {
+	id     ScreenID
+	active bool
+	keys   string
+}
+
+func (s *inputScreen) ID() ScreenID     { return s.id }
+func (s *inputScreen) SetSize(int, int) {}
+func (s *inputScreen) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		s.keys += key.String()
+	}
+	return nil
+}
+func (s *inputScreen) View() string          { return "input" }
+func (s *inputScreen) Actions() []Action     { return nil }
+func (s *inputScreen) TransientActive() bool { return s.active }
+
 func TestNoColorViewsKeepSemanticMarkers(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "! attention") {
+	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "✓ overview clean") {
 		t.Fatalf("overview is not understandable without colour: %q", m.View().Content)
 	}
 }
@@ -138,8 +254,13 @@ func TestNavigation(t *testing.T) {
 		t.Fatal("escape did not close the palette")
 	}
 	_, command := m.Update(tea.KeyPressMsg{Code: 'q'})
+	if command != nil {
+		t.Fatal("q quit outside navigation focus")
+	}
+	m.focus = focusSidebar
+	_, command = m.Update(tea.KeyPressMsg{Code: 'q'})
 	if command == nil || command() != tea.Quit() {
-		t.Fatal("q did not quit when no transient was open")
+		t.Fatal("q did not quit from navigation focus")
 	}
 }
 
@@ -157,13 +278,36 @@ func TestCommandPalette(t *testing.T) {
 
 func TestHelp(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.screens[ScreenConfig] = &configScreen{Config: screens.NewConfig(nil)}
+	m.selectScreen(ScreenConfig)
+	m.focus = focusDetails
 	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
-	if !m.helpOpen {
-		t.Fatal("help did not open")
+	view := m.View().Content
+	if !m.helpOpen || !strings.Contains(view, "Help: Config") || !strings.Contains(view, "d  View Config diff") || !strings.Contains(view, "Focus: details") {
+		t.Fatalf("help is not contextual to screen and focus: %q", view)
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.helpOpen {
 		t.Fatal("help did not close")
+	}
+}
+
+func TestPaletteDoesNotRunDisabledAction(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	m.screens[ScreenConfig] = &configScreen{Config: screens.NewConfig(nil)}
+	m.selectScreen(ScreenConfig)
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	for _, key := range "config.edit" {
+		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
+	}
+	if items := filterActions(m.actions(), m.paletteQuery); len(items) != 1 || items[0].Enabled || items[0].DisabledReason == "" {
+		t.Fatalf("disabled palette action is not accurately described: %#v", items)
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(model)
+	if cmd != nil || m.modal != modalPalette {
+		t.Fatal("disabled palette action ran or closed the palette")
 	}
 }
 

@@ -76,9 +76,9 @@ func (h Handoff) lookup(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
-func handoffCmd(kind string, command *exec.Cmd) tea.Cmd {
+func handoffCmd(refresh ScreenID, kind string, command *exec.Cmd) tea.Cmd {
 	return tea.ExecProcess(command, func(err error) tea.Msg {
-		return handoffFinishedMsg{Kind: kind, Err: err}
+		return handoffFinishedMsg{Refresh: refresh, Kind: kind, Err: err}
 	})
 }
 

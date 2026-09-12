@@ -27,7 +27,7 @@ func TestSyncScreenActionsCoverProfileGitStates(t *testing.T) {
 		{"repo no origin", profilegit.Status{Repository: true, Branch: "main"}, []string{"sync.set-remote"}, []string{"sync.fetch", "sync.push"}},
 		{"clean tracked", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Upstream: "origin/main"}, []string{"sync.fetch", "sync.set-remote", "sync.remove-remote", "sync.push"}, []string{"sync.commit", "sync.pull"}},
 		{"managed dirty", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Changes: []profilegit.Change{managed}}, []string{"sync.commit", "sync.commit-push"}, nil},
-		{"unmanaged dirty", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Changes: []profilegit.Change{unmanaged}}, []string{"sync.lazygit", "sync.copy-profile"}, []string{"sync.commit", "sync.pull", "sync.push"}},
+		{"unmanaged dirty", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Changes: []profilegit.Change{unmanaged}}, []string{"sync.push"}, []string{"sync.commit", "sync.pull"}},
 		{"no upstream", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git"}, []string{"sync.push"}, []string{"sync.pull"}},
 		{"ahead", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Upstream: "origin/main", Ahead: 1}, []string{"sync.push", "sync.commit-push"}, nil},
 		{"behind", profilegit.Status{Repository: true, Branch: "main", Head: "abc", Origin: "https://example.test/me/profile.git", Upstream: "origin/main", Behind: 1}, []string{"sync.pull", "sync.push"}, nil},
@@ -79,8 +79,8 @@ func TestSyncScreenCommitMessageFlow(t *testing.T) {
 	screen := NewSync(session)
 	screen.Update(screen.Init()())
 	screen.Update(tea.KeyPressMsg{Code: 'c'})
-	if want := profilegit.SuggestedCommitMessage(screen.status); screen.message != want {
-		t.Fatalf("message=%q want=%q", screen.message, want)
+	if want := profilegit.SuggestedCommitMessage(screen.status); screen.textInput.Value() != want {
+		t.Fatalf("message=%q want=%q", screen.textInput.Value(), want)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if screen.confirm != "commit" {
@@ -90,6 +90,39 @@ func TestSyncScreenCommitMessageFlow(t *testing.T) {
 	screen.Update(msg)
 	if screen.err != nil || screen.status.Ahead != 0 || len(screen.status.Changes) != 0 {
 		t.Fatalf("commit status=%#v err=%v", screen.status, screen.err)
+	}
+}
+
+func TestSyncScreenTextInputAcceptsGitPunctuation(t *testing.T) {
+	screen := NewSync(nil)
+	screen.beginInput("commit", "")
+	for _, key := range []tea.KeyPressMsg{{Text: "q"}, {Text: ":"}, {Text: "?"}} {
+		screen.Update(key)
+	}
+	if got := screen.textInput.Value(); got != "q:?" {
+		t.Fatalf("input=%q", got)
+	}
+}
+
+func TestSyncScreenKeepsLastGoodStatusAndUpdatesFetchTimeFromResult(t *testing.T) {
+	good := profilegit.Status{Repository: true, Branch: "main"}
+	screen := &Sync{status: good, busy: true}
+	screen.Update(syncStatusMsg{err: context.DeadlineExceeded})
+	if screen.status.Repository != good.Repository || screen.status.Branch != good.Branch {
+		t.Fatalf("status changed after refresh error: %#v", screen.status)
+	}
+	screen.Update(syncResultMsg{status: good, fetched: true})
+	if screen.busy || screen.lastFetched.IsZero() {
+		t.Fatalf("busy=%v fetched=%v", screen.busy, screen.lastFetched)
+	}
+}
+
+func TestSyncScreenBusyDisablesActions(t *testing.T) {
+	screen := &Sync{status: profilegit.Status{Repository: true, Branch: "main"}, busy: true}
+	for _, action := range screen.Actions() {
+		if action.Enabled {
+			t.Fatalf("%s enabled while busy", action.ID)
+		}
 	}
 }
 
@@ -170,6 +203,16 @@ func git(t *testing.T, dir string, args ...string) string {
 	if out, err := command.Run(context.Background(), "git", append([]string{"-C", dir}, args...)...); err != nil {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	} else {
+		if len(args) > 0 && args[0] == "init" {
+			bare := false
+			for _, arg := range args {
+				bare = bare || arg == "--bare"
+			}
+			if !bare {
+				git(t, dir, "config", "user.name", "Blueprint Test")
+				git(t, dir, "config", "user.email", "blueprint@example.test")
+			}
+		}
 		return out
 	}
 	return ""

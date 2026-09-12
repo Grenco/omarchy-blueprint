@@ -23,7 +23,7 @@ func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"desktop *", "projects -> ~/Code (override)", "retired -> /mnt/retired (dormant)", "Mapping target: projects"} {
+	for _, want := range []string{"desktop *", "Resource       Portable", "projects       ~/Projects           ~/Code               override", "retired        -                    /mnt/retired         dormant"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}

@@ -2,11 +2,13 @@ package screens
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -17,6 +19,8 @@ type Provider struct {
 	id                      string
 	width, height, selected int
 	status                  workflow.ProviderStatus
+	styles                  components.Styles
+	busy, confirm           bool
 	err                     error
 }
 
@@ -35,22 +39,23 @@ type CaptureComplete struct {
 func NewProvider(session *workflow.Session, id string) *Provider {
 	return &Provider{session: session, id: id}
 }
-func (s *Provider) Refresh() tea.Cmd          { return s.refresh() }
-func (s *Provider) SetSize(width, height int) { s.width, s.height = width, height }
-func (s *Provider) Init() tea.Cmd             { return s.refresh() }
+func (s *Provider) Refresh() tea.Cmd                   { return s.refresh() }
+func (s *Provider) SetStyles(styles components.Styles) { s.styles = styles }
+func (s *Provider) SetSize(width, height int)          { s.width, s.height = width, height }
+func (s *Provider) Init() tea.Cmd                      { return s.refresh() }
 
 func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case providerStatusMsg:
-		s.status, s.err = msg.status, msg.err
+		s.status, s.err, s.busy = msg.status, msg.err, false
 		if s.selected >= len(s.status.Changes) {
 			s.selected = max(0, len(s.status.Changes)-1)
 		}
 		return nil
 	case providerCaptureMsg:
-		s.err = msg.err
+		s.err, s.busy = msg.err, false
 		if msg.err == nil {
-			return s.refresh()
+			return func() tea.Msg { return CaptureComplete{Provider: s.id} }
 		}
 		return nil
 	}
@@ -59,6 +64,10 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	switch key.String() {
+	case "r":
+		if !s.busy {
+			return s.refresh()
+		}
 	case "j", "down":
 		if s.selected < len(s.status.Changes)-1 {
 			s.selected++
@@ -68,7 +77,16 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			s.selected--
 		}
 	case "c":
-		return s.capture()
+		if !s.busy {
+			s.confirm = true
+		}
+	case "enter":
+		if s.confirm {
+			s.confirm, s.busy = false, true
+			return s.capture()
+		}
+	case "esc":
+		s.confirm = false
 	}
 	return nil
 }
@@ -76,9 +94,16 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 func (s *Provider) View() string {
 	title := strings.ToUpper(s.id[:1]) + s.id[1:]
 	if s.err != nil {
-		return title + "\n\nUnable to load " + title + ": " + s.err.Error()
+		return s.styles.Error(title + "\n\n! Unable to load " + title + ": " + s.err.Error())
 	}
 	lines := []string{title}
+	if s.busy {
+		lines = append(lines, "Loading...")
+	}
+	if s.confirm {
+		lines = append(lines, "", "Capture observed changes into the profile?", "Enter confirm  Esc cancel")
+		return strings.Join(lines, "\n")
+	}
 	if !s.status.Captured {
 		lines = append(lines, "Not captured. Press c to capture.")
 	}
@@ -90,13 +115,15 @@ func (s *Provider) View() string {
 		lines = append(lines, marker+" "+change.Summary)
 	}
 	if len(s.status.Changes) == 0 && s.status.Captured {
-		lines = append(lines, "No differences.")
+		lines = append(lines, "No differences.", "", "Saved snapshot:")
+		lines = append(lines, snapshotLines(s.status.Snapshot)...)
 	}
-	lines = append(lines, "c capture  j/k select")
+	lines = append(lines, "r refresh  d details  c capture  j/k select")
 	return strings.Join(lines, "\n")
 }
 
 func (s *Provider) refresh() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(context.Background(), s.id)
 		if err != nil && !providerCaptured(s.session.Profile(), s.id) {
@@ -112,6 +139,17 @@ func (s *Provider) refresh() tea.Cmd {
 		}
 		return providerStatusMsg{err: fmt.Errorf("%s status is unavailable", s.id)}
 	}
+}
+
+func snapshotLines(snapshot any) []string {
+	if snapshot == nil {
+		return []string{"  (empty)"}
+	}
+	encoded, err := json.MarshalIndent(snapshot, "  ", "  ")
+	if err != nil {
+		return []string{"  (unavailable)"}
+	}
+	return strings.Split(string(encoded), "\n")
 }
 func (s *Provider) capture() tea.Cmd {
 	return func() tea.Msg {

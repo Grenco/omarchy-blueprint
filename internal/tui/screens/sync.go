@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -19,7 +20,10 @@ type Sync struct {
 	status                  profilegit.Status
 	lastFetched             time.Time
 	diff                    *components.DiffViewer
-	input, confirm, message string
+	input                   string
+	textInput               textinput.Model
+	confirm, message        string
+	busy                    bool
 	err                     error
 }
 
@@ -32,35 +36,51 @@ type syncStatusMsg struct {
 	err    error
 }
 type syncResultMsg struct {
-	status profilegit.Status
-	err    error
+	status  profilegit.Status
+	err     error
+	fetched bool
 }
 type syncDiffMsg struct {
 	diff profilegit.Diff
 	err  error
 }
 
-func NewSync(session *workflow.Session) *Sync { return &Sync{session: session} }
+func NewSync(session *workflow.Session) *Sync {
+	input := textinput.New()
+	input.CharLimit = 0
+	return &Sync{session: session, textInput: input}
+}
 func (s *Sync) SetSize(width, height int) {
 	s.width, s.height = width, height
 	if s.diff != nil {
 		s.diff.SetSize(width, height)
 	}
 }
-func (s *Sync) Init() tea.Cmd { return s.refresh() }
+func (s *Sync) Init() tea.Cmd         { return s.refresh() }
+func (s *Sync) TransientActive() bool { return s.input != "" || s.confirm != "" || s.diff != nil }
+func (s *Sync) HandlesKey(key string) bool {
+	return strings.Contains(" j down k up d f c g l p i r x y v b z", " "+key+" ")
+}
 
 func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case syncStatusMsg:
-		s.status, s.err = msg.status, msg.err
+		if msg.err == nil {
+			s.status = msg.status
+		}
+		s.err = msg.err
 		if s.selected >= len(s.status.Changes) {
 			s.selected = max(0, len(s.status.Changes)-1)
 		}
 		return nil
 	case syncResultMsg:
+		s.busy = false
 		s.err = msg.err
 		if msg.err == nil {
 			s.status = msg.status
+			if msg.fetched {
+				s.lastFetched = time.Now()
+			}
 		}
 		return nil
 	case syncDiffMsg:
@@ -80,11 +100,9 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		switch key.String() {
 		case "esc":
 			s.input = ""
-		case "backspace":
-			if len(s.message) > 0 {
-				s.message = s.message[:len(s.message)-1]
-			}
+			s.textInput.Blur()
 		case "enter":
+			s.message = s.textInput.Value()
 			if s.input == "commit" {
 				s.input, s.confirm = "", "commit"
 			} else if s.input == "commit-push" {
@@ -93,9 +111,9 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 				return s.setRemote(s.message)
 			}
 		default:
-			if text := key.Text; text != "" {
-				s.message += text
-			}
+			var cmd tea.Cmd
+			s.textInput, cmd = s.textInput.Update(msg)
+			return cmd
 		}
 		return nil
 	}
@@ -120,6 +138,9 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		}
 		return s.diff.Update(msg)
 	}
+	if s.busy {
+		return nil
+	}
 	switch key.String() {
 	case "j", "down":
 		if s.selected < len(s.status.Changes)-1 {
@@ -139,11 +160,11 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		}
 	case "c":
 		if s.allowed("commit") {
-			s.input, s.message = "commit", profilegit.SuggestedCommitMessage(s.status)
+			s.beginInput("commit", profilegit.SuggestedCommitMessage(s.status))
 		}
 	case "g":
 		if s.allowed("commit-push") {
-			s.input, s.message = "commit-push", profilegit.SuggestedCommitMessage(s.status)
+			s.beginInput("commit-push", profilegit.SuggestedCommitMessage(s.status))
 		}
 	case "p":
 		if s.allowed("push") {
@@ -158,8 +179,8 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 			return s.initRepo()
 		}
 	case "r":
-		if s.status.Repository {
-			s.input, s.message = "remote", s.status.Origin
+		if s.allowed("set-remote") {
+			s.beginInput("remote", s.status.Origin)
 		}
 	case "x":
 		if s.allowed("remove-remote") {
@@ -167,19 +188,25 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		}
 	case "y":
 		if s.status.Origin != "" {
-			return func() tea.Msg { return HandoffRequest{Kind: "copy", Path: s.status.Origin} }
+			return func() tea.Msg {
+				return HandoffRequest{Source: "sync", Kind: "copy", Path: s.status.Origin, Refresh: "sync"}
+			}
 		}
 	case "v":
 		if s.complex() {
-			return func() tea.Msg { return HandoffRequest{Kind: "copy", Path: s.session.ProfileDir()} }
+			return func() tea.Msg {
+				return HandoffRequest{Source: "sync", Kind: "copy", Path: s.session.ProfileDir(), Refresh: "sync"}
+			}
 		}
 	case "b":
 		if url, ok := profilegit.BrowserURL(s.status.Origin); ok {
-			return func() tea.Msg { return HandoffRequest{Kind: "browser", Path: url} }
+			return func() tea.Msg { return HandoffRequest{Source: "sync", Kind: "browser", Path: url, Refresh: "sync"} }
 		}
 	case "z":
 		if s.complex() {
-			return func() tea.Msg { return HandoffRequest{Kind: "lazygit", Path: s.session.ProfileDir()} }
+			return func() tea.Msg {
+				return HandoffRequest{Source: "sync", Kind: "lazygit", Path: s.session.ProfileDir(), Refresh: "sync"}
+			}
 		}
 	}
 	return nil
@@ -190,7 +217,7 @@ func (s *Sync) View() string {
 		return "Sync\n\nUnable to load profile Git state: " + s.err.Error()
 	}
 	if s.input != "" {
-		return fmt.Sprintf("Sync\n\n%s: %s\nEnter confirm  Esc cancel", map[string]string{"commit": "Commit message", "commit-push": "Commit & Push message", "remote": "Origin URL"}[s.input], s.message)
+		return fmt.Sprintf("Sync\n\n%s\n%s\nEnter confirm  Esc cancel", map[string]string{"commit": "Commit message", "commit-push": "Commit & Push message", "remote": "Origin URL"}[s.input], s.textInput.View())
 	}
 	if s.confirm != "" {
 		return components.Confirm("Commit managed profile changes with message: " + s.message + "?")
@@ -234,6 +261,9 @@ func (s *Sync) View() string {
 	} else {
 		lines = append(lines, "f fetch  d diff  c commit  g commit & push  l pull  p push  r origin")
 	}
+	if s.hasUnmanagedChanges() {
+		lines = append(lines, "Warning: unmanaged working-tree changes will not be included in Blueprint commits.")
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -259,21 +289,13 @@ func (s *Sync) selectedChange() profilegit.Change {
 	return profilegit.Change{}
 }
 func (s *Sync) complex() bool {
-	if !s.status.Repository {
-		return false
-	}
-	if s.status.Branch == "" || s.status.Ahead > 0 && s.status.Behind > 0 {
-		return true
-	}
-	for _, change := range s.status.Changes {
-		if change.Index != "" || !change.Managed {
-			return true
-		}
-	}
-	return false
+	return complexStatus(s.status)
 }
 func (s *Sync) allowed(action string) bool { return s.reason(action) == "" }
 func (s *Sync) reason(action string) string {
+	if s.busy {
+		return "Git operation in progress"
+	}
 	if action == "init" {
 		if !s.status.Repository {
 			return ""
@@ -338,6 +360,33 @@ func (s *Sync) reason(action string) string {
 	}
 	return ""
 }
+func complexStatus(status profilegit.Status) bool {
+	if !status.Repository {
+		return false
+	}
+	if status.Branch == "" || status.Ahead > 0 && status.Behind > 0 {
+		return true
+	}
+	for _, change := range status.Changes {
+		if change.Index != "" || change.Worktree == "U" || change.Index == "U" {
+			return true
+		}
+	}
+	return false
+}
+func (s *Sync) hasUnmanagedChanges() bool {
+	for _, change := range s.status.Changes {
+		if !change.Managed {
+			return true
+		}
+	}
+	return false
+}
+func (s *Sync) beginInput(kind, value string) {
+	s.input = kind
+	s.textInput.SetValue(value)
+	s.textInput.Focus()
+}
 func (s *Sync) refresh() tea.Cmd {
 	return func() tea.Msg {
 		status, err := s.session.ProfileGitStatus(context.Background())
@@ -351,6 +400,7 @@ func (s *Sync) loadDiff(path string) tea.Cmd {
 	}
 }
 func (s *Sync) initRepo() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitInit(context.Background())
 		if err != nil {
@@ -360,37 +410,39 @@ func (s *Sync) initRepo() tea.Cmd {
 	}
 }
 func (s *Sync) fetch() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		_, err := s.session.ProfileGitFetch(context.Background())
 		if err != nil {
 			return syncResultMsg{err: err}
 		}
 		status, err := s.session.ProfileGitStatus(context.Background())
-		if err == nil {
-			s.lastFetched = time.Now()
-		}
-		return syncResultMsg{status: status, err: err}
+		return syncResultMsg{status: status, err: err, fetched: err == nil}
 	}
 }
 func (s *Sync) setRemote(raw string) tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitSetRemote(context.Background(), raw)
 		return syncResultMsg{status: result.Status, err: err}
 	}
 }
 func (s *Sync) removeRemote() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitRemoveRemote(context.Background())
 		return syncResultMsg{status: result.Status, err: err}
 	}
 }
 func (s *Sync) pull() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitPull(context.Background())
-		return syncResultMsg{status: result.Status, err: err}
+		return syncResultMsg{status: result.Status, err: err, fetched: err == nil}
 	}
 }
 func (s *Sync) push() tea.Cmd {
+	s.busy = true
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitPush(context.Background())
 		return syncResultMsg{status: result.Status, err: err}
@@ -399,23 +451,21 @@ func (s *Sync) push() tea.Cmd {
 func (s *Sync) commit(push bool) tea.Cmd {
 	message := s.message
 	s.confirm, s.message = "", ""
+	s.busy = true
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitCommit(context.Background(), message)
 		if err != nil {
 			return syncResultMsg{err: err}
 		}
 		status, err := s.session.ProfileGitStatus(context.Background())
-		if err != nil || !push || s.reasonFor(status, "push") != "" {
+		if err != nil || !push || reasonFor(status, "push") != "" {
 			return syncResultMsg{status: status, err: err}
 		}
 		result, err = s.session.ProfileGitPush(context.Background())
 		return syncResultMsg{status: result.Status, err: err}
 	}
 }
-func (s *Sync) reasonFor(status profilegit.Status, action string) string {
-	old := s.status
-	s.status = status
-	reason := s.reason(action)
-	s.status = old
-	return reason
+func reasonFor(status profilegit.Status, action string) string {
+	screen := Sync{status: status}
+	return screen.reason(action)
 }

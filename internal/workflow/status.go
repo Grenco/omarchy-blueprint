@@ -12,12 +12,13 @@ import (
 )
 
 type ProviderStatus struct {
-	ID           string
-	Captured     bool
-	Changes      []model.Change
-	ConfigScan   *configprovider.ScanSummary
-	ResourceGit  map[string]resourcesprovider.GitWorkingSummary
-	Verification *model.VerificationResult
+	ID           string                                         `json:"id"`
+	Captured     bool                                           `json:"captured"`
+	Snapshot     any                                            `json:"snapshot,omitempty"`
+	Changes      []model.Change                                 `json:"changes"`
+	ConfigScan   *configprovider.ScanSummary                    `json:"config_scan,omitempty"`
+	ResourceGit  map[string]resourcesprovider.GitWorkingSummary `json:"resource_git,omitempty"`
+	Verification *model.VerificationResult                      `json:"verification,omitempty"`
 }
 
 type StatusReport struct {
@@ -47,7 +48,7 @@ func (s *Session) Status(ctx context.Context, onlyProvider string) (StatusReport
 	}
 	report := StatusReport{Profile: s.profile, Machine: s.machine, Providers: make([]ProviderStatus, 0, len(selected))}
 	for _, provider := range selected {
-		status := ProviderStatus{ID: provider.ID(), Captured: true}
+		status := ProviderStatus{ID: provider.ID(), Captured: true, Snapshot: providerSnapshot(s.profile, provider.ID())}
 		var err error
 		if scanner, ok := provider.(scanProvider); ok {
 			var scan configprovider.ScanSummary
@@ -64,6 +65,31 @@ func (s *Session) Status(ctx context.Context, onlyProvider string) (StatusReport
 		report.Providers = append(report.Providers, status)
 	}
 	return report, nil
+}
+
+// providerSnapshot exposes the saved desired state without coupling callers to
+// profile.Data's complete on-disk layout.
+func providerSnapshot(data profile.Data, id string) any {
+	switch id {
+	case "packages":
+		return data.Packages
+	case "themes":
+		return data.Themes
+	case "plugins":
+		return data.Plugins
+	case "resources":
+		return data.Resources
+	case "config":
+		return data.Config
+	case "defaults":
+		return data.Defaults
+	case "shell":
+		return data.Shell
+	case "hooks":
+		return data.Hooks
+	default:
+		return nil
+	}
 }
 
 func CaptureRequiredError(id string) error {

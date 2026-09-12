@@ -64,7 +64,7 @@ func TestHandoffLazyGitCmd(t *testing.T) {
 }
 
 func TestHandoffCallbacks(t *testing.T) {
-	if handoffCmd("sync", nil) == nil {
+	if handoffCmd(ScreenSync, "sync", nil) == nil {
 		t.Fatal("handoff command is nil")
 	}
 	if copyCmd("value") == nil {

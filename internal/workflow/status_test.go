@@ -42,3 +42,25 @@ func TestWorkflowStatusPreservesProviderOrder(t *testing.T) {
 		t.Fatalf("providers = %#v", report.Providers)
 	}
 }
+
+func TestWorkflowStatusIncludesProviderSnapshot(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"zoxide"}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetProviders([]Provider{statusTestProvider{id: "packages"}})
+	report, err := session.Status(context.Background(), "packages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, ok := report.Providers[0].Snapshot.(profile.Packages)
+	if !ok || len(snapshot.Official) != 1 || snapshot.Official[0] != "zoxide" {
+		t.Fatalf("snapshot = %#v", report.Providers[0].Snapshot)
+	}
+}

@@ -50,6 +50,20 @@ func TestNoColorDisablesPaletteColors(t *testing.T) {
 	}
 }
 
+func TestThemeLoaderUsesNamedSemanticFallbacks(t *testing.T) {
+	stateHome := t.TempDir()
+	writeColors(t, stateHome, `accent = "#00aaff"
+muted = "#888888"
+red = "#ff0000"
+green = "#00ff00"
+yellow = "#ffff00"
+`)
+	palette := ThemeLoader{StateHome: func() (string, error) { return stateHome, nil }}.Load()
+	if palette.Accent != "#00aaff" || palette.Muted != "#888888" || palette.Error != "#ff0000" || palette.Success != "#00ff00" || palette.Warning != "#ffff00" {
+		t.Fatalf("palette = %#v", palette)
+	}
+}
+
 func TestThemeFingerprintChangesWhenPaletteChanges(t *testing.T) {
 	stateHome := t.TempDir()
 	writeColors(t, stateHome, `foreground = "#111111"`)

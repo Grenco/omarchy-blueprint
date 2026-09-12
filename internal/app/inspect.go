@@ -117,7 +117,7 @@ func (p resourcesStateProvider) InspectPath(ctx context.Context, d profile.Data,
 			return result, nil
 		}
 		if git {
-			result.Git = &workflow.GitInspection{Root: path, Remote: state.Remote, Revision: state.Revision, Branch: state.Branch, Staged: state.StagedTracked, Unstaged: state.UnstagedTracked, Untracked: len(state.Untracked)}
+			result.Git = &workflow.GitInspection{Root: path, Remote: state.Remote, Revision: state.Revision, Branch: state.Branch, Staged: state.StagedTracked, Unstaged: state.UnstagedTracked, Untracked: len(state.Untracked), UntrackedPaths: append([]string(nil), state.Untracked...)}
 			dirty := state.StagedTracked > 0 || state.UnstagedTracked > 0 || len(state.Untracked) > 0 || state.Conflicted || state.DirtySubmodule
 			if dirty {
 				result.SuggestedStrategy, result.StrategyReason = "git+diff", "portable Git worktree has local changes"

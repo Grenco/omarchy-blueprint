@@ -21,6 +21,7 @@ type Restore struct {
 	mode                    workflow.RestoreMode
 	diff                    *components.DiffViewer
 	confirm                 bool
+	busy                    bool
 	err                     error
 }
 
@@ -42,7 +43,8 @@ func (s *Restore) SetSize(width, height int) {
 		s.diff.SetSize(width, height)
 	}
 }
-func (s *Restore) Init() tea.Cmd { return s.compare() }
+func (s *Restore) Init() tea.Cmd         { return s.compare() }
+func (s *Restore) TransientActive() bool { return s.confirm }
 
 func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -53,7 +55,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case restoreAppliedMsg:
-		s.err, s.confirm = msg.err, false
+		s.err, s.confirm, s.busy = msg.err, false, false
 		if msg.err == nil {
 			return s.compare()
 		}
@@ -68,7 +70,10 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		case "esc":
 			s.confirm = false
 		case "enter":
-			return s.apply()
+			if !s.busy {
+				s.confirm, s.busy = false, true
+				return s.apply()
+			}
 		}
 		return nil
 	}
@@ -78,6 +83,9 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return s.diff.Update(msg)
+	}
+	if s.busy {
+		return nil
 	}
 	switch key.String() {
 	case "j", "down":
@@ -114,6 +122,9 @@ func (s *Restore) View() string {
 	}
 	if s.confirm {
 		return components.Confirm(s.confirmation())
+	}
+	if s.busy {
+		return "Applying restore..."
 	}
 	if s.diff != nil {
 		return "Restore diff\n" + s.diff.View()

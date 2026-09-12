@@ -21,3 +21,19 @@ func TestOverviewScreenSectionsAndNavigationTarget(t *testing.T) {
 		t.Fatalf("target=%#v", message)
 	}
 }
+
+func TestOverviewSelectionFollowsDisplayedSectionOrder(t *testing.T) {
+	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{
+		{Severity: workflow.AttentionDrift, Summary: "drift", Target: "config", Ref: "drift"},
+		{Severity: workflow.AttentionDecision, Summary: "review", Target: "resources", Ref: "review"},
+		{Severity: workflow.AttentionInfo, Provider: "profile-git", Summary: "sync", Target: "sync", Ref: "sync"},
+	}}}
+	if view := screen.View(); strings.Index(view, "review") > strings.Index(view, "drift") {
+		t.Fatalf("sections are not displayed in priority order: %q", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'j'})
+	message := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})().(OverviewTarget)
+	if message.Ref != "drift" {
+		t.Fatalf("selected item followed source order instead of display order: %#v", message)
+	}
+}
