@@ -67,6 +67,28 @@ func (s *Session) Status(ctx context.Context, onlyProvider string) (StatusReport
 	return report, nil
 }
 
+// CaptureStatus includes uncaptured categories so the Capture screen can make
+// first capture discoverable while reusing normal status for captured state.
+func (s *Session) CaptureStatus(ctx context.Context) (StatusReport, error) {
+	report, err := s.Status(ctx, "")
+	if err != nil {
+		return StatusReport{}, err
+	}
+	byID := make(map[string]ProviderStatus, len(report.Providers))
+	for _, status := range report.Providers {
+		byID[status.ID] = status
+	}
+	report.Providers = report.Providers[:0]
+	for _, id := range ProviderIDs(s.providers) {
+		if status, ok := byID[id]; ok {
+			report.Providers = append(report.Providers, status)
+		} else {
+			report.Providers = append(report.Providers, ProviderStatus{ID: id})
+		}
+	}
+	return report, nil
+}
+
 // providerSnapshot exposes the saved desired state without coupling callers to
 // profile.Data's complete on-disk layout.
 func providerSnapshot(data profile.Data, id string) any {

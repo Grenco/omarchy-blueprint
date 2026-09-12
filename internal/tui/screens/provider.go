@@ -37,8 +37,9 @@ type providerStatusMsg struct {
 type providerCaptureMsg struct{ err error }
 type providerToggleMsg struct{ err error }
 type CaptureComplete struct {
-	Provider string
-	Err      error
+	Provider  string
+	Providers []string
+	Err       error
 }
 
 func NewProvider(session *workflow.Session, id string) *Provider {
@@ -118,10 +119,6 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		if row := s.selectedSavedRow(); s.activeTab() == "Saved" && row.value != "" && providerItemCanToggle(s.id, row.section) && !s.busy {
 			s.busy = true
 			return s.toggleItem(row)
-		}
-		if s.activeTab() == "Saved" && providerCanToggle(s.id) && !s.busy {
-			s.busy = true
-			return s.toggleCaptured()
 		}
 	case "c":
 		if !s.busy {
@@ -396,21 +393,14 @@ func (s *Provider) refresh() tea.Cmd {
 func (s *Provider) capture() tea.Cmd {
 	return func() tea.Msg { _, err := s.session.Capture(s.ctx, s.id); return providerCaptureMsg{err} }
 }
-func (s *Provider) toggleCaptured() tea.Cmd {
-	captured := !providerCaptured(s.session.Profile(), s.id)
-	return func() tea.Msg { return providerToggleMsg{err: s.session.SetProviderCaptured(s.ctx, s.id, captured)} }
+func (s *Provider) CanToggleSelected() bool {
+	row := s.selectedSavedRow()
+	return !s.busy && s.activeTab() == "Saved" && row.value != "" && providerItemCanToggle(s.id, row.section)
 }
 func (s *Provider) toggleItem(row providerRow) tea.Cmd {
 	return func() tea.Msg {
 		return providerToggleMsg{err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
 	}
-}
-func providerCanToggle(id string) bool {
-	switch id {
-	case "themes", "plugins", "shell", "hooks", "defaults":
-		return true
-	}
-	return false
 }
 func providerItemCanToggle(id, section string) bool {
 	if id == "packages" {

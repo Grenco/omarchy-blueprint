@@ -218,7 +218,7 @@ func (s *Sync) View() string {
 		return "Profile Git diff\n" + s.diff.View()
 	}
 	if !s.status.Repository {
-		return "Sync\n\nProfile is not a Git repository."
+		return "Profile is not a Git repository."
 	}
 	branch := s.status.Branch
 	if branch == "" {

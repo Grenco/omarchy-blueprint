@@ -14,7 +14,7 @@ import (
 func TestConfigScreenRendersFlattenedTableWithUserFacingStateAndPolicy(t *testing.T) {
 	screen := &Config{width: 80, candidates: []config.Candidate{{Path: ".config/gh/hosts.yml", Classification: config.ConfigSensitive, Reason: "sensitive"}, {Path: ".config/nvim/init.lua", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}}
 	view := screen.View()
-	for _, want := range []string{"Path", "Policy", "Changed from baseline", "Sensitive", ".config/nvim/init.lua", "managed", "not eligible"} {
+	for _, want := range []string{"Path", "Policy", "Changed from baseline", "Sensitive", ".config/nvim/init.lua", "Included", "Not eligible"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -78,7 +78,7 @@ func TestConfigScreenDetailExplainsWhyAndKeepsRawReasonSecondary(t *testing.T) {
 	}
 	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{LivePath: live, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
 	detail := screen.DetailView()
-	for _, want := range []string{"State: Changed from baseline", "Policy: managed", "Why: modified baseline", "Provider reason: modified-baseline", "Live: " + live, "Effective policy: managed", "Edit/open/copy: available"} {
+	for _, want := range []string{"State: Changed from baseline", "Policy: Included", "Why: modified baseline", "Provider reason: modified-baseline", "Live: " + live, "Effective policy: managed", "Edit/open/copy: available"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail missing %q:\n%s", want, detail)
 		}

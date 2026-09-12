@@ -28,7 +28,10 @@ type captureStatusMsg struct {
 	statuses []workflow.ProviderStatus
 	err      error
 }
-type captureDoneMsg struct{ err error }
+type captureDoneMsg struct {
+	providers []string
+	err       error
+}
 
 func NewCaptureContext(ctx context.Context, session *workflow.Session) *Capture {
 	return &Capture{ctx: ctx, session: session, chosen: map[string]bool{}}
@@ -44,7 +47,7 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case captureDoneMsg:
 		s.err, s.busy, s.confirm, s.capturing, s.captureAll = msg.err, false, false, false, false
-		return s.refresh()
+		return func() tea.Msg { return CaptureComplete{Providers: msg.providers, Err: msg.err} }
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok || s.busy {
@@ -99,9 +102,6 @@ func (s *Capture) View() string {
 	if s.err != nil {
 		return s.styles.Error("Capture failed: " + s.err.Error())
 	}
-	if s.confirm {
-		return "Capture selected providers?\n\nEnter confirms. Escape cancels."
-	}
 	if s.capturing {
 		return "Capturing selected providers...\n\nThis can take a while while providers inspect the running system."
 	}
@@ -138,7 +138,7 @@ func (s *Capture) current() workflow.ProviderStatus {
 func (s *Capture) refresh() tea.Cmd {
 	s.busy = true
 	return func() tea.Msg {
-		report, err := s.session.Status(s.ctx, "")
+		report, err := s.session.CaptureStatus(s.ctx)
 		return captureStatusMsg{statuses: report.Providers, err: err}
 	}
 }
@@ -151,15 +151,18 @@ func (s *Capture) capture() tea.Cmd {
 	}
 	return func() tea.Msg {
 		if s.captureAll {
-			_, err := s.session.Capture(s.ctx, "")
-			return captureDoneMsg{err: err}
+			result, err := s.session.Capture(s.ctx, "")
+			return captureDoneMsg{providers: result.Providers, err: err}
 		}
+		captured := make([]string, 0, len(ids))
 		for _, id := range ids {
-			if _, err := s.session.Capture(s.ctx, id); err != nil {
+			result, err := s.session.Capture(s.ctx, id)
+			if err != nil {
 				return captureDoneMsg{err: err}
 			}
+			captured = append(captured, result.Providers...)
 		}
-		return captureDoneMsg{}
+		return captureDoneMsg{providers: captured}
 	}
 }
 func (s *Capture) chosenCount() int {

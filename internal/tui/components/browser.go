@@ -38,6 +38,16 @@ type BrowserInspectionMsg struct {
 
 // BrowserReadDirMsg is the asynchronous result for one directory generation.
 type BrowserReadDirMsg struct {
+	Generation    uint64
+	Path          string
+	Entries       []BrowserEntry
+	Err           error
+	ParentEntries []BrowserEntry
+	ParentErr     error
+}
+
+// BrowserChildReadDirMsg is the asynchronous result for the selected directory preview.
+type BrowserChildReadDirMsg struct {
 	Generation uint64
 	Path       string
 	Entries    []BrowserEntry
@@ -57,6 +67,13 @@ type Browser struct {
 	mode           BrowserMode
 	path           string
 	entries        []BrowserEntry
+	parentPath     string
+	parentEntries  []BrowserEntry
+	parentErr      error
+	childPath      string
+	childEntries   []BrowserEntry
+	childErr       error
+	childLoading   bool
 	bookmarks      []Bookmark
 	selected       int
 	list           Selectable
@@ -73,6 +90,7 @@ type Browser struct {
 	inspectPathCmd func(requestID uint64, path string) tea.Cmd
 	requestID      uint64
 	directoryID    uint64
+	childID        uint64
 	inspection     workflow.PathInspection
 	inspectionPath string
 }
@@ -145,6 +163,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		b.entries, b.readErr = result.Entries, result.Err
+		b.parentPath, b.parentEntries, b.parentErr = filepath.Dir(result.Path), result.ParentEntries, result.ParentErr
 		b.selected = b.cursors[b.path]
 		b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
 		b.selected = b.list.Selected
@@ -152,7 +171,14 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			b.addRecent(result.Path)
 		}
 		b.clearInspection()
-		return b.inspectSelected()
+		return tea.Batch(b.inspectSelected(), b.readChild())
+	}
+	if result, ok := msg.(BrowserChildReadDirMsg); ok {
+		if result.Generation != b.childID || result.Path != b.childPath {
+			return nil
+		}
+		b.childEntries, b.childErr, b.childLoading = result.Entries, result.Err, false
+		return nil
 	}
 	if result, ok := msg.(BrowserInspectionMsg); ok {
 		if result.RequestID == b.requestID {
@@ -185,7 +211,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 	}
 	if b.list.Vim(key.String(), len(b.filteredEntries()), b.listHeight()) {
 		b.selected, b.cursors[b.path] = b.list.Selected, b.list.Selected
-		return b.inspectSelected()
+		return tea.Batch(b.inspectSelected(), b.readChild())
 	}
 	switch key.String() {
 	case "esc":
@@ -203,7 +229,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			if len(b.filter) > 0 {
 				b.filter = b.filter[:len(b.filter)-1]
 				b.selected = 0
-				return b.inspectSelected()
+				return tea.Batch(b.inspectSelected(), b.readChild())
 			}
 			b.filtering = false
 			return nil
@@ -216,14 +242,14 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			b.selected++
 			b.cursors[b.path] = b.selected
 			b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
-			return b.inspectSelected()
+			return tea.Batch(b.inspectSelected(), b.readChild())
 		}
 	case "k", "up":
 		if b.selected > 0 {
 			b.selected--
 			b.cursors[b.path] = b.selected
 			b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
-			return b.inspectSelected()
+			return tea.Batch(b.inspectSelected(), b.readChild())
 		}
 	case "enter", "l", "right":
 		if entry, ok := b.selectedEntry(); ok && entry.Type == "directory" {
@@ -254,11 +280,14 @@ func (b Browser) View() string {
 	if b.bookmarksOpen {
 		lines = append(lines, "Bookmarks")
 		for i, bookmark := range b.bookmarks {
-			marker := " "
+			line := fmt.Sprintf("  %s  %s", bookmark.Label, bookmark.Path)
 			if i == b.bookmark {
-				marker = ">"
+				if !b.styles.Palette.ColorEnabled {
+					line = Icons.Selected + line[1:]
+				}
+				line = b.styles.Selection(line, true)
 			}
-			lines = append(lines, fmt.Sprintf("%s %s  %s", marker, bookmark.Label, bookmark.Path))
+			lines = append(lines, line)
 		}
 		return strings.Join(lines, "\n")
 	}
@@ -318,38 +347,61 @@ func (b Browser) CanSelect() bool {
 func (b *Browser) readDir() tea.Cmd {
 	b.clearInspection()
 	b.directoryID++
+	b.childID++
+	b.childPath, b.childEntries, b.childErr, b.childLoading = "", nil, nil, false
 	generation, path := b.directoryID, b.path
 	return func() tea.Msg {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return BrowserReadDirMsg{Generation: generation, Path: path, Err: err}
-		}
-		result := make([]BrowserEntry, 0, len(entries))
-		for _, entry := range entries {
-			entryPath := filepath.Join(path, entry.Name())
-			info, err := os.Lstat(entryPath)
-			if err != nil {
-				continue
-			}
-			kind := "special"
-			if info.Mode()&os.ModeSymlink != 0 {
-				kind = "symlink"
-			} else if info.IsDir() {
-				kind = "directory"
-			} else if info.Mode().IsRegular() {
-				kind = "file"
-			}
-			result = append(result, BrowserEntry{Name: entry.Name(), Path: entryPath, Type: kind, Hidden: strings.HasPrefix(entry.Name(), ".")})
-		}
-		sort.Slice(result, func(i, j int) bool {
-			left, right := result[i], result[j]
-			if (left.Type == "directory") != (right.Type == "directory") {
-				return left.Type == "directory"
-			}
-			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
-		})
-		return BrowserReadDirMsg{Generation: generation, Path: path, Entries: result}
+		entries, err := readBrowserEntries(path)
+		parentEntries, parentErr := readBrowserEntries(filepath.Dir(path))
+		return BrowserReadDirMsg{Generation: generation, Path: path, Entries: entries, Err: err, ParentEntries: parentEntries, ParentErr: parentErr}
 	}
+}
+
+func (b *Browser) readChild() tea.Cmd {
+	b.childID++
+	b.childPath, b.childEntries, b.childErr, b.childLoading = "", nil, nil, false
+	entry, ok := b.selectedEntry()
+	if !ok || entry.Type != "directory" {
+		return nil
+	}
+	generation, path := b.childID, entry.Path
+	b.childPath, b.childLoading = path, true
+	return func() tea.Msg {
+		entries, err := readBrowserEntries(path)
+		return BrowserChildReadDirMsg{Generation: generation, Path: path, Entries: entries, Err: err}
+	}
+}
+
+func readBrowserEntries(path string) ([]BrowserEntry, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]BrowserEntry, 0, len(entries))
+	for _, entry := range entries {
+		entryPath := filepath.Join(path, entry.Name())
+		info, err := os.Lstat(entryPath)
+		if err != nil {
+			continue
+		}
+		kind := "special"
+		if info.Mode()&os.ModeSymlink != 0 {
+			kind = "symlink"
+		} else if info.IsDir() {
+			kind = "directory"
+		} else if info.Mode().IsRegular() {
+			kind = "file"
+		}
+		result = append(result, BrowserEntry{Name: entry.Name(), Path: entryPath, Type: kind, Hidden: strings.HasPrefix(entry.Name(), ".")})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		if (left.Type == "directory") != (right.Type == "directory") {
+			return left.Type == "directory"
+		}
+		return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+	})
+	return result, nil
 }
 
 func (b *Browser) goParent() tea.Cmd {
@@ -434,17 +486,18 @@ func (b Browser) currentView() string {
 func (b Browser) parentView() string {
 	parent := filepath.Dir(b.path)
 	lines := []string{"Parent"}
-	entries, err := os.ReadDir(parent)
-	if err != nil {
-		return strings.Join(append(lines, "  "+err.Error()), "\n")
+	if b.parentPath != parent {
+		return strings.Join(append(lines, "  Loading..."), "\n")
 	}
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil || !info.IsDir() {
+	if b.parentErr != nil {
+		return strings.Join(append(lines, "  "+b.parentErr.Error()), "\n")
+	}
+	for _, entry := range b.parentEntries {
+		if entry.Type != "directory" {
 			continue
 		}
-		line := "  " + Icons.Folder + " " + entry.Name()
-		if filepath.Join(parent, entry.Name()) == b.path {
+		line := "  " + Icons.Folder + " " + entry.Name
+		if entry.Path == b.path {
 			if !b.styles.Palette.ColorEnabled {
 				line = Icons.Selected + line[1:]
 			}
@@ -462,26 +515,24 @@ func (b Browser) parentView() string {
 func (b Browser) childView() string {
 	entry, ok := b.selectedEntry()
 	if !ok || entry.Type != "directory" {
-		return b.DetailView()
+		return "Next\n  (select a directory)"
 	}
 	lines := []string{"Next: " + entry.Name}
-	entries, err := os.ReadDir(entry.Path)
-	if err != nil {
-		return strings.Join(append(lines, "  "+err.Error()), "\n")
+	if b.childPath != entry.Path || b.childLoading {
+		return strings.Join(append(lines, "  Loading..."), "\n")
+	}
+	if b.childErr != nil {
+		return strings.Join(append(lines, "  "+b.childErr.Error()), "\n")
 	}
 	limit := max(1, b.listHeight()-1)
-	for i, child := range entries {
+	for i, child := range b.childEntries {
 		if i >= limit {
 			lines = append(lines, "  …")
 			break
 		}
-		kind := "file"
-		if child.IsDir() {
-			kind = "directory"
-		}
-		lines = append(lines, "  "+browserIcon(kind)+" "+child.Name())
+		lines = append(lines, "  "+browserIcon(child.Type)+" "+child.Name)
 	}
-	if len(entries) == 0 {
+	if len(b.childEntries) == 0 {
 		lines = append(lines, "  (empty)")
 	}
 	return strings.Join(lines, "\n")

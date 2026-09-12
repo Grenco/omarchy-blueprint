@@ -37,6 +37,7 @@ type Config struct {
 	focusPath               string
 	statusID, inspectionID  uint64
 	busy                    bool
+	notice                  string
 	err                     error
 }
 
@@ -121,6 +122,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			s.err = msg.err
 			return nil
 		}
+		s.notice = "Policy updated."
 		return s.rescan()
 	}
 	key, ok := msg.(tea.KeyPressMsg)
@@ -257,6 +259,9 @@ func (s *Config) View() string {
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+s.err.Error())
 	}
+	if s.notice != "" {
+		lines = append(lines, s.styles.Success(s.notice))
+	}
 	rows := s.rows()
 	tableRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
@@ -268,7 +273,16 @@ func (s *Config) View() string {
 			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + configState(row.group)), ""}, Selected: i == s.selected, Focused: true})
 			continue
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{"  " + row.candidate.Path, candidatePolicy(row.candidate)}, Selected: i == s.selected, Focused: true})
+		policy := candidatePolicy(row.candidate)
+		switch policy {
+		case "Included":
+			policy = s.styles.Added(policy)
+		case "Excluded":
+			policy = s.styles.Removed(policy)
+		default:
+			policy = s.styles.Muted(policy)
+		}
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + row.candidate.Path, policy}, Selected: i == s.selected, Focused: true})
 	}
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
@@ -429,6 +443,7 @@ func (s *Config) validLive() bool {
 	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
 }
 func (s *Config) CanHandoff() bool { return s.validLive() }
+func (s *Config) CanPolicy() bool  { return s.selectedCandidate().Path != "" }
 
 // DetailView supplies the root three-pane preview without duplicating it below the list.
 func (s *Config) DetailView() string {
@@ -465,15 +480,15 @@ func configState(classification config.Classification) string {
 func candidatePolicy(candidate config.Candidate) string {
 	switch candidate.Classification {
 	case config.ConfigExcluded:
-		return "excluded"
+		return "Excluded"
 	case config.ConfigDelegated:
-		return "managed elsewhere"
+		return "Managed elsewhere"
 	case config.ConfigSensitive, config.ConfigOversized, config.ConfigVolatile, config.ConfigUnmanagedSymlink, config.ConfigUnsupported:
-		return "not eligible"
+		return "Not eligible"
 	case config.ConfigModifiedBaseline, config.ConfigDeletedBaseline:
-		return "managed"
+		return "Included"
 	default:
-		return "automatic"
+		return "Auto"
 	}
 }
 func configReason(reason string) string {

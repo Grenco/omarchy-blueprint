@@ -2446,6 +2446,13 @@ This is the first genuinely useful release.
 **Delivered: TUI v1.** Bubble Tea now provides the primary interactive client
 while the CLI remains fully functional without it.
 
+Current interaction clarification: the stable sidebar begins Overview → Capture
+→ Packages. Capture is a dedicated screen: `Space` toggles the highlighted
+provider, `a` selects changed providers, `c` captures the selection, and `C`
+runs aggregate Capture All. Capture requires confirmation (`Enter`) and can be
+cancelled with `Esc`; success refreshes Overview, provider status, and local
+Profile Git/Sync state without automatically committing or pushing.
+
 Screens include:
 
 ```text id="n10a9c"

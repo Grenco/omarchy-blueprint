@@ -85,6 +85,18 @@ func (s *Machines) SetSize(width, height int) {
 }
 func (s *Machines) Init() tea.Cmd         { return nil }
 func (s *Machines) TransientActive() bool { return s.browser != nil || s.confirm != "" || s.mode != "" }
+func (s *Machines) HasSelectedMachine() bool {
+	return !s.focusMappings && s.selectedMachine().Name != ""
+}
+func (s *Machines) CanUseMachine() bool {
+	return s.HasSelectedMachine() && s.selectedMachine().Name != s.session.Machine().Name
+}
+func (s *Machines) CanClearMachine() bool { return !s.focusMappings && s.session.Machine().Name != "" }
+func (s *Machines) CanMapResource() bool {
+	return s.focusMappings && s.selectedMachine().Name != "" && s.selectedMapping().id != ""
+}
+func (s *Machines) CanUnmapResource() bool { return s.CanMapResource() && s.selectedMapping().override }
+func (s *Machines) MappingFocused() bool   { return s.focusMappings }
 
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	if submitted, ok := msg.(components.TextInputSubmitted); ok {
@@ -252,15 +264,18 @@ func (s *Machines) View() string {
 	}
 	machineLines := make([]string, 0, len(s.machines()))
 	for i, item := range s.machines() {
-		marker := " "
-		if i == s.machineList.Selected {
-			marker = ">"
-		}
 		active := ""
 		if item.Name == s.session.Machine().Name {
-			active = " *"
+			active = " " + s.styles.Success("[active]")
 		}
-		machineLines = append(machineLines, marker+" "+item.Name+active)
+		line := "  " + item.Name + active
+		if i == s.machineList.Selected {
+			if !s.styles.Palette.ColorEnabled {
+				line = components.Icons.Selected + line[1:]
+			}
+			line = s.styles.Selection(line, !s.focusMappings)
+		}
+		machineLines = append(machineLines, line)
 	}
 	if len(machineLines) == 0 {
 		machineLines = append(machineLines, "No machine overlays.")
@@ -282,7 +297,7 @@ func (s *Machines) View() string {
 		rightWidth = 80
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
-	return lipgloss.JoinHorizontal(lipgloss.Top, "Machines\n"+left, "  ", "Resource paths\n"+right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
 }
 
 func (s *Machines) DetailView() string {
@@ -367,9 +382,11 @@ func (s *Machines) tableHeight() int {
 func (s *Machines) confirmModal() tea.Cmd {
 	prompt := "Rename machine to " + s.name + "?"
 	if s.confirm == "remove" {
-		prompt = "Remove " + s.selectedMachine().Name + "? Resource files remain untouched."
+		prompt = "Remove machine \"" + s.selectedMachine().Name + "\"?\n\nThis removes the machine overlay and its path mappings.\nLive Resource files will not be moved or deleted."
 	}
-	return func() tea.Msg { return components.ModalRequest{Title: "Machines", Content: components.Confirm(prompt)} }
+	return func() tea.Msg {
+		return components.ModalRequest{Title: "Confirm machine change", Content: components.Confirm(prompt)}
+	}
 }
 func (s *Machines) nameModal(title string) tea.Cmd {
 	return func() tea.Msg {

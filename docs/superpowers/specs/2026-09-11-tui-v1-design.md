@@ -8,6 +8,10 @@
 
 **Prerequisite:** `docs/superpowers/specs/2026-09-11-profile-git-sync-v1-design.md`
 
+> **Historical design note:** This approved v1 design predates the dedicated
+> Capture screen. The implementation clarification below records the current
+> shipped navigation and interactions without changing the historical design.
+
 ## 1. Purpose
 
 TUI v1 makes Omarchy Blueprint's mature state/safety model usable as a primary daily interactive experience without replacing the CLI, the running system, the user's editor, file manager, browser, or Git client.
@@ -175,6 +179,7 @@ Default wide layout:
 ┌ Blueprint ─ profile: main ─ machine: framework ─ 3 need review ─────────────┐
 ├──────────────┬───────────────────────────────────────┬───────────────────────┤
 │ Overview     │                                       │                       │
+│ Capture      │                                       │                       │
 │ Packages     │                                       │                       │
 │ Config       │              workspace                │       details         │
 │ Resources    │                                       │       / preview       │
@@ -201,6 +206,12 @@ busy/error state when relevant
 ```
 
 The footer is contextual and shows only currently valid shortcuts plus `?` and `:`.
+
+The current sidebar order begins Overview, Capture, Packages. Capture is a
+dedicated aggregate workflow: `Space` toggles the highlighted provider, `a`
+selects changed providers, `c` captures the selected providers, and `C` runs
+aggregate Capture All. Both capture actions require confirmation; `Enter`
+confirms and `Esc` cancels.
 
 ## 7. Responsive behavior
 
@@ -237,6 +248,10 @@ Esc               close palette/modal/detail or go back one transient level
 q                 quit when no transient UI consumes it
 ctrl+c            quit safely
 ```
+
+On Capture, `Space` toggles the highlighted provider; `a` selects changed
+providers; `c` captures the selected providers; and `C` runs Capture All. The
+capture modal accepts `Enter` and cancels with `Esc`.
 
 Do not bind destructive operations to an unconfirmed single keypress.
 
@@ -350,6 +365,15 @@ R / navigate to restore plan scoped to provider when supported
 ```
 
 Any capture action writes the profile only after a confirmation dialog that names the provider and semantic changes currently observed. TUI v1 does not introduce a new long-lived capture staging protocol; it uses the same current-state inspection and capture operation as CLI and refreshes after completion.
+
+### 11.1 Current Capture screen clarification
+
+The shipped dedicated Capture screen composes provider capture operations into
+one aggregate workflow. `c` captures only the selected providers; `C` performs
+aggregate Capture All. Neither action auto-commits or pushes. After a successful
+capture, reload the profile, refresh provider status and Overview, and refresh
+local Profile Git/Sync status so newly managed profile changes are immediately
+visible.
 
 ## 12. Config screen
 
@@ -1147,7 +1171,7 @@ After any mutation:
 Config policy        → reload profile + rescan Config
 Resource track       → reload profile + refresh Resources/Overview
 Machine operation    → reload machine selection + Resources/Overview
-Capture              → reload profile + provider status + Sync local status
+Capture              → reload profile + provider status + Overview + Sync local status
 Restore              → rerun verification/status + Overview
 Profile Git action   → refresh Profile Git status; pull also reloads entire profile/session
 External editor      → refresh owning provider/path on return

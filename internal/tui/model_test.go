@@ -70,6 +70,23 @@ func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
 	}
 }
 
+func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
+	cmd := wrapScreenCmd(ScreenResources, tea.Batch(
+		func() tea.Msg { return ownedTestMsg{step: 1} },
+		func() tea.Msg { return ownedTestMsg{step: 2} },
+	))
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("wrapped command = %#v", batch)
+	}
+	for _, child := range batch {
+		wrapped, ok := child().(screenMsg)
+		if !ok || wrapped.Screen != ScreenResources {
+			t.Fatalf("batch child lost owner: %#v", wrapped)
+		}
+	}
+}
+
 func TestCompactSidebarIsVisibleWhenToggled(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
 	if m.focus == focusSidebar {
@@ -136,11 +153,10 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	}
 	configScreen := m.activeScreen().(*configScreen)
 	consumeScreenCmd(t, &m, configScreen.Init())
-	if view := configScreen.View(); !strings.Contains(view, "Needs a decision") || !strings.Contains(view, ".config/example/settings.toml") || !strings.Contains(view, "automatic") {
+	if view := configScreen.View(); !strings.Contains(view, "Needs a decision") || !strings.Contains(view, ".config/example/settings.toml") || !strings.Contains(view, "Auto") {
 		t.Fatalf("config semantic markers missing: %q", view)
 	}
 	consumeScreenCmd(t, &m, configScreen.Update(tea.KeyPressMsg{Code: 'i'}))
-	consumeScreenCmd(t, &m, configScreen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	if got := session.Profile().Config.Included; len(got) != 1 || got[0] != ".config/example/settings.toml" {
 		t.Fatalf("config policy was not persisted: %#v", got)
 	}
@@ -402,6 +418,29 @@ func TestScreenModalRequestUsesConfirmationOverlay(t *testing.T) {
 	}
 }
 
+func TestDirectScreenKeyOpensRootConfirmationModal(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.screens[ScreenOverview] = &modalKeyScreen{}
+	m.selectScreen(ScreenOverview)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c'})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if m.modal != modalConfirm || !strings.Contains(m.View().Content, "Confirm direct action") || m.footer() != "enter confirm   esc cancel" {
+		t.Fatalf("modal=%d footer=%q view=%q", m.modal, m.footer(), m.View().Content)
+	}
+}
+
+type modalKeyScreen struct{}
+
+func (*modalKeyScreen) ID() ScreenID           { return ScreenOverview }
+func (*modalKeyScreen) SetSize(int, int)       {}
+func (*modalKeyScreen) Update(tea.Msg) tea.Cmd { return nil }
+func (*modalKeyScreen) View() string           { return "direct action" }
+func (*modalKeyScreen) Actions() []Action      { return nil }
+func (*modalKeyScreen) HandleKey(tea.KeyPressMsg) KeyResult {
+	return KeyResult{Consumed: true, Cmd: func() tea.Msg { return components.ModalRequest{Title: "Confirm direct action", Content: "Proceed?"} }}
+}
+
 func TestCommandPalette(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
@@ -485,7 +524,14 @@ func consumeScreenCmd(t *testing.T, m *model, cmd tea.Cmd) {
 	if cmd == nil {
 		return
 	}
-	updated, next := m.Update(cmd())
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, batchCmd := range batch {
+			consumeScreenCmd(t, m, batchCmd)
+		}
+		return
+	}
+	updated, next := m.Update(msg)
 	*m = updated.(model)
 	if next != nil {
 		consumeScreenCmd(t, m, next)

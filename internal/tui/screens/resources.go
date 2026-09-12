@@ -31,8 +31,10 @@ type Resources struct {
 	discover                bool
 	items                   []profile.Resource
 	git                     map[string]resourcesprovider.GitWorkingSummary
+	effective               map[string]string
 	browser                 *components.Browser
 	phase                   resourcePhase
+	confirmFrom             resourcePhase
 	strategy                string
 	candidate               components.BrowserEntry
 	untracked               []string
@@ -53,9 +55,10 @@ type ResourceAction struct {
 }
 
 type resourcesStatusMsg struct {
-	items []profile.Resource
-	git   map[string]resourcesprovider.GitWorkingSummary
-	err   error
+	items     []profile.Resource
+	git       map[string]resourcesprovider.GitWorkingSummary
+	effective map[string]string
+	err       error
 }
 type resourceTrackedMsg struct{ err error }
 type resourceUntrackedMsg struct{ err error }
@@ -89,6 +92,13 @@ func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
 func (s *Resources) Actions() []ResourceAction {
+	if s.phase == resourceUntracked {
+		return []ResourceAction{
+			{ID: "select", Label: "Toggle untracked file", Shortcut: "space", Enabled: len(s.untracked) > 0},
+			{ID: "select-all", Label: "Select all untracked files", Shortcut: "a", Enabled: len(s.untracked) > 0},
+			{ID: "continue", Label: "Continue tracking", Shortcut: "enter", Enabled: true},
+		}
+	}
 	if s.phase != resourceBrowse || s.browser != nil {
 		return nil
 	}
@@ -111,7 +121,7 @@ func (s *Resources) Actions() []ResourceAction {
 
 func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
-	case components.BrowserInspectionMsg, components.BrowserReadDirMsg:
+	case components.BrowserInspectionMsg, components.BrowserReadDirMsg, components.BrowserChildReadDirMsg:
 		if s.browser != nil {
 			cmd := s.browser.Update(msg)
 			if s.phase == resourceCandidateInspect || s.phase == resourceStrategy || s.phase == resourceUntracked {
@@ -121,7 +131,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case resourcesStatusMsg:
-		s.items, s.git = msg.items, msg.git
+		s.items, s.git, s.effective = msg.items, msg.git, msg.effective
 		if msg.err != nil {
 			s.err = msg.err
 		}
@@ -229,7 +239,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			if s.strategy == "git+diff" && len(s.untracked) > 0 {
 				s.phase = resourceUntracked
 			} else if s.strategy != "" {
+				s.confirmFrom = s.phase
 				s.phase, s.confirm = resourceConfirm, "track"
+				return s.confirmTrackModal()
 			}
 		}
 		return nil
@@ -252,7 +264,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 				s.chosen[path] = true
 			}
 		case "enter":
+			s.confirmFrom = s.phase
 			s.phase, s.confirm = resourceConfirm, "track"
+			return s.confirmTrackModal()
 		}
 		return nil
 	}
@@ -287,6 +301,10 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	case "u", "x":
 		if !s.discover && s.selectedResource().ID != "" {
 			s.confirm = "untrack"
+			id := s.selectedResource().ID
+			return func() tea.Msg {
+				return components.ModalRequest{Title: "Confirm untrack", Content: components.Confirm("Untrack " + id + "? Its live path remains untouched.")}
+			}
 		}
 	case "e", "o", "y":
 		if item := s.selectedResource(); item.ID != "" {
@@ -305,12 +323,16 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (s *Resources) View() string {
-	if s.confirm == "untrack" {
-		return components.Confirm("Untrack " + s.selectedResource().ID + "? Its live path remains untouched.")
+func (s *Resources) confirmTrackModal() tea.Cmd {
+	return func() tea.Msg {
+		return components.ModalRequest{Title: "Confirm tracked resource", Content: components.Confirm("Track selected path with strategy " + s.strategy + "?")}
 	}
-	if s.phase == resourceConfirm {
-		return components.Confirm("Track selected path with strategy " + s.strategy + "?")
+}
+
+func (s *Resources) View() string {
+	phase := s.phase
+	if phase == resourceConfirm {
+		phase = s.confirmFrom
 	}
 	if s.phase == resourcePending {
 		return "Tracking resource..."
@@ -321,26 +343,30 @@ func (s *Resources) View() string {
 		}
 		return "Resource tracked. Press Esc to continue."
 	}
-	if s.browser != nil && s.phase == resourceBrowse {
+	if s.browser != nil && phase == resourceBrowse {
 		return s.browser.View()
 	}
-	if s.phase == resourceCandidateInspect {
+	if phase == resourceCandidateInspect {
 		return "Candidate: " + s.candidate.Path
 	}
-	if s.phase == resourceStrategy {
+	if phase == resourceStrategy {
 		return components.Confirm("Choose tracking strategy\n\ncopy: snapshot files and directories\ngit: portable repository provenance only\ngit+diff: repository plus selected local changes\n\n1 copy   2 git   3 git+diff\nSelected: " + s.strategy)
 	}
-	if s.phase == resourceUntracked {
+	if phase == resourceUntracked {
 		lines := []string{"Select eligible untracked files"}
 		for i, path := range s.untracked {
-			marker, selected := " ", " "
-			if i == s.selected && !s.styles.Palette.ColorEnabled {
-				marker = ">"
-			}
+			selected := " "
 			if s.chosen[path] {
 				selected = "x"
 			}
-			lines = append(lines, fmt.Sprintf("%s [%s] %s", marker, selected, path))
+			line := fmt.Sprintf("  [%s] %s", selected, path)
+			if i == s.selected {
+				if !s.styles.Palette.ColorEnabled {
+					line = components.Icons.Selected + line[1:]
+				}
+				line = s.styles.Selection(line, true)
+			}
+			lines = append(lines, line)
 		}
 		return strings.Join(lines, "\n")
 	}
@@ -358,11 +384,7 @@ func (s *Resources) View() string {
 	}
 	rows := make([]components.Row, 0, len(s.items))
 	for i, item := range s.items {
-		state := "clean"
-		if item.Dirty {
-			state = "modified"
-		}
-		rows = append(rows, components.Row{Cells: []string{item.ID, item.Strategy, item.Path, state}, Selected: i == s.selected, Focused: true})
+		rows = append(rows, components.Row{Cells: []string{item.ID, item.Strategy, item.Path, s.effective[item.ID], s.resourceState(item)}, Selected: i == s.selected, Focused: true})
 	}
 	if len(s.items) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No tracked resources."}})
@@ -371,7 +393,7 @@ func (s *Resources) View() string {
 	if width == 0 {
 		width = 120
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "Resource", MinWidth: 10}, {Title: "Strategy", MinWidth: 8}, {Title: "Path", MinWidth: 16}, {Title: "State", MinWidth: 7}}, rows, width, s.listHeight(), s.styles))
+	lines = append(lines, s.table.Render([]components.Column{{Title: "Resource", MinWidth: 10}, {Title: "Strategy", MinWidth: 8}, {Title: "Portable path", MinWidth: 16}, {Title: "Effective path", MinWidth: 16}, {Title: "State", MinWidth: 9}}, rows, width, s.listHeight(), s.styles))
 	return strings.Join(lines, "\n")
 }
 
@@ -383,10 +405,10 @@ func (s *Resources) DetailView() string {
 		return resourceDetail(s.candidate.Path, s.browserInspection())
 	}
 	if item := s.selectedResource(); item.ID != "" {
-		lines := []string{"Resource: " + item.ID, "Saved path: " + item.Path, "Kind: " + item.Kind, "Strategy: " + item.Strategy, "Hash: " + item.Hash, "Mode: " + item.Mode, "Remote: " + item.Remote, "Branch: " + item.Branch, "Revision: " + item.Revision}
-		if item.Strategy == "git+diff" {
+		lines := []string{"Resource: " + item.ID, "Portable path: " + item.Path, "Effective path: " + s.effective[item.ID], "Kind: " + item.Kind, "Strategy: " + item.Strategy, "Hash: " + item.Hash, "Mode: " + item.Mode, "Remote: " + item.Remote, "Branch: " + item.Branch, "Revision: " + item.Revision}
+		if item.Strategy == "git" || item.Strategy == "git+diff" {
 			state := s.git[item.ID]
-			lines = append(lines, fmt.Sprintf("Staged: %d", state.StagedTracked), fmt.Sprintf("Unstaged: %d", state.UnstagedTracked), "Selected untracked: "+strings.Join(state.SelectedUntracked, ", "), "Other untracked: "+strings.Join(state.Untracked, ", "))
+			lines = append(lines, fmt.Sprintf("Staged: %d", state.StagedTracked), fmt.Sprintf("Unstaged: %d", state.UnstagedTracked), "Selected untracked: "+strings.Join(state.SelectedUntracked, ", "), "Other untracked: "+strings.Join(otherUntracked(state), ", "))
 		}
 		return strings.Join(lines, "\n")
 	}
@@ -463,11 +485,56 @@ func (s *Resources) rescan() tea.Cmd {
 		}
 		for _, provider := range report.Providers {
 			if provider.ID == "resources" {
-				return resourcesStatusMsg{items: report.Profile.Resources.Items, git: provider.ResourceGit}
+				effective := make(map[string]string, len(report.Profile.Resources.Items))
+				for _, item := range report.Profile.Resources.Items {
+					inspection, err := s.session.InspectResource(s.ctx, item.ID)
+					if err == nil {
+						effective[item.ID] = inspection.EffectivePath
+					}
+				}
+				return resourcesStatusMsg{items: report.Profile.Resources.Items, git: provider.ResourceGit, effective: effective}
 			}
 		}
 		return resourcesStatusMsg{}
 	}
+}
+
+func (s *Resources) resourceState(item profile.Resource) string {
+	if item.Strategy != "git" && item.Strategy != "git+diff" {
+		if item.Dirty {
+			return "modified"
+		}
+		return "clean"
+	}
+	state, ok := s.git[item.ID]
+	if !ok {
+		return "clean"
+	}
+	parts := make([]string, 0, 2)
+	if state.StagedTracked > 0 || state.UnstagedTracked > 0 {
+		parts = append(parts, "modified")
+	}
+	if len(state.Untracked) > 0 {
+		parts = append(parts, "untracked")
+	}
+	if len(parts) == 0 {
+		return "clean"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func otherUntracked(state resourcesprovider.GitWorkingSummary) []string {
+	selected := make(map[string]bool, len(state.SelectedUntracked))
+	for _, path := range state.SelectedUntracked {
+		selected[path] = true
+	}
+	other := make([]string, 0, len(state.Untracked))
+	for _, path := range state.Untracked {
+		if !selected[path] {
+			other = append(other, path)
+		}
+	}
+	return other
 }
 func (s *Resources) listHeight() int {
 	if s.height == 0 {

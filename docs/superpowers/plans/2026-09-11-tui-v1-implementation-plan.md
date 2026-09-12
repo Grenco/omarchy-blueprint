@@ -4,6 +4,10 @@
 
 **Goal:** Add Omarchy Blueprint's primary interactive Bubble Tea interface—sidebar navigation, decision inbox, Config review, Resource discovery, machine mappings, shared diffs, normal-vs-force restore consequences, Profile Git Sync, specialist-tool handoff, and Omarchy-aware theming—without creating TUI-only semantics.
 
+> **Implementation clarification (post-plan):** The shipped TUI adds a
+> dedicated Capture screen between Overview and Packages. This records current
+> behavior; the tasks below remain historical implementation planning.
+
 **Architecture:** Extract presentation-independent orchestration from the current Cobra-centric app into `internal/workflow`, then build `internal/tui` as a native Bubble Tea v2 client of those workflows/providers. The CLI remains the authoritative headless surface; new inspection data needed by the TUI is exposed through `inspect` CLI/JSON before the TUI consumes it.
 
 **Tech Stack:** Go 1.25+, Bubble Tea v2, Lip Gloss v2, Bubbles v2, Cobra, `golang.org/x/term`, `github.com/mattn/go-shellwords`, existing Blueprint providers/machine/restore/profilegit packages.
@@ -715,6 +719,7 @@ Stable screen IDs:
 type ScreenID string
 const (
     ScreenOverview  ScreenID = "overview"
+    ScreenCapture   ScreenID = "capture"
     ScreenPackages  ScreenID = "packages"
     ScreenConfig    ScreenID = "config"
     ScreenResources ScreenID = "resources"
@@ -773,6 +778,12 @@ Root model owns global focus/transients/palette/theme and routes unconsumed mess
 - [ ] **Step 5: Implement sidebar/statusbar/help**
 
 Sidebar always uses stable screen ordering. Statusbar accepts contextual actions and renders only those valid for current state.
+
+Current order starts Overview, Capture, Packages. On Capture, `Space` toggles
+the highlighted provider, `a` selects changed providers, `c` opens confirmation
+for selected-provider capture, and `C` opens confirmation for aggregate Capture
+All. `Enter` confirms and `Esc` cancels. Successful capture reloads the profile
+and refreshes Overview, provider status, and local Profile Git/Sync status.
 
 State symbols include text characters (`!`, `~`, `✓`, `×`, `?`) in addition to colour.
 
@@ -1625,6 +1636,10 @@ omarchy-blueprint --profile ~/omarchy-profile
 
 Explain navigation, Config review, Resource discovery, Machines, Restore Normal/Forced comparison, Sync, and external-tool handoffs.
 
+Also document the dedicated Capture screen, its Overview → Capture → Packages
+sidebar position, `Space`/`a`/`c`/`C` controls, confirmation/cancel behavior,
+aggregate Capture All, and post-capture refreshes.
+
 - [ ] **Step 6: Update ROADMAP**
 
 Mark TUI v1 delivered only after all screens/flows in this plan are implemented. Keep deferred generic backup providers, advanced Git, broader machine-specific state, migration UI, and agent assistance pending.
@@ -1667,6 +1682,8 @@ review a real Config ambiguity without displaying sensitive contents
 browse to a safe Git repo and track/update it
 use editor/file manager/LazyGit/browser handoffs and return
 map a test Resource path and confirm effective path everywhere
+use Capture to select one provider and Capture All; confirm `Enter` approves,
+`Esc` cancels, and Overview/provider/Sync state refreshes after success
 compare Normal/Forced restore on a deliberately conflicting disposable target
 apply only after reading consequences and verify actual operation matches selected plan
 initialize/commit/push disposable profile repo; fetch/pull safe case

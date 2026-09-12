@@ -93,7 +93,7 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 }
 func (s *Overview) View() string {
 	if s.err != nil {
-		return "Overview\n\nUnable to load overview: " + s.err.Error()
+		return "Unable to load overview: " + s.err.Error()
 	}
 	lines := make([]string, 0, len(s.rows()))
 	for i, row := range s.rows() {
@@ -135,7 +135,7 @@ func (s *Overview) View() string {
 	if width == 0 {
 		width = 120
 	}
-	return "Overview\n" + s.list.View(lines, width, s.listHeight())
+	return s.list.View(lines, width, s.listHeight())
 }
 func (s *Overview) DetailView() string {
 	row := s.selectedRow()

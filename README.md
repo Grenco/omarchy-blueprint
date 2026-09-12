@@ -109,9 +109,15 @@ omarchy-blueprint tui
 omarchy-blueprint --profile ~/omarchy-profile
 ```
 
-The Overview is a decision inbox. Use the sidebar, `j`/`k`, `Tab`, or the `:`
-command palette to navigate. Config review shows each discovery classification
-and reason, then lets you choose include, exclude, or automatic policy.
+The Overview is a decision inbox. The sidebar begins Overview, Capture,
+Packages; use it, `j`/`k`, `Tab`, or the `:` command palette to navigate. In
+Capture, `Space` toggles the highlighted provider, `a` selects changed
+providers, `c` captures the selection, and `C` runs aggregate Capture All.
+Both capture actions require confirmation: `Enter` confirms and `Esc` cancels.
+Successful capture refreshes Overview, provider status, and local Profile
+Git/Sync status, but never commits or pushes automatically. Config review shows
+each discovery classification and reason, then lets you choose include, exclude,
+or automatic policy.
 Resources supports non-destructive discovery and strategy selection; Machines
 shows portable paths and per-machine overrides. Restore compares Normal and
 Forced plans before approval, including consequence changes. Sync exposes the

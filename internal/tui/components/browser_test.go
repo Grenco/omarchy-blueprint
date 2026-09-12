@@ -79,6 +79,45 @@ func TestBrowserWideViewPreviewsSelectedDirectoryChildren(t *testing.T) {
 	}
 }
 
+func TestBrowserWideViewLoadsSelectedDirectoryChildrenAsynchronously(t *testing.T) {
+	home := t.TempDir()
+	child := filepath.Join(home, "adir")
+	mustMkdir(t, child)
+	mustWrite(t, filepath.Join(child, "nested.txt"))
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	browser.SetSize(100, 20)
+	initial := browser.Init()()
+	cmd := browser.Update(initial)
+	if !strings.Contains(browser.View(), "Next: adir") || !strings.Contains(browser.View(), "Loading...") {
+		t.Fatalf("child preview was not pending: %q", browser.View())
+	}
+	deliverBrowser(t, &browser, cmd)
+	if !strings.Contains(browser.View(), "nested.txt") {
+		t.Fatalf("child preview missing after result: %q", browser.View())
+	}
+}
+
+func TestBrowserIgnoresStaleChildPreviewResult(t *testing.T) {
+	home := t.TempDir()
+	alpha, beta := filepath.Join(home, "alpha"), filepath.Join(home, "beta")
+	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
+	browser.SetSize(100, 20)
+	browser.Init()
+	browser.Update(BrowserReadDirMsg{Generation: 1, Path: home, Entries: []BrowserEntry{
+		{Name: "alpha", Path: alpha, Type: "directory"},
+		{Name: "beta", Path: beta, Type: "directory"},
+	}})
+	browser.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	browser.Update(BrowserChildReadDirMsg{Generation: 2, Path: alpha, Entries: []BrowserEntry{{Name: "stale", Path: filepath.Join(alpha, "stale"), Type: "file"}}})
+	if strings.Contains(browser.View(), "stale") {
+		t.Fatalf("stale child preview applied: %q", browser.View())
+	}
+	browser.Update(BrowserChildReadDirMsg{Generation: 3, Path: beta, Entries: []BrowserEntry{{Name: "current", Path: filepath.Join(beta, "current"), Type: "file"}}})
+	if !strings.Contains(browser.View(), "current") {
+		t.Fatalf("current child preview missing: %q", browser.View())
+	}
+}
+
 func TestBuildBookmarksDeterministicAndCanonical(t *testing.T) {
 	home := t.TempDir()
 	config, profileDir := filepath.Join(home, ".config"), filepath.Join(home, "profile")
@@ -303,6 +342,13 @@ func count(values []string, want string) int {
 func deliverBrowser(t *testing.T, browser *Browser, cmd tea.Cmd) {
 	t.Helper()
 	for cmd != nil {
-		cmd = browser.Update(cmd())
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, batchCmd := range batch {
+				deliverBrowser(t, browser, batchCmd)
+			}
+			return
+		}
+		cmd = browser.Update(msg)
 	}
 }

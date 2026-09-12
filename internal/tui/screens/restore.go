@@ -140,7 +140,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 
 func (s *Restore) View() string {
 	if s.err != nil {
-		return "Restore\n\nUnable to prepare restore: " + s.err.Error()
+		return "Unable to prepare restore: " + s.err.Error()
 	}
 	if s.busy {
 		return "Applying restore..."

@@ -174,7 +174,17 @@ func wrapScreenCmd(id ScreenID, cmd tea.Cmd) tea.Cmd {
 	if cmd == nil {
 		return nil
 	}
-	return func() tea.Msg { return screenMsg{Screen: id, Msg: cmd()} }
+	return func() tea.Msg {
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			wrapped := make([]tea.Cmd, 0, len(batch))
+			for _, batchCmd := range batch {
+				wrapped = append(wrapped, wrapScreenCmd(id, batchCmd))
+			}
+			return tea.BatchMsg(wrapped)
+		}
+		return screenMsg{Screen: id, Msg: msg}
+	}
 }
 
 func (m model) updateScreenMsg(wrapped screenMsg) (tea.Model, tea.Cmd) {
@@ -424,7 +434,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// workspace may offer a key to its screen before root fallback.
 		if transient || m.focus == focusWorkspace {
 			if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
-				return m, result.Cmd
+				return m, wrapScreenCmd(m.screenID(), result.Cmd)
 			}
 		}
 		if key == "q" {
@@ -542,6 +552,9 @@ func (m model) handleCaptureComplete(complete screens.CaptureComplete) (tea.Mode
 	}
 	m.notification = "Capture complete. Overview and Profile Git status refreshed."
 	commands := []tea.Cmd{}
+	if capture, ok := m.screens[ScreenCapture].(*captureScreen); ok {
+		commands = append(commands, wrapScreenCmd(ScreenCapture, capture.Init()))
+	}
 	if overview, ok := m.screens[ScreenOverview].(*overviewScreen); ok {
 		commands = append(commands, wrapScreenCmd(ScreenOverview, overview.Update(tea.KeyPressMsg{Code: 'r'})))
 	}
@@ -550,6 +563,11 @@ func (m model) handleCaptureComplete(complete screens.CaptureComplete) (tea.Mode
 	}
 	if provider, ok := m.screens[ScreenID(complete.Provider)].(*providerScreen); ok {
 		commands = append(commands, wrapScreenCmd(ScreenID(complete.Provider), provider.Refresh()))
+	}
+	for _, id := range complete.Providers {
+		if provider, ok := m.screens[ScreenID(id)].(*providerScreen); ok {
+			commands = append(commands, wrapScreenCmd(ScreenID(id), provider.Refresh()))
+		}
 	}
 	return m, tea.Batch(commands...)
 }
@@ -959,8 +977,7 @@ func (m model) modalView(base string, layout layout) string {
 	}
 	overlay = components.Panel(title, true, width, height, overlay, styles)
 	if m.modal == modalConfirm {
-		// A confirmation must never be visually obscured by ANSI-styled workspace cells.
-		return lipgloss.Place(m.width, layout.contentHeight, lipgloss.Center, lipgloss.Center, overlay)
+		return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
 	}
 	return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
 }
@@ -1081,7 +1098,14 @@ func (s *resourcesScreen) Actions() []Action {
 	for _, state := range states {
 		state := state
 		actions = append(actions, Action{ID: "resources." + state.ID, Label: state.Label, Group: "Resources", Enabled: state.Enabled, Visible: true, DisabledReason: state.DisabledReason, Run: func() tea.Cmd {
-			return s.Update(tea.KeyPressMsg{Code: rune(state.Shortcut[0])})
+			key := tea.KeyPressMsg{Code: rune(state.Shortcut[0])}
+			switch state.Shortcut {
+			case "space":
+				key.Code = tea.KeySpace
+			case "enter":
+				key.Code = tea.KeyEnter
+			}
+			return s.Update(key)
 		}})
 	}
 	return actions
@@ -1098,13 +1122,22 @@ func (s *machinesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *machinesScreen) Actions() []Action {
+	selectedMachine := s.HasSelectedMachine()
+	primaryLabel, primaryEnabled, primaryReason := "Use machine overlay", s.CanUseMachine(), "selected machine is already active"
+	if s.MappingFocused() {
+		primaryLabel, primaryEnabled, primaryReason = "Remove resource mapping", s.CanUnmapResource(), "selected resource has no override"
+	}
 	return []Action{
 		{ID: "machines.add", Label: "Add machine", Group: "Machines", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
-		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
+		{ID: "machines.primary", Label: primaryLabel, Group: "Machines", Enabled: primaryEnabled, Visible: true, DisabledReason: primaryReason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'u'}) }},
+		{ID: "machines.clear", Label: "Clear active machine", Group: "Machines", Enabled: s.CanClearMachine(), Visible: true, DisabledReason: "no active machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
+		{ID: "machines.rename", Label: "Rename machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
+		{ID: "machines.remove", Label: "Remove machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
+		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Enabled: s.CanMapResource(), Visible: true, DisabledReason: "select a resource path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
 	}
 }
 func (s *machinesScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.map", Key: "m"}}
+	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
 }
 
 func (s *restoreScreen) ID() ScreenID { return ScreenRestore }
@@ -1158,14 +1191,14 @@ func (s *providerScreen) Actions() []Action {
 		{ID: string(s.id) + ".refresh", Label: "Refresh " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 	}
-	if s.id == ScreenThemes || s.id == ScreenPlugins || s.id == ScreenShell || s.id == ScreenHooks || s.id == ScreenDefaults {
-		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: "Include or remove selected item", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
+	if s.id == ScreenPackages || s.id == ScreenThemes || s.id == ScreenPlugins {
+		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: "Include or remove selected item", Enabled: s.CanToggleSelected(), Visible: true, DisabledReason: "select a saved item", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
 	}
 	return actions
 }
 func (s *providerScreen) Bindings() []Binding {
 	bindings := []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}, {Label: "Collapse group", Key: "enter"}}
-	if s.id == ScreenThemes || s.id == ScreenPlugins || s.id == ScreenShell || s.id == ScreenHooks || s.id == ScreenDefaults {
+	if s.id == ScreenPackages || s.id == ScreenThemes || s.id == ScreenPlugins {
 		bindings = append(bindings, Binding{ActionID: string(s.id) + ".toggle", Key: "space"})
 	}
 	return bindings
@@ -1179,18 +1212,20 @@ func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *configScreen) Actions() []Action {
+	policyEnabled := s.CanPolicy()
 	return []Action{
-		{ID: "config.diff", Label: "View Config diff", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
-		{ID: "config.include", Label: "Include Config path", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'i'}) }},
-		{ID: "config.exclude", Label: "Exclude Config path", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
-		{ID: "config.auto", Label: "Use automatic Config policy", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
+		{ID: "config.diff", Label: "View Config diff", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
+		{ID: "config.policy", Label: "Cycle Config policy", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
+		{ID: "config.include", Label: "Include Config path", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'i'}) }},
+		{ID: "config.exclude", Label: "Exclude Config path", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
+		{ID: "config.auto", Label: "Use automatic Config policy", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
 		{ID: "config.edit", Label: "Edit Config file", Group: "Config", Enabled: s.CanHandoff(), Visible: true, DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
 		{ID: "config.open", Label: "Open Config location", Group: "Config", Enabled: s.CanHandoff(), Visible: true, DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
 		{ID: "config.copy", Label: "Copy Config path", Group: "Config", Enabled: s.CanHandoff(), Visible: true, DisabledReason: "selected Config path is not a regular live file", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'y'}) }},
 	}
 }
 func (s *configScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "config.diff", Key: "d"}, {ActionID: "config.include", Key: "i"}, {ActionID: "config.exclude", Key: "x"}, {ActionID: "config.auto", Key: "a"}, {ActionID: "config.edit", Key: "e"}, {ActionID: "config.open", Key: "o"}, {ActionID: "config.copy", Key: "y"}}
+	return []Binding{{ActionID: "config.policy", Key: "space"}, {ActionID: "config.diff", Key: "d"}, {ActionID: "config.include", Key: "i"}, {ActionID: "config.exclude", Key: "x"}, {ActionID: "config.auto", Key: "a"}, {ActionID: "config.edit", Key: "e"}, {ActionID: "config.open", Key: "o"}, {ActionID: "config.copy", Key: "y"}}
 }
 
 func (s *overviewScreen) ID() ScreenID { return ScreenOverview }
