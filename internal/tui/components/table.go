@@ -18,6 +18,7 @@ type Column struct {
 type Row struct {
 	Cells    []string
 	Selected bool
+	Focused  bool
 }
 
 func (t *Table) Move(delta, count, height int) {
@@ -66,7 +67,7 @@ func (t *Table) Render(columns []Column, rows []Row, width, height int, styles S
 		}
 		line := tableLine(row.Cells, widths)
 		if row.Selected {
-			line = styles.Selection(line, true)
+			line = styles.Selection(line, row.Focused)
 		}
 		lines = append(lines, line)
 	}

@@ -210,6 +210,9 @@ func (s *inputScreen) Update(msg tea.Msg) tea.Cmd {
 func (s *inputScreen) View() string          { return "input" }
 func (s *inputScreen) Actions() []Action     { return nil }
 func (s *inputScreen) TransientActive() bool { return s.active }
+func (s *inputScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 
 type countingScreen struct {
 	id   ScreenID
@@ -224,9 +227,34 @@ func (s *countingScreen) Update(msg tea.Msg) tea.Cmd {
 	}
 	return nil
 }
-func (s *countingScreen) View() string           { return "counting" }
-func (s *countingScreen) Actions() []Action      { return nil }
-func (s *countingScreen) HandlesKey(string) bool { return true }
+func (s *countingScreen) View() string      { return "counting" }
+func (s *countingScreen) Actions() []Action { return nil }
+func (s *countingScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
+
+type resultScreen struct {
+	id      ScreenID
+	consume map[string]bool
+	keys    string
+}
+
+func (s *resultScreen) ID() ScreenID     { return s.id }
+func (s *resultScreen) SetSize(int, int) {}
+func (s *resultScreen) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		s.keys += key.String()
+	}
+	return nil
+}
+func (s *resultScreen) View() string      { return "result" }
+func (s *resultScreen) Actions() []Action { return nil }
+func (s *resultScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.consume[key.String()] {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 
 func TestNoColorViewsKeepSemanticMarkers(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
@@ -304,6 +332,33 @@ func TestQuitDefersToTransientInput(t *testing.T) {
 	}
 }
 
+func TestRootKeyRoutingPrecedenceAndFallback(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	screen := &resultScreen{id: ScreenOverview, consume: map[string]bool{"x": true}}
+	m.screens[ScreenOverview] = screen
+	m.focus = focusWorkspace
+
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'x'})
+	if screen.keys != "x" {
+		t.Fatalf("consumed key deliveries=%q, want one", screen.keys)
+	}
+	before := m.selected
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if screen.keys != "x" || m.selected != before {
+		t.Fatalf("declined workspace key was delivered or moved root state: keys=%q selected=%d", screen.keys, m.selected)
+	}
+
+	m.openModal(modalPalette)
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'x'})
+	if screen.keys != "x" {
+		t.Fatalf("modal key leaked to screen: %q", screen.keys)
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil || cmd() != tea.Quit() || updated.(model).modal != modalPalette || screen.keys != "x" {
+		t.Fatalf("ctrl-c did not preempt modal/screen: modal=%v keys=%q", updated.(model).modal, screen.keys)
+	}
+}
+
 func TestPanelsAndSidebarSelectionRender(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
 	view := m.View().Content
@@ -357,7 +412,7 @@ func TestHelp(t *testing.T) {
 	m.focus = focusDetails
 	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
 	view := m.View().Content
-	if !m.helpOpen || !strings.Contains(view, "Help: Config") || !strings.Contains(view, "d  View Config diff") || !strings.Contains(view, "Focus: details") {
+	if !m.helpOpen || !strings.Contains(view, "CONFIG") || !strings.Contains(view, "View Config diff") || !strings.Contains(view, "Focus: details") {
 		t.Fatalf("help is not contextual to screen and focus: %q", view)
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})

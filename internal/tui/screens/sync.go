@@ -63,9 +63,6 @@ func (s *Sync) SetSize(width, height int) {
 }
 func (s *Sync) Init() tea.Cmd         { return s.refresh() }
 func (s *Sync) TransientActive() bool { return s.confirm != "" || s.diff != nil }
-func (s *Sync) HandlesKey(key string) bool {
-	return strings.Contains(" j down k up d f c g l p i x y v b z", " "+key+" ")
-}
 
 func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -221,7 +218,7 @@ func (s *Sync) View() string {
 		return "Profile Git diff\n" + s.diff.View()
 	}
 	if !s.status.Repository {
-		return "Sync\n\nProfile is not a Git repository.\ni initialize repository"
+		return "Sync\n\nProfile is not a Git repository."
 	}
 	branch := s.status.Branch
 	if branch == "" {

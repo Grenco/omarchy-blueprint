@@ -32,6 +32,7 @@ type Config struct {
 	filtering               bool
 	collapsed               map[config.Classification]bool
 	table                   components.Table
+	styles                  components.Styles
 	focusPath               string
 	statusID, inspectionID  uint64
 	busy                    bool
@@ -66,8 +67,9 @@ func (s *Config) SetSize(width, height int) {
 		s.diff.SetSize(width, height)
 	}
 }
-func (s *Config) Init() tea.Cmd         { return s.rescan() }
-func (s *Config) TransientActive() bool { return s.confirm != "" || s.diff != nil }
+func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
+func (s *Config) Init() tea.Cmd                      { return s.rescan() }
+func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil }
 
 func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -194,12 +196,21 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			return s.inspectSelected()
 		}
 	case "space", " ", "i":
+		if s.selectedCandidate().Path == "" {
+			return nil
+		}
 		s.confirm = "include"
 		return s.confirmModal()
 	case "x":
+		if s.selectedCandidate().Path == "" {
+			return nil
+		}
 		s.confirm = "exclude"
 		return s.confirmModal()
 	case "a":
+		if s.selectedCandidate().Path == "" {
+			return nil
+		}
 		s.confirm = "auto"
 		return s.confirmModal()
 	case "e", "o", "y":
@@ -250,7 +261,7 @@ func (s *Config) View() string {
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
 	} else {
-		lines = append(lines, s.table.Render([]components.Column{{Title: "State", Width: 23, MinWidth: 8}, {Title: "Path", Width: 0, MinWidth: 12}, {Title: "Policy", Width: 14, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), components.Styles{}))
+		lines = append(lines, s.table.Render([]components.Column{{Title: "State", Width: 23, MinWidth: 8}, {Title: "Path", Width: 0, MinWidth: 12}, {Title: "Policy", Width: 14, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	}
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)

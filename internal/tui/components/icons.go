@@ -3,7 +3,8 @@ package components
 // IconSet keeps textual symbols consistent and lets callers retain readable
 // ASCII fallbacks where colour or glyph support is unavailable.
 type IconSet struct {
-	Selected, Attention, Changed, Ready, Error, Unknown string
+	Selected, Attention, Changed, Ready, Error, Unknown      string
+	Folder, File, Symlink, Git, Blocked, Expanded, Collapsed string
 }
 
 var Icons = IconSet{
@@ -13,4 +14,11 @@ var Icons = IconSet{
 	Ready:     "✓",
 	Error:     "×",
 	Unknown:   "?",
+	Folder:    "󰉋",
+	File:      "󰈔",
+	Symlink:   "󰌹",
+	Git:       "󰊢",
+	Blocked:   "!",
+	Expanded:  "▼",
+	Collapsed: "▶",
 }

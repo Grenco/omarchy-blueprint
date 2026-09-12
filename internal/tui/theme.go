@@ -19,7 +19,10 @@ type ThemeLoader struct {
 }
 
 type omarchyColors struct {
+	Background          string `toml:"background"`
+	Selection           string `toml:"selection"`
 	SelectionBackground string `toml:"selection_background"`
+	SelectionForeground string `toml:"selection_foreground"`
 	Foreground          string `toml:"foreground"`
 	DarkForeground      string `toml:"dark_foreground"`
 	BrightForeground    string `toml:"bright_foreground"`
@@ -58,6 +61,7 @@ func (l ThemeLoader) Load() Palette {
 		return palette
 	}
 
+	palette.Background = firstColor(colors.Background, palette.Background)
 	palette.Foreground = firstColor(colors.Foreground, palette.Foreground)
 	palette.DarkForeground = firstColor(colors.DarkForeground, palette.DarkForeground)
 	palette.BrightForeground = firstColor(colors.BrightForeground, palette.BrightForeground)
@@ -69,8 +73,14 @@ func (l ThemeLoader) Load() Palette {
 	palette.Cyan = firstColor(colors.Cyan, palette.Cyan)
 	palette.Blue = firstColor(colors.Blue, palette.Blue)
 	palette.Magenta = firstColor(colors.Magenta, palette.Magenta)
-	palette.SelectionBackground = firstColor(colors.SelectionBackground, palette.SelectionBackground)
-	palette.SelectionForeground = selectionForeground(palette.SelectionBackground, palette.Foreground, palette.DarkForeground, palette.BrightForeground)
+	palette.SelectionBackground = firstColor(colors.Selection, colors.SelectionBackground, palette.SelectionBackground, palette.Accent)
+	palette.SelectionForeground = firstColor(colors.SelectionForeground, palette.SelectionForeground)
+	if foreground := selectionForeground(palette.SelectionBackground, palette.Foreground, palette.DarkForeground, palette.BrightForeground); foreground != "" {
+		palette.SelectionForeground = foreground
+	}
+	if palette.SelectionForeground == "" {
+		palette.SelectionForeground = firstColor(palette.Foreground, palette.BrightForeground, palette.DarkForeground, "7")
+	}
 	palette.Selection = palette.SelectionBackground
 	palette.Border, palette.BorderFocused = palette.Muted, palette.Accent
 	palette.Error, palette.Removed = palette.Red, palette.Red
@@ -118,7 +128,7 @@ func selectionForeground(background string, candidates ...string) string {
 	if best != "" {
 		return best
 	}
-	return ""
+	return firstColor(candidates...)
 }
 
 func usableColor(color string) string {

@@ -14,16 +14,20 @@ func Sidebar(items []NavItem, selected int, width int) string {
 	return SidebarWithStyles(items, selected, width, Styles{})
 }
 
-func SidebarWithStyles(items []NavItem, selected int, width int, styles Styles) string {
+func SidebarWithStyles(items []NavItem, selected int, width int, styles Styles, focused ...bool) string {
+	isFocused := true
+	if len(focused) > 0 {
+		isFocused = focused[0]
+	}
 	lines := make([]string, 0, len(items))
 	for index, item := range items {
 		marker := " "
-		if index == selected {
+		if index == selected && !styles.Palette.ColorEnabled {
 			marker = Icons.Selected
 		}
 		line := pad(marker+" "+item.Label, width)
 		if index == selected && styles.Palette.ColorEnabled {
-			line = styles.Selection(line, true)
+			line = styles.Selection(line, isFocused)
 		}
 		lines = append(lines, line)
 	}

@@ -1,6 +1,10 @@
 package tui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 type Action struct {
 	ID, Label, Group, Keywords string
@@ -15,8 +19,11 @@ type Action struct {
 // Binding associates a visible key with an action. Actions remain discoverable
 // commands even when they intentionally have no direct key binding.
 type Binding struct {
-	ActionID, Key  string
-	FooterPriority int
+	// ActionID is optional. Bindings without an action are still shown in the
+	// footer and help, but do not imply a palette command.
+	ActionID, Label, Key, Context string
+	Keys                          []string
+	FooterPriority                int
 }
 
 // ActionRegistry is the single source for command discovery and key display.
@@ -45,6 +52,13 @@ func (r ActionRegistry) Key(actionID string) string {
 		}
 	}
 	return ""
+}
+
+func (b Binding) DisplayKeys() string {
+	if len(b.Keys) > 0 {
+		return strings.Join(b.Keys, " / ")
+	}
+	return b.Key
 }
 
 func visibleActions(actions []Action) []Action {

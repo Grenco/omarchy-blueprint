@@ -77,14 +77,18 @@ func TestMachineScreenDownSelectsMachineAndMapping(t *testing.T) {
 	}
 }
 
-func TestMachineScreenOwnsWorkspaceNavigationKeys(t *testing.T) {
+func TestMachineScreenKeepsPaneNavigationUntilOuterEdge(t *testing.T) {
 	screen := &Machines{}
-	for _, key := range []string{"tab", "h", "left", "l", "right", "j", "down", "k", "up"} {
-		if !screen.HandlesKey(key) {
+	for _, key := range []string{"tab", "l", "right", "j", "down", "k", "up"} {
+		if !screen.OwnsWorkspaceKey(key) {
 			t.Errorf("Machines must own %q in its workspace", key)
 		}
 	}
-	if screen.HandlesKey(":") {
+	if screen.OwnsWorkspaceKey("h") || screen.OwnsWorkspaceKey("left") || screen.OwnsWorkspaceKey(":") {
 		t.Fatal("root command palette key must remain root-owned")
+	}
+	screen.focusMappings = true
+	if !screen.OwnsWorkspaceKey("h") || !screen.OwnsWorkspaceKey("left") || screen.OwnsWorkspaceKey("l") || screen.OwnsWorkspaceKey("right") {
+		t.Fatal("machine pane boundaries do not escape to root")
 	}
 }

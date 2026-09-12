@@ -87,7 +87,6 @@ func (s *Resources) Init() tea.Cmd { return s.rescan() }
 func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
-func (s *Resources) HandlesKey(key string) bool { return key == "tab" }
 func (s *Resources) Actions() []ResourceAction {
 	if s.phase != resourceBrowse || s.browser != nil {
 		return nil

@@ -28,6 +28,35 @@ color8 = "#888888"
 	}
 }
 
+func TestThemeLoaderPrefersCurrentSelectionField(t *testing.T) {
+	stateHome := t.TempDir()
+	writeColors(t, stateHome, `background = "#1a1b26"
+foreground = "#c0caf5"
+dark_foreground = "#15161e"
+bright_foreground = "#ffffff"
+selection = "#33467c"
+selection_background = "#ff00ff"
+`)
+	palette := ThemeLoader{StateHome: func() (string, error) { return stateHome, nil }}.Load()
+	if palette.SelectionBackground != "#33467c" || contrastRatio(palette.SelectionBackground, palette.SelectionForeground) < 4.5 {
+		t.Fatalf("palette = %#v", palette)
+	}
+}
+
+func TestThemeLoaderLightSelectionUsesDarkForeground(t *testing.T) {
+	stateHome := t.TempDir()
+	writeColors(t, stateHome, `background = "#ffffff"
+foreground = "#202020"
+dark_foreground = "#111111"
+bright_foreground = "#ffffff"
+selection = "#d8e2ff"
+`)
+	palette := ThemeLoader{StateHome: func() (string, error) { return stateHome, nil }}.Load()
+	if palette.SelectionForeground != "#111111" {
+		t.Fatalf("selection foreground = %q", palette.SelectionForeground)
+	}
+}
+
 func TestThemeLoaderMissingOrMalformedUsesFallback(t *testing.T) {
 	stateHome := t.TempDir()
 	loader := ThemeLoader{StateHome: func() (string, error) { return stateHome, nil }}

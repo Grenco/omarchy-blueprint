@@ -435,10 +435,18 @@ func (b Browser) parentView() string {
 		return strings.Join(append(lines, "  "+err.Error()), "\n")
 	}
 	for _, entry := range entries {
-		name := entry.Name()
-		if filepath.Join(parent, name) == b.path {
-			lines = append(lines, Icons.Selected+" "+name)
+		info, err := entry.Info()
+		if err != nil || !info.IsDir() {
+			continue
 		}
+		line := "  " + Icons.Folder + " " + entry.Name()
+		if filepath.Join(parent, entry.Name()) == b.path {
+			if !b.styles.Palette.ColorEnabled {
+				line = Icons.Selected + line[1:]
+			}
+			line = b.styles.Selection(line, false)
+		}
+		lines = append(lines, line)
 	}
 	if len(lines) == 1 {
 		lines = append(lines, "  /")
@@ -456,13 +464,13 @@ func (b Browser) listHeight() int {
 func browserIcon(kind string) string {
 	switch kind {
 	case "directory":
-		return "[D]"
+		return Icons.Folder
 	case "file":
-		return "[F]"
+		return Icons.File
 	case "symlink":
-		return "[@]"
+		return Icons.Symlink
 	default:
-		return "[?]"
+		return Icons.Blocked
 	}
 }
 

@@ -44,7 +44,6 @@ type screen interface {
 
 type initializableScreen interface{ Init() tea.Cmd }
 type transientScreen interface{ TransientActive() bool }
-type keyHandlingScreen interface{ HandlesKey(string) bool }
 type styleableScreen interface{ SetStyles(components.Styles) }
 type headerStateScreen interface{ HeaderState() string }
 type bindingScreen interface{ Bindings() []Binding }
@@ -417,13 +416,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if isKey {
 		transient := m.activeTransient()
-		// q is global unless a screen has an active transient/input that owns it.
-		if key == "q" && !transient {
+		// Active transients always own their input. Outside a transient, only the
+		// workspace may offer a key to its screen before root fallback.
+		if transient || m.focus == focusWorkspace {
+			if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
+				return m, result.Cmd
+			}
+		}
+		if key == "q" {
 			m.stop()
 			return m, tea.Quit
-		}
-		if (transient || m.focus != focusSidebar) && m.screenOwnsKey(key, transient) {
-			return m, m.updateActiveScreen(msg)
 		}
 		switch key {
 		case ":":
@@ -514,16 +516,12 @@ func (m model) activeTransient() bool {
 	return ok && owner.TransientActive()
 }
 
-// screenOwnsKey is a nonmutating ownership check. Root navigation and modal
-// shortcuts stay root-owned; a transient always owns all input.
-func (m model) screenOwnsKey(key string, transient bool) bool {
-	if transient {
-		return true
+func (m model) activeKeyResult(key tea.KeyPressMsg) KeyResult {
+	handler, ok := m.activeScreen().(KeyHandler)
+	if !ok {
+		return KeyResult{}
 	}
-	if owner, ok := m.activeScreen().(keyHandlingScreen); ok {
-		return owner.HandlesKey(key)
-	}
-	return false
+	return handler.HandleKey(key)
 }
 
 func (m model) updateActiveScreen(msg tea.Msg) tea.Cmd {
@@ -738,7 +736,7 @@ func (m model) View() tea.View {
 		return view
 	}
 	header := m.header()
-	footer := m.muted(m.footer())
+	footer := m.footer()
 	if m.notification != "" {
 		footer += "  " + m.notification
 	}
@@ -812,11 +810,11 @@ func (m model) contentView(layout layout) string {
 	styles := components.NewStyles(m.palette)
 	if layout.mode == LayoutCompact {
 		if m.sidebarOpen {
-			return components.Panel("Navigation", m.focus == focusSidebar, layout.workspaceWidth, layout.contentHeight, m.sidebarScroll.render(strings.Split(components.SidebarWithStyles(items, m.selected, layout.workspaceWidth-2, styles), "\n"), layout.workspaceWidth-2, layout.contentHeight-2), styles)
+			return components.Panel("Navigation", m.focus == focusSidebar, layout.workspaceWidth, layout.contentHeight, m.sidebarScroll.render(strings.Split(components.SidebarWithStyles(items, m.selected, layout.workspaceWidth-2, styles, m.focus == focusSidebar), "\n"), layout.workspaceWidth-2, layout.contentHeight-2), styles)
 		}
 		return components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
 	}
-	sidebar := components.Panel("Navigation", m.focus == focusSidebar, layout.sidebarWidth, layout.contentHeight, m.sidebarScroll.render(strings.Split(components.SidebarWithStyles(items, m.selected, layout.sidebarWidth-2, styles), "\n"), layout.sidebarWidth-2, layout.contentHeight-2), styles)
+	sidebar := components.Panel("Navigation", m.focus == focusSidebar, layout.sidebarWidth, layout.contentHeight, m.sidebarScroll.render(strings.Split(components.SidebarWithStyles(items, m.selected, layout.sidebarWidth-2, styles, m.focus == focusSidebar), "\n"), layout.sidebarWidth-2, layout.contentHeight-2), styles)
 	workspace = components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
 	if layout.mode == LayoutTwoPane {
 		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace)
@@ -886,8 +884,8 @@ func (m model) modalView(base string, layout layout) string {
 	switch m.modal {
 	case modalPalette:
 		title = "Command palette"
-		items := filterActions(m.actions(), m.paletteQuery)
-		lines := strings.Split("Search: "+m.paletteInput.View()+"\n"+components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected), "\n")
+		items := m.paletteActions()
+		lines := strings.Split("Search: "+m.paletteInput.View()+"\n"+components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles), "\n")
 		overlay = m.paletteScroll.render(lines, width, height)
 	case modalHelp:
 		title = "Help"
@@ -915,13 +913,29 @@ func (m model) modalView(base string, layout layout) string {
 }
 
 func (m model) helpLines() []string {
-	lines := strings.Split(components.Help(screenLabel(m.screenID()), statusActions(m.activeScreen(), m.bindings())), "\n")
+	lines := []string{strings.ToUpper(screenLabel(m.screenID()))}
+	actions := map[string]Action{}
+	for _, action := range m.actions() {
+		actions[action.ID] = action
+	}
+	for _, binding := range m.bindings() {
+		keys := binding.DisplayKeys()
+		label := binding.Label
+		if label == "" {
+			label = actions[binding.ActionID].Label
+		}
+		if keys == "" || label == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%-14s %s", keys, label))
+	}
+	lines = append(lines, "", "GLOBAL", "?              Help", ":              Commands", "q              Quit")
 	focus := []string{"sidebar", "workspace", "details"}[m.focus]
 	return append(lines, "Focus: "+focus)
 }
 
 func (m model) bindings() []Binding {
-	bindings := []Binding{{ActionID: "help", Key: "?"}, {ActionID: "palette", Key: ":"}}
+	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global"}, {Label: "Command palette", Key: ":", Context: "Global"}}
 	if current, ok := m.activeScreen().(bindingScreen); ok {
 		bindings = append(bindings, current.Bindings()...)
 	}
@@ -937,8 +951,15 @@ func statusActions(current screen, bindings []Binding) []components.StatusAction
 		}
 		sort.SliceStable(bindings, func(i, j int) bool { return bindings[i].FooterPriority < bindings[j].FooterPriority })
 		for _, binding := range bindings {
+			key := binding.DisplayKeys()
+			if binding.ActionID == "" {
+				actions = append(actions, components.StatusAction{Label: binding.Label, Shortcut: key, Enabled: true})
+				continue
+			}
 			if action, ok := available[binding.ActionID]; ok {
-				actions = append(actions, components.StatusAction{Label: action.Label, Shortcut: binding.Key, Enabled: action.Enabled})
+				actions = append(actions, components.StatusAction{Label: action.Label, Shortcut: key, Enabled: action.Enabled})
+			} else if binding.Label != "" {
+				actions = append(actions, components.StatusAction{Label: binding.Label, Shortcut: key, Enabled: true})
 			}
 		}
 	}
@@ -948,7 +969,7 @@ func statusActions(current screen, bindings []Binding) []components.StatusAction
 func paletteItems(actions []Action, bindings []Binding) []components.PaletteItem {
 	keys := map[string]string{}
 	for _, binding := range bindings {
-		keys[binding.ActionID] = binding.Key
+		keys[binding.ActionID] = binding.DisplayKeys()
 	}
 	items := make([]components.PaletteItem, 0, len(actions))
 	for _, action := range actions {
@@ -993,8 +1014,11 @@ type providerScreen struct {
 }
 
 func (s *resourcesScreen) ID() ScreenID { return ScreenResources }
-func (s *resourcesScreen) HandlesKey(key string) bool {
-	return s.Resources.HandlesKey(key) || screenKey(key)
+func (s *resourcesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "tab" {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *resourcesScreen) Actions() []Action {
 	states := s.Resources.Actions()
@@ -1012,8 +1036,11 @@ func (s *resourcesScreen) Bindings() []Binding {
 }
 
 func (s *machinesScreen) ID() ScreenID { return ScreenMachines }
-func (s *machinesScreen) HandlesKey(key string) bool {
-	return s.Machines.HandlesKey(key) || screenKey(key)
+func (s *machinesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !s.Machines.OwnsWorkspaceKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *machinesScreen) Actions() []Action {
 	return []Action{
@@ -1022,11 +1049,16 @@ func (s *machinesScreen) Actions() []Action {
 	}
 }
 func (s *machinesScreen) Bindings() []Binding {
-	return []Binding{{"machines.add", "a", 0}, {"machines.map", "m", 0}}
+	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.map", Key: "m"}}
 }
 
-func (s *restoreScreen) ID() ScreenID               { return ScreenRestore }
-func (s *restoreScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *restoreScreen) ID() ScreenID { return ScreenRestore }
+func (s *restoreScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !screenKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 func (s *restoreScreen) Actions() []Action {
 	label := "Restore all (normal)"
 	if s.Mode() == workflow.RestoreForced {
@@ -1035,11 +1067,16 @@ func (s *restoreScreen) Actions() []Action {
 	return []Action{{ID: "restore.force", Label: "Toggle forced restore", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.detail", Label: "View restore detail", Group: "Restore", Enabled: s.CanDetail(), Visible: true, DisabledReason: "selected consequence has no diff", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }}, {ID: "restore.apply", Label: label, Group: "Restore", Enabled: s.CanApply(), Visible: true, DisabledReason: "active restore plan has no operations", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
 }
 func (s *restoreScreen) Bindings() []Binding {
-	return []Binding{{"restore.force", "f", 0}, {"restore.detail", "d", 0}, {"restore.apply", "enter", 0}}
+	return []Binding{{ActionID: "restore.force", Key: "f"}, {ActionID: "restore.detail", Key: "d"}, {ActionID: "restore.apply", Key: "enter"}}
 }
 
-func (s *syncScreen) ID() ScreenID               { return ScreenSync }
-func (s *syncScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *syncScreen) ID() ScreenID { return ScreenSync }
+func (s *syncScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !screenKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 func (s *syncScreen) Actions() []Action {
 	states := s.Sync.Actions()
 	actions := make([]Action, 0, len(states))
@@ -1053,8 +1090,13 @@ func (s *syncScreen) Actions() []Action {
 }
 func (s *syncScreen) Bindings() []Binding { return bindingsFromSyncActions(s.Sync.Actions()) }
 
-func (s *providerScreen) ID() ScreenID               { return s.id }
-func (s *providerScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *providerScreen) ID() ScreenID { return s.id }
+func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !screenKey(key.String()) && key.String() != "tab" {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 func (s *providerScreen) Actions() []Action {
 	return []Action{
 		{ID: string(s.id) + ".tab", Label: "Switch saved/changes", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
@@ -1063,11 +1105,16 @@ func (s *providerScreen) Actions() []Action {
 	}
 }
 func (s *providerScreen) Bindings() []Binding {
-	return []Binding{{string(s.id) + ".tab", "tab", 0}, {string(s.id) + ".refresh", "r", 0}, {string(s.id) + ".capture", "c", 0}}
+	return []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}}
 }
 
-func (s *configScreen) ID() ScreenID               { return ScreenConfig }
-func (s *configScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *configScreen) ID() ScreenID { return ScreenConfig }
+func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !screenKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 func (s *configScreen) Actions() []Action {
 	return []Action{
 		{ID: "config.diff", Label: "View Config diff", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
@@ -1080,11 +1127,16 @@ func (s *configScreen) Actions() []Action {
 	}
 }
 func (s *configScreen) Bindings() []Binding {
-	return []Binding{{"config.diff", "d", 0}, {"config.include", "i", 0}, {"config.exclude", "x", 0}, {"config.auto", "a", 0}, {"config.edit", "e", 0}, {"config.open", "o", 0}, {"config.copy", "y", 0}}
+	return []Binding{{ActionID: "config.diff", Key: "d"}, {ActionID: "config.include", Key: "i"}, {ActionID: "config.exclude", Key: "x"}, {ActionID: "config.auto", Key: "a"}, {ActionID: "config.edit", Key: "e"}, {ActionID: "config.open", Key: "o"}, {ActionID: "config.copy", Key: "y"}}
 }
 
-func (s *overviewScreen) ID() ScreenID               { return ScreenOverview }
-func (s *overviewScreen) HandlesKey(key string) bool { return screenKey(key) }
+func (s *overviewScreen) ID() ScreenID { return ScreenOverview }
+func (s *overviewScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !screenKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
 func (s *overviewScreen) Actions() []Action {
 	return []Action{
 		{ID: "overview.open", Label: "Open selected decision", Enabled: s.CanOpen(), Visible: true, DisabledReason: "select an attention item", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
@@ -1092,7 +1144,7 @@ func (s *overviewScreen) Actions() []Action {
 	}
 }
 func (s *overviewScreen) Bindings() []Binding {
-	return []Binding{{"overview.open", "enter", 0}, {"overview.refresh", "r", 0}}
+	return []Binding{{ActionID: "overview.open", Key: "enter"}, {ActionID: "overview.refresh", Key: "r"}}
 }
 
 func bindingsFromResourceActions(actions []screens.ResourceAction, prefix string) []Binding {
@@ -1112,7 +1164,7 @@ func bindingsFromSyncActions(actions []screens.SyncAction) []Binding {
 
 func screenKey(key string) bool {
 	switch key {
-	case ":", "?", "tab", "shift+tab", "h", "left", "l", "right":
+	case ":", "?", "q", "tab", "shift+tab", "h", "left", "l", "right":
 		return false
 	}
 	return true

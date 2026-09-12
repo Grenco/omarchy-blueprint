@@ -28,14 +28,29 @@ func (s Styles) Added(value string) string    { return s.color(value, s.Palette.
 func (s Styles) Removed(value string) string  { return s.color(value, s.Palette.Removed) }
 func (s Styles) Disabled(value string) string { return s.color(value, s.Palette.Disabled) }
 func (s Styles) Selection(value string, focused bool) string {
-	if !s.Palette.ColorEnabled || s.Palette.SelectionBackground == "" {
+	if !s.Palette.ColorEnabled {
+		return value
+	}
+	if !focused {
+		// Keep the selected item visible without competing with the active cursor.
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(first(s.Palette.Accent, s.Palette.DarkForeground, s.Palette.Muted))).Render(value)
+	}
+	background := s.Palette.Selection
+	if background == "" {
+		background = s.Palette.SelectionBackground
+	}
+	if background == "" {
 		return value
 	}
 	foreground := s.Palette.SelectionForeground
-	if !focused {
-		foreground = s.Palette.Muted
+	if foreground == "" {
+		foreground = s.Palette.Foreground
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(foreground)).Background(lipgloss.Color(s.Palette.SelectionBackground)).Render(value)
+	style := lipgloss.NewStyle().Background(lipgloss.Color(background))
+	if foreground != "" {
+		style = style.Foreground(lipgloss.Color(foreground))
+	}
+	return style.Bold(true).Render(value)
 }
 func (s Styles) Border(value string, focused bool) string {
 	color := s.Palette.Border
@@ -50,4 +65,13 @@ func (s Styles) color(value, color string) string {
 		return value
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(value)
+}
+
+func first(colors ...string) string {
+	for _, color := range colors {
+		if color != "" {
+			return color
+		}
+	}
+	return ""
 }

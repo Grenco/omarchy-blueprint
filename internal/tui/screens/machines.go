@@ -47,13 +47,18 @@ func (s *Machines) SetStyles(styles components.Styles) {
 	}
 }
 
-// HandlesKey reserves workspace navigation for the two machine subpanels.
-func (s *Machines) HandlesKey(key string) bool {
+// OwnsWorkspaceKey keeps movement inside the machine subpanels until an outer
+// edge is reached, where root focus navigation may take over.
+func (s *Machines) OwnsWorkspaceKey(key string) bool {
 	switch key {
-	case "tab", "h", "left", "l", "right", "j", "down", "k", "up":
+	case "h", "left":
+		return s.focusMappings
+	case "l", "right":
+		return !s.focusMappings
+	case "tab", "j", "down", "k", "up":
 		return true
 	}
-	return false
+	return key != ":" && key != "?" && key != "q"
 }
 func (s *Machines) Focus(mapping string) {
 	s.focusMapping = mapping
@@ -233,7 +238,7 @@ func (s *Machines) View() string {
 	}
 	rows := []components.Row{}
 	for i, row := range s.mappingRows() {
-		rows = append(rows, components.Row{Cells: []string{row.id, row.portable, row.effective, row.source}, Selected: i == s.resource})
+		rows = append(rows, components.Row{Cells: []string{row.id, row.portable, row.effective, row.source}, Selected: i == s.resource, Focused: s.focusMappings})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
