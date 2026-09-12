@@ -1,0 +1,44 @@
+package workflow
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+)
+
+type statusTestProvider struct {
+	id      string
+	changes []model.Change
+}
+
+func (p statusTestProvider) ID() string               { return p.id }
+func (statusTestProvider) Captured(profile.Data) bool { return true }
+func (p statusTestProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+	return nil, nil, nil
+}
+func (p statusTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return p.changes, nil
+}
+func (statusTestProvider) CategoryEnabled() bool { return true }
+
+func TestWorkflowStatusPreservesProviderOrder(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, profile.New("test", time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetProviders([]Provider{statusTestProvider{id: "packages"}, statusTestProvider{id: "config"}, statusTestProvider{id: "resources"}})
+	report, err := session.Status(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Providers) != 3 || report.Providers[0].ID != "packages" || report.Providers[1].ID != "config" || report.Providers[2].ID != "resources" {
+		t.Fatalf("providers = %#v", report.Providers)
+	}
+}

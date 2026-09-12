@@ -98,6 +98,31 @@ omarchy-blueprint restore --dry-run
 omarchy-blueprint restore
 ```
 
+## Interactive TUI
+
+When stdin and stdout are terminals, the bare command opens the keyboard-first
+TUI. Use an explicit command when preferred, or select a profile directly:
+
+```sh
+omarchy-blueprint                    # TUI when interactive
+omarchy-blueprint tui
+omarchy-blueprint --profile ~/omarchy-profile
+```
+
+The Overview is a decision inbox. Use the sidebar, `j`/`k`, `Tab`, or the `:`
+command palette to navigate. Config review shows each discovery classification
+and reason, then lets you choose include, exclude, or automatic policy.
+Resources supports non-destructive discovery and strategy selection; Machines
+shows portable paths and per-machine overrides. Restore compares Normal and
+Forced plans before approval, including consequence changes. Sync exposes the
+safe profile-Git workflow without fetching automatically at startup. Editor,
+file-manager, browser, clipboard, and LazyGit actions hand off to external
+tools and refresh when they return.
+
+Without an interactive terminal, bare invocation prints normal CLI help and
+does not emit terminal control sequences. Set `NO_COLOR=1` to disable colour;
+selection, warning, diff, and restore semantics remain visible as text.
+
 Category-less `status`, `diff`, and `restore` operate on every captured
 provider. Use `status packages`, `status themes`, `restore packages`, or
 `restore themes` when you want to target one category. Configuration, defaults,
@@ -264,8 +289,9 @@ rejected during local-theme capture. Config restore never overwrites a target
 that differs from both the desired content and the current Omarchy baseline,
 and cross-version baseline changes are reported as migration-required rather
 than auto-merged. Defaults restore is additive: it never unsets a
-machine-selected default. The TUI, monitors/input config, path mappings,
-migrations, and AI remain postponed.
+machine-selected default. Generic backup providers, advanced Git workflows,
+broader machine-specific state, migration UI, and agent assistance remain
+postponed.
 
 Capture and inspect theme state explicitly with:
 

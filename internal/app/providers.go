@@ -20,6 +20,7 @@ import (
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 // stateProvider keeps CLI orchestration independent from each provider's
@@ -93,6 +94,78 @@ type resourcesStateProvider struct {
 	deps     Dependencies
 	opt      *options
 	prepared *resourcesprovider.PreparedCapture
+}
+
+// TrackResource stages resource artifacts before saving metadata, retaining the
+// previous generation when the profile save fails.
+func (p resourcesStateProvider) TrackResource(ctx context.Context, d profile.Data, request workflow.TrackRequest) (profile.Data, profile.Resource, []model.Change, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	prepared, err := provider.PrepareTrack(ctx, d.Resources, request.Path, resourcesprovider.TrackOptions{
+		ID: request.ID, Strategy: request.Strategy, IncludeUntracked: request.IncludeUntracked, ExcludeUntracked: request.ExcludeUntracked,
+	})
+	if err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	if err := prepared.Install(); err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	changes := trackChanges(d.Resources, prepared.State, prepared.Changes)
+	d.Resources = prepared.State
+	d.Manifest.Capture.Resources = true
+	d.Manifest.Profile.UpdatedAt = p.deps.Now().UTC()
+	if err := profile.Save(p.opt.profileDir, d); err != nil {
+		_ = prepared.Rollback()
+		return d, profile.Resource{}, nil, fmt.Errorf("save profile: %w", err)
+	}
+	if err := prepared.Commit(); err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	if err := prepared.Finalize(); err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	resource := profile.Resource{}
+	for _, change := range changes {
+		if change.Provider == "resources" && change.Kind == "resource" {
+			resource, _ = resourceByID(d.Resources.Items, change.Name)
+			break
+		}
+	}
+	if resource.ID == "" && request.ID != "" {
+		resource, _ = resourceByID(d.Resources.Items, request.ID)
+	}
+	return d, resource, changes, nil
+}
+
+// UntrackResource removes a saved resource generation while retaining the live files.
+func (p resourcesStateProvider) UntrackResource(_ context.Context, d profile.Data, id string) (profile.Data, []string, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return d, nil, err
+	}
+	prepared, removed, err := provider.PrepareUntrack(d.Resources, "resource:"+id)
+	if err != nil {
+		return d, nil, err
+	}
+	if err := prepared.Install(); err != nil {
+		return d, nil, err
+	}
+	d.Resources = prepared.State
+	d.Manifest.Capture.Resources = true
+	d.Manifest.Profile.UpdatedAt = p.deps.Now().UTC()
+	if err := profile.Save(p.opt.profileDir, d); err != nil {
+		_ = prepared.Rollback()
+		return d, nil, fmt.Errorf("save profile: %w", err)
+	}
+	if err := prepared.Commit(); err != nil {
+		return d, nil, err
+	}
+	if err := prepared.Finalize(); err != nil {
+		return d, nil, err
+	}
+	return d, removed, nil
 }
 
 func (resourcesStateProvider) ID() string                     { return "resources" }

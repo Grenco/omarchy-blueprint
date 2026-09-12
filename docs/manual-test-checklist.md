@@ -1,5 +1,20 @@
 # Manual cross-machine test checklist
 
+## TUI v1 acceptance checklist
+
+Run each journey at widths 140, 100, 80, and a too-small terminal (under 70
+columns or 18 rows). Confirm the compact and too-small views remain readable
+and no navigation action crashes. This is a checklist only; it does not record
+real-Omarchy acceptance.
+
+1. **Entrypoint:** Launch bare `omarchy-blueprint` in a terminal and confirm it opens the TUI; pipe stdin or stdout and confirm normal help has no ANSI escape bytes. Confirm explicit CLI commands do not open the TUI.
+2. **Config review:** Open Overview, inspect an ambiguous Config candidate, review its classification/reason and bounded diff, then confirm Include, Exclude, and Auto use the persisted policy after refresh.
+3. **Resource discovery:** Browse a safe file, directory, and Git worktree without mutation; inspect ownership/Git state, choose copy, git, and git+diff deliberately, and confirm tracked status refreshes.
+4. **Machine mapping:** Add/select a disposable machine overlay, choose a tracked Resource and destination directory, confirm the effective path appears in Machines and Resources, then clear or remove the mapping without moving live bytes.
+5. **Restore comparison:** On a disposable conflicting target, compare Normal and Forced plans, identify every changed consequence, toggle modes, open detail where available, and approve only after reading the selected-mode confirmation.
+6. **Profile Git sync:** Initialize a disposable profile repository, set a safe origin, refresh, inspect managed diff, commit and push; verify staged, unmanaged, divergent, or conflicted states offer handoff instead of unsafe mutation.
+7. **Omarchy theme/fallback:** Launch under the current Omarchy theme, change its palette while the TUI runs, then test missing/malformed palette fallback and `NO_COLOR=1`; warnings, selection, diff add/remove, mode, and destructive consequences must remain understandable.
+
 ## Portable themes
 
 - Restore a missing clean Git theme and confirm the captured revision is checked out.
