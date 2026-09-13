@@ -15,12 +15,13 @@ import (
 type resourcePhase string
 
 const (
-	resourceBrowse    resourcePhase = "browse"
-	resourceStrategy  resourcePhase = "strategy"
-	resourceUntracked resourcePhase = "untracked-selector"
-	resourceConfirm   resourcePhase = "confirm"
-	resourcePending   resourcePhase = "pending"
-	resourceResult    resourcePhase = "result"
+	resourceBrowse       resourcePhase = "browse"
+	resourceStrategy     resourcePhase = "strategy"
+	resourceUntracked    resourcePhase = "untracked-selector"
+	resourceConfirm      resourcePhase = "confirm"
+	resourcePending      resourcePhase = "pending"
+	resourceResult       resourcePhase = "result"
+	resourceInspectError resourcePhase = "inspect-error"
 )
 
 type Resources struct {
@@ -184,7 +185,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		if msg.err != nil {
-			s.err, s.phase = msg.err, resourceResult
+			s.err, s.phase = msg.err, resourceInspectError
 			return nil
 		}
 		s.candidate = components.BrowserEntry{Path: msg.inspection.EffectivePath, Type: msg.inspection.Resource.Kind}
@@ -262,7 +263,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			s.strategyCursor = max(0, s.strategyCursor-1)
 			s.strategy = s.strategies()[s.strategyCursor]
 		case "enter":
-			if s.strategy == "git+diff" {
+			if s.strategy == "git+diff" && len(s.untracked) > 0 {
 				s.phase = resourceUntracked
 			} else if s.strategy != "" {
 				s.phase = resourcePending
@@ -294,7 +295,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	}
-	if s.phase == resourceResult {
+	if s.phase == resourceResult || s.phase == resourceInspectError {
 		if key.String() == "esc" {
 			s.resetDiscovery()
 		}
@@ -359,6 +360,9 @@ func (s *Resources) View() string {
 			return "Resource tracking failed: " + components.DisplayText(s.err.Error())
 		}
 		return "Resource tracked. Press Esc to continue."
+	}
+	if s.phase == resourceInspectError {
+		return "Unable to inspect resource: " + components.DisplayText(s.err.Error())
 	}
 	if s.browser != nil && phase == resourceBrowse {
 		return s.browser.View()

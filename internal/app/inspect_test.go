@@ -165,6 +165,35 @@ func TestInspectConfigAndResourceJSON(t *testing.T) {
 	}
 }
 
+func TestInspectCopyResourceIgnoresUnavailableGitCapability(t *testing.T) {
+	profileDir, stateHome, home := t.TempDir(), t.TempDir(), t.TempDir()
+	root := filepath.Join(home, "copy-repository")
+	for _, args := range [][]string{{"init", root}, {"-C", root, "config", "user.email", "test@example.com"}, {"-C", root, "config", "user.name", "Test"}} {
+		if _, err := (command.SystemRunner{}).Run(context.Background(), "git", args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAppFile(t, filepath.Join(root, "README"), "first")
+	for _, args := range [][]string{{"-C", root, "add", "README"}, {"-C", root, "commit", "-m", "initial"}} {
+		if _, err := (command.SystemRunner{}).Run(context.Background(), "git", args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "copy-repository", Path: "~/copy-repository", Kind: "directory", Strategy: "copy"}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := openWorkflow(inspectDeps(stateHome, home, ""), &options{profileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := session.InspectResource(context.Background(), "copy-repository")
+	if err != nil || inspection.EffectivePath != root || inspection.Git != nil {
+		t.Fatalf("inspection=%#v err=%v", inspection, err)
+	}
+}
+
 func TestConfigDiffSafetyFixtures(t *testing.T) {
 	root := t.TempDir()
 	write := func(name string, data []byte) string {

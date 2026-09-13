@@ -148,9 +148,11 @@ func (p resourcesStateProvider) InspectResource(ctx context.Context, d profile.D
 	if provider.Runner != nil {
 		state, ok, err := resourcesprovider.InspectGitWorkingState(ctx, provider.Runner, effective)
 		if err != nil {
-			return workflow.ResourceInspection{}, err
+			if item.Strategy != "copy" {
+				return workflow.ResourceInspection{}, err
+			}
 		}
-		if ok {
+		if err == nil && ok {
 			result.Git = &resourcesprovider.GitWorkingSummary{StagedTracked: state.StagedTracked, UnstagedTracked: state.UnstagedTracked, Untracked: state.Untracked}
 		}
 	}

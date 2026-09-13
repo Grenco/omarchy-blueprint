@@ -206,7 +206,7 @@ func TestResourceGitDiffEscapeReturnsToStrategy(t *testing.T) {
 }
 
 func TestResourceStrategyPickerUsesNavigationAndGitCapability(t *testing.T) {
-	screen := &Resources{phase: resourceStrategy, strategy: "copy", candidateInspection: workflow.PathInspection{Git: &workflow.GitInspection{}}}
+	screen := &Resources{phase: resourceStrategy, strategy: "copy", candidateInspection: workflow.PathInspection{Git: &workflow.GitInspection{}}, untracked: []string{"new.txt"}}
 	screen.selectStrategy("copy")
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if screen.strategy != "git" || !strings.Contains(screen.View(), "> git:") {
@@ -216,6 +216,22 @@ func TestResourceStrategyPickerUsesNavigationAndGitCapability(t *testing.T) {
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if screen.strategy != "git+diff" || screen.phase != resourceUntracked {
 		t.Fatalf("git+diff did not open selector: strategy=%q phase=%q", screen.strategy, screen.phase)
+	}
+}
+
+func TestResourceGitDiffWithoutUntrackedAppliesDirectly(t *testing.T) {
+	screen := &Resources{phase: resourceStrategy, strategy: "git+diff", candidateInspection: workflow.PathInspection{Git: &workflow.GitInspection{}}}
+	screen.selectStrategy("git+diff")
+	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil || screen.phase != resourcePending {
+		t.Fatalf("empty git+diff did not apply: phase=%q cmd=%v", screen.phase, cmd != nil)
+	}
+}
+
+func TestResourceInspectionFailureUsesInspectionMessage(t *testing.T) {
+	screen := &Resources{requestID: 2}
+	screen.Update(resourceExistingInspectMsg{requestID: 2, err: fmt.Errorf("missing origin")})
+	if screen.phase != resourceInspectError || !strings.Contains(screen.View(), "Unable to inspect resource: missing origin") {
+		t.Fatalf("inspection failure=%q phase=%q", screen.View(), screen.phase)
 	}
 }
 
