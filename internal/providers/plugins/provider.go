@@ -19,8 +19,10 @@ import (
 )
 
 type Provider struct {
-	Runner              command.Runner
-	UserDir, ProfileDir string
+	Runner                         command.Runner
+	UserDir, ProfileDir            string
+	captureDestination, captureOld string
+	capturePending                 bool
 }
 type catalogItem struct {
 	ID         string `json:"id"`
@@ -58,7 +60,7 @@ func (p Provider) Detect(ctx context.Context) (profile.Plugins, error) {
 	return state, nil
 }
 
-func (p Provider) Capture(ctx context.Context) (profile.Plugins, error) {
+func (p *Provider) Capture(ctx context.Context) (profile.Plugins, error) {
 	state, err := p.Detect(ctx)
 	if err != nil {
 		return state, err
@@ -98,8 +100,35 @@ func (p Provider) Capture(ctx context.Context) (profile.Plugins, error) {
 		_ = os.Rename(old, dest)
 		return state, err
 	}
-	_ = os.RemoveAll(old)
+	p.captureDestination, p.captureOld, p.capturePending = dest, old, true
 	return state, nil
+}
+
+func (p *Provider) CommitCapture() error { return nil }
+func (p *Provider) FinalizeCapture() error {
+	if !p.capturePending {
+		return nil
+	}
+	err := os.RemoveAll(p.captureOld)
+	p.captureDestination, p.captureOld, p.capturePending = "", "", false
+	return err
+}
+func (p *Provider) RollbackCapture() error {
+	if !p.capturePending {
+		return nil
+	}
+	if err := os.RemoveAll(p.captureDestination); err != nil {
+		return err
+	}
+	if _, err := os.Stat(p.captureOld); err == nil {
+		if err := os.Rename(p.captureOld, p.captureDestination); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	p.captureDestination, p.captureOld, p.capturePending = "", "", false
+	return nil
 }
 
 func (p Provider) detectUser(ctx context.Context, item catalogItem, path string) (profile.Plugin, error) {

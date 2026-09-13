@@ -54,6 +54,17 @@ func TestAddInclusionNormalizesCuratedHomePaths(t *testing.T) {
 	}
 }
 
+func TestClearPolicyRemovesOnlyExactCanonicalRecords(t *testing.T) {
+	saved := profile.Configs{Included: []string{".config/nvim", ".config/nvim/lua", ".config/ghostty"}, Excluded: []string{".config/nvim/cache", ".config/nvim/lua", ".config/waybar"}}
+	updated, changed, err := ClearPolicy(saved, "~/.config/nvim/lua")
+	if err != nil || !changed {
+		t.Fatalf("changed=%t err=%v", changed, err)
+	}
+	if !reflect.DeepEqual(updated.Included, []string{".config/ghostty", ".config/nvim"}) || !reflect.DeepEqual(updated.Excluded, []string{".config/nvim/cache", ".config/waybar"}) {
+		t.Fatalf("policy=%#v", updated)
+	}
+}
+
 func TestNormalizeConfigExclusionPathRejectsUnsafeInput(t *testing.T) {
 	for _, input := range []string{"", "../ssh", "/etc", "~/.ssh", ".ssh/id_ed25519", "~/.config"} {
 		if _, err := NormalizeExclusionPath(input); err == nil {

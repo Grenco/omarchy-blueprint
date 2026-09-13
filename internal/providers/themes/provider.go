@@ -21,6 +21,8 @@ import (
 type Provider struct {
 	Runner                          command.Runner
 	BuiltinDir, UserDir, ProfileDir string
+	captureDestination, captureOld  string
+	capturePending                  bool
 }
 
 func (p Provider) Detect(ctx context.Context) (profile.Themes, error) {
@@ -81,7 +83,7 @@ func (p Provider) Detect(ctx context.Context) (profile.Themes, error) {
 	return state, nil
 }
 
-func (p Provider) Capture(ctx context.Context) (profile.Themes, error) {
+func (p *Provider) Capture(ctx context.Context) (profile.Themes, error) {
 	state, err := p.Detect(ctx)
 	if err != nil {
 		return state, err
@@ -122,8 +124,35 @@ func (p Provider) Capture(ctx context.Context) (profile.Themes, error) {
 		_ = os.Rename(old, destination)
 		return state, err
 	}
-	_ = os.RemoveAll(old)
+	p.captureDestination, p.captureOld, p.capturePending = destination, old, true
 	return state, nil
+}
+
+func (p *Provider) CommitCapture() error { return nil }
+func (p *Provider) FinalizeCapture() error {
+	if !p.capturePending {
+		return nil
+	}
+	err := os.RemoveAll(p.captureOld)
+	p.captureDestination, p.captureOld, p.capturePending = "", "", false
+	return err
+}
+func (p *Provider) RollbackCapture() error {
+	if !p.capturePending {
+		return nil
+	}
+	if err := os.RemoveAll(p.captureDestination); err != nil {
+		return err
+	}
+	if _, err := os.Stat(p.captureOld); err == nil {
+		if err := os.Rename(p.captureOld, p.captureDestination); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	p.captureDestination, p.captureOld, p.capturePending = "", "", false
+	return nil
 }
 
 func (p Provider) detectUserTheme(ctx context.Context, id, path string) (profile.Theme, error) {
@@ -170,6 +199,9 @@ func installID(raw string) string {
 
 func Diff(saved, current profile.Themes) []model.Change {
 	saved = legacy(saved)
+	if saved.Current == "" {
+		current.Current = ""
+	}
 	want, have := themeMap(saved.Items), themeMap(current.Items)
 	var changes []model.Change
 	for id, desired := range want {
@@ -198,6 +230,9 @@ func Diff(saved, current profile.Themes) []model.Change {
 
 func (p Provider) Plan(saved, current profile.Themes, schema int, from, to string) model.RestorePlan {
 	saved = legacy(saved)
+	if saved.Current == "" {
+		current.Current = ""
+	}
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	have := themeMap(current.Items)
 	needsActivation := saved.Current != "" && saved.Current != current.Current
@@ -252,6 +287,9 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 
 func Verify(saved, current profile.Themes) model.VerificationResult {
 	saved = legacy(saved)
+	if saved.Current == "" {
+		current.Current = ""
+	}
 	have := themeMap(current.Items)
 	var missing []string
 	for _, desired := range saved.Items {
@@ -266,7 +304,6 @@ func Verify(saved, current profile.Themes) model.VerificationResult {
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
 }
-
 func legacy(state profile.Themes) profile.Themes {
 	if len(state.Items) == 0 && state.Current != "" {
 		state.Items = []profile.Theme{{ID: state.Current, Type: state.Source, Enabled: true}}

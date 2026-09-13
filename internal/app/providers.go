@@ -20,6 +20,7 @@ import (
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 // stateProvider keeps CLI orchestration independent from each provider's
@@ -59,8 +60,8 @@ type resourceDiffProvider interface {
 func stateProviders(deps Dependencies, opt *options) []stateProvider {
 	return []stateProvider{
 		packagesStateProvider{deps: deps},
-		themesStateProvider{deps: deps, opt: opt},
-		pluginsStateProvider{deps: deps, opt: opt},
+		&themesStateProvider{deps: deps, opt: opt},
+		&pluginsStateProvider{deps: deps, opt: opt},
 		&resourcesStateProvider{deps: deps, opt: opt},
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
@@ -93,6 +94,78 @@ type resourcesStateProvider struct {
 	deps     Dependencies
 	opt      *options
 	prepared *resourcesprovider.PreparedCapture
+}
+
+// TrackResource stages resource artifacts before saving metadata, retaining the
+// previous generation when the profile save fails.
+func (p resourcesStateProvider) TrackResource(ctx context.Context, d profile.Data, request workflow.TrackRequest) (profile.Data, profile.Resource, []model.Change, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	prepared, err := provider.PrepareTrack(ctx, d.Resources, request.Path, resourcesprovider.TrackOptions{
+		ID: request.ID, Strategy: request.Strategy, IncludeUntracked: request.IncludeUntracked, ExcludeUntracked: request.ExcludeUntracked,
+	})
+	if err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	if err := prepared.Install(); err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	changes := trackChanges(d.Resources, prepared.State, prepared.Changes)
+	d.Resources = prepared.State
+	d.Manifest.Capture.Resources = true
+	d.Manifest.Profile.UpdatedAt = p.deps.Now().UTC()
+	if err := profile.Save(p.opt.profileDir, d); err != nil {
+		_ = prepared.Rollback()
+		return d, profile.Resource{}, nil, fmt.Errorf("save profile: %w", err)
+	}
+	if err := prepared.Commit(); err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	if err := prepared.Finalize(); err != nil {
+		return d, profile.Resource{}, nil, err
+	}
+	resource := profile.Resource{}
+	for _, change := range changes {
+		if change.Provider == "resources" && change.Kind == "resource" {
+			resource, _ = resourceByID(d.Resources.Items, change.Name)
+			break
+		}
+	}
+	if resource.ID == "" && request.ID != "" {
+		resource, _ = resourceByID(d.Resources.Items, request.ID)
+	}
+	return d, resource, changes, nil
+}
+
+// UntrackResource removes a saved resource generation while retaining the live files.
+func (p resourcesStateProvider) UntrackResource(_ context.Context, d profile.Data, id string) (profile.Data, []string, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return d, nil, err
+	}
+	prepared, removed, err := provider.PrepareUntrack(d.Resources, "resource:"+id)
+	if err != nil {
+		return d, nil, err
+	}
+	if err := prepared.Install(); err != nil {
+		return d, nil, err
+	}
+	d.Resources = prepared.State
+	d.Manifest.Capture.Resources = true
+	d.Manifest.Profile.UpdatedAt = p.deps.Now().UTC()
+	if err := profile.Save(p.opt.profileDir, d); err != nil {
+		_ = prepared.Rollback()
+		return d, nil, fmt.Errorf("save profile: %w", err)
+	}
+	if err := prepared.Commit(); err != nil {
+		return d, nil, err
+	}
+	if err := prepared.Finalize(); err != nil {
+		return d, nil, err
+	}
+	return d, removed, nil
 }
 
 func (resourcesStateProvider) ID() string                     { return "resources" }
@@ -414,8 +487,9 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 }
 
 type themesStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps            Dependencies
+	opt             *options
+	captureProvider *themesprovider.Provider
 }
 
 func (themesStateProvider) ID() string { return "themes" }
@@ -428,19 +502,44 @@ func (p themesStateProvider) provider() (themesprovider.Provider, error) {
 	return themeProvider(p.deps, p.opt)
 }
 
-func (p themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := provider.Capture(ctx)
+	p.captureProvider = &provider
+	current, err := p.captureProvider.Capture(ctx)
 	if err != nil {
+		p.captureProvider = nil
 		return nil, nil, err
 	}
 	changes := themesprovider.Diff(d.Themes, current)
 	d.Themes = current
 	d.Manifest.Capture.Themes = true
 	return current, changes, nil
+}
+
+func (p *themesStateProvider) CommitCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	return p.captureProvider.CommitCapture()
+}
+func (p *themesStateProvider) FinalizeCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.FinalizeCapture()
+	p.captureProvider = nil
+	return err
+}
+func (p *themesStateProvider) RollbackCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.RollbackCapture()
+	p.captureProvider = nil
+	return err
 }
 
 func (p themesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
@@ -489,8 +588,9 @@ func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
 }
 
 type pluginsStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps            Dependencies
+	opt             *options
+	captureProvider *pluginsprovider.Provider
 }
 
 // pluginSemantics delegates plugin enablement ownership to the Shell provider
@@ -510,19 +610,44 @@ func (p pluginsStateProvider) provider() (pluginsprovider.Provider, error) {
 	return pluginProvider(p.deps, p.opt)
 }
 
-func (p pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := provider.Capture(ctx)
+	p.captureProvider = &provider
+	current, err := p.captureProvider.Capture(ctx)
 	if err != nil {
+		p.captureProvider = nil
 		return nil, nil, err
 	}
 	changes := pluginsprovider.Diff(d.Plugins, current, pluginSemantics(*d))
 	d.Plugins = current
 	d.Manifest.Capture.Plugins = true
 	return current, changes, nil
+}
+
+func (p *pluginsStateProvider) CommitCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	return p.captureProvider.CommitCapture()
+}
+func (p *pluginsStateProvider) FinalizeCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.FinalizeCapture()
+	p.captureProvider = nil
+	return err
+}
+func (p *pluginsStateProvider) RollbackCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.RollbackCapture()
+	p.captureProvider = nil
+	return err
 }
 
 func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {

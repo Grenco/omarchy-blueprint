@@ -21,6 +21,13 @@ func (f runnerFunc) Run(ctx context.Context, name string, args ...string) (strin
 
 func TestCaptureGitAndLocalPlugins(t *testing.T) {
 	user, profileDir := t.TempDir(), t.TempDir()
+	previous := filepath.Join(profileDir, "plugins", "local", "mine.local", "manifest.json")
+	if err := os.MkdirAll(filepath.Dir(previous), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previous, []byte(`{"id":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{"acme.git", "mine.local"} {
 		if err := os.MkdirAll(filepath.Join(user, id), 0755); err != nil {
 			t.Fatal(err)
@@ -48,7 +55,8 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 			return "", fmt.Errorf("unexpected %s", joined)
 		}
 	})
-	got, err := (Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}).Capture(context.Background())
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+	got, err := provider.Capture(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +68,12 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, "plugins", "local", "mine.local", "manifest.json")); err != nil {
 		t.Fatal(err)
+	}
+	if err := provider.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if restored, err := os.ReadFile(previous); err != nil || string(restored) != `{"id":"old"}` {
+		t.Fatalf("restored snapshot=%q err=%v", restored, err)
 	}
 }
 

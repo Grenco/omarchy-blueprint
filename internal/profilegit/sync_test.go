@@ -305,11 +305,13 @@ func gitRemoteClones(t *testing.T) (origin, first, second string) {
 	second = filepath.Join(parent, "second")
 	git(t, parent, "init", "--bare", origin)
 	git(t, parent, "clone", origin, first)
+	gitIdentity(t, first)
 	git(t, first, "checkout", "-b", "main")
 	gitCommit(t, first, "profile.toml", "initial\n")
 	git(t, first, "push", "-u", "origin", "main")
 	git(t, origin, "symbolic-ref", "HEAD", "refs/heads/main")
 	git(t, parent, "clone", origin, second)
+	gitIdentity(t, second)
 	return origin, first, second
 }
 
@@ -331,11 +333,16 @@ func writeProfile(t *testing.T, root string) {
 
 func gitCommit(t *testing.T, root, path, content string) {
 	t.Helper()
-	git(t, root, "config", "user.name", "Blueprint Test")
-	git(t, root, "config", "user.email", "blueprint@example.test")
+	gitIdentity(t, root)
 	mustWrite(t, filepath.Join(root, path), content)
 	git(t, root, "add", path)
 	git(t, root, "commit", "-m", "commit")
+}
+
+func gitIdentity(t *testing.T, root string) {
+	t.Helper()
+	git(t, root, "config", "user.name", "Blueprint Test")
+	git(t, root, "config", "user.email", "blueprint@example.test")
 }
 
 func mustRead(t *testing.T, name string) string {

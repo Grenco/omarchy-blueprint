@@ -35,6 +35,7 @@ The stable top-level navigation is:
 
 ```text
 Overview
+Capture
 Packages
 Config
 Resources
@@ -49,6 +50,15 @@ Restore
 ```
 
 Screens may be hidden or marked unavailable when the associated provider is unsupported, but navigation order remains stable.
+
+Implementation clarification: the dedicated Capture screen is the second sidebar
+entry, between Overview and Packages. It provides aggregate capture without
+replacing provider-specific capture actions. `Space` toggles the highlighted
+provider, `a` selects changed providers, `c` confirms capture of the selection,
+and `C` confirms aggregate Capture All. `Enter` confirms the modal and `Esc`
+cancels it. On success, reload the profile and refresh Overview, the affected
+provider status, and local Profile Git/Sync status; Capture All does not commit
+or push.
 
 ### 2. Bare interactive invocation launches the TUI
 
@@ -70,7 +80,12 @@ All existing subcommands keep their current behavior.
 
 When bare `omarchy-blueprint` is executed without an interactive terminal, it must not attempt to start a TUI. It prints normal CLI help and exits successfully. Explicit `omarchy-blueprint tui` without a usable terminal fails with actionable guidance.
 
-TUI v1 uses the same profile-path resolution as the CLI. It does not introduce a profile registry or automatic profile discovery beyond the active `--profile` path.
+TUI v1 uses the same profile-path resolution as the CLI. If the implicit path
+has no `profile.toml`, interactive startup offers Create, Open, and Quit with an
+editable path, regardless of unrelated files in the current directory. It does
+not initialize that directory automatically. Explicit invalid or partial
+`--profile` paths remain strict errors. This does not introduce a profile
+registry or automatic discovery.
 
 ### 3. CLI capability parity is a product invariant
 
@@ -296,6 +311,15 @@ Space           toggle selection/policy where applicable
 Esc             close/back/cancel current transient UI
 q               quit when no modal/transient view consumes it
 ```
+
+The command palette and help open with their search input focused, so direct
+typing filters immediately. Arrow keys move palette selection; printable
+`j`/`k` are search input rather than hidden navigation aliases in that overlay.
+
+On the Capture screen specifically, `Space` toggles the highlighted provider,
+`a` selects changed providers, `c` captures the selected providers after
+confirmation, and `C` runs confirmed aggregate Capture All. `Enter` accepts a
+confirmation and `Esc` cancels it.
 
 Contextual actions such as edit/open/copy/diff/LazyGit appear in the bottom key-hint bar and command palette instead of being required knowledge.
 
