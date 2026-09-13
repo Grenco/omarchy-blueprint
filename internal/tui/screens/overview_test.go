@@ -42,3 +42,11 @@ func TestOverviewSectionCollapseAndViewportKeepCursorVisible(t *testing.T) {
 		t.Fatalf("cursor or viewport wrong: %q", view)
 	}
 }
+
+func TestOverviewIgnoresStaleRefresh(t *testing.T) {
+	screen := &Overview{requestID: 2, busy: true}
+	screen.Update(overviewMsg{requestID: 1, data: workflow.Overview{Healthy: []string{"stale"}}})
+	if !screen.busy || len(screen.data.Healthy) != 0 {
+		t.Fatalf("stale refresh changed state: busy=%v data=%#v", screen.busy, screen.data)
+	}
+}

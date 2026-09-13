@@ -44,6 +44,7 @@ type BrowserReadDirMsg struct {
 	Err           error
 	ParentEntries []BrowserEntry
 	ParentErr     error
+	Bookmarks     []Bookmark
 }
 
 // BrowserChildReadDirMsg is the asynchronous result for the selected directory preview.
@@ -64,44 +65,45 @@ type BrowserConfig struct {
 }
 
 type Browser struct {
-	mode           BrowserMode
-	path           string
-	entries        []BrowserEntry
-	parentPath     string
-	parentEntries  []BrowserEntry
-	parentErr      error
-	childPath      string
-	childEntries   []BrowserEntry
-	childErr       error
-	childLoading   bool
-	bookmarks      []Bookmark
-	selected       int
-	list           Selectable
-	cursors        map[string]int
-	width, height  int
-	styles         Styles
-	filter         string
-	filtering      bool
-	bookmarksOpen  bool
-	bookmark       int
-	closed         bool
-	readErr        error
-	inspectErr     error
-	inspectPathCmd func(requestID uint64, path string) tea.Cmd
-	requestID      uint64
-	directoryID    uint64
-	childID        uint64
-	inspection     workflow.PathInspection
-	inspectionPath string
+	mode               BrowserMode
+	path               string
+	entries            []BrowserEntry
+	parentPath         string
+	parentEntries      []BrowserEntry
+	parentErr          error
+	childPath          string
+	childEntries       []BrowserEntry
+	childErr           error
+	childLoading       bool
+	bookmarks          []Bookmark
+	bookmarkCandidates []Bookmark
+	selected           int
+	list               Selectable
+	cursors            map[string]int
+	width, height      int
+	styles             Styles
+	filter             string
+	filtering          bool
+	bookmarksOpen      bool
+	bookmark           int
+	closed             bool
+	readErr            error
+	inspectErr         error
+	inspectPathCmd     func(requestID uint64, path string) tea.Cmd
+	requestID          uint64
+	directoryID        uint64
+	childID            uint64
+	inspection         workflow.PathInspection
+	inspectionPath     string
 }
 
 func NewBrowser(mode BrowserMode, config BrowserConfig) Browser {
 	b := Browser{
-		mode:           mode,
-		path:           filepath.Clean(config.Home),
-		bookmarks:      BuildBookmarks(config),
-		inspectPathCmd: config.InspectPathCmd,
-		cursors:        make(map[string]int),
+		mode:               mode,
+		path:               filepath.Clean(config.Home),
+		bookmarkCandidates: BuildBookmarks(config),
+		inspectPathCmd:     config.InspectPathCmd,
+		cursors:            make(map[string]int),
 	}
 	return b
 }
@@ -110,7 +112,7 @@ func NewBrowser(mode BrowserMode, config BrowserConfig) Browser {
 func (b *Browser) SetSize(width, height int) { b.width, b.height = width, height }
 func (b *Browser) SetStyles(styles Styles)   { b.styles = styles }
 
-// BuildBookmarks returns the stable, existing locations useful to resource picking.
+// BuildBookmarks returns stable candidate locations without touching the filesystem.
 func BuildBookmarks(config BrowserConfig) []Bookmark {
 	home := filepath.Clean(config.Home)
 	candidates := []Bookmark{{"Home", home}, {"Config", filepath.Join(home, ".config")}}
@@ -141,18 +143,7 @@ func BuildBookmarks(config BrowserConfig) []Bookmark {
 	for _, path := range config.RecentDirs {
 		candidates = append(candidates, Bookmark{"Recent", path})
 	}
-	seen := map[string]bool{}
-	bookmarks := make([]Bookmark, 0, len(candidates))
-	for _, candidate := range candidates {
-		path, err := canonicalDir(candidate.Path)
-		if err != nil || seen[path] {
-			continue
-		}
-		seen[path] = true
-		candidate.Path = path
-		bookmarks = append(bookmarks, candidate)
-	}
-	return bookmarks
+	return candidates
 }
 
 func (b *Browser) Init() tea.Cmd { return b.readDir() }
@@ -163,6 +154,9 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		b.entries, b.readErr = result.Entries, result.Err
+		if result.Bookmarks != nil {
+			b.bookmarks = result.Bookmarks
+		}
 		b.parentPath, b.parentEntries, b.parentErr = filepath.Dir(result.Path), result.ParentEntries, result.ParentErr
 		b.selected = b.cursors[b.path]
 		b.list.SetSelected(b.selected, len(b.filteredEntries()), b.listHeight())
@@ -273,14 +267,14 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (b Browser) View() string {
-	lines := []string{"Parent: " + filepath.Dir(b.path), "Current: " + b.path}
+	lines := []string{"Parent: " + DisplayText(filepath.Dir(b.path)), "Current: " + DisplayText(b.path)}
 	if b.readErr != nil {
-		lines = append(lines, "Unable to read directory: "+b.readErr.Error())
+		lines = append(lines, "Unable to read directory: "+DisplayText(b.readErr.Error()))
 	}
 	if b.bookmarksOpen {
 		lines = append(lines, "Bookmarks")
 		for i, bookmark := range b.bookmarks {
-			line := fmt.Sprintf("  %s  %s", bookmark.Label, bookmark.Path)
+			line := fmt.Sprintf("  %s  %s", DisplayText(bookmark.Label), DisplayText(bookmark.Path))
 			if i == b.bookmark {
 				if !b.styles.Palette.ColorEnabled {
 					line = Icons.Selected + line[1:]
@@ -321,10 +315,10 @@ func (b Browser) Selected() (BrowserEntry, bool) {
 func (b Browser) Inspection() workflow.PathInspection { return b.inspection }
 func (b Browser) DetailView() string {
 	if b.readErr != nil {
-		return "Unable to read directory: " + b.readErr.Error()
+		return "Unable to read directory: " + DisplayText(b.readErr.Error())
 	}
 	if b.inspectErr != nil {
-		return "Unable to inspect selection: " + b.inspectErr.Error()
+		return "Unable to inspect selection: " + DisplayText(b.inspectErr.Error())
 	}
 	if b.inspection.Path == "" {
 		return "Loading selection details..."
@@ -350,10 +344,15 @@ func (b *Browser) readDir() tea.Cmd {
 	b.childID++
 	b.childPath, b.childEntries, b.childErr, b.childLoading = "", nil, nil, false
 	generation, path := b.directoryID, b.path
+	candidates, loadBookmarks := append([]Bookmark(nil), b.bookmarkCandidates...), b.bookmarks == nil
 	return func() tea.Msg {
 		entries, err := readBrowserEntries(path)
 		parentEntries, parentErr := readBrowserEntries(filepath.Dir(path))
-		return BrowserReadDirMsg{Generation: generation, Path: path, Entries: entries, Err: err, ParentEntries: parentEntries, ParentErr: parentErr}
+		var bookmarks []Bookmark
+		if loadBookmarks {
+			bookmarks = resolveBookmarks(candidates)
+		}
+		return BrowserReadDirMsg{Generation: generation, Path: path, Entries: entries, Err: err, ParentEntries: parentEntries, ParentErr: parentErr, Bookmarks: bookmarks}
 	}
 }
 
@@ -370,6 +369,20 @@ func (b *Browser) readChild() tea.Cmd {
 		entries, err := readBrowserEntries(path)
 		return BrowserChildReadDirMsg{Generation: generation, Path: path, Entries: entries, Err: err}
 	}
+}
+
+func resolveBookmarks(candidates []Bookmark) []Bookmark {
+	seen := map[string]bool{}
+	bookmarks := make([]Bookmark, 0, len(candidates))
+	for _, candidate := range candidates {
+		path, err := canonicalDir(candidate.Path)
+		if err != nil || seen[path] {
+			continue
+		}
+		seen[path], candidate.Path = true, path
+		bookmarks = append(bookmarks, candidate)
+	}
+	return bookmarks
 }
 
 func readBrowserEntries(path string) ([]BrowserEntry, error) {
@@ -468,7 +481,7 @@ func (b Browser) currentView() string {
 	end := min(len(entries), start+b.listHeight())
 	for i := start; i < end; i++ {
 		entry := entries[i]
-		line := fmt.Sprintf("  %s %s", browserIcon(entry.Type), entry.Name)
+		line := fmt.Sprintf("  %s %s", browserIcon(entry.Type), DisplayText(entry.Name))
 		if i == b.selected {
 			if !b.styles.Palette.ColorEnabled {
 				line = Icons.Selected + line[1:]
@@ -490,13 +503,13 @@ func (b Browser) parentView() string {
 		return strings.Join(append(lines, "  Loading..."), "\n")
 	}
 	if b.parentErr != nil {
-		return strings.Join(append(lines, "  "+b.parentErr.Error()), "\n")
+		return strings.Join(append(lines, "  "+DisplayText(b.parentErr.Error())), "\n")
 	}
 	for _, entry := range b.parentEntries {
 		if entry.Type != "directory" {
 			continue
 		}
-		line := "  " + Icons.Folder + " " + entry.Name
+		line := "  " + Icons.Folder + " " + DisplayText(entry.Name)
 		if entry.Path == b.path {
 			if !b.styles.Palette.ColorEnabled {
 				line = Icons.Selected + line[1:]
@@ -517,12 +530,12 @@ func (b Browser) childView() string {
 	if !ok || entry.Type != "directory" {
 		return "Next\n  (select a directory)"
 	}
-	lines := []string{"Next: " + entry.Name}
+	lines := []string{"Next: " + DisplayText(entry.Name)}
 	if b.childPath != entry.Path || b.childLoading {
 		return strings.Join(append(lines, "  Loading..."), "\n")
 	}
 	if b.childErr != nil {
-		return strings.Join(append(lines, "  "+b.childErr.Error()), "\n")
+		return strings.Join(append(lines, "  "+DisplayText(b.childErr.Error())), "\n")
 	}
 	limit := max(1, b.listHeight()-1)
 	for i, child := range b.childEntries {
@@ -530,7 +543,7 @@ func (b Browser) childView() string {
 			lines = append(lines, "  …")
 			break
 		}
-		lines = append(lines, "  "+browserIcon(child.Type)+" "+child.Name)
+		lines = append(lines, "  "+browserIcon(child.Type)+" "+DisplayText(child.Name))
 	}
 	if len(b.childEntries) == 0 {
 		lines = append(lines, "  (empty)")
@@ -559,21 +572,21 @@ func browserIcon(kind string) string {
 }
 
 func browserPreview(inspection workflow.PathInspection) string {
-	lines := []string{"Preview: " + inspection.Path}
+	lines := []string{"Preview: " + DisplayText(inspection.Path)}
 	if inspection.OwnershipProvider != "" {
-		lines = append(lines, "Owner: "+inspection.OwnershipProvider)
+		lines = append(lines, "Owner: "+DisplayText(inspection.OwnershipProvider))
 	}
 	if inspection.ResourceID != "" {
-		lines = append(lines, "Resource: "+inspection.ResourceID)
+		lines = append(lines, "Resource: "+DisplayText(inspection.ResourceID))
 	}
 	if inspection.Git != nil {
-		lines = append(lines, fmt.Sprintf("Git: %s (%s) staged:%d unstaged:%d untracked:%d", inspection.Git.Branch, inspection.Git.Revision, inspection.Git.Staged, inspection.Git.Unstaged, inspection.Git.Untracked))
+		lines = append(lines, fmt.Sprintf("Git: %s (%s) staged:%d unstaged:%d untracked:%d", DisplayText(inspection.Git.Branch), DisplayText(inspection.Git.Revision), inspection.Git.Staged, inspection.Git.Unstaged, inspection.Git.Untracked))
 	}
 	if inspection.SuggestedStrategy != "" {
-		lines = append(lines, "Suggested: "+inspection.SuggestedStrategy+" - "+inspection.StrategyReason)
+		lines = append(lines, "Suggested: "+DisplayText(inspection.SuggestedStrategy)+" - "+DisplayText(inspection.StrategyReason))
 	}
 	if inspection.BlockedReason != "" {
-		lines = append(lines, "Blocked: "+inspection.BlockedReason)
+		lines = append(lines, "Blocked: "+DisplayText(inspection.BlockedReason))
 	}
 	return strings.Join(lines, "\n")
 }

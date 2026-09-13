@@ -23,6 +23,7 @@ import (
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 	"github.com/Grenco/omarchy-blueprint/internal/tui"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 type machineRunner struct {
@@ -260,11 +261,38 @@ func TestBareInteractiveInvocationLaunchesTUI(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("TUI calls = %d", calls)
 	}
-	if got != (tui.Options{ProfileDir: profileDir, Machine: "desktop"}) {
+	if got != (tui.Options{ProfileDir: profileDir, ProfileExplicit: true, Machine: "desktop"}) {
 		t.Errorf("options = %#v", got)
 	}
 	if gotDeps.Workflow.Runner == nil || gotDeps.Workflow.StateHome == nil || gotDeps.Workflow.ResourceLinkRoots == nil {
 		t.Errorf("workflow dependencies = %#v", gotDeps.Workflow)
+	}
+	selected := filepath.Join(t.TempDir(), "selected-profile")
+	if _, err := gotDeps.OpenSession(workflow.Options{ProfileDir: selected, ExplicitMachine: "desktop"}); err == nil || !strings.Contains(err.Error(), selected) {
+		t.Fatalf("chooser path was ignored: %v", err)
+	}
+}
+
+func TestBareImplicitInvocationMarksProfileAsImplicit(t *testing.T) {
+	var got tui.Options
+	deps := Dependencies{IsTTY: func() bool { return true }, RunTUI: func(_ context.Context, options tui.Options, _ tui.Dependencies) error { got = options; return nil }}
+	if code := Execute(context.Background(), nil, deps); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if got.ProfileExplicit {
+		t.Fatalf("options = %#v", got)
+	}
+}
+
+func TestExplicitTUISubcommandPropagatesExplicitProfile(t *testing.T) {
+	var got tui.Options
+	deps := Dependencies{IsTTY: func() bool { return true }, RunTUI: func(_ context.Context, options tui.Options, _ tui.Dependencies) error { got = options; return nil }}
+	profileDir := t.TempDir()
+	if code := Execute(context.Background(), []string{"--profile", profileDir, "tui"}, deps); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !got.ProfileExplicit || got.ProfileDir != profileDir {
+		t.Fatalf("options = %#v", got)
 	}
 }
 

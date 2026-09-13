@@ -270,10 +270,10 @@ func (s *Config) View() string {
 			if s.collapsed[row.group] {
 				marker = components.Icons.Collapsed
 			}
-			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + configState(row.group)), ""}, Selected: i == s.selected, Focused: true})
+			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + configState(row.group)), "", ""}, Selected: i == s.selected, Focused: true})
 			continue
 		}
-		policy := candidatePolicy(row.candidate)
+		policy := s.candidatePolicy(row.candidate.Path)
 		switch policy {
 		case "Included":
 			policy = s.styles.Added(policy)
@@ -282,12 +282,12 @@ func (s *Config) View() string {
 		default:
 			policy = s.styles.Muted(policy)
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{"  " + row.candidate.Path, policy}, Selected: i == s.selected, Focused: true})
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + row.candidate.Path, configState(row.candidate.Classification), policy}, Selected: i == s.selected, Focused: true})
 	}
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
 	} else {
-		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "Policy", Width: 14, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 22, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	}
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)
@@ -451,7 +451,7 @@ func (s *Config) DetailView() string {
 	if candidate.Path == "" {
 		return "Config details"
 	}
-	lines := []string{"Path: " + candidate.Path, "State: " + configState(candidate.Classification), "Policy: " + candidatePolicy(candidate), "Why: " + configReason(candidate.Reason)}
+	lines := []string{"Path: " + candidate.Path, "State: " + configState(candidate.Classification), "Policy: " + s.candidatePolicy(candidate.Path), "Why: " + configReason(candidate.Reason)}
 	if s.inspection.LivePath != "" {
 		lines = append(lines, "Live: "+s.inspection.LivePath, "Baseline: "+s.inspection.BaselinePath, "Profile: "+s.inspection.ProfilePath)
 	}
@@ -477,19 +477,25 @@ func configState(classification config.Classification) string {
 	}
 	return string(classification)
 }
-func candidatePolicy(candidate config.Candidate) string {
-	switch candidate.Classification {
-	case config.ConfigExcluded:
-		return "Excluded"
-	case config.ConfigDelegated:
-		return "Managed elsewhere"
-	case config.ConfigSensitive, config.ConfigOversized, config.ConfigVolatile, config.ConfigUnmanagedSymlink, config.ConfigUnsupported:
-		return "Not eligible"
-	case config.ConfigModifiedBaseline, config.ConfigDeletedBaseline:
-		return "Included"
-	default:
+func (s *Config) candidatePolicy(path string) string {
+	if s.session == nil {
 		return "Auto"
 	}
+	for _, excluded := range s.session.Profile().Config.Excluded {
+		if configPathWithin(path, excluded) {
+			return "Excluded"
+		}
+	}
+	for _, included := range s.session.Profile().Config.Included {
+		if configPathWithin(path, included) {
+			return "Included"
+		}
+	}
+	return "Auto"
+}
+func configPathWithin(path, root string) bool {
+	root = strings.TrimSuffix(root, "/")
+	return path == root || strings.HasPrefix(path, root+"/")
 }
 func configReason(reason string) string {
 	if reason == "" {

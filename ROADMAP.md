@@ -515,8 +515,7 @@ omarchy-blueprint capture directory:projects
 Exclusion:
 
 ```bash id="6upnrl"
-omarchy-blueprint capture --exclude monitors
-omarchy-blueprint capture --exclude theme:tokyo-night
+omarchy-blueprint exclude package:dislocker-git
 ```
 
 Machine-readable output:

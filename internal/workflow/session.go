@@ -114,7 +114,7 @@ func (s *Session) SetProviderCaptured(_ context.Context, id string, captured boo
 	return nil
 }
 
-// SetProviderItemEnabled toggles a saved package/theme/plugin item's desired state.
+// SetProviderItemEnabled toggles a saved package item's desired state.
 func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, key string) error {
 	data := s.profile
 	switch provider {
@@ -133,16 +133,6 @@ func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, k
 		if err != nil {
 			return err
 		}
-	case "themes":
-		if !themeExists(data.Themes.Items, key) {
-			return fmt.Errorf("unknown theme %s", key)
-		}
-		data.Themes.Excluded = toggleString(data.Themes.Excluded, key)
-	case "plugins":
-		if !pluginExists(data.Plugins.Items, key) {
-			return fmt.Errorf("unknown plugin %s", key)
-		}
-		data.Plugins.Excluded = toggleString(data.Plugins.Excluded, key)
 	default:
 		return fmt.Errorf("%s does not support item selection", provider)
 	}
@@ -151,14 +141,6 @@ func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, k
 	}
 	s.profile = data
 	return nil
-}
-func toggleString(values []string, value string) []string {
-	for i, current := range values {
-		if current == value {
-			return append(values[:i], values[i+1:]...)
-		}
-	}
-	return append(values, value)
 }
 func removeString(values []string, value string) []string {
 	for i, current := range values {
@@ -171,22 +153,6 @@ func removeString(values []string, value string) []string {
 func containsString(values []string, value string) bool {
 	for _, current := range values {
 		if current == value {
-			return true
-		}
-	}
-	return false
-}
-func themeExists(items []profile.Theme, id string) bool {
-	for _, item := range items {
-		if item.ID == id {
-			return true
-		}
-	}
-	return false
-}
-func pluginExists(items []profile.Plugin, id string) bool {
-	for _, item := range items {
-		if item.ID == id {
 			return true
 		}
 	}
@@ -220,7 +186,14 @@ func (s *Session) ProfileGitCommit(ctx context.Context, message string) (profile
 	return s.profileGit.Commit(ctx, message)
 }
 func (s *Session) ProfileGitPull(ctx context.Context) (profilegit.Result, error) {
-	return s.profileGit.Pull(ctx)
+	result, err := s.profileGit.Pull(ctx)
+	if err != nil {
+		return result, err
+	}
+	if err := s.Reload(); err != nil {
+		return result, fmt.Errorf("reload profile after pull: %w", err)
+	}
+	return result, nil
 }
 func (s *Session) ProfileGitPush(ctx context.Context) (profilegit.Result, error) {
 	return s.profileGit.Push(ctx)

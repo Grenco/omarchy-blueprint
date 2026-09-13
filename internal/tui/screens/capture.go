@@ -22,13 +22,16 @@ type Capture struct {
 	styles                               components.Styles
 	confirm, busy, capturing, captureAll bool
 	err                                  error
+	requestID                            uint64
 }
 
 type captureStatusMsg struct {
-	statuses []workflow.ProviderStatus
-	err      error
+	requestID uint64
+	statuses  []workflow.ProviderStatus
+	err       error
 }
 type captureDoneMsg struct {
+	requestID uint64
 	providers []string
 	err       error
 }
@@ -43,10 +46,19 @@ func (s *Capture) TransientActive() bool              { return s.confirm || s.bu
 func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case captureStatusMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.statuses, s.err, s.busy = msg.statuses, msg.err, false
 		return nil
 	case captureDoneMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.err, s.busy, s.confirm, s.capturing, s.captureAll = msg.err, false, false, false, false
+		if msg.err == nil {
+			s.chosen = map[string]bool{}
+		}
 		return func() tea.Msg { return CaptureComplete{Providers: msg.providers, Err: msg.err} }
 	}
 	key, ok := msg.(tea.KeyPressMsg)
@@ -79,6 +91,7 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 			s.chosen[p.ID] = !s.chosen[p.ID]
 		}
 	case "a":
+		s.chosen = map[string]bool{}
 		for _, p := range s.statuses {
 			if len(p.Changes) > 0 {
 				s.chosen[p.ID] = true
@@ -110,8 +123,11 @@ func (s *Capture) View() string {
 	}
 	rows := make([]components.Row, 0, len(s.statuses))
 	for i, p := range s.statuses {
-		changes := "clean"
-		if len(p.Changes) > 0 {
+		changes := "not captured"
+		if p.Captured {
+			changes = "clean"
+		}
+		if p.Captured && len(p.Changes) > 0 {
 			changes = fmt.Sprintf("%d", len(p.Changes))
 		}
 		check := " "
@@ -136,33 +152,26 @@ func (s *Capture) current() workflow.ProviderStatus {
 	return workflow.ProviderStatus{}
 }
 func (s *Capture) refresh() tea.Cmd {
+	s.requestID++
+	requestID := s.requestID
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.CaptureStatus(s.ctx)
-		return captureStatusMsg{statuses: report.Providers, err: err}
+		return captureStatusMsg{requestID: requestID, statuses: report.Providers, err: err}
 	}
 }
 func (s *Capture) capture() tea.Cmd {
-	ids := make([]string, 0, len(s.chosen))
-	for id, chosen := range s.chosen {
-		if chosen {
-			ids = append(ids, id)
+	s.requestID++
+	requestID := s.requestID
+	ids := make([]string, 0, len(s.statuses))
+	for _, status := range s.statuses {
+		if s.captureAll || s.chosen[status.ID] {
+			ids = append(ids, status.ID)
 		}
 	}
 	return func() tea.Msg {
-		if s.captureAll {
-			result, err := s.session.Capture(s.ctx, "")
-			return captureDoneMsg{providers: result.Providers, err: err}
-		}
-		captured := make([]string, 0, len(ids))
-		for _, id := range ids {
-			result, err := s.session.Capture(s.ctx, id)
-			if err != nil {
-				return captureDoneMsg{err: err}
-			}
-			captured = append(captured, result.Providers...)
-		}
-		return captureDoneMsg{providers: captured}
+		result, err := s.session.CaptureMany(s.ctx, ids)
+		return captureDoneMsg{requestID: requestID, providers: result.Providers, err: err}
 	}
 }
 func (s *Capture) chosenCount() int {

@@ -53,9 +53,10 @@ type Dependencies struct {
 }
 
 type options struct {
-	profileDir string
-	json       bool
-	machine    string
+	profileDir      string
+	profileExplicit bool
+	json            bool
+	machine         string
 }
 
 type driftError struct{}
@@ -130,7 +131,10 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 
 func newRoot(deps Dependencies) *cobra.Command {
 	opt := &options{}
-	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		if flag := cmd.Root().PersistentFlags().Lookup("profile"); flag != nil {
+			opt.profileExplicit = flag.Changed
+		}
 		profileDir, err := machine.CanonicalProfileRoot(opt.profileDir)
 		if err != nil {
 			return err
@@ -141,11 +145,13 @@ func newRoot(deps Dependencies) *cobra.Command {
 		if !deps.IsTTY() {
 			return cmd.Help()
 		}
-		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
+		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, ProfileExplicit: opt.profileExplicit, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(options workflow.Options) (*workflow.Session, error) {
+			return openWorkflowOptions(deps, opt, options)
+		}, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
 			if _, err := workflow.CreateProfile(ctx, workflowDependencies(deps), dir, name); err != nil {
 				return nil, err
 			}
-			return openWorkflow(deps, opt)
+			return openWorkflowOptions(deps, opt, workflow.Options{ProfileDir: dir, ExplicitMachine: opt.machine})
 		}})
 	}}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
@@ -165,11 +171,13 @@ func tuiCommand(deps Dependencies, opt *options) *cobra.Command {
 		if !deps.IsTTY() {
 			return errors.New("tui requires an interactive terminal")
 		}
-		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(_ workflow.Options) (*workflow.Session, error) { return openWorkflow(deps, opt) }, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
+		return deps.RunTUI(cmd.Context(), tui.Options{ProfileDir: opt.profileDir, ProfileExplicit: opt.profileExplicit, Machine: opt.machine}, tui.Dependencies{Workflow: workflowDependencies(deps), OpenSession: func(options workflow.Options) (*workflow.Session, error) {
+			return openWorkflowOptions(deps, opt, options)
+		}, CreateProfile: func(ctx context.Context, dir, name string) (*workflow.Session, error) {
 			if _, err := workflow.CreateProfile(ctx, workflowDependencies(deps), dir, name); err != nil {
 				return nil, err
 			}
-			return openWorkflow(deps, opt)
+			return openWorkflowOptions(deps, opt, workflow.Options{ProfileDir: dir, ExplicitMachine: opt.machine})
 		}})
 	}}
 }
@@ -986,6 +994,12 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 	return session, nil
 }
 
+func openWorkflowOptions(deps Dependencies, base *options, selected workflow.Options) (*workflow.Session, error) {
+	opt := *base
+	opt.profileDir, opt.machine = selected.ProfileDir, selected.ExplicitMachine
+	return openWorkflow(deps, &opt)
+}
+
 type restoreProviderAdapter struct{ stateProvider }
 
 func (p restoreProviderAdapter) StateProvider() stateProvider { return p.stateProvider }
@@ -1000,6 +1014,25 @@ func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, inf
 func (p restoreProviderAdapter) CategoryEnabled() bool {
 	provider, ok := p.stateProvider.(categoryStateProvider)
 	return ok && provider.CategoryEnabled()
+}
+
+func (p restoreProviderAdapter) CommitCapture() error {
+	if provider, ok := p.stateProvider.(interface{ CommitCapture() error }); ok {
+		return provider.CommitCapture()
+	}
+	return nil
+}
+func (p restoreProviderAdapter) FinalizeCapture() error {
+	if provider, ok := p.stateProvider.(interface{ FinalizeCapture() error }); ok {
+		return provider.FinalizeCapture()
+	}
+	return nil
+}
+func (p restoreProviderAdapter) RollbackCapture() error {
+	if provider, ok := p.stateProvider.(interface{ RollbackCapture() error }); ok {
+		return provider.RollbackCapture()
+	}
+	return nil
 }
 
 type configWorkflowProvider struct{ restoreProviderAdapter }

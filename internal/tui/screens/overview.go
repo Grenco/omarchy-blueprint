@@ -35,10 +35,12 @@ type Overview struct {
 	styles    components.Styles
 	err       error
 	busy      bool
+	requestID uint64
 }
 type overviewMsg struct {
-	data workflow.Overview
-	err  error
+	requestID uint64
+	data      workflow.Overview
+	err       error
 }
 
 func NewOverview(session *workflow.Session) *Overview {
@@ -52,6 +54,9 @@ func (s *Overview) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Overview) Init() tea.Cmd                      { return s.refresh() }
 func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	if result, ok := msg.(overviewMsg); ok {
+		if result.requestID != s.requestID {
+			return nil
+		}
 		s.data, s.err, s.busy = result.data, result.err, false
 		s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
@@ -226,6 +231,11 @@ func (s *Overview) listHeight() int {
 	return max(1, s.height-1)
 }
 func (s *Overview) refresh() tea.Cmd {
+	s.requestID++
+	requestID := s.requestID
 	s.busy = true
-	return func() tea.Msg { data, err := s.session.Overview(s.ctx); return overviewMsg{data, err} }
+	return func() tea.Msg {
+		data, err := s.session.Overview(s.ctx)
+		return overviewMsg{requestID: requestID, data: data, err: err}
+	}
 }

@@ -126,6 +126,9 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	if listing, ok := msg.(components.BrowserReadDirMsg); ok && s.browser != nil {
 		return s.browser.Update(listing)
 	}
+	if listing, ok := msg.(components.BrowserChildReadDirMsg); ok && s.browser != nil {
+		return s.browser.Update(listing)
+	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok || s.busy {
 		return nil

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -24,13 +25,31 @@ type captureTransaction interface {
 }
 
 func (s *Session) Capture(ctx context.Context, onlyProvider string) (CaptureResult, error) {
-	selected := s.providers
-	if onlyProvider != "" {
-		provider, ok := ProviderByID(s.providers, onlyProvider)
-		if !ok {
-			return CaptureResult{}, fmt.Errorf("unknown category %s", onlyProvider)
+	if onlyProvider == "" {
+		ids := make([]string, 0, len(s.providers))
+		for _, provider := range s.providers {
+			ids = append(ids, provider.ID())
 		}
-		selected = []Provider{provider}
+		return s.CaptureMany(ctx, ids)
+	}
+	return s.CaptureMany(ctx, []string{onlyProvider})
+}
+
+// CaptureMany captures the requested providers in configured order and saves
+// their combined state as one profile update.
+func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult, error) {
+	requested := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if _, ok := ProviderByID(s.providers, id); !ok {
+			return CaptureResult{}, fmt.Errorf("unknown category %s", id)
+		}
+		requested[id] = true
+	}
+	selected := make([]Provider, 0, len(requested))
+	for _, provider := range s.providers {
+		if requested[provider.ID()] {
+			selected = append(selected, provider)
+		}
 	}
 	info, err := omarchy.Detect(ctx, s.deps.Runner)
 	if err != nil {
@@ -39,13 +58,17 @@ func (s *Session) Capture(ctx context.Context, onlyProvider string) (CaptureResu
 	data := s.profile
 	result := CaptureResult{Profile: data}
 	var transactions []captureTransaction
+	rollback := func() error {
+		var rollbackErr error
+		for i := len(transactions) - 1; i >= 0; i-- {
+			rollbackErr = errors.Join(rollbackErr, transactions[i].RollbackCapture())
+		}
+		return rollbackErr
+	}
 	for _, provider := range selected {
 		state, changes, err := provider.Capture(ctx, &data)
 		if err != nil {
-			for _, transaction := range transactions {
-				_ = transaction.RollbackCapture()
-			}
-			return CaptureResult{}, fmt.Errorf("capture %s: %w", provider.ID(), err)
+			return CaptureResult{}, errors.Join(fmt.Errorf("capture %s: %w", provider.ID(), err), rollback())
 		}
 		if transaction, ok := provider.(captureTransaction); ok {
 			transactions = append(transactions, transaction)
@@ -64,19 +87,20 @@ func (s *Session) Capture(ctx context.Context, onlyProvider string) (CaptureResu
 		data.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 		data.Manifest.Omarchy.CapturedVersion, data.Manifest.Omarchy.Channel = info.Version, info.Channel
 		if err := profile.Save(s.opts.ProfileDir, data); err != nil {
-			for _, transaction := range transactions {
-				_ = transaction.RollbackCapture()
-			}
-			return CaptureResult{}, fmt.Errorf("save profile: %w", err)
+			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", err), rollback())
 		}
 		for _, transaction := range transactions {
 			if err := transaction.CommitCapture(); err != nil {
-				return CaptureResult{}, err
+				rollbackErr := rollback()
+				restoreErr := profile.Save(s.opts.ProfileDir, s.profile)
+				return CaptureResult{}, errors.Join(fmt.Errorf("commit capture: %w", err), rollbackErr, restoreErr)
 			}
 		}
+		s.profile = data
+		result.Profile = data
 		for _, transaction := range transactions {
 			if err := transaction.FinalizeCapture(); err != nil {
-				return CaptureResult{}, err
+				return result, fmt.Errorf("finalize capture: %w", err)
 			}
 		}
 	}

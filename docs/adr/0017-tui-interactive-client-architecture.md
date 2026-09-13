@@ -80,7 +80,10 @@ All existing subcommands keep their current behavior.
 
 When bare `omarchy-blueprint` is executed without an interactive terminal, it must not attempt to start a TUI. It prints normal CLI help and exits successfully. Explicit `omarchy-blueprint tui` without a usable terminal fails with actionable guidance.
 
-TUI v1 uses the same profile-path resolution as the CLI. It does not introduce a profile registry or automatic profile discovery beyond the active `--profile` path.
+TUI v1 uses the same profile-path resolution as the CLI. If the implicit default
+path is missing, interactive startup offers Create, Open, and Quit with an
+editable path. Explicit invalid or partial `--profile` paths remain strict
+errors. This does not introduce a profile registry or automatic discovery.
 
 ### 3. CLI capability parity is a product invariant
 
@@ -306,6 +309,10 @@ Space           toggle selection/policy where applicable
 Esc             close/back/cancel current transient UI
 q               quit when no modal/transient view consumes it
 ```
+
+The command palette and help open with their search input focused, so direct
+typing filters immediately. Arrow keys move palette selection; printable
+`j`/`k` are search input rather than hidden navigation aliases in that overlay.
 
 On the Capture screen specifically, `Space` toggles the highlighted provider,
 `a` selects changed providers, `c` captures the selected providers after

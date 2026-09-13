@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -92,35 +93,54 @@ func TestSessionReloadRepairsBareLegacyPackageExclusion(t *testing.T) {
 	}
 }
 
-func TestSessionPersistsThemeAndPluginBlueprintExclusions(t *testing.T) {
-	profileDir, stateHome := t.TempDir(), t.TempDir()
-	data := profile.New("test", time.Now())
-	data.Themes.Items = []profile.Theme{{ID: "nord", Enabled: true}}
-	data.Plugins.Items = []profile.Plugin{{ID: "clock", Source: "builtin", Enabled: false}}
-	if err := profile.Save(profileDir, data); err != nil {
+func TestSessionProfileGitPullReloadsProfile(t *testing.T) {
+	ctx := context.Background()
+	root, stateHome, remote, other := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "origin.git"), filepath.Join(t.TempDir(), "other")
+	data := profile.New("local", time.Now())
+	if err := profile.Save(root, data); err != nil {
 		t.Fatal(err)
 	}
-	session, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir})
+	runner := command.SystemRunner{}
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := runner.Run(ctx, "git", args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	run("init", "--bare", remote)
+	run("-C", root, "init", "-b", "main")
+	run("-C", root, "config", "user.name", "Blueprint Test")
+	run("-C", root, "config", "user.email", "blueprint@example.test")
+	run("-C", root, "add", ".")
+	run("-C", root, "commit", "-m", "initial")
+	run("-C", root, "remote", "add", "origin", remote)
+	run("-C", root, "push", "-u", "origin", "main")
+	run("clone", "--branch", "main", remote, other)
+	remoteData, err := profile.Load(other)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SetProviderItemEnabled(context.Background(), "themes", "Saved themes", "nord"); err != nil {
+	remoteData.Manifest.Profile.Name = "remote"
+	if err := profile.Save(other, remoteData); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SetProviderItemEnabled(context.Background(), "plugins", "Built-in plugins", "clock"); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir})
+	run("-C", other, "config", "user.name", "Blueprint Test")
+	run("-C", other, "config", "user.email", "blueprint@example.test")
+	run("-C", other, "add", ".")
+	run("-C", other, "commit", "-m", "remote change")
+	run("-C", other, "push")
+
+	session, err := Open(Dependencies{Runner: runner, StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reopened.Profile().Themes.Excluded) != 1 || reopened.Profile().Themes.Excluded[0] != "nord" {
-		t.Fatalf("themes=%v", reopened.Profile().Themes.Excluded)
+	if _, err := session.ProfileGitFetch(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if len(reopened.Profile().Plugins.Excluded) != 1 || reopened.Profile().Plugins.Excluded[0] != "clock" {
-		t.Fatalf("plugins=%v", reopened.Profile().Plugins.Excluded)
+	if _, err := session.ProfileGitPull(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if reopened.Profile().Plugins.Items[0].Enabled {
-		t.Fatal("runtime plugin enabled state changed")
+	if session.Profile().Manifest.Profile.Name != "remote" {
+		t.Fatalf("profile after pull=%q", session.Profile().Manifest.Profile.Name)
 	}
 }

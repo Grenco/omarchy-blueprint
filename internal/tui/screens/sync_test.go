@@ -54,6 +54,19 @@ func TestSyncScreenActionsCoverProfileGitStates(t *testing.T) {
 	}
 }
 
+func TestSyncScreenPullRequiresCleanIndexAndWorktree(t *testing.T) {
+	for _, change := range []profilegit.Change{
+		{Path: "profile.toml", Managed: true, Index: "M"},
+		{Path: "profile.toml", Managed: true, Worktree: "M"},
+	} {
+		screen := &Sync{status: profilegit.Status{Repository: true, Branch: "main", Head: "abc", Upstream: "origin/main", Behind: 1, Changes: []profilegit.Change{change}}}
+		action := syncActionsByID(screen.Actions())["sync.pull"]
+		if action.Enabled || action.DisabledReason == "" {
+			t.Fatalf("pull action=%#v for change=%#v", action, change)
+		}
+	}
+}
+
 func TestSyncScreenSetAndChangeOriginUseSharedInputModal(t *testing.T) {
 	screen := &Sync{status: profilegit.Status{Repository: true}}
 	actions := syncActionsByID(screen.Actions())
@@ -149,6 +162,37 @@ func TestSyncScreenBusyDisablesActions(t *testing.T) {
 		if action.Enabled {
 			t.Fatalf("%s enabled while busy", action.ID)
 		}
+	}
+}
+
+func TestSyncScreenIgnoresStaleStatusAndMutationResults(t *testing.T) {
+	newer := profilegit.Status{Repository: true, Branch: "newer"}
+	screen := &Sync{requestID: 2, busy: true}
+	screen.Update(syncStatusMsg{requestID: 2, status: newer})
+	screen.Update(syncStatusMsg{requestID: 1, status: profilegit.Status{Repository: true, Branch: "older"}})
+	if screen.status.Branch != "newer" {
+		t.Fatalf("stale refresh replaced status: %#v", screen.status)
+	}
+	screen.Update(syncResultMsg{requestID: 1, status: profilegit.Status{Repository: true, Branch: "older"}})
+	if !screen.busy || screen.status.Branch != "newer" {
+		t.Fatalf("stale mutation changed state: busy=%v status=%#v", screen.busy, screen.status)
+	}
+	screen.Update(syncDiffMsg{requestID: 1, diff: profilegit.Diff{Files: []profilegit.DiffFile{{}}}})
+	if screen.diff != nil {
+		t.Fatal("stale diff replaced current state")
+	}
+	screen.Update(syncResultMsg{requestID: 2, status: newer})
+	if screen.busy {
+		t.Fatal("current mutation result did not clear busy state")
+	}
+}
+
+func TestSyncScreenSuccessfulPullRequestsSessionReload(t *testing.T) {
+	screen := &Sync{requestID: 1, busy: true}
+	cmd := screen.Update(syncResultMsg{requestID: 1, reloadSession: true})
+	msg, ok := cmd().(SessionReloadNeeded)
+	if !ok || msg.Reason != "profile Git pull" {
+		t.Fatalf("reload signal=%#v", msg)
 	}
 }
 

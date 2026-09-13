@@ -195,6 +195,70 @@ func TestResourceScreenUntrackedSelectorUsesSpaceAndAll(t *testing.T) {
 	}
 }
 
+func TestResourceConfirmEscapeRestoresOriginPhase(t *testing.T) {
+	screen := &Resources{phase: resourceStrategy, strategy: "copy"}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if screen.phase != resourceConfirm || screen.confirmFrom != resourceStrategy {
+		t.Fatalf("track confirmation: phase=%q from=%q", screen.phase, screen.confirmFrom)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if screen.phase != resourceStrategy || screen.confirm != "" {
+		t.Fatalf("cancelled track: phase=%q confirm=%q", screen.phase, screen.confirm)
+	}
+}
+
+func TestResourceGitDiffConfirmationCancelReturnsToUntracked(t *testing.T) {
+	screen := &Resources{phase: resourceUntracked, untracked: []string{"chosen.txt"}, chosen: map[string]bool{}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if screen.phase != resourceConfirm || screen.confirmFrom != resourceUntracked {
+		t.Fatalf("git+diff confirmation: phase=%q from=%q", screen.phase, screen.confirmFrom)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if screen.phase != resourceUntracked || screen.confirm != "" {
+		t.Fatalf("cancelled git+diff: phase=%q confirm=%q", screen.phase, screen.confirm)
+	}
+}
+
+func TestResourceUntrackConfirmationRestoresBrowseAndCompletionStaysTracked(t *testing.T) {
+	screen := &Resources{phase: resourceBrowse, items: []profile.Resource{{ID: "projects", Path: "~/Projects"}}}
+	screen.Update(tea.KeyPressMsg{Code: 'u'})
+	if screen.phase != resourceBrowse || screen.confirmFrom != resourceBrowse || screen.confirm != "untrack" {
+		t.Fatalf("confirmation state: phase=%q from=%q confirm=%q", screen.phase, screen.confirmFrom, screen.confirm)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if screen.phase != resourceBrowse || screen.confirm != "" {
+		t.Fatalf("cancelled untrack: phase=%q confirm=%q", screen.phase, screen.confirm)
+	}
+	screen.phase, screen.confirm = resourceConfirm, "untrack"
+	screen.Update(resourceUntrackedMsg{})
+	if screen.phase != resourceBrowse {
+		t.Fatalf("completed untrack phase=%q", screen.phase)
+	}
+}
+
+func TestResourceCandidateSnapshotIgnoresLateBrowserUpdates(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, "candidate"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	browser := components.NewBrowser(components.BrowseResource, components.BrowserConfig{Home: home, InspectPathCmd: func(id uint64, path string) tea.Cmd {
+		return func() tea.Msg {
+			return components.BrowserInspectionMsg{RequestID: id, Inspection: workflow.PathInspection{Path: path, SuggestedStrategy: "git+diff", Git: &workflow.GitInspection{UntrackedPaths: []string{"chosen.txt"}}}}
+		}
+	}})
+	deliverResourceBrowser(t, &browser, browser.Init())
+	screen := &Resources{browser: &browser, phase: resourceBrowse}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	screen.chosen["chosen.txt"] = true
+	screen.selected = 0
+	screen.Update(components.BrowserReadDirMsg{})
+	screen.Update(components.BrowserChildReadDirMsg{})
+	screen.Update(components.BrowserInspectionMsg{})
+	if !screen.chosen["chosen.txt"] || screen.selected != 0 || !reflect.DeepEqual(screen.untracked, []string{"chosen.txt"}) {
+		t.Fatalf("late browser update reset selection: chosen=%#v selected=%d untracked=%#v", screen.chosen, screen.selected, screen.untracked)
+	}
+}
+
 func TestResourceScreenUntrackWarningPreservesLivePath(t *testing.T) {
 	screen := &Resources{items: []profile.Resource{{ID: "projects", Path: "~/Projects"}}}
 	request, ok := screen.Update(tea.KeyPressMsg{Code: 'u'})().(components.ModalRequest)
@@ -203,6 +267,14 @@ func TestResourceScreenUntrackWarningPreservesLivePath(t *testing.T) {
 	}
 	if view := screen.View(); !strings.Contains(view, "projects") || strings.Contains(view, "live path remains untouched") {
 		t.Fatalf("confirmation did not preserve tracked background: %q", view)
+	}
+}
+
+func TestResourcesScreenIgnoresStaleStatus(t *testing.T) {
+	screen := &Resources{requestID: 2}
+	screen.Update(resourcesStatusMsg{requestID: 1, items: []profile.Resource{{ID: "stale"}}})
+	if len(screen.items) != 0 {
+		t.Fatalf("stale status changed items: %#v", screen.items)
 	}
 }
 

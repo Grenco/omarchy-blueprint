@@ -196,10 +196,12 @@ type ownedTestMsg struct{ step int }
 type recordingScreen struct {
 	id    ScreenID
 	steps []int
+	inits int
 }
 
 func (s *recordingScreen) ID() ScreenID     { return s.id }
 func (s *recordingScreen) SetSize(int, int) {}
+func (s *recordingScreen) Init() tea.Cmd    { s.inits++; return nil }
 func (s *recordingScreen) Update(msg tea.Msg) tea.Cmd {
 	if owned, ok := msg.(ownedTestMsg); ok {
 		s.steps = append(s.steps, owned.step)
@@ -209,6 +211,41 @@ func (s *recordingScreen) Update(msg tea.Msg) tea.Cmd {
 }
 func (s *recordingScreen) View() string      { return "recording" }
 func (s *recordingScreen) Actions() []Action { return nil }
+
+func TestModelInitializesScreensOnFirstVisitOnly(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	overview := &recordingScreen{id: ScreenOverview}
+	config := &recordingScreen{id: ScreenConfig}
+	m.screens[ScreenOverview], m.screens[ScreenConfig] = overview, config
+	m.Init()
+	if overview.inits != 1 || config.inits != 0 {
+		t.Fatalf("startup init counts: overview=%d config=%d", overview.inits, config.inits)
+	}
+	m.selectScreen(ScreenConfig)
+	m.selectScreen(ScreenConfig)
+	if config.inits != 1 {
+		t.Fatalf("config initialized %d times", config.inits)
+	}
+}
+
+func TestModelReloadRefreshesInitializedScreensAfterPullAndLazyGit(t *testing.T) {
+	m := newModelWithSession(ThemeLoader{NoColor: true}, integrationSession(t))
+	overview := &recordingScreen{id: ScreenOverview}
+	config := &recordingScreen{id: ScreenConfig}
+	m.screens[ScreenOverview], m.screens[ScreenConfig] = overview, config
+	m.initialized[ScreenOverview] = true
+
+	updated, _ := m.updateScreenMsg(screenMsg{Screen: ScreenSync, Msg: screens.SessionReloadNeeded{Reason: "profile Git pull"}})
+	m = updated.(model)
+	if overview.inits != 1 || config.inits != 0 || !strings.Contains(m.notification, "profile Git pull") {
+		t.Fatalf("pull reload: overview=%d config=%d notice=%q", overview.inits, config.inits, m.notification)
+	}
+	updated, _ = m.Update(handoffFinishedMsg{Kind: "lazygit"})
+	m = updated.(model)
+	if overview.inits != 2 || config.inits != 0 || !strings.Contains(m.notification, "LazyGit") {
+		t.Fatalf("LazyGit reload: overview=%d config=%d notice=%q", overview.inits, config.inits, m.notification)
+	}
+}
 
 type inputScreen struct {
 	id     ScreenID
@@ -444,9 +481,8 @@ func (*modalKeyScreen) HandleKey(tea.KeyPressMsg) KeyResult {
 func TestCommandPalette(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
-	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
 	for _, key := range "sync" {
-		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
+		m = updateModel(t, m, textKey(key))
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.screenID() != ScreenSync || m.paletteOpen {
@@ -465,6 +501,13 @@ func TestHelp(t *testing.T) {
 	if !m.helpOpen || !strings.Contains(view, "CONFIG") || !strings.Contains(view, "View Config diff") || !strings.Contains(view, "Focus: details") {
 		t.Fatalf("help is not contextual to screen and focus: %q", view)
 	}
+	for _, key := range "restore" {
+		m = updateModel(t, m, textKey(key))
+	}
+	view = m.View().Content
+	if !strings.Contains(view, "Restore") || strings.Contains(view, "View Config diff") {
+		t.Fatalf("help search did not filter actions: %q", view)
+	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.helpOpen {
 		t.Fatal("help did not close")
@@ -476,9 +519,8 @@ func TestPaletteDoesNotRunDisabledAction(t *testing.T) {
 	m.screens[ScreenConfig] = &configScreen{Config: screens.NewConfig(nil)}
 	m.selectScreen(ScreenConfig)
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
-	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
 	for _, key := range "config.edit" {
-		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
+		m = updateModel(t, m, textKey(key))
 	}
 	if items := filterActions(m.actions(), m.paletteQuery); len(items) != 1 || items[0].Enabled || items[0].DisabledReason == "" {
 		t.Fatalf("disabled palette action is not accurately described: %#v", items)
@@ -490,28 +532,34 @@ func TestPaletteDoesNotRunDisabledAction(t *testing.T) {
 	}
 }
 
-func TestPaletteSearchStartsWithSlashAndAcceptsActionKeys(t *testing.T) {
+func TestPaletteSearchStartsImmediatelyAndClosesWithEscape(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
-	if m.paletteFiltering || strings.Contains(m.View().Content, "Search:") {
-		t.Fatal("palette opened in search mode")
+	if !m.paletteFiltering || !strings.Contains(m.View().Content, "Search:") {
+		t.Fatal("palette did not open in search mode")
 	}
-	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
-	if m.paletteQuery != "" || m.paletteSelected == 0 {
-		t.Fatalf("navigation query=%q selected=%d", m.paletteQuery, m.paletteSelected)
-	}
-	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
 	for _, key := range "jk" {
-		m = updateModel(t, m, tea.KeyPressMsg{Code: key})
+		m = updateModel(t, m, textKey(key))
 	}
 	if m.paletteQuery != "jk" {
 		t.Fatalf("search query=%q", m.paletteQuery)
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
-	if !m.paletteOpen || m.paletteFiltering || m.paletteQuery != "" {
-		t.Fatalf("escape did not clear search: open=%t filtering=%t query=%q", m.paletteOpen, m.paletteFiltering, m.paletteQuery)
+	if m.paletteOpen {
+		t.Fatal("escape did not close palette")
 	}
 }
+
+func TestPaletteInputHandlesUnicodeBackspace(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.KeyPressMsg{Code: ':'})
+	m = updateModel(t, m, textKey('é'))
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if m.paletteQuery != "" {
+		t.Fatalf("query = %q", m.paletteQuery)
+	}
+}
+
+func textKey(key rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: key, Text: string(key)} }
 
 func updateModel(t *testing.T, m model, msg tea.Msg) model {
 	t.Helper()

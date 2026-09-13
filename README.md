@@ -109,8 +109,16 @@ omarchy-blueprint tui
 omarchy-blueprint --profile ~/omarchy-profile
 ```
 
+If the default profile path does not exist, interactive startup offers Create,
+Open, and Quit. Create accepts a destination and profile name; Open accepts an
+existing profile path. An explicitly supplied invalid `--profile` path remains
+a strict error rather than opening the chooser.
+
 The Overview is a decision inbox. The sidebar begins Overview, Capture,
 Packages; use it, `j`/`k`, `Tab`, or the `:` command palette to navigate. In
+the command palette, typing filters actions immediately and arrows move the
+selection; `j` and `k` remain searchable characters. `?` opens searchable help.
+`Esc` closes either overlay. In
 Capture, `Space` toggles the highlighted provider, `a` selects changed
 providers, `c` captures the selection, and `C` runs aggregate Capture All.
 Both capture actions require confirmation: `Enter` confirms and `Esc` cancels.

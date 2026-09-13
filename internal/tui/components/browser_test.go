@@ -135,7 +135,11 @@ func TestBuildBookmarksDeterministicAndCanonical(t *testing.T) {
 		EffectiveRoots: map[string]string{"z": filepath.Join(home, "effective"), "a": code},
 		RecentDirs:     []string{projects, filepath.Join(home, "effective")},
 	}
-	bookmarks := BuildBookmarks(configInput)
+	candidates := BuildBookmarks(configInput)
+	if !reflect.DeepEqual(candidates, BuildBookmarks(configInput)) {
+		t.Fatal("bookmark candidates are not deterministic")
+	}
+	bookmarks := resolveBookmarks(candidates)
 	paths := make([]string, len(bookmarks))
 	for i, bookmark := range bookmarks {
 		paths[i] = bookmark.Path
@@ -147,9 +151,6 @@ func TestBuildBookmarksDeterministicAndCanonical(t *testing.T) {
 	}
 	if count(paths, tracked) != 1 || count(paths, code) != 1 || count(paths, projects) != 1 {
 		t.Fatalf("bookmarks were not canonically deduplicated: %#v", bookmarks)
-	}
-	if !reflect.DeepEqual(bookmarks, BuildBookmarks(configInput)) {
-		t.Fatal("bookmarks are not deterministic")
 	}
 }
 
@@ -174,6 +175,13 @@ func TestBrowserIgnoresStalePreview(t *testing.T) {
 	browser.Update(BrowserInspectionMsg{RequestID: 2, Inspection: workflow.PathInspection{Path: "current", OwnershipProvider: "resources", SuggestedStrategy: "copy"}})
 	if !strings.Contains(browser.DetailView(), "Preview: current") || !strings.Contains(browser.DetailView(), "Owner: resources") {
 		t.Fatalf("current inspection missing from detail: %s", browser.DetailView())
+	}
+}
+
+func TestBrowserPreviewSanitizesInspectionMetadata(t *testing.T) {
+	view := browserPreview(workflow.PathInspection{Path: "path\nnext", OwnershipProvider: "owner\x1b", ResourceID: "id\tvalue", SuggestedStrategy: "copy\r", StrategyReason: "reason\nline", BlockedReason: "blocked\x00value"})
+	if strings.ContainsAny(view, "\r\t\x1b\x00") || strings.Count(view, "\n") != 4 {
+		t.Fatalf("unsafe preview=%q", view)
 	}
 }
 

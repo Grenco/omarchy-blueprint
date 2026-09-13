@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func TestConfigScreenRendersFlattenedTableWithUserFacingStateAndPolicy(t *testing.T) {
 	screen := &Config{width: 80, candidates: []config.Candidate{{Path: ".config/gh/hosts.yml", Classification: config.ConfigSensitive, Reason: "sensitive"}, {Path: ".config/nvim/init.lua", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}}
 	view := screen.View()
-	for _, want := range []string{"Path", "Policy", "Changed from baseline", "Sensitive", ".config/nvim/init.lua", "Included", "Not eligible"} {
+	for _, want := range []string{"Path", "State", "Policy", "Changed from baseline", "Sensitive", ".config/nvim/init.lua", "Auto"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -78,9 +79,33 @@ func TestConfigScreenDetailExplainsWhyAndKeepsRawReasonSecondary(t *testing.T) {
 	}
 	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{LivePath: live, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
 	detail := screen.DetailView()
-	for _, want := range []string{"State: Changed from baseline", "Policy: Included", "Why: modified baseline", "Provider reason: modified-baseline", "Live: " + live, "Effective policy: managed", "Edit/open/copy: available"} {
+	for _, want := range []string{"State: Changed from baseline", "Policy: Auto", "Why: modified baseline", "Provider reason: modified-baseline", "Live: " + live, "Effective policy: managed", "Edit/open/copy: available"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail missing %q:\n%s", want, detail)
 		}
+	}
+}
+
+func TestConfigScreenRendersPersistedAndInheritedPolicy(t *testing.T) {
+	session, _ := newSyncSession(t)
+	if err := session.SetConfigPolicy(context.Background(), ".config/excluded", "exclude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetConfigPolicy(context.Background(), ".config/included.conf", "include"); err != nil {
+		t.Fatal(err)
+	}
+	screen := &Config{session: session, width: 100, candidates: []config.Candidate{
+		{Path: ".config/excluded/child.conf", Classification: config.ConfigAdded},
+		{Path: ".config/included.conf", Classification: config.ConfigAdded},
+	}}
+	view := screen.View()
+	for _, want := range []string{"Excluded", "Included"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing persisted policy %q:\n%s", want, view)
+		}
+	}
+	screen.selected = 1
+	if detail := screen.DetailView(); !strings.Contains(detail, "Policy: Excluded") {
+		t.Fatalf("detail missing inherited exclusion:\n%s", detail)
 	}
 }

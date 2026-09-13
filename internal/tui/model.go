@@ -93,6 +93,8 @@ type model struct {
 	paletteFiltering      bool
 	paletteSelected       int
 	paletteInput          components.TextInputModal
+	helpQuery             string
+	helpInput             components.TextInputModal
 	sidebarOpen           bool
 	sidebarScroll         verticalViewport
 	paletteScroll         verticalViewport
@@ -100,11 +102,18 @@ type model struct {
 	detailScroll          verticalViewport
 	notification          string
 	screens               map[ScreenID]screen
+	initialized           map[ScreenID]bool
 	session               *workflow.Session
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	profileDir            string
 	createProfile         func(context.Context, string, string) (*workflow.Session, error)
+	openSession           func(workflow.Options) (*workflow.Session, error)
+	machine               string
+	welcomeChooser        bool
+	welcomeStep           string
+	welcomeChoice         int
+	welcomePath           components.TextInputModal
 	welcomeName           components.TextInputModal
 	welcomeError          error
 	welcomeBusy           bool
@@ -112,6 +121,8 @@ type model struct {
 
 type profileCreatedMsg struct {
 	session *workflow.Session
+	dir     string
+	verb    string
 	err     error
 }
 
@@ -149,12 +160,23 @@ func newModelWithContext(ctx context.Context, cancel context.CancelFunc, loader 
 			styled.SetStyles(components.NewStyles(palette))
 		}
 	}
-	m := model{palette: palette, themeLoader: loader, fingerprint: loader.Fingerprint(), screens: screenMap, session: session, ctx: ctx, cancel: cancel, profileDir: profileDir, createProfile: createProfile}
+	m := model{palette: palette, themeLoader: loader, fingerprint: loader.Fingerprint(), screens: screenMap, initialized: map[ScreenID]bool{}, session: session, ctx: ctx, cancel: cancel, profileDir: profileDir, createProfile: createProfile}
 	if session == nil && createProfile != nil {
+		m.welcomeStep = "create-name"
 		m.welcomeName = components.NewTextInputModal(filepath.Base(profileDir), "Profile name")
 		m.openModal(modalWelcome)
 	}
 	return m
+}
+
+func (m *model) enableProfileChooser(openSession func(workflow.Options) (*workflow.Session, error), machine string) {
+	m.openSession, m.machine, m.welcomeChooser, m.welcomeStep, m.welcomeChoice = openSession, machine, true, "choose", 0
+	path := filepath.Join(filepath.Dir(m.profileDir), "omarchy-profile")
+	if home, err := os.UserHomeDir(); err == nil {
+		path = filepath.Join(home, "omarchy-profile")
+	}
+	m.welcomePath = components.NewTextInputModal(path, "Profile path")
+	m.openModal(modalWelcome)
 }
 
 func (m model) Init() tea.Cmd {
@@ -162,11 +184,7 @@ func (m model) Init() tea.Cmd {
 	if m.modal == modalWelcome {
 		commands = append(commands, m.welcomeName.Focus())
 	}
-	for id, current := range m.screens {
-		if initializable, ok := current.(initializableScreen); ok {
-			commands = append(commands, wrapScreenCmd(id, initializable.Init()))
-		}
-	}
+	commands = append(commands, m.initScreen(m.screenID()))
 	return tea.Batch(commands...)
 }
 
@@ -203,21 +221,26 @@ func (m model) updateScreenMsg(wrapped screenMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case screens.OverviewTarget:
-		m.selectScreen(ScreenID(msg.Target))
+		navigation := m.selectScreen(ScreenID(msg.Target))
 		switch current := m.activeScreen().(type) {
 		case *configScreen:
-			return m, wrapScreenCmd(m.screenID(), current.Focus(msg.Ref))
+			return m, tea.Batch(navigation, wrapScreenCmd(m.screenID(), current.Focus(msg.Ref)))
 		case *resourcesScreen:
-			return m, wrapScreenCmd(m.screenID(), current.Focus(msg.Ref))
+			return m, tea.Batch(navigation, wrapScreenCmd(m.screenID(), current.Focus(msg.Ref)))
 		case *machinesScreen:
 			current.Focus(msg.Ref)
 		}
-		return m, nil
+		return m, navigation
 	case screens.CaptureComplete:
 		return m.handleCaptureComplete(msg)
+	case screens.SessionReloadNeeded:
+		return m.reloadSessionScreens(msg.Reason)
 	case screens.HandoffRequest:
 		return m.handleHandoffRequest(msg)
 	case handoffFinishedMsg:
+		if msg.Kind == "lazygit" {
+			return m.reloadSessionScreens("LazyGit")
+		}
 		m.notification = "External tool closed. Refreshing " + msg.Kind + "."
 		if msg.Err != nil {
 			m.notification = "External tool closed with an error. Refreshing " + msg.Kind + "."
@@ -261,9 +284,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.welcomeError = created.err
 			return m, nil
 		}
-		fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, m.profileDir, m.createProfile)
+		dir := created.dir
+		if dir == "" {
+			dir = m.profileDir
+		}
+		fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, dir, m.createProfile)
 		fresh.width, fresh.height = m.width, m.height
-		fresh.notification = "Profile created at " + m.profileDir
+		fresh.notification = "Profile " + created.verb + " at " + dir
 		for _, current := range fresh.screens {
 			width, height := components.InteriorSize(layoutForSize(fresh.width, fresh.height).workspaceWidth, layoutForSize(fresh.width, fresh.height).contentHeight)
 			current.SetSize(width, height)
@@ -278,16 +305,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if target, ok := msg.(screens.OverviewTarget); ok {
-		m.selectScreen(ScreenID(target.Target))
+		navigation := m.selectScreen(ScreenID(target.Target))
 		switch current := m.activeScreen().(type) {
 		case *configScreen:
-			return m, current.Focus(target.Ref)
+			return m, tea.Batch(navigation, wrapScreenCmd(m.screenID(), current.Focus(target.Ref)))
 		case *resourcesScreen:
-			return m, current.Focus(target.Ref)
+			return m, tea.Batch(navigation, wrapScreenCmd(m.screenID(), current.Focus(target.Ref)))
 		case *machinesScreen:
 			current.Focus(target.Ref)
 		}
-		return m, nil
+		return m, navigation
 	}
 	if complete, ok := msg.(screens.CaptureComplete); ok {
 		if complete.Err != nil {
@@ -336,6 +363,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, themeTickCmd()
 	}
 	if finished, ok := msg.(handoffFinishedMsg); ok {
+		if finished.Kind == "lazygit" {
+			return m.reloadSessionScreens("LazyGit")
+		}
 		m.notification = "External tool closed. Refreshing " + finished.Kind + "."
 		if finished.Err != nil {
 			m.notification = "External tool closed with an error. Refreshing " + finished.Kind + "."
@@ -396,6 +426,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.modal == modalPalette {
 		return m.updatePalette(msg, key, isKey)
 	}
+	if m.modal == modalHelp && m.requestedModal == nil {
+		return m.updateHelp(msg, key, isKey)
+	}
 	if m.modal == modalHelp || m.modal == modalConfirm {
 		if m.requestedModal != nil && (m.requestedModal.Input != "" || m.requestedModal.Placeholder != "") && isKey {
 			if key == "esc" {
@@ -444,12 +477,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key {
 		case ":":
 			m.openModal(modalPalette)
-			m.paletteQuery, m.paletteSelected, m.paletteFiltering = "", 0, false
+			m.paletteQuery, m.paletteSelected, m.paletteFiltering = "", 0, true
 			m.paletteInput = components.NewTextInputModal("", "Search actions")
-			return m, nil
+			return m, m.paletteInput.Focus()
 		case "?":
 			m.openModal(modalHelp)
-			return m, nil
+			m.helpQuery = ""
+			m.helpInput = components.NewTextInputModal("", "Search help")
+			return m, m.helpInput.Focus()
 		case "tab", "shift+tab":
 			if layoutForSize(m.width, m.height).mode == LayoutCompact {
 				m.sidebarOpen = !m.sidebarOpen
@@ -459,8 +494,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "j", "down":
 			if m.focus == focusSidebar {
-				m.moveScreen(1)
-				return m, nil
+				return m, m.moveScreen(1)
 			}
 			if m.focus == focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
 				m.detailScroll.move(1, len(m.detailLines(layoutForSize(m.width, m.height))), layoutForSize(m.width, m.height).contentHeight-2)
@@ -468,8 +502,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "k", "up":
 			if m.focus == focusSidebar {
-				m.moveScreen(-1)
-				return m, nil
+				return m, m.moveScreen(-1)
 			}
 			if m.focus == focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
 				m.detailScroll.move(-1, len(m.detailLines(layoutForSize(m.width, m.height))), layoutForSize(m.width, m.height).contentHeight-2)
@@ -494,12 +527,74 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, tea.Cmd) {
+	if m.welcomeChooser && m.welcomeStep == "choose" {
+		if isKey {
+			switch key {
+			case "q", "esc":
+				m.stop()
+				return m, tea.Quit
+			case "up", "k":
+				m.welcomeChoice = max(0, m.welcomeChoice-1)
+			case "down", "j":
+				m.welcomeChoice = min(2, m.welcomeChoice+1)
+			case "enter":
+				switch m.welcomeChoice {
+				case 0:
+					m.welcomeStep = "create-path"
+					return m, m.welcomePath.Focus()
+				case 1:
+					m.welcomeStep = "open-path"
+					return m, m.welcomePath.Focus()
+				default:
+					m.stop()
+					return m, tea.Quit
+				}
+			}
+		}
+		return m, nil
+	}
 	if isKey {
 		switch key {
-		case "q", "esc":
+		case "q":
+			m.stop()
+			return m, tea.Quit
+		case "esc":
+			if m.welcomeChooser {
+				m.welcomeStep, m.welcomeError = "choose", nil
+				return m, nil
+			}
 			m.stop()
 			return m, tea.Quit
 		case "enter":
+			if m.welcomeStep == "create-path" {
+				path := strings.TrimSpace(m.welcomePath.Value())
+				if path == "" {
+					m.welcomeError = fmt.Errorf("profile path is required")
+					return m, nil
+				}
+				m.profileDir, m.welcomeStep = path, "create-name"
+				m.welcomeName = components.NewTextInputModal(filepath.Base(filepath.Clean(path)), "Profile name")
+				return m, m.welcomeName.Focus()
+			}
+			if m.welcomeStep == "open-path" {
+				path := strings.TrimSpace(m.welcomePath.Value())
+				if path == "" {
+					m.welcomeError = fmt.Errorf("profile path is required")
+					return m, nil
+				}
+				if !m.welcomeBusy {
+					m.welcomeBusy, m.welcomeError = true, nil
+					return m, func() tea.Msg {
+						session, err := m.openSession(workflow.Options{ProfileDir: path, ExplicitMachine: m.machine})
+						dir := path
+						if session != nil {
+							dir = session.ProfileDir()
+						}
+						return profileCreatedMsg{session: session, dir: dir, verb: "opened", err: err}
+					}
+				}
+				return m, nil
+			}
 			name := strings.TrimSpace(m.welcomeName.Value())
 			if name == "" {
 				m.welcomeError = fmt.Errorf("profile name is required")
@@ -509,13 +604,21 @@ func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, te
 				m.welcomeBusy, m.welcomeError = true, nil
 				return m, func() tea.Msg {
 					session, err := m.createProfile(m.ctx, m.profileDir, name)
-					return profileCreatedMsg{session: session, err: err}
+					dir := m.profileDir
+					if session != nil {
+						dir = session.ProfileDir()
+					}
+					return profileCreatedMsg{session: session, dir: dir, verb: "created", err: err}
 				}
 			}
 		}
 	}
 	var cmd tea.Cmd
-	cmd = m.welcomeName.Update(msg)
+	if m.welcomeStep == "create-path" || m.welcomeStep == "open-path" {
+		cmd = m.welcomePath.Update(msg)
+	} else {
+		cmd = m.welcomeName.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -567,6 +670,27 @@ func (m model) handleCaptureComplete(complete screens.CaptureComplete) (tea.Mode
 	for _, id := range complete.Providers {
 		if provider, ok := m.screens[ScreenID(id)].(*providerScreen); ok {
 			commands = append(commands, wrapScreenCmd(ScreenID(id), provider.Refresh()))
+		}
+	}
+	return m, tea.Batch(commands...)
+}
+
+func (m model) reloadSessionScreens(reason string) (tea.Model, tea.Cmd) {
+	if m.session == nil {
+		return m, nil
+	}
+	if err := m.session.Reload(); err != nil {
+		m.notification = "Profile reload failed after " + reason + ": " + err.Error()
+		return m, nil
+	}
+	m.notification = "Profile reloaded after " + reason + "."
+	commands := make([]tea.Cmd, 0, len(m.screens))
+	for id, current := range m.screens {
+		if !m.initialized[id] {
+			continue
+		}
+		if initializable, ok := current.(initializableScreen); ok {
+			commands = append(commands, wrapScreenCmd(id, initializable.Init()))
 		}
 	}
 	return m, tea.Batch(commands...)
@@ -631,15 +755,11 @@ func (m *model) closeModal() {
 }
 
 func (m *model) updatePalette(msg tea.Msg, key string, isKey bool) (tea.Model, tea.Cmd) {
-	if !isKey {
-		return *m, nil
-	}
 	items := m.paletteActions()
-	if m.paletteFiltering {
+	if isKey {
 		switch key {
 		case "esc":
-			m.paletteFiltering, m.paletteQuery, m.paletteSelected = false, "", 0
-			m.paletteInput.Input.SetValue("")
+			m.closeModal()
 			return *m, nil
 		case "up":
 			if m.paletteSelected > 0 {
@@ -650,85 +770,83 @@ func (m *model) updatePalette(msg tea.Msg, key string, isKey bool) (tea.Model, t
 			if m.paletteSelected < len(items)-1 {
 				m.paletteSelected++
 			}
+			m.paletteScroll.ensure(m.paletteSelected, len(items), layoutForSize(m.width, m.height).contentHeight-2)
 			return *m, nil
 		case "enter":
-			// Enter selects the current filtered action below.
-		case "backspace":
-			if len(m.paletteQuery) > 0 {
-				m.paletteQuery = m.paletteQuery[:len(m.paletteQuery)-1]
-			}
-			m.paletteInput.Input.SetValue(m.paletteQuery)
-			items = m.paletteActions()
-			if m.paletteSelected >= len(items) {
-				m.paletteSelected = max(0, len(items)-1)
-			}
-			return *m, nil
-		case "space", " ":
-			m.paletteQuery += " "
-			m.paletteInput.Input.SetValue(m.paletteQuery)
-			return *m, nil
-		default:
-			if len(key) != 1 {
-				return *m, nil
-			}
-			m.paletteQuery += key
-			m.paletteInput.Input.SetValue(m.paletteQuery)
-			items = m.paletteActions()
-			if m.paletteSelected >= len(items) {
-				m.paletteSelected = max(0, len(items)-1)
-			}
-			return *m, nil
-		}
-	}
-	switch key {
-	case "esc":
-		m.closeModal()
-	case "up", "k":
-		if m.paletteSelected > 0 {
-			m.paletteSelected--
-		}
-	case "down", "j":
-		if m.paletteSelected < len(items)-1 {
-			m.paletteSelected++
-		}
-		m.paletteScroll.ensure(m.paletteSelected, len(items), layoutForSize(m.width, m.height).contentHeight-2)
-	case "enter":
-		if len(items) > 0 && items[m.paletteSelected].Enabled {
-			action := items[m.paletteSelected]
-			m.closeModal()
-			if action.Screen != "" {
-				m.selectScreen(action.Screen)
-			}
-			if action.Run != nil {
-				if action.Screen == "" {
-					return *m, action.Run()
+			if len(items) > 0 && items[m.paletteSelected].Enabled {
+				action := items[m.paletteSelected]
+				m.closeModal()
+				var navigation tea.Cmd
+				if action.Screen != "" {
+					navigation = m.selectScreen(action.Screen)
 				}
-				return *m, wrapScreenCmd(action.Screen, action.Run())
+				if action.Run != nil {
+					if action.Screen == "" {
+						return *m, tea.Batch(navigation, action.Run())
+					}
+					return *m, tea.Batch(navigation, wrapScreenCmd(action.Screen, action.Run()))
+				}
+				return *m, navigation
 			}
+			return *m, nil
 		}
-	case "/":
-		m.paletteFiltering, m.paletteQuery, m.paletteSelected = true, "", 0
-		m.paletteInput.Input.SetValue("")
-		return *m, m.paletteInput.Focus()
 	}
+	cmd := m.paletteInput.Update(msg)
+	m.paletteQuery = m.paletteInput.Value()
 	items = m.paletteActions()
 	if m.paletteSelected >= len(items) {
 		m.paletteSelected = max(0, len(items)-1)
 	}
-	return *m, nil
+	return *m, cmd
 }
 
-func (m *model) moveScreen(delta int) {
+func (m *model) updateHelp(msg tea.Msg, key string, isKey bool) (tea.Model, tea.Cmd) {
+	if isKey {
+		switch key {
+		case "esc":
+			m.closeModal()
+			return *m, nil
+		case "up":
+			m.helpScroll.move(-1, len(m.helpLines()), layoutForSize(m.width, m.height).contentHeight-2)
+			return *m, nil
+		case "down":
+			m.helpScroll.move(1, len(m.helpLines()), layoutForSize(m.width, m.height).contentHeight-2)
+			return *m, nil
+		}
+	}
+	cmd := m.helpInput.Update(msg)
+	m.helpQuery = m.helpInput.Value()
+	m.helpScroll.offset = 0
+	return *m, cmd
+}
+
+func (m *model) moveScreen(delta int) tea.Cmd {
 	m.selected = (m.selected + delta + len(screenOrder)) % len(screenOrder)
 	m.sidebarScroll.ensure(m.selected, len(screenOrder), layoutForSize(m.width, m.height).contentHeight)
+	return m.initScreen(m.screenID())
 }
-func (m *model) selectScreen(id ScreenID) {
+func (m *model) selectScreen(id ScreenID) tea.Cmd {
 	for i, candidate := range screenOrder {
 		if candidate == id {
 			m.selected, m.focus = i, focusWorkspace
-			return
+			return m.initScreen(id)
 		}
 	}
+	return nil
+}
+func (m *model) initScreen(id ScreenID) tea.Cmd {
+	if m.initialized == nil {
+		m.initialized = map[ScreenID]bool{}
+	}
+	if m.initialized[id] {
+		return nil
+	}
+	initializable, ok := m.screens[id].(initializableScreen)
+	if !ok {
+		return nil
+	}
+	m.initialized[id] = true
+	return wrapScreenCmd(id, initializable.Init())
 }
 func (m *model) cycleFocus(reverse bool) {
 	count := 2
@@ -802,11 +920,22 @@ func (m model) footer() string {
 	if m.modal != modalNone {
 		switch m.modal {
 		case modalPalette:
-			if m.paletteFiltering {
-				return "type search   up/down select   enter run   esc clear"
+			return "type search   up/down select   enter run   esc close"
+		case modalHelp:
+			if m.requestedModal == nil {
+				return "type search   up/down scroll   esc close"
 			}
-			return "/ search   enter run   esc close"
+			if m.requestedModal.Input != "" || m.requestedModal.Placeholder != "" {
+				return "enter save   esc cancel"
+			}
+			return "enter confirm   esc cancel"
 		case modalWelcome:
+			if m.welcomeChooser && m.welcomeStep == "choose" {
+				return "up/down select   enter continue   esc quit"
+			}
+			if m.welcomeChooser {
+				return "enter continue   esc back"
+			}
 			return "enter create   esc quit"
 		default:
 			if m.requestedModal != nil {
@@ -930,6 +1059,7 @@ func composeOverlay(base, overlay string, width, height int, color bool) string 
 
 func (m model) modalView(base string, layout layout) string {
 	width, height := max(30, min(layout.workspaceWidth, m.width-8)), max(4, layout.contentHeight-2)
+	innerWidth, innerHeight := components.InteriorSize(width, height)
 	var overlay string
 	styles := components.NewStyles(m.palette)
 	title := ""
@@ -937,27 +1067,42 @@ func (m model) modalView(base string, layout layout) string {
 	case modalPalette:
 		title = "Command palette"
 		items := m.paletteActions()
-		content := "/ search\n" + components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
-		if m.paletteFiltering {
-			content = "Search: " + m.paletteInput.View() + "\n" + components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
-		}
+		content := "Search: " + m.paletteInput.View() + "\n" + components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
 		lines := strings.Split(content, "\n")
-		overlay = m.paletteScroll.render(lines, width, height)
+		overlay = m.paletteScroll.render(lines, innerWidth, innerHeight)
 	case modalHelp:
 		title = "Help"
-		lines := m.helpLines()
+		lines := append([]string{"Search: " + m.helpInput.View(), ""}, m.helpLines()...)
 		if m.requestedModal != nil {
 			title, lines = m.requestedModal.Title, strings.Split(m.requestedModal.Content, "\n")
 			if m.requestedModal.Input != "" || m.requestedModal.Placeholder != "" {
 				lines = append(lines, "", m.requestedModalInput.View())
 			}
 		}
-		overlay = m.helpScroll.render(lines, width, height)
+		overlay = m.helpScroll.render(lines, innerWidth, innerHeight)
 	case modalWelcome:
 		title = "Welcome to Omarchy Blueprint"
-		lines := []string{"No profile exists at:", m.profileDir, "", "Create a new profile to begin.", "", "Profile name: " + m.welcomeName.View(), "", "enter create  esc quit"}
+		lines := []string{}
+		if m.welcomeChooser && m.welcomeStep == "choose" {
+			lines = append(lines, "No Blueprint profile was found.", "", "Choose what to do:")
+			for i, choice := range []string{"Create a new profile", "Open an existing profile", "Quit"} {
+				marker := "  "
+				if i == m.welcomeChoice {
+					marker = "> "
+				}
+				lines = append(lines, marker+choice)
+			}
+		} else if m.welcomeStep == "create-path" || m.welcomeStep == "open-path" {
+			action := "Create profile at:"
+			if m.welcomeStep == "open-path" {
+				action = "Open profile at:"
+			}
+			lines = append(lines, action, "", m.welcomePath.View())
+		} else {
+			lines = append(lines, "Create a new profile at:", m.profileDir, "", "Profile name: "+m.welcomeName.View())
+		}
 		if m.welcomeBusy {
-			lines = append(lines, "Creating profile...")
+			lines = append(lines, "", "Working...")
 		}
 		if m.welcomeError != nil {
 			lines = append(lines, "Error: "+m.welcomeError.Error())
@@ -983,6 +1128,21 @@ func (m model) modalView(base string, layout layout) string {
 }
 
 func (m model) helpLines() []string {
+	if m.helpQuery != "" {
+		registry := ActionRegistry{Actions: m.actions(), Bindings: m.bindings()}
+		lines := []string{}
+		for _, action := range registry.Search(m.helpQuery) {
+			key := registry.Key(action.ID)
+			if key == "" {
+				key = "-"
+			}
+			lines = append(lines, fmt.Sprintf("%-14s %s: %s", key, action.Group, action.Label))
+		}
+		if len(lines) == 0 {
+			return []string{"No matching help."}
+		}
+		return lines
+	}
 	lines := []string{strings.ToUpper(screenLabel(m.screenID()))}
 	actions := map[string]Action{}
 	for _, action := range m.actions() {
@@ -1191,14 +1351,14 @@ func (s *providerScreen) Actions() []Action {
 		{ID: string(s.id) + ".refresh", Label: "Refresh " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 	}
-	if s.id == ScreenPackages || s.id == ScreenThemes || s.id == ScreenPlugins {
-		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: "Include or remove selected item", Enabled: s.CanToggleSelected(), Visible: true, DisabledReason: "select a saved item", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
+	if s.id == ScreenPackages {
+		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: s.ToggleSelectedLabel(), Enabled: s.CanToggleSelected(), Visible: true, DisabledReason: "select an Official, AUR, or Mise package", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
 	}
 	return actions
 }
 func (s *providerScreen) Bindings() []Binding {
 	bindings := []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}, {Label: "Collapse group", Key: "enter"}}
-	if s.id == ScreenPackages || s.id == ScreenThemes || s.id == ScreenPlugins {
+	if s.id == ScreenPackages {
 		bindings = append(bindings, Binding{ActionID: string(s.id) + ".toggle", Key: "space"})
 	}
 	return bindings

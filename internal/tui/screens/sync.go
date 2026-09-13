@@ -25,6 +25,7 @@ type Sync struct {
 	confirm, message        string
 	busy                    bool
 	err                     error
+	requestID               uint64
 }
 
 type SyncAction struct {
@@ -32,21 +33,29 @@ type SyncAction struct {
 	Enabled                             bool
 }
 type syncStatusMsg struct {
-	status profilegit.Status
-	err    error
+	requestID uint64
+	status    profilegit.Status
+	err       error
 }
 type syncResultMsg struct {
-	status  profilegit.Status
-	err     error
-	fetched bool
+	requestID     uint64
+	status        profilegit.Status
+	err           error
+	fetched       bool
+	reloadSession bool
 }
 type syncDiffMsg struct {
-	diff profilegit.Diff
-	err  error
+	requestID uint64
+	diff      profilegit.Diff
+	err       error
 }
 
 // Notice lets the root display a non-blocking action result in its status bar.
 type Notice struct{ Message string }
+
+// SessionReloadNeeded tells the root that profile files changed outside its
+// current session-derived screens and all of them need refreshing.
+type SessionReloadNeeded struct{ Reason string }
 
 func NewSync(session *workflow.Session) *Sync {
 	return NewSyncContext(context.Background(), session)
@@ -67,6 +76,9 @@ func (s *Sync) TransientActive() bool { return s.confirm != "" || s.diff != nil 
 func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case syncStatusMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		if msg.err == nil {
 			s.status = msg.status
 			s.err = nil
@@ -82,6 +94,9 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		s.table.Ensure(s.selected, len(s.status.Changes), s.tableHeight())
 		return nil
 	case syncResultMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.busy = false
 		if msg.err == nil {
 			s.status, s.err = msg.status, nil
@@ -94,8 +109,14 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 				return Notice{Message: "Sync action failed; showing last successful status: " + msg.err.Error()}
 			}
 		}
+		if msg.err == nil && msg.reloadSession {
+			return func() tea.Msg { return SessionReloadNeeded{Reason: "profile Git pull"} }
+		}
 		return nil
 	case syncDiffMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.err = msg.err
 		if msg.err == nil && len(msg.diff.Files) > 0 {
 			viewer := components.NewDiffViewer(msg.diff.Files[0].Document)
@@ -337,6 +358,9 @@ func (s *Sync) reason(action string) string {
 			return "cannot push a detached HEAD"
 		}
 	case "pull":
+		if len(s.status.Changes) > 0 {
+			return "profile repository has uncommitted changes"
+		}
 		if s.status.Head == "" {
 			return "profile repository has no HEAD commit"
 		}
@@ -382,83 +406,96 @@ func (s *Sync) hasUnmanagedChanges() bool {
 	return false
 }
 func (s *Sync) refresh() tea.Cmd {
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		status, err := s.session.ProfileGitStatus(s.ctx)
-		return syncStatusMsg{status, err}
+		return syncStatusMsg{requestID: requestID, status: status, err: err}
 	}
 }
 func (s *Sync) loadDiff(path string) tea.Cmd {
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		diff, err := s.session.ProfileGitDiff(s.ctx, path)
-		return syncDiffMsg{diff, err}
+		return syncDiffMsg{requestID: requestID, diff: diff, err: err}
 	}
 }
 func (s *Sync) initRepo() tea.Cmd {
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitInit(s.ctx)
 		if err != nil {
-			return syncResultMsg{err: err}
+			return syncResultMsg{requestID: requestID, err: err}
 		}
-		return syncResultMsg{status: result.Status}
+		return syncResultMsg{requestID: requestID, status: result.Status}
 	}
 }
 func (s *Sync) fetch() tea.Cmd {
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		_, err := s.session.ProfileGitFetch(s.ctx)
 		if err != nil {
-			return syncResultMsg{err: err}
+			return syncResultMsg{requestID: requestID, err: err}
 		}
 		status, err := s.session.ProfileGitStatus(s.ctx)
-		return syncResultMsg{status: status, err: err, fetched: err == nil}
+		return syncResultMsg{requestID: requestID, status: status, err: err, fetched: err == nil}
 	}
 }
 func (s *Sync) removeRemote() tea.Cmd {
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitRemoveRemote(s.ctx)
-		return syncResultMsg{status: result.Status, err: err}
+		return syncResultMsg{requestID: requestID, status: result.Status, err: err}
 	}
 }
 func (s *Sync) setRemote(rawURL string) tea.Cmd {
 	s.confirm = ""
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitSetRemote(s.ctx, rawURL)
-		return syncResultMsg{status: result.Status, err: err}
+		return syncResultMsg{requestID: requestID, status: result.Status, err: err}
 	}
 }
 func (s *Sync) pull() tea.Cmd {
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitPull(s.ctx)
-		return syncResultMsg{status: result.Status, err: err, fetched: err == nil}
+		return syncResultMsg{requestID: requestID, status: result.Status, err: err, fetched: err == nil, reloadSession: err == nil}
 	}
 }
 func (s *Sync) push() tea.Cmd {
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitPush(s.ctx)
-		return syncResultMsg{status: result.Status, err: err}
+		return syncResultMsg{requestID: requestID, status: result.Status, err: err}
 	}
 }
 func (s *Sync) commit(push bool) tea.Cmd {
 	message := s.message
 	s.confirm, s.message = "", ""
 	s.busy = true
+	requestID := s.nextRequestID()
 	return func() tea.Msg {
 		result, err := s.session.ProfileGitCommit(s.ctx, message)
 		if err != nil {
-			return syncResultMsg{err: err}
+			return syncResultMsg{requestID: requestID, err: err}
 		}
 		status, err := s.session.ProfileGitStatus(s.ctx)
 		if err != nil || !push || reasonFor(status, "push") != "" {
-			return syncResultMsg{status: status, err: err}
+			return syncResultMsg{requestID: requestID, status: status, err: err}
 		}
 		result, err = s.session.ProfileGitPush(s.ctx)
-		return syncResultMsg{status: result.Status, err: err}
+		return syncResultMsg{requestID: requestID, status: result.Status, err: err}
 	}
+}
+func (s *Sync) nextRequestID() uint64 {
+	s.requestID++
+	return s.requestID
 }
 func (s *Sync) tableHeight() int {
 	if s.height == 0 {

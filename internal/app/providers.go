@@ -60,8 +60,8 @@ type resourceDiffProvider interface {
 func stateProviders(deps Dependencies, opt *options) []stateProvider {
 	return []stateProvider{
 		packagesStateProvider{deps: deps},
-		themesStateProvider{deps: deps, opt: opt},
-		pluginsStateProvider{deps: deps, opt: opt},
+		&themesStateProvider{deps: deps, opt: opt},
+		&pluginsStateProvider{deps: deps, opt: opt},
 		&resourcesStateProvider{deps: deps, opt: opt},
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
@@ -487,8 +487,9 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 }
 
 type themesStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps            Dependencies
+	opt             *options
+	captureProvider *themesprovider.Provider
 }
 
 func (themesStateProvider) ID() string { return "themes" }
@@ -501,20 +502,44 @@ func (p themesStateProvider) provider() (themesprovider.Provider, error) {
 	return themeProvider(p.deps, p.opt)
 }
 
-func (p themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := provider.Capture(ctx)
+	p.captureProvider = &provider
+	current, err := p.captureProvider.Capture(ctx)
 	if err != nil {
+		p.captureProvider = nil
 		return nil, nil, err
 	}
-	current.Excluded = append([]string{}, d.Themes.Excluded...)
 	changes := themesprovider.Diff(d.Themes, current)
 	d.Themes = current
 	d.Manifest.Capture.Themes = true
 	return current, changes, nil
+}
+
+func (p *themesStateProvider) CommitCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	return p.captureProvider.CommitCapture()
+}
+func (p *themesStateProvider) FinalizeCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.FinalizeCapture()
+	p.captureProvider = nil
+	return err
+}
+func (p *themesStateProvider) RollbackCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.RollbackCapture()
+	p.captureProvider = nil
+	return err
 }
 
 func (p themesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
@@ -563,8 +588,9 @@ func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
 }
 
 type pluginsStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps            Dependencies
+	opt             *options
+	captureProvider *pluginsprovider.Provider
 }
 
 // pluginSemantics delegates plugin enablement ownership to the Shell provider
@@ -584,20 +610,44 @@ func (p pluginsStateProvider) provider() (pluginsprovider.Provider, error) {
 	return pluginProvider(p.deps, p.opt)
 }
 
-func (p pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := provider.Capture(ctx)
+	p.captureProvider = &provider
+	current, err := p.captureProvider.Capture(ctx)
 	if err != nil {
+		p.captureProvider = nil
 		return nil, nil, err
 	}
-	current.Excluded = append([]string{}, d.Plugins.Excluded...)
 	changes := pluginsprovider.Diff(d.Plugins, current, pluginSemantics(*d))
 	d.Plugins = current
 	d.Manifest.Capture.Plugins = true
 	return current, changes, nil
+}
+
+func (p *pluginsStateProvider) CommitCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	return p.captureProvider.CommitCapture()
+}
+func (p *pluginsStateProvider) FinalizeCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.FinalizeCapture()
+	p.captureProvider = nil
+	return err
+}
+func (p *pluginsStateProvider) RollbackCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.RollbackCapture()
+	p.captureProvider = nil
+	return err
 }
 
 func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {

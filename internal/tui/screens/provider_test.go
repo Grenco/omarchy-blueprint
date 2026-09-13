@@ -72,11 +72,19 @@ func TestProviderGroupsIncludedAndExcludedItemsWithStateMarkers(t *testing.T) {
 }
 
 func TestProviderGroupsPluginsBySource(t *testing.T) {
-	snapshot := profile.Plugins{Items: []profile.Plugin{{ID: "clock", Source: "builtin", Enabled: true}, {ID: "repo", Source: "git", Enabled: true}, {ID: "private", Source: "local"}}, Excluded: []string{"private"}}
+	snapshot := profile.Plugins{Items: []profile.Plugin{{ID: "clock", Source: "builtin", Enabled: true}, {ID: "repo", Source: "git", Enabled: true}, {ID: "private", Source: "local"}}}
 	view := (&Provider{id: "plugins", status: workflow.ProviderStatus{Captured: true, Snapshot: snapshot}}).View()
-	for _, want := range []string{"Built-in plugins", "+ clock", "Git plugins", "+ repo", "Local plugins", "- private"} {
+	for _, want := range []string{"Built-in plugins", "clock", "Git plugins", "repo", "Local plugins", "private"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestProviderScreenIgnoresStaleStatus(t *testing.T) {
+	screen := &Provider{requestID: 2, busy: true}
+	screen.Update(providerStatusMsg{requestID: 1, status: workflow.ProviderStatus{ID: "stale"}})
+	if !screen.busy || screen.status.ID != "" {
+		t.Fatalf("stale status changed state: busy=%v status=%#v", screen.busy, screen.status)
 	}
 }

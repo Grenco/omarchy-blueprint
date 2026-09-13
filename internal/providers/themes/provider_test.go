@@ -45,6 +45,13 @@ func TestCaptureCopiesUserOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	profileDir := t.TempDir()
+	previous := filepath.Join(profileDir, "themes", "local", "osaka-jade", "colors.toml")
+	if err := os.MkdirAll(filepath.Dir(previous), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previous, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "Osaka Jade\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
 	got, err := p.Capture(context.Background())
 	if err != nil {
@@ -55,6 +62,12 @@ func TestCaptureCopiesUserOverride(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, "themes", "local", "osaka-jade", "colors.toml")); err != nil {
 		t.Fatal(err)
+	}
+	if err := p.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if restored, err := os.ReadFile(previous); err != nil || string(restored) != "old\n" {
+		t.Fatalf("restored snapshot=%q err=%v", restored, err)
 	}
 }
 

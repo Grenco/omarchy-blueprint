@@ -29,13 +29,21 @@ type Provider struct {
 	busy, confirm           bool
 	collapsed               map[string]bool
 	err                     error
+	requestID               uint64
 }
 type providerStatusMsg struct {
-	status workflow.ProviderStatus
-	err    error
+	requestID uint64
+	status    workflow.ProviderStatus
+	err       error
 }
-type providerCaptureMsg struct{ err error }
-type providerToggleMsg struct{ err error }
+type providerCaptureMsg struct {
+	requestID uint64
+	err       error
+}
+type providerToggleMsg struct {
+	requestID uint64
+	err       error
+}
 type CaptureComplete struct {
 	Provider  string
 	Providers []string
@@ -58,17 +66,26 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	}
 	switch msg := msg.(type) {
 	case providerStatusMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.status, s.err, s.busy = msg.status, msg.err, false
 		s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 		return nil
 	case providerCaptureMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.err, s.busy = msg.err, false
 		if msg.err == nil {
 			return func() tea.Msg { return CaptureComplete{Provider: s.id} }
 		}
 		return nil
 	case providerToggleMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
 		s.err, s.busy = msg.err, false
 		if msg.err == nil {
 			return s.refresh()
@@ -299,38 +316,14 @@ func savedRows(snapshot any) []providerRow {
 		group("Current theme", []string{empty(value.Current)}, &rows)
 		themes := make([]string, 0, len(value.Items))
 		for _, item := range value.Items {
-			if !containsValue(value.Excluded, item.ID) {
-				themes = append(themes, item.ID+valueSuffix(item.Type, item.Revision))
-			}
-		}
-		for _, item := range value.Items {
-			if containsValue(value.Excluded, item.ID) {
-				themes = append(themes, item.ID+valueSuffix(item.Type, item.Revision))
-			}
+			themes = append(themes, item.ID+valueSuffix(item.Type, item.Revision))
 		}
 		group("Saved themes", themes, &rows)
-		for i := range rows {
-			if rows[i].group == "" {
-				rows[i].key = strings.Split(rows[i].value, " (")[0]
-				if rows[i].section == "Saved themes" {
-					for _, item := range value.Items {
-						if item.ID == rows[i].key {
-							rows[i].state = map[bool]string{true: "not included", false: "included"}[containsValue(value.Excluded, item.ID)]
-						}
-					}
-				}
-			}
-		}
 	case profile.Plugins:
 		pluginRows := func(label, source string) {
 			plugins := make([]string, 0)
 			for _, item := range value.Items {
-				if item.Source == source && !containsValue(value.Excluded, item.ID) {
-					plugins = append(plugins, item.ID+valueSuffix(item.Revision))
-				}
-			}
-			for _, item := range value.Items {
-				if item.Source == source && containsValue(value.Excluded, item.ID) {
+				if item.Source == source {
 					plugins = append(plugins, item.ID+valueSuffix(item.Revision))
 				}
 			}
@@ -339,18 +332,6 @@ func savedRows(snapshot any) []providerRow {
 		pluginRows("Git plugins", "git")
 		pluginRows("Local plugins", "local")
 		pluginRows("Built-in plugins", "builtin")
-		for i := range rows {
-			if rows[i].group == "" {
-				rows[i].key = strings.Split(rows[i].value, " (")[0]
-				if strings.HasSuffix(rows[i].section, " plugins") {
-					for _, item := range value.Items {
-						if item.ID == rows[i].key {
-							rows[i].state = map[bool]string{true: "not included", false: "included"}[containsValue(value.Excluded, item.ID)]
-						}
-					}
-				}
-			}
-		}
 	case profile.Defaults:
 		group("Applications", []string{"Terminal: " + empty(value.Terminal), "Browser: " + empty(value.Browser), "Editor: " + empty(value.Editor), "Agent: " + empty(value.Agent)}, &rows)
 	case profile.Shell:
@@ -373,46 +354,58 @@ func valueSuffix(values ...string) string {
 	return ""
 }
 func (s *Provider) refresh() tea.Cmd {
+	s.requestID++
+	requestID := s.requestID
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, s.id)
 		if err != nil && !providerCaptured(s.session.Profile(), s.id) {
-			return providerStatusMsg{status: workflow.ProviderStatus{ID: s.id}}
+			return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}}
 		}
 		if err != nil {
-			return providerStatusMsg{err: err}
+			return providerStatusMsg{requestID: requestID, err: err}
 		}
 		for _, status := range report.Providers {
 			if status.ID == s.id {
-				return providerStatusMsg{status: status}
+				return providerStatusMsg{requestID: requestID, status: status}
 			}
 		}
-		return providerStatusMsg{err: fmt.Errorf("%s status is unavailable", s.id)}
+		return providerStatusMsg{requestID: requestID, err: fmt.Errorf("%s status is unavailable", s.id)}
 	}
 }
 func (s *Provider) capture() tea.Cmd {
-	return func() tea.Msg { _, err := s.session.Capture(s.ctx, s.id); return providerCaptureMsg{err} }
+	s.requestID++
+	requestID := s.requestID
+	return func() tea.Msg {
+		_, err := s.session.Capture(s.ctx, s.id)
+		return providerCaptureMsg{requestID: requestID, err: err}
+	}
 }
 func (s *Provider) CanToggleSelected() bool {
 	row := s.selectedSavedRow()
 	return !s.busy && s.activeTab() == "Saved" && row.value != "" && providerItemCanToggle(s.id, row.section)
 }
+func (s *Provider) ToggleSelectedLabel() string {
+	if s.selectedSavedRow().state == "not included" {
+		return "Include selected package"
+	}
+	return "Exclude selected package"
+}
 func (s *Provider) toggleItem(row providerRow) tea.Cmd {
+	s.requestID++
+	requestID := s.requestID
 	return func() tea.Msg {
-		return providerToggleMsg{err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
+		return providerToggleMsg{requestID: requestID, err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
 	}
 }
 func providerItemCanToggle(id, section string) bool {
 	if id == "packages" {
-		return section == "Official packages" || section == "AUR packages" || section == "Mise tools" || section == "Machine-specific packages" || section == "Excluded packages"
+		return section == "Official packages" || section == "AUR packages" || section == "Mise tools"
 	}
-	if id == "themes" {
-		return section == "Saved themes"
-	}
-	return id == "plugins" && strings.HasSuffix(section, " plugins")
+	return false
 }
 func providerItemCanToggleID(id string) bool {
-	return id == "packages" || id == "themes" || id == "plugins"
+	return id == "packages"
 }
 func containsValue(values []string, value string) bool {
 	for _, item := range values {

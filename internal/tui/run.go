@@ -10,8 +10,9 @@ import (
 )
 
 type Options struct {
-	ProfileDir string
-	Machine    string
+	ProfileDir      string
+	ProfileExplicit bool
+	Machine         string
 }
 
 type Dependencies struct {
@@ -25,14 +26,25 @@ func Run(ctx context.Context, options Options, deps Dependencies) error {
 	defer cancel()
 	loader := ThemeLoader{StateHome: deps.Workflow.StateHome, NoColor: os.Getenv("NO_COLOR") != ""}
 	var session *workflow.Session
+	chooser := false
 	var err error
 	if deps.OpenSession != nil {
 		session, err = deps.OpenSession(workflow.Options{ProfileDir: options.ProfileDir, ExplicitMachine: options.Machine})
-		if err != nil && !workflow.IsMissingProfile(options.ProfileDir, err) {
-			return err
+		if err != nil {
+			if options.ProfileExplicit {
+				return err
+			} else if workflow.IsMissingProfile(options.ProfileDir, err) {
+				chooser = true
+			} else {
+				return err
+			}
 		}
 	}
-	_, err = tea.NewProgram(newModelWithContext(ctx, cancel, loader, session, options.ProfileDir, deps.CreateProfile), tea.WithContext(ctx)).Run()
+	m := newModelWithContext(ctx, cancel, loader, session, options.ProfileDir, deps.CreateProfile)
+	if chooser {
+		m.enableProfileChooser(deps.OpenSession, options.Machine)
+	}
+	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
 }
 
