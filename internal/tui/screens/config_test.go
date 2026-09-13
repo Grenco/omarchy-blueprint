@@ -63,12 +63,12 @@ func TestConfigScreenRowsFilterAndViewportKeepSelectedCandidateVisible(t *testin
 }
 
 func TestConfigScreenIgnoresStaleInspection(t *testing.T) {
-	screen := &Config{inspectionID: 2, candidates: []config.Candidate{{Path: ".config/current"}}}
-	screen.Update(configInspectionMsg{requestID: 1, inspection: workflow.ConfigInspection{LivePath: "stale"}})
+	screen := &Config{inspectionID: 2, selected: 1, candidates: []config.Candidate{{Path: ".config/current", Classification: config.ConfigAdded}}}
+	screen.Update(configInspectionMsg{requestID: 1, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/current"}, LivePath: "stale"}})
 	if screen.inspection.LivePath != "" {
 		t.Fatalf("stale inspection applied: %#v", screen.inspection)
 	}
-	screen.Update(configInspectionMsg{requestID: 2, inspection: workflow.ConfigInspection{LivePath: "current"}})
+	screen.Update(configInspectionMsg{requestID: 2, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/current"}, LivePath: "current"}})
 	if screen.inspection.LivePath != "current" {
 		t.Fatalf("current inspection was not applied: %#v", screen.inspection)
 	}
@@ -79,7 +79,7 @@ func TestConfigScreenDetailExplainsWhyAndKeepsRawReasonSecondary(t *testing.T) {
 	if err := os.WriteFile(live, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{LivePath: live, LiveHandoffSafe: true, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
+	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/tool/config"}, LivePath: live, LiveHandoffSafe: true, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
 	detail := screen.DetailView()
 	for _, want := range []string{"State: Changed from baseline", "Policy: Auto", "Why: modified baseline", "Provider reason: modified-baseline", "Live: " + live, "Effective policy: managed", "Edit/open/copy: available"} {
 		if !strings.Contains(detail, want) {
@@ -89,9 +89,27 @@ func TestConfigScreenDetailExplainsWhyAndKeepsRawReasonSecondary(t *testing.T) {
 }
 
 func TestConfigHandoffEligibilityUsesInspectionState(t *testing.T) {
-	screen := &Config{inspection: workflow.ConfigInspection{LivePath: filepath.Join(t.TempDir(), "missing"), LiveHandoffSafe: true}}
+	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/current", Classification: config.ConfigAdded}}, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/current"}, LivePath: filepath.Join(t.TempDir(), "missing"), LiveHandoffSafe: true}}
 	if !screen.CanHandoff() {
 		t.Fatal("inspection marked handoff-safe was rejected")
+	}
+}
+
+func TestConfigHandoffInvalidatesWhenSelectionMovesToHeading(t *testing.T) {
+	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/a", Classification: config.ConfigAdded}}, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/a"}, LivePath: "/live/a", LiveHandoffSafe: true}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	if screen.inspection.LivePath != "" || screen.CanHandoff() || screen.Update(tea.KeyPressMsg{Code: 'o'}) != nil {
+		t.Fatalf("stale handoff remained available: %#v", screen.inspection)
+	}
+}
+
+func TestConfigIgnoresLateInspectionAfterSelectionChanges(t *testing.T) {
+	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/a", Classification: config.ConfigAdded}, {Path: ".config/b", Classification: config.ConfigAdded}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	requestID := screen.inspectionID
+	screen.Update(configInspectionMsg{requestID: requestID, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/a"}, LivePath: "/live/a", LiveHandoffSafe: true}})
+	if screen.inspection.LivePath != "" || screen.CanHandoff() {
+		t.Fatalf("late inspection applied to %q: %#v", screen.selectedCandidate().Path, screen.inspection)
 	}
 }
 

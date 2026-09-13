@@ -115,7 +115,7 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 }
 func (s *Capture) View() string {
 	if s.err != nil {
-		return s.styles.Error("Capture failed: " + s.err.Error())
+		return s.styles.Error("Capture failed: " + components.DisplayText(s.err.Error()))
 	}
 	if s.capturing {
 		return "Capturing selected providers...\n\nThis can take a while while providers inspect the running system."
@@ -136,7 +136,7 @@ func (s *Capture) View() string {
 		if s.chosen[p.ID] {
 			check = "x"
 		}
-		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", p.ID, changes}, Selected: i == s.cursor, Focused: true})
+		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: i == s.cursor, Focused: true})
 	}
 	return s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Provider", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
 }
@@ -145,7 +145,7 @@ func (s *Capture) DetailView() string {
 	if p.ID == "" {
 		return "Select providers to capture."
 	}
-	return "Provider: " + p.ID + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected: " + fmt.Sprint(s.chosen[p.ID])
+	return "Provider: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected: " + fmt.Sprint(s.chosen[p.ID])
 }
 func (s *Capture) current() workflow.ProviderStatus {
 	if s.cursor >= 0 && s.cursor < len(s.statuses) {

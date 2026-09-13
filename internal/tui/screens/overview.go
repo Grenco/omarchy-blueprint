@@ -98,7 +98,7 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 }
 func (s *Overview) View() string {
 	if s.err != nil {
-		return "Unable to load overview: " + s.err.Error()
+		return "Unable to load overview: " + components.DisplayText(s.err.Error())
 	}
 	lines := make([]string, 0, len(s.rows()))
 	for i, row := range s.rows() {
@@ -145,25 +145,25 @@ func (s *Overview) View() string {
 func (s *Overview) DetailView() string {
 	row := s.selectedRow()
 	if row.isSection() {
-		return row.section + "\nPress Enter to " + map[bool]string{true: "expand", false: "collapse"}[s.collapsed[row.section]] + " this section."
+		return components.DisplayText(row.section) + "\nPress Enter to " + map[bool]string{true: "expand", false: "collapse"}[s.collapsed[row.section]] + " this section."
 	}
 	if !row.isItem() {
 		if row.healthy != "" {
-			return "Healthy\n" + row.healthy + " has no detected differences."
+			return "Healthy\n" + components.DisplayText(row.healthy) + " has no detected differences."
 		}
 		return "Overview details\nSelect a decision to see what needs attention."
 	}
-	lines := []string{"Needs attention", decisionSummary(row.item), "", "Why: " + row.item.Summary}
+	lines := []string{"Needs attention", decisionSummary(row.item), "", "Why: " + components.DisplayText(row.item.Summary)}
 	if row.item.Target != "" {
-		lines = append(lines, "", "Enter opens: "+row.item.Target)
+		lines = append(lines, "", "Enter opens: "+components.DisplayText(row.item.Target))
 	}
 	return strings.Join(lines, "\n")
 }
 func decisionSummary(item workflow.AttentionItem) string {
 	if item.Provider == "" {
-		return item.Summary
+		return components.DisplayText(item.Summary)
 	}
-	return title(item.Provider) + ": " + item.Summary
+	return components.DisplayText(title(item.Provider)) + ": " + components.DisplayText(item.Summary)
 }
 func title(value string) string {
 	if value == "" {

@@ -257,13 +257,13 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 
 func (s *Machines) View() string {
 	if s.err != nil {
-		return s.styles.Error("Unable to update machine: " + s.err.Error())
+		return s.styles.Error("Unable to update machine: " + components.DisplayText(s.err.Error()))
 	}
 	if s.browser != nil {
 		return s.browser.View()
 	}
 	if s.mode != "" {
-		return "Machine name: " + s.name
+		return "Machine name: " + components.DisplayText(s.name)
 	}
 	machineLines := make([]string, 0, len(s.machines()))
 	for i, item := range s.machines() {
@@ -271,7 +271,7 @@ func (s *Machines) View() string {
 		if item.Name == s.session.Machine().Name {
 			active = " " + s.styles.Success("[active]")
 		}
-		line := "  " + item.Name + active
+		line := "  " + components.DisplayText(item.Name) + active
 		if i == s.machineList.Selected {
 			if !s.styles.Palette.ColorEnabled {
 				line = components.Icons.Selected + line[1:]
@@ -285,7 +285,7 @@ func (s *Machines) View() string {
 	}
 	rows := []components.Row{}
 	for i, row := range s.mappingRows() {
-		rows = append(rows, components.Row{Cells: []string{row.id, row.portable, row.effective, row.source}, Selected: i == s.resource, Focused: s.focusMappings})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), components.DisplayText(row.source)}, Selected: i == s.resource, Focused: s.focusMappings})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
@@ -309,7 +309,7 @@ func (s *Machines) DetailView() string {
 	}
 	if s.focusMappings {
 		row := s.selectedMapping()
-		return "Mapping\nMachine: " + s.selectedMachine().Name + "\nResource: " + row.id + "\nPortable: " + row.portable + "\nEffective: " + row.effective + "\nSource: " + row.source
+		return "Mapping\nMachine: " + components.DisplayText(s.selectedMachine().Name) + "\nResource: " + components.DisplayText(row.id) + "\nPortable: " + components.DisplayText(row.portable) + "\nEffective: " + components.DisplayText(row.effective) + "\nSource: " + components.DisplayText(row.source)
 	}
 	item := s.selectedMachine()
 	if item.Name == "" {
@@ -319,7 +319,7 @@ func (s *Machines) DetailView() string {
 	if item.Name == s.session.Machine().Name {
 		state = "active"
 	}
-	return "Machine: " + item.Name + "\nState: " + state + "\nMappings: " + fmt.Sprint(len(item.ResourcePaths)) + "\nMappings change placement policy only; resource bytes are never moved."
+	return "Machine: " + components.DisplayText(item.Name) + "\nState: " + state + "\nMappings: " + fmt.Sprint(len(item.ResourcePaths)) + "\nMappings change placement policy only; resource bytes are never moved."
 }
 
 type mappingRow struct {
@@ -383,9 +383,9 @@ func (s *Machines) tableHeight() int {
 	return max(1, s.height-3)
 }
 func (s *Machines) confirmModal() tea.Cmd {
-	prompt := "Rename machine to " + s.name + "?"
+	prompt := "Rename machine to " + components.DisplayText(s.name) + "?"
 	if s.confirm == "remove" {
-		prompt = "Remove machine \"" + s.selectedMachine().Name + "\"?\n\nThis removes the machine overlay and its path mappings.\nLive Resource files will not be moved or deleted."
+		prompt = "Remove machine \"" + components.DisplayText(s.selectedMachine().Name) + "\"?\n\nThis removes the machine overlay and its path mappings.\nLive Resource files will not be moved or deleted."
 	}
 	return func() tea.Msg {
 		return components.ModalRequest{Title: "Confirm machine change", Content: components.Confirm(prompt)}

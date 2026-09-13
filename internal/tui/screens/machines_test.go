@@ -1,12 +1,14 @@
 package screens
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -28,6 +30,18 @@ func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestMachineScreenSanitizesExternalValues(t *testing.T) {
+	screen := &Machines{err: errors.New("bad\nerror\x1b")}
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?error?") {
+		t.Fatalf("unsafe error view=%q", view)
+	}
+	screen = &Machines{name: "bad\nname\x1b", confirm: "rename"}
+	request := screen.confirmModal()().(components.ModalRequest)
+	if strings.Contains(request.Content, "\x1b") || !strings.Contains(request.Content, "bad?name?") {
+		t.Fatalf("unsafe confirmation=%q", request.Content)
 	}
 }
 

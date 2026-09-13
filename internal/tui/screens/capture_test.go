@@ -56,6 +56,17 @@ func TestCaptureViewLabelsUncapturedProviders(t *testing.T) {
 	}
 }
 
+func TestCaptureSanitizesProviderValuesAndErrors(t *testing.T) {
+	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "bad\nprovider\x1b"}}, chosen: map[string]bool{}}
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?provider?") {
+		t.Fatalf("unsafe capture=%q", view)
+	}
+	screen.err = errors.New("bad\nerror\x1b")
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?error?") {
+		t.Fatalf("unsafe error=%q", view)
+	}
+}
+
 func TestCaptureScreenIgnoresStaleStatus(t *testing.T) {
 	screen := &Capture{requestID: 2, busy: true}
 	screen.Update(captureStatusMsg{requestID: 1, statuses: []workflow.ProviderStatus{{ID: "stale"}}})

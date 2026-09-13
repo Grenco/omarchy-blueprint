@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -20,6 +21,17 @@ func TestOverviewScreenFlattensExpandedSectionsAndRoutesDecision(t *testing.T) {
 	message := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})().(OverviewTarget)
 	if message.Target != "config" || message.Ref != ".config/nvim" {
 		t.Fatalf("target=%#v", message)
+	}
+}
+
+func TestOverviewSanitizesAttentionAndErrors(t *testing.T) {
+	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{{Severity: workflow.AttentionDecision, Summary: "bad\nsummary\x1b"}}}}
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?summary?") {
+		t.Fatalf("unsafe overview=%q", view)
+	}
+	screen.err = errors.New("bad\nerror\x1b")
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?error?") {
+		t.Fatalf("unsafe error=%q", view)
 	}
 }
 

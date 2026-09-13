@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,6 +25,21 @@ func TestRestoreScreenToggleUsesCachedComparison(t *testing.T) {
 	view := screen.View()
 	if !strings.Contains(view, "active: [Forced]") || !strings.Contains(view, "replace:1") || !strings.Contains(view, "create   replace") {
 		t.Fatalf("forced cached view missing expected state: %q", view)
+	}
+}
+
+func TestRestoreSanitizesConsequencesAndErrors(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.comparison.Consequences = []workflow.Consequence{{Provider: "bad\nprovider\x1b", Resource: "bad\nresource\x1b", Difference: "bad\ndifference\x1b"}}
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?resou") {
+		t.Fatalf("unsafe restore=%q", view)
+	}
+	if detail := screen.DetailView(); strings.Contains(detail, "\x1b") || !strings.Contains(detail, "bad?difference?") {
+		t.Fatalf("unsafe detail=%q", detail)
+	}
+	screen.err = errors.New("bad\nerror\x1b")
+	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?error?") {
+		t.Fatalf("unsafe error=%q", view)
 	}
 }
 

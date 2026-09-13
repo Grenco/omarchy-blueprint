@@ -97,6 +97,9 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		if msg.requestID != s.inspectionID {
 			return nil
 		}
+		if msg.inspection.Candidate.Path != s.selectedCandidate().Path {
+			return nil
+		}
 		if msg.err != nil {
 			s.err = msg.err
 			return nil
@@ -405,7 +408,11 @@ func (s *Config) rescan() tea.Cmd {
 		return configStatusMsg{requestID: requestID, err: fmt.Errorf("config scan is unavailable")}
 	}
 }
-func (s *Config) inspectSelected() tea.Cmd { return s.inspectForDiff(s.selectedCandidate().Path) }
+func (s *Config) inspectSelected() tea.Cmd {
+	s.inspectionID++
+	s.inspection = workflow.ConfigInspection{}
+	return s.inspectForDiff(s.selectedCandidate().Path)
+}
 func (s *Config) inspectForDiff(logical string) tea.Cmd {
 	if logical == "" {
 		return nil
@@ -438,7 +445,7 @@ func (s *Config) nextPolicy(path string) string {
 	return "include"
 }
 func (s *Config) validLive() bool {
-	return s.inspection.LiveHandoffSafe
+	return s.inspection.LiveHandoffSafe && s.inspection.Candidate.Path == s.selectedCandidate().Path && s.selectedCandidate().Path != ""
 }
 func (s *Config) CanHandoff() bool { return s.validLive() }
 func (s *Config) CanPolicy() bool  { return s.selectedCandidate().Path != "" }

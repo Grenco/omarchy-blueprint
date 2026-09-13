@@ -140,7 +140,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 
 func (s *Restore) View() string {
 	if s.err != nil {
-		return "Unable to prepare restore: " + s.err.Error()
+		return "Unable to prepare restore: " + components.DisplayText(s.err.Error())
 	}
 	if s.busy {
 		return "Applying restore..."
@@ -165,7 +165,7 @@ func (s *Restore) View() string {
 			risk = "low"
 		}
 		risk = s.risk(risk)
-		rows = append(rows, components.Row{Cells: []string{item.Provider, item.Resource, s.outcome(item.Normal), s.outcome(item.Forced), risk + " " + changed}, Selected: i == s.selected})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.Provider), components.DisplayText(item.Resource), s.outcome(item.Normal), s.outcome(item.Forced), risk + " " + changed}, Selected: i == s.selected})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No restore operations required."}})
@@ -185,12 +185,12 @@ func (s *Restore) DetailView() string {
 	if item.Resource == "" {
 		return "Restore details\nNo consequence selected."
 	}
-	lines := []string{"Restore consequence", "Provider: " + item.Provider, "Resource: " + item.Resource, "Normal: " + string(item.Normal), "Forced: " + string(item.Forced), "Risk: " + string(item.Risk)}
+	lines := []string{"Restore consequence", "Provider: " + components.DisplayText(item.Provider), "Resource: " + components.DisplayText(item.Resource), "Normal: " + components.DisplayText(string(item.Normal)), "Forced: " + components.DisplayText(string(item.Forced)), "Risk: " + components.DisplayText(string(item.Risk))}
 	if item.Difference != "" {
-		lines = append(lines, "", item.Difference)
+		lines = append(lines, "", components.DisplayText(item.Difference))
 	}
 	if item.Diff != nil && item.Diff.Kind != inspection.DiffText {
-		lines = append(lines, "Detail is metadata-only: "+string(item.Diff.Kind))
+		lines = append(lines, "Detail is metadata-only: "+components.DisplayText(string(item.Diff.Kind)))
 	}
 	return strings.Join(lines, "\n")
 }
