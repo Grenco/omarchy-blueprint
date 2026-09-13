@@ -42,6 +42,7 @@ type Resources struct {
 	candidate               components.BrowserEntry
 	candidateInspection     workflow.PathInspection
 	untracked               []string
+	eligibleUntracked       map[string]bool
 	chosen                  map[string]bool
 	confirm                 string
 	focusID                 string
@@ -202,6 +203,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		for _, file := range msg.item.Untracked {
 			s.chosen[file.Path] = true
 		}
+		s.setUntracked(msg.item.Untracked)
 		s.selectStrategy(msg.item.Strategy)
 		s.untrackedCursor = 0
 		return nil
@@ -385,7 +387,11 @@ func (s *Resources) View() string {
 			if s.chosen[path] {
 				selected = "x"
 			}
-			line := fmt.Sprintf("  [%s] %s", selected, components.DisplayText(path))
+			label := components.DisplayText(path)
+			if s.eligibleUntracked != nil && !s.eligibleUntracked[path] {
+				label += "  ignored now"
+			}
+			line := fmt.Sprintf("  [%s] %s", selected, label)
 			if i == s.untrackedCursor {
 				if !s.styles.Palette.ColorEnabled {
 					line = components.Icons.Selected + line[1:]
@@ -513,7 +519,7 @@ func (s *Resources) untrack() tea.Cmd {
 	}
 }
 func (s *Resources) resetDiscovery() {
-	s.browser, s.phase, s.strategy, s.strategyCursor, s.untrackedCursor, s.editingResourceID, s.candidate, s.candidateInspection, s.untracked, s.chosen, s.confirm, s.err = nil, resourceBrowse, "", 0, 0, "", components.BrowserEntry{}, workflow.PathInspection{}, nil, nil, "", nil
+	s.browser, s.phase, s.strategy, s.strategyCursor, s.untrackedCursor, s.editingResourceID, s.candidate, s.candidateInspection, s.untracked, s.eligibleUntracked, s.chosen, s.confirm, s.err = nil, resourceBrowse, "", 0, 0, "", components.BrowserEntry{}, workflow.PathInspection{}, nil, nil, nil, "", nil
 	s.discover = false
 }
 func (s *Resources) rescan() tea.Cmd {
@@ -585,15 +591,29 @@ func (s *Resources) listHeight() int {
 }
 func (s *Resources) setCandidateInspection() {
 	inspection := s.candidateInspection
-	if inspection.Git != nil {
-		s.untracked = append([]string(nil), inspection.Git.UntrackedPaths...)
-	}
 	s.chosen = make(map[string]bool)
+	s.setUntracked(nil)
 	s.untrackedCursor = 0
 	if s.strategy == "" {
 		s.strategy = inspection.SuggestedStrategy
 	}
 	s.selectStrategy(s.strategy)
+}
+
+func (s *Resources) setUntracked(saved []profile.GitUntrackedFile) {
+	s.untracked = nil
+	s.eligibleUntracked = map[string]bool{}
+	if git := s.candidateInspection.Git; git != nil {
+		for _, path := range git.UntrackedPaths {
+			s.eligibleUntracked[path] = true
+			s.untracked = append(s.untracked, path)
+		}
+	}
+	for _, file := range saved {
+		if !s.eligibleUntracked[file.Path] {
+			s.untracked = append(s.untracked, file.Path)
+		}
+	}
 }
 
 func (s *Resources) strategies() []string {

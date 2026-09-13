@@ -248,11 +248,20 @@ func TestResourceTrackRequestKeepsEditedIdentityAndDiffSelections(t *testing.T) 
 	}
 }
 
-func TestExistingResourceUsesInspectionGitCapabilityWithoutMovingTableSelection(t *testing.T) {
-	screen := &Resources{selected: 1, items: []profile.Resource{{ID: "first"}, {ID: "second", Strategy: "git+diff", Untracked: []profile.GitUntrackedFile{{Path: "kept.txt"}}}}, requestID: 3}
-	screen.Update(resourceExistingInspectMsg{requestID: 3, item: screen.items[1], inspection: workflow.ResourceInspection{EffectivePath: "/work/second", Git: &resourcesprovider.GitWorkingSummary{Untracked: []string{"kept.txt", "other.txt"}}}})
-	if screen.selected != 1 || screen.editingResourceID != "second" || !screen.chosen["kept.txt"] || screen.phase != resourceStrategy || len(screen.strategies()) != 3 {
-		t.Fatalf("editor state=%#v selected=%d editing=%q chosen=%#v phase=%q", screen.candidate, screen.selected, screen.editingResourceID, screen.chosen, screen.phase)
+func TestExistingResourceGitDiffSelectorUsesCurrentAndSavedUntracked(t *testing.T) {
+	screen := &Resources{selected: 1, items: []profile.Resource{{ID: "first"}, {ID: "second", Strategy: "git+diff", Untracked: []profile.GitUntrackedFile{{Path: "current.txt"}, {Path: "old-local.env"}}}}, requestID: 3}
+	screen.Update(resourceExistingInspectMsg{requestID: 3, item: screen.items[1], inspection: workflow.ResourceInspection{EffectivePath: "/work/second", Git: &resourcesprovider.GitWorkingSummary{Untracked: []string{"current.txt"}}}})
+	if screen.selected != 1 || screen.editingResourceID != "second" || !screen.chosen["current.txt"] || screen.phase != resourceStrategy || len(screen.strategies()) != 3 || !reflect.DeepEqual(screen.untracked, []string{"current.txt", "old-local.env"}) {
+		t.Fatalf("editor state=%#v selected=%d editing=%q chosen=%#v untracked=%#v phase=%q", screen.candidate, screen.selected, screen.editingResourceID, screen.chosen, screen.untracked, screen.phase)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || screen.phase != resourceUntracked || !strings.Contains(screen.View(), "old-local.env  ignored now") {
+		t.Fatalf("git+diff selector=%q phase=%q cmd=%v", screen.View(), screen.phase, cmd != nil)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	screen.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	request := screen.trackRequest()
+	if !reflect.DeepEqual(request.ExcludeUntracked, []string{"old-local.env"}) {
+		t.Fatalf("request did not exclude stale selection: %#v", request)
 	}
 }
 
