@@ -33,6 +33,10 @@ type ActionRegistry struct {
 	Bindings []Binding
 }
 
+type HelpEntry struct {
+	Key, Label, Context, Group, ActionID, Keywords string
+}
+
 func (r ActionRegistry) Initial() []Action {
 	initial := make([]Action, 0, len(r.Actions))
 	for _, action := range r.Actions {
@@ -44,6 +48,43 @@ func (r ActionRegistry) Initial() []Action {
 }
 
 func (r ActionRegistry) Search(query string) []Action { return filterActions(r.Actions, query) }
+
+func (r ActionRegistry) SearchHelp(query string) []HelpEntry {
+	actions := make(map[string]Action, len(r.Actions))
+	bound := make(map[string]bool, len(r.Bindings))
+	for _, action := range r.Actions {
+		actions[action.ID] = action
+	}
+	entries := make([]HelpEntry, 0, len(r.Bindings)+len(r.Actions))
+	for _, binding := range r.Bindings {
+		action := actions[binding.ActionID]
+		label := binding.Label
+		if label == "" {
+			label = action.Label
+		}
+		entry := HelpEntry{Key: binding.DisplayKeys(), Label: label, Context: binding.Context, Group: action.Group, ActionID: action.ID, Keywords: action.Keywords}
+		if helpEntryMatches(entry, query) {
+			entries = append(entries, entry)
+		}
+		if binding.ActionID != "" {
+			bound[binding.ActionID] = true
+		}
+	}
+	for _, action := range r.Actions {
+		if bound[action.ID] {
+			continue
+		}
+		entry := HelpEntry{Key: "-", Label: action.Label, Group: action.Group, ActionID: action.ID, Keywords: action.Keywords}
+		if helpEntryMatches(entry, query) {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func helpEntryMatches(entry HelpEntry, query string) bool {
+	return subsequenceMatch(query, entry.Key) || subsequenceMatch(query, entry.Label) || subsequenceMatch(query, entry.Context) || subsequenceMatch(query, entry.Group) || subsequenceMatch(query, entry.ActionID) || subsequenceMatch(query, entry.Keywords)
+}
 
 func (r ActionRegistry) Key(actionID string) string {
 	for _, binding := range r.Bindings {

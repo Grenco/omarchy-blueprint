@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/config"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -77,12 +79,37 @@ func TestConfigScreenDetailExplainsWhyAndKeepsRawReasonSecondary(t *testing.T) {
 	if err := os.WriteFile(live, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{LivePath: live, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
+	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{LivePath: live, LiveHandoffSafe: true, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
 	detail := screen.DetailView()
 	for _, want := range []string{"State: Changed from baseline", "Policy: Auto", "Why: modified baseline", "Provider reason: modified-baseline", "Live: " + live, "Effective policy: managed", "Edit/open/copy: available"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail missing %q:\n%s", want, detail)
 		}
+	}
+}
+
+func TestConfigHandoffEligibilityUsesInspectionState(t *testing.T) {
+	screen := &Config{inspection: workflow.ConfigInspection{LivePath: filepath.Join(t.TempDir(), "missing"), LiveHandoffSafe: true}}
+	if !screen.CanHandoff() {
+		t.Fatal("inspection marked handoff-safe was rejected")
+	}
+}
+
+func TestConfigDiffHeaderSanitizesLabels(t *testing.T) {
+	document := inspection.DiffDocument{OldLabel: "old\nlabel", NewLabel: "new\x1b"}
+	viewer := components.NewDiffViewer(document)
+	screen := &Config{diff: &viewer, inspection: workflow.ConfigInspection{BaselineToLive: &document}}
+	view := screen.View()
+	if strings.Contains(view, "\x1b") || !strings.Contains(view, "old?label <-> new?") {
+		t.Fatalf("unsafe diff header=%q", view)
+	}
+}
+
+func TestConfigPolicyModalSanitizesPath(t *testing.T) {
+	screen := &Config{confirm: "include", selected: 1, candidates: []config.Candidate{{Path: ".config/bad\nname\x1b", Classification: config.ConfigAdded}}}
+	request := screen.confirmModal()().(components.ModalRequest)
+	if strings.Contains(request.Content, "\x1b") || !strings.Contains(request.Content, ".config/bad?name?") {
+		t.Fatalf("unsafe modal=%q", request.Content)
 	}
 }
 

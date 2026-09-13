@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -33,7 +35,7 @@ func Run(ctx context.Context, options Options, deps Dependencies) error {
 		if err != nil {
 			if options.ProfileExplicit {
 				return err
-			} else if workflow.IsMissingProfile(options.ProfileDir, err) {
+			} else if profileChooserNeeded(options.ProfileDir, err) {
 				chooser = true
 			} else {
 				return err
@@ -46,6 +48,14 @@ func Run(ctx context.Context, options Options, deps Dependencies) error {
 	}
 	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
+}
+
+func profileChooserNeeded(dir string, openErr error) bool {
+	if !errors.Is(openErr, os.ErrNotExist) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, "profile.toml"))
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func themeTickCmd() tea.Cmd {

@@ -249,7 +249,7 @@ func (s *Sync) View() string {
 	if !s.lastFetched.IsZero() {
 		fetched = s.lastFetched.Local().Format(time.Kitchen)
 	}
-	lines := []string{"Repository", fmt.Sprintf("  Branch    %s", branch), fmt.Sprintf("  Origin    %s", valueOr(s.status.Origin, "not configured")), fmt.Sprintf("  Upstream  %s", valueOr(s.status.Upstream, "not configured")), fmt.Sprintf("  HEAD      %s", valueOr(s.status.Head, "unborn")), "", "Remote (last fetched)", fmt.Sprintf("  Ahead     %d", s.status.Ahead), fmt.Sprintf("  Behind    %d", s.status.Behind), fmt.Sprintf("  Checked   %s", fetched), "", "Working tree"}
+	lines := []string{"Repository", fmt.Sprintf("  Branch    %s", components.DisplayText(branch)), fmt.Sprintf("  Origin    %s", components.DisplayText(valueOr(s.status.Origin, "not configured"))), fmt.Sprintf("  Upstream  %s", components.DisplayText(valueOr(s.status.Upstream, "not configured"))), fmt.Sprintf("  HEAD      %s", components.DisplayText(valueOr(s.status.Head, "unborn"))), "", "Remote (last fetched)", fmt.Sprintf("  Ahead     %d", s.status.Ahead), fmt.Sprintf("  Behind    %d", s.status.Behind), fmt.Sprintf("  Checked   %s", fetched), "", "Working tree"}
 	if s.err != nil {
 		lines = append(lines, s.styles.Warning("! Last refresh failed; showing last successful status."))
 	}
@@ -263,7 +263,7 @@ func (s *Sync) View() string {
 		if state == "" {
 			state = "?"
 		}
-		rows = append(rows, components.Row{Cells: []string{"[" + state + "]", managed, change.Path}, Selected: i == s.selected})
+		rows = append(rows, components.Row{Cells: []string{"[" + components.DisplayText(state) + "]", managed, components.DisplayText(change.Path)}, Selected: i == s.selected})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"[clean]", "", "No changes."}})
@@ -509,7 +509,7 @@ func (s *Sync) confirmModal() tea.Cmd {
 		label = "Commit managed profile changes and push"
 	}
 	return func() tea.Msg {
-		return components.ModalRequest{Title: "Profile sync", Content: components.Confirm(label + " with message: " + s.message + "?")}
+		return components.ModalRequest{Title: "Profile sync", Content: components.Confirm(label + " with message: " + components.DisplayText(s.message) + "?")}
 	}
 }
 func (s *Sync) originModal() tea.Cmd {
@@ -533,7 +533,7 @@ func (s *Sync) DetailView() string {
 	if change.Managed {
 		scope = "managed by Blueprint"
 	}
-	return fmt.Sprintf("Change\nPath: %s\nScope: %s\nIndex: %s\nWorktree: %s", change.Path, scope, emptyChange(change.Index), emptyChange(change.Worktree))
+	return fmt.Sprintf("Change\nPath: %s\nScope: %s\nIndex: %s\nWorktree: %s", components.DisplayText(change.Path), scope, components.DisplayText(emptyChange(change.Index)), components.DisplayText(emptyChange(change.Worktree)))
 }
 func emptyChange(value string) string {
 	if value == "" {

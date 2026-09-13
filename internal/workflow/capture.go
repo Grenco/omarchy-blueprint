@@ -18,6 +18,13 @@ type CaptureResult struct {
 	ConfigScan *configprovider.ScanSummary
 }
 
+type PostCommitWarning struct{ Err error }
+
+func (w PostCommitWarning) Error() string {
+	return "capture applied; cleanup warning: " + w.Err.Error()
+}
+func (w PostCommitWarning) Unwrap() error { return w.Err }
+
 type captureTransaction interface {
 	CommitCapture() error
 	FinalizeCapture() error
@@ -98,10 +105,12 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 		}
 		s.profile = data
 		result.Profile = data
+		var finalizeErr error
 		for _, transaction := range transactions {
-			if err := transaction.FinalizeCapture(); err != nil {
-				return result, fmt.Errorf("finalize capture: %w", err)
-			}
+			finalizeErr = errors.Join(finalizeErr, transaction.FinalizeCapture())
+		}
+		if finalizeErr != nil {
+			return result, PostCommitWarning{Err: finalizeErr}
 		}
 	}
 	s.profile = data

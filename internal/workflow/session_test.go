@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,19 +80,27 @@ func TestSessionSetProviderCapturedSavesOptionalProvider(t *testing.T) {
 	}
 }
 
-func TestSessionReloadRepairsBareLegacyPackageExclusion(t *testing.T) {
+func TestSessionReloadRejectsInvalidPackageExclusionWithoutMutation(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
 	data := profile.New("test", time.Now())
 	data.Packages.Excluded = []string{"1password", "aur:valid-package"}
 	if err := profile.Save(profileDir, data); err != nil {
 		t.Fatal(err)
 	}
-	session, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir})
+	path := filepath.Join(profileDir, "profile.toml")
+	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := session.Profile().Packages.Excluded; len(got) != 1 || got[0] != "aur:valid-package" {
-		t.Fatalf("excluded=%v", got)
+	if _, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir}); err == nil || !strings.Contains(err.Error(), "validate package exclusions") {
+		t.Fatalf("err=%v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("reload mutated profile.toml")
 	}
 }
 

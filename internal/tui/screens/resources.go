@@ -323,15 +323,14 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			s.confirmFrom, s.confirm = s.phase, "untrack"
 			id := s.selectedResource().ID
 			return func() tea.Msg {
-				return components.ModalRequest{Title: "Confirm untrack", Content: components.Confirm("Untrack " + id + "? Its live path remains untouched.")}
+				return components.ModalRequest{Title: "Confirm untrack", Content: components.Confirm("Untrack " + components.DisplayText(id) + "? Its live path remains untouched.")}
 			}
 		}
 	case "e", "o", "y":
 		if item := s.selectedResource(); item.ID != "" {
-			inspection, err := s.session.InspectResource(s.ctx, item.ID)
-			if err == nil {
+			if path := s.effective[item.ID]; path != "" {
 				return func() tea.Msg {
-					return HandoffRequest{Source: "resources", Kind: map[string]string{"e": "editor", "o": "open", "y": "copy"}[key.String()], Path: inspection.EffectivePath, IsDir: inspection.Resource.Kind == "directory", Refresh: "resources"}
+					return HandoffRequest{Source: "resources", Kind: map[string]string{"e": "editor", "o": "open", "y": "copy"}[key.String()], Path: path, IsDir: item.Kind == "directory", Refresh: "resources"}
 				}
 			}
 		}
@@ -359,7 +358,7 @@ func (s *Resources) View() string {
 	}
 	if s.phase == resourceResult {
 		if s.err != nil {
-			return "Resource tracking failed: " + s.err.Error()
+			return "Resource tracking failed: " + components.DisplayText(s.err.Error())
 		}
 		return "Resource tracked. Press Esc to continue."
 	}
@@ -367,10 +366,10 @@ func (s *Resources) View() string {
 		return s.browser.View()
 	}
 	if phase == resourceCandidateInspect {
-		return "Candidate: " + s.candidate.Path
+		return "Candidate: " + components.DisplayText(s.candidate.Path)
 	}
 	if phase == resourceStrategy {
-		return components.Confirm("Choose tracking strategy\n\ncopy: snapshot files and directories\ngit: portable repository provenance only\ngit+diff: repository plus selected local changes\n\n1 copy   2 git   3 git+diff\nSelected: " + s.strategy)
+		return components.Confirm("Choose tracking strategy\n\ncopy: snapshot files and directories\ngit: portable repository provenance only\ngit+diff: repository plus selected local changes\n\n1 copy   2 git   3 git+diff\nSelected: " + components.DisplayText(s.strategy))
 	}
 	if phase == resourceUntracked {
 		lines := []string{"Select eligible untracked files"}
@@ -379,7 +378,7 @@ func (s *Resources) View() string {
 			if s.chosen[path] {
 				selected = "x"
 			}
-			line := fmt.Sprintf("  [%s] %s", selected, path)
+			line := fmt.Sprintf("  [%s] %s", selected, components.DisplayText(path))
 			if i == s.selected {
 				if !s.styles.Palette.ColorEnabled {
 					line = components.Icons.Selected + line[1:]
@@ -397,14 +396,14 @@ func (s *Resources) View() string {
 	}
 	lines := []string{components.TabBar([]string{tracked, discover}, active, s.styles)}
 	if s.err != nil {
-		lines = append(lines, "Last action failed: "+s.err.Error())
+		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}
 	if s.discover {
 		return strings.Join(lines, "\n")
 	}
 	rows := make([]components.Row, 0, len(s.items))
 	for i, item := range s.items {
-		rows = append(rows, components.Row{Cells: []string{item.ID, item.Strategy, item.Path, s.effective[item.ID], s.resourceState(item)}, Selected: i == s.selected, Focused: true})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.ID), components.DisplayText(item.Strategy), components.DisplayText(item.Path), components.DisplayText(s.effective[item.ID]), components.DisplayText(s.resourceState(item))}, Selected: i == s.selected, Focused: true})
 	}
 	if len(s.items) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No tracked resources."}})
@@ -425,25 +424,25 @@ func (s *Resources) DetailView() string {
 		return resourceDetail(s.candidate.Path, s.candidateInspection)
 	}
 	if item := s.selectedResource(); item.ID != "" {
-		lines := []string{"Resource: " + item.ID, "Portable path: " + item.Path, "Effective path: " + s.effective[item.ID], "Kind: " + item.Kind, "Strategy: " + item.Strategy, "Hash: " + item.Hash, "Mode: " + item.Mode, "Remote: " + item.Remote, "Branch: " + item.Branch, "Revision: " + item.Revision}
+		lines := []string{"Resource: " + components.DisplayText(item.ID), "Portable path: " + components.DisplayText(item.Path), "Effective path: " + components.DisplayText(s.effective[item.ID]), "Kind: " + components.DisplayText(item.Kind), "Strategy: " + components.DisplayText(item.Strategy), "Hash: " + components.DisplayText(item.Hash), "Mode: " + components.DisplayText(item.Mode), "Remote: " + components.DisplayText(item.Remote), "Branch: " + components.DisplayText(item.Branch), "Revision: " + components.DisplayText(item.Revision)}
 		if item.Strategy == "git" || item.Strategy == "git+diff" {
 			state := s.git[item.ID]
-			lines = append(lines, fmt.Sprintf("Staged: %d", state.StagedTracked), fmt.Sprintf("Unstaged: %d", state.UnstagedTracked), "Selected untracked: "+strings.Join(state.SelectedUntracked, ", "), "Other untracked: "+strings.Join(otherUntracked(state), ", "))
+			lines = append(lines, fmt.Sprintf("Staged: %d", state.StagedTracked), fmt.Sprintf("Unstaged: %d", state.UnstagedTracked), "Selected untracked: "+components.DisplayText(strings.Join(state.SelectedUntracked, ", ")), "Other untracked: "+components.DisplayText(strings.Join(otherUntracked(state), ", ")))
 		}
 		return strings.Join(lines, "\n")
 	}
 	return "Resources details"
 }
 func resourceDetail(path string, inspection workflow.PathInspection) string {
-	lines := []string{"Candidate: " + path}
+	lines := []string{"Candidate: " + components.DisplayText(path)}
 	if inspection.Git != nil {
-		lines = append(lines, fmt.Sprintf("Git: %s (%s), staged:%d unstaged:%d untracked:%d", inspection.Git.Branch, inspection.Git.Revision, inspection.Git.Staged, inspection.Git.Unstaged, inspection.Git.Untracked))
+		lines = append(lines, fmt.Sprintf("Git: %s (%s), staged:%d unstaged:%d untracked:%d", components.DisplayText(inspection.Git.Branch), components.DisplayText(inspection.Git.Revision), inspection.Git.Staged, inspection.Git.Unstaged, inspection.Git.Untracked))
 	}
 	if inspection.SuggestedStrategy != "" {
-		lines = append(lines, "Suggested: "+inspection.SuggestedStrategy+" - "+inspection.StrategyReason)
+		lines = append(lines, "Suggested: "+components.DisplayText(inspection.SuggestedStrategy)+" - "+components.DisplayText(inspection.StrategyReason))
 	}
 	if inspection.BlockedReason != "" {
-		lines = append(lines, "Blocked: "+inspection.BlockedReason)
+		lines = append(lines, "Blocked: "+components.DisplayText(inspection.BlockedReason))
 	}
 	return strings.Join(lines, "\n")
 }

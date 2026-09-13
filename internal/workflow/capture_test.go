@@ -23,11 +23,12 @@ func (captureRunner) Run(_ context.Context, name string, args ...string) (string
 }
 
 type captureTestProvider struct {
-	id                 string
-	order              *[]string
-	fail               bool
-	commitFail         bool
-	commits, rollbacks *int
+	id                            string
+	order                         *[]string
+	fail                          bool
+	commitFail                    bool
+	finalizeFail                  bool
+	commits, rollbacks, finalizes *int
 }
 
 func (p captureTestProvider) ID() string               { return p.id }
@@ -74,10 +75,37 @@ func TestCaptureManyRollsBackTransactionsAndProfileOnCommitFailure(t *testing.T)
 		t.Fatalf("failed commit persisted profile: disk=%#v session=%#v", loaded.Packages, session.Profile().Packages)
 	}
 }
-func (p captureTestProvider) FinalizeCapture() error { return nil }
+func (p captureTestProvider) FinalizeCapture() error {
+	if p.finalizes != nil {
+		*p.finalizes++
+	}
+	if p.finalizeFail {
+		return errors.New("cleanup failed")
+	}
+	return nil
+}
 func (p captureTestProvider) RollbackCapture() error {
 	*p.rollbacks++
 	return nil
+}
+
+func TestCaptureManyReturnsCommittedResultWithCleanupWarning(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var order []string
+	commits, rollbacks, finalizes := 0, 0, 0
+	session.SetProviders([]Provider{
+		captureTestProvider{id: "packages", order: &order, commits: &commits, rollbacks: &rollbacks, finalizes: &finalizes, finalizeFail: true},
+		captureTestProvider{id: "themes", order: &order, commits: &commits, rollbacks: &rollbacks, finalizes: &finalizes},
+	})
+	result, err := session.CaptureMany(context.Background(), []string{"packages", "themes"})
+	var warning PostCommitWarning
+	if !errors.As(err, &warning) || len(result.Providers) != 2 || finalizes != 2 || rollbacks != 0 {
+		t.Fatalf("result=%#v err=%v finalizes=%d rollbacks=%d", result, err, finalizes, rollbacks)
+	}
+	loaded, loadErr := profile.Load(session.ProfileDir())
+	if loadErr != nil || len(loaded.Packages.Official) != 2 || len(session.Profile().Packages.Official) != 2 {
+		t.Fatalf("capture was not committed: disk=%#v session=%#v err=%v", loaded.Packages, session.Profile().Packages, loadErr)
+	}
 }
 
 func newCaptureSession(t *testing.T, data profile.Data) *Session {

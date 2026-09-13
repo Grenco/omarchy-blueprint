@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,6 +40,7 @@ type providerStatusMsg struct {
 type providerCaptureMsg struct {
 	requestID uint64
 	err       error
+	warning   error
 }
 type providerToggleMsg struct {
 	requestID uint64
@@ -48,6 +50,7 @@ type CaptureComplete struct {
 	Provider  string
 	Providers []string
 	Err       error
+	Warning   error
 }
 
 func NewProvider(session *workflow.Session, id string) *Provider {
@@ -79,7 +82,7 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.err, s.busy = msg.err, false
 		if msg.err == nil {
-			return func() tea.Msg { return CaptureComplete{Provider: s.id} }
+			return func() tea.Msg { return CaptureComplete{Provider: s.id, Warning: msg.warning} }
 		}
 		return nil
 	case providerToggleMsg:
@@ -154,7 +157,7 @@ func (s *Provider) View() string {
 		s.tab = "Saved"
 	}
 	if s.err != nil {
-		return s.styles.Error("! Unable to load " + titleFor(s.id) + ": " + s.err.Error())
+		return s.styles.Error("! Unable to load " + titleFor(s.id) + ": " + components.DisplayText(s.err.Error()))
 	}
 	lines := []string{components.TabBar([]string{"Changes" + countLabel(len(s.status.Changes)), "Saved"}, s.tabLabel(), s.styles)}
 	if s.tab == "Saved" && providerItemCanToggleID(s.id) {
@@ -177,7 +180,7 @@ func (s *Provider) View() string {
 			if s.collapsed[row.group] {
 				icon = components.Icons.Collapsed
 			}
-			rendered[i] = s.styles.Accent(icon + " " + row.group)
+			rendered[i] = s.styles.Accent(icon + " " + components.DisplayText(row.group))
 			if i == s.list.Selected {
 				if !s.styles.Palette.ColorEnabled {
 					rendered[i] = components.Icons.Selected + rendered[i]
@@ -192,7 +195,7 @@ func (s *Provider) View() string {
 			if row.state == "not included" {
 				marker = s.styles.Removed("- ")
 			}
-			rendered[i] = marker + row.value
+			rendered[i] = marker + components.DisplayText(row.value)
 			if i == s.list.Selected {
 				if !s.styles.Palette.ColorEnabled {
 					rendered[i] = components.Icons.Selected + rendered[i][1:]
@@ -378,6 +381,10 @@ func (s *Provider) capture() tea.Cmd {
 	requestID := s.requestID
 	return func() tea.Msg {
 		_, err := s.session.Capture(s.ctx, s.id)
+		var warning workflow.PostCommitWarning
+		if errors.As(err, &warning) {
+			return providerCaptureMsg{requestID: requestID, warning: warning.Err}
+		}
 		return providerCaptureMsg{requestID: requestID, err: err}
 	}
 }
@@ -418,15 +425,15 @@ func containsValue(values []string, value string) bool {
 func (s *Provider) DetailView() string {
 	title := titleFor(s.id)
 	if s.err != nil {
-		return title + " details unavailable: " + s.err.Error()
+		return title + " details unavailable: " + components.DisplayText(s.err.Error())
 	}
 	if s.tab == "Changes" {
 		if change := s.selectedChange(); change.Summary != "" {
-			return title + " change\n" + change.Summary
+			return title + " change\n" + components.DisplayText(change.Summary)
 		}
 	}
 	if row := s.selectedSavedRow(); row.value != "" {
-		return title + " saved state\n" + row.value
+		return title + " saved state\n" + components.DisplayText(row.value)
 	}
 	return title + " saved state\n" + emptyTabMessage("Saved", s.status.Captured)
 }

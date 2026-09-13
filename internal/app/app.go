@@ -1148,8 +1148,12 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return profileError(opt.profileDir, err)
 	}
 	result, err := session.Capture(ctx, captureOnlyProvider(providers, stateProviders(deps, opt)))
-	if err != nil {
+	var warning workflow.PostCommitWarning
+	if err != nil && !errors.As(err, &warning) {
 		return err
+	}
+	if warning.Err != nil {
+		fmt.Fprintln(deps.Err, "Warning:", warning.Error())
 	}
 	data := map[string]any{}
 	for _, id := range result.Providers {

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,9 +196,10 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 
 type ownedTestMsg struct{ step int }
 type recordingScreen struct {
-	id    ScreenID
-	steps []int
-	inits int
+	id      ScreenID
+	steps   []int
+	inits   int
+	actions []Action
 }
 
 func (s *recordingScreen) ID() ScreenID     { return s.id }
@@ -210,7 +213,7 @@ func (s *recordingScreen) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 func (s *recordingScreen) View() string      { return "recording" }
-func (s *recordingScreen) Actions() []Action { return nil }
+func (s *recordingScreen) Actions() []Action { return s.actions }
 
 func TestModelInitializesScreensOnFirstVisitOnly(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
@@ -244,6 +247,15 @@ func TestModelReloadRefreshesInitializedScreensAfterPullAndLazyGit(t *testing.T)
 	m = updated.(model)
 	if overview.inits != 2 || config.inits != 0 || !strings.Contains(m.notification, "LazyGit") {
 		t.Fatalf("LazyGit reload: overview=%d config=%d notice=%q", overview.inits, config.inits, m.notification)
+	}
+}
+
+func TestCaptureCleanupWarningRefreshesCommittedState(t *testing.T) {
+	m := newModelWithSession(ThemeLoader{NoColor: true}, integrationSession(t))
+	updated, cmd := m.handleCaptureComplete(screens.CaptureComplete{Providers: []string{"packages"}, Warning: errors.New("backup cleanup")})
+	m = updated.(model)
+	if cmd == nil || !strings.Contains(m.notification, "Capture applied; cleanup warning: backup cleanup") || strings.Contains(m.notification, "Capture failed") {
+		t.Fatalf("cmd=%v notification=%q", cmd != nil, m.notification)
 	}
 }
 
@@ -315,6 +327,32 @@ func TestNoColorViewsKeepSemanticMarkers(t *testing.T) {
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "✓ overview clean") {
 		t.Fatalf("overview is not understandable without colour: %q", m.View().Content)
+	}
+}
+
+func TestRootNotificationSanitizesControls(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.notification = "failed\nnext\x1b[31m"
+	view := m.View().Content
+	if strings.Contains(view, "\x1b") || !strings.Contains(view, "failed?next?[31m") {
+		t.Fatalf("unsafe notification=%q", view)
+	}
+}
+
+func TestRootHeaderSanitizesProfileName(t *testing.T) {
+	session := integrationSession(t)
+	data := session.Profile()
+	data.Manifest.Profile.Name = "profile\nname\x1b"
+	if err := profile.Save(session.ProfileDir(), data); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	m := updateModel(t, newModelWithSession(ThemeLoader{NoColor: true}, session), tea.WindowSizeMsg{Width: 100, Height: 30})
+	header := m.header()
+	if strings.Contains(header, "\x1b") || !strings.Contains(header, "profile?name?") {
+		t.Fatalf("unsafe header=%q", header)
 	}
 }
 
@@ -556,6 +594,61 @@ func TestPaletteInputHandlesUnicodeBackspace(t *testing.T) {
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	if m.paletteQuery != "" {
 		t.Fatalf("query = %q", m.paletteQuery)
+	}
+}
+
+func TestPaletteQueryResetsSelectionAndShowsNoResults(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 18})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	m.paletteSelected, m.paletteScroll.offset = 5, 5
+	m = updateModel(t, m, textKey('z'))
+	if m.paletteSelected != 0 || m.paletteScroll.offset != 0 {
+		t.Fatalf("query did not reset palette: selected=%d offset=%d", m.paletteSelected, m.paletteScroll.offset)
+	}
+	for _, key := range "zzzz-no-command" {
+		m = updateModel(t, m, textKey(key))
+	}
+	if !strings.Contains(m.View().Content, "No matching commands") {
+		t.Fatalf("missing no-result message: %q", m.View().Content)
+	}
+}
+
+func TestPaletteUpKeepsSelectionVisible(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 18})
+	actions := make([]Action, 20)
+	for i := range actions {
+		actions[i] = Action{ID: fmt.Sprintf("item.%d", i), Label: fmt.Sprintf("Item %d", i), Visible: true, Enabled: true, PaletteInitial: true}
+	}
+	m.screens[ScreenOverview] = &recordingScreen{id: ScreenOverview, actions: actions}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	m.paletteSelected, m.paletteScroll.offset = 15, 15
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	height := layoutForSize(m.width, m.height).contentHeight - 2
+	if m.paletteSelected != 14 || m.paletteScroll.offset >= 15 || m.paletteSelected < m.paletteScroll.offset || m.paletteSelected >= m.paletteScroll.offset+height {
+		t.Fatalf("up did not ensure viewport: selected=%d offset=%d", m.paletteSelected, m.paletteScroll.offset)
+	}
+}
+
+func TestHelpSearchIncludesBindingKeysLabelsAndBindingOnlyEntries(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	m.screens[ScreenPackages] = &providerScreen{Provider: screens.NewProvider(nil, "packages"), id: ScreenPackages}
+	m.selectScreen(ScreenPackages)
+	for query, want := range map[string]string{"space": "selected package", "enter": "Collapse group", "collapse": "Collapse group", "commands": "Commands"} {
+		m.helpQuery = query
+		if lines := strings.Join(m.helpLines(), "\n"); !strings.Contains(lines, want) {
+			t.Errorf("query %q missing %q: %s", query, want, lines)
+		}
+	}
+}
+
+func TestCaptureAllActionLabelMatchesSemantics(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	m.screens[ScreenCapture] = &captureScreen{Capture: screens.NewCaptureContext(context.Background(), nil)}
+	m.selectScreen(ScreenCapture)
+	for _, action := range m.actions() {
+		if action.ID == "capture.capture-all" && action.Label != "Capture all providers" {
+			t.Fatalf("label=%q", action.Label)
+		}
 	}
 }
 

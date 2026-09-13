@@ -88,3 +88,11 @@ func TestProviderScreenIgnoresStaleStatus(t *testing.T) {
 		t.Fatalf("stale status changed state: busy=%v status=%#v", screen.busy, screen.status)
 	}
 }
+
+func TestProviderScreenSanitizesProfileValues(t *testing.T) {
+	screen := &Provider{id: "hooks", status: workflow.ProviderStatus{Captured: true, Snapshot: profile.Hooks{Items: []profile.Hook{{Path: "hook\npath\x1b"}}}}}
+	view := screen.View()
+	if strings.Contains(view, "\x1b") || !strings.Contains(view, "hook?path?") {
+		t.Fatalf("unsafe provider view=%q", view)
+	}
+}

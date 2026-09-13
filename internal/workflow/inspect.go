@@ -38,13 +38,14 @@ type PathInspection struct {
 }
 
 type ConfigInspection struct {
-	Candidate      configprovider.Candidate `json:"candidate"`
-	LivePath       string                   `json:"live_path,omitempty"`
-	BaselinePath   string                   `json:"baseline_path,omitempty"`
-	ProfilePath    string                   `json:"profile_path,omitempty"`
-	Managed        bool                     `json:"managed"`
-	BaselineToLive *inspection.DiffDocument `json:"baseline_to_live,omitempty"`
-	ProfileToLive  *inspection.DiffDocument `json:"profile_to_live,omitempty"`
+	Candidate       configprovider.Candidate `json:"candidate"`
+	LivePath        string                   `json:"live_path,omitempty"`
+	LiveHandoffSafe bool                     `json:"live_handoff_safe"`
+	BaselinePath    string                   `json:"baseline_path,omitempty"`
+	ProfilePath     string                   `json:"profile_path,omitempty"`
+	Managed         bool                     `json:"managed"`
+	BaselineToLive  *inspection.DiffDocument `json:"baseline_to_live,omitempty"`
+	ProfileToLive   *inspection.DiffDocument `json:"profile_to_live,omitempty"`
 }
 
 type ResourceInspection struct {

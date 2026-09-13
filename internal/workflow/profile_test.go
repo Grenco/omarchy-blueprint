@@ -64,17 +64,3 @@ func TestCreateProfileRejectsPartialDirectory(t *testing.T) {
 		t.Fatalf("profile.toml error = %v", err)
 	}
 }
-
-func TestIsMissingProfileOnlyAcceptsEmptyRoot(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing")
-	if !IsMissingProfile(missing, os.ErrNotExist) {
-		t.Fatal("missing root was not accepted")
-	}
-	partial := t.TempDir()
-	if err := os.WriteFile(filepath.Join(partial, "partial"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if IsMissingProfile(partial, os.ErrNotExist) {
-		t.Fatal("partial root was accepted")
-	}
-}

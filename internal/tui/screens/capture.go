@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
@@ -34,6 +35,7 @@ type captureDoneMsg struct {
 	requestID uint64
 	providers []string
 	err       error
+	warning   error
 }
 
 func NewCaptureContext(ctx context.Context, session *workflow.Session) *Capture {
@@ -59,7 +61,7 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 		if msg.err == nil {
 			s.chosen = map[string]bool{}
 		}
-		return func() tea.Msg { return CaptureComplete{Providers: msg.providers, Err: msg.err} }
+		return func() tea.Msg { return CaptureComplete{Providers: msg.providers, Err: msg.err, Warning: msg.warning} }
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok || s.busy {
@@ -171,6 +173,10 @@ func (s *Capture) capture() tea.Cmd {
 	}
 	return func() tea.Msg {
 		result, err := s.session.CaptureMany(s.ctx, ids)
+		var warning workflow.PostCommitWarning
+		if errors.As(err, &warning) {
+			return captureDoneMsg{requestID: requestID, providers: result.Providers, warning: warning.Err}
+		}
 		return captureDoneMsg{requestID: requestID, providers: result.Providers, err: err}
 	}
 }

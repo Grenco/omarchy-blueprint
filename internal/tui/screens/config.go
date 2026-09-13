@@ -3,7 +3,6 @@ package screens
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -250,14 +249,14 @@ func (s *Config) View() string {
 		if document == nil {
 			return "No diff available."
 		}
-		return "Config diff: " + document.OldLabel + " <-> " + document.NewLabel + "\n" + s.diff.View()
+		return "Config diff: " + components.DisplayText(document.OldLabel) + " <-> " + components.DisplayText(document.NewLabel) + "\n" + s.diff.View()
 	}
 	lines := []string{"Review  " + s.reviewCounts()}
 	if s.busy {
 		lines = append(lines, "Working...")
 	}
 	if s.err != nil {
-		lines = append(lines, "Last action failed: "+s.err.Error())
+		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}
 	if s.notice != "" {
 		lines = append(lines, s.styles.Success(s.notice))
@@ -282,7 +281,7 @@ func (s *Config) View() string {
 		default:
 			policy = s.styles.Muted(policy)
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{"  " + row.candidate.Path, configState(row.candidate.Classification), policy}, Selected: i == s.selected, Focused: true})
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), configState(row.candidate.Classification), policy}, Selected: i == s.selected, Focused: true})
 	}
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
@@ -384,7 +383,7 @@ func (s *Config) widthOrDefault() int {
 	return s.width
 }
 func (s *Config) confirmModal() tea.Cmd {
-	prompt := fmt.Sprintf("Set %s policy for %s?", s.confirm, s.selectedCandidate().Path)
+	prompt := fmt.Sprintf("Set %s policy for %s?", s.confirm, components.DisplayText(s.selectedCandidate().Path))
 	return func() tea.Msg {
 		return components.ModalRequest{Title: "Config policy", Content: components.Confirm(prompt)}
 	}
@@ -439,8 +438,7 @@ func (s *Config) nextPolicy(path string) string {
 	return "include"
 }
 func (s *Config) validLive() bool {
-	info, err := os.Lstat(s.inspection.LivePath)
-	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
+	return s.inspection.LiveHandoffSafe
 }
 func (s *Config) CanHandoff() bool { return s.validLive() }
 func (s *Config) CanPolicy() bool  { return s.selectedCandidate().Path != "" }
@@ -451,15 +449,15 @@ func (s *Config) DetailView() string {
 	if candidate.Path == "" {
 		return "Config details"
 	}
-	lines := []string{"Path: " + candidate.Path, "State: " + configState(candidate.Classification), "Policy: " + s.candidatePolicy(candidate.Path), "Why: " + configReason(candidate.Reason)}
+	lines := []string{"Path: " + components.DisplayText(candidate.Path), "State: " + configState(candidate.Classification), "Policy: " + s.candidatePolicy(candidate.Path), "Why: " + components.DisplayText(configReason(candidate.Reason))}
 	if s.inspection.LivePath != "" {
-		lines = append(lines, "Live: "+s.inspection.LivePath, "Baseline: "+s.inspection.BaselinePath, "Profile: "+s.inspection.ProfilePath)
+		lines = append(lines, "Live: "+components.DisplayText(s.inspection.LivePath), "Baseline: "+components.DisplayText(s.inspection.BaselinePath), "Profile: "+components.DisplayText(s.inspection.ProfilePath))
 	}
 	policy := "automatic"
 	if s.inspection.Managed {
 		policy = "managed"
 	}
-	lines = append(lines, "Effective policy: "+policy, "Provider reason: "+candidate.Reason, "Available actions: view diff, include, exclude, automatic")
+	lines = append(lines, "Effective policy: "+policy, "Provider reason: "+components.DisplayText(candidate.Reason), "Available actions: view diff, include, exclude, automatic")
 	if s.validLive() {
 		lines = append(lines, "Edit/open/copy: available")
 	} else {

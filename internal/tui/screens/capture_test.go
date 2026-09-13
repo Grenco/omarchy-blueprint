@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -28,6 +29,15 @@ func TestCaptureCompletionIncludesAffectedProviders(t *testing.T) {
 	complete, ok := cmd().(CaptureComplete)
 	if !ok || len(complete.Providers) != 2 || complete.Providers[0] != "packages" || complete.Providers[1] != "themes" || len(screen.chosen) != 0 || screen.busy || screen.capturing {
 		t.Fatalf("completion=%#v busy=%v capturing=%v", complete, screen.busy, screen.capturing)
+	}
+}
+
+func TestCaptureCleanupWarningStillCompletes(t *testing.T) {
+	screen := &Capture{chosen: map[string]bool{"packages": true}}
+	cmd := screen.Update(captureDoneMsg{providers: []string{"packages"}, warning: errors.New("backup cleanup")})
+	complete := cmd().(CaptureComplete)
+	if complete.Err != nil || complete.Warning == nil || len(complete.Providers) != 1 || len(screen.chosen) != 0 {
+		t.Fatalf("complete=%#v chosen=%#v", complete, screen.chosen)
 	}
 }
 

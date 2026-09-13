@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -47,19 +46,8 @@ func (s *Session) Reload() error {
 	if err != nil {
 		return err
 	}
-	// Older TUI item toggles could persist a bare package name as an exclusion.
-	// Exclusions are typed references; discard only those invalid legacy entries.
-	filtered := data.Packages.Excluded[:0]
-	for _, ref := range data.Packages.Excluded {
-		if strings.Contains(ref, ":") {
-			filtered = append(filtered, ref)
-		}
-	}
-	if len(filtered) != len(data.Packages.Excluded) {
-		data.Packages.Excluded = filtered
-		if err := profile.Save(dir, data); err != nil {
-			return fmt.Errorf("repair package exclusions: %w", err)
-		}
+	if err := packagesprovider.ValidateExclusions(data.Packages); err != nil {
+		return fmt.Errorf("validate package exclusions: %w", err)
 	}
 	state, err := s.deps.StateHome()
 	if err != nil {

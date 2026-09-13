@@ -137,14 +137,48 @@ func TestRunDoesNotOnboardExplicitMissingProfile(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotOnboardImplicitPartialProfile(t *testing.T) {
+func TestImplicitPopulatedDirectoryWithoutProfileUsesChooserAndRemainsUntouched(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "unrelated"), []byte("data"), 0o644); err != nil {
+	unrelated := filepath.Join(dir, "unrelated")
+	if err := os.WriteFile(unrelated, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	want := &os.PathError{Op: "open", Path: filepath.Join(dir, "profile.toml"), Err: os.ErrNotExist}
-	err := Run(context.Background(), Options{ProfileDir: dir}, Dependencies{OpenSession: func(workflow.Options) (*workflow.Session, error) { return nil, want }})
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("err=%v", err)
+	if !profileChooserNeeded(dir, want) {
+		t.Fatal("implicit populated directory did not enable chooser")
 	}
+	content, err := os.ReadFile(unrelated)
+	if err != nil || string(content) != "data" {
+		t.Fatalf("cwd changed: content=%q err=%v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "profile.toml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("profile created in cwd: %v", err)
+	}
+}
+
+func TestWelcomeExpandsHomeInCreateAndOpenPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	m := newModelWithContext(context.Background(), func() {}, ThemeLoader{}, nil, ".", func(_ context.Context, path, _ string) (*workflow.Session, error) {
+		if path != filepath.Join(home, "created") {
+			t.Fatalf("create path=%q", path)
+		}
+		return nil, nil
+	})
+	m.enableProfileChooser(func(options workflow.Options) (*workflow.Session, error) {
+		if options.ProfileDir != filepath.Join(home, "existing") {
+			t.Fatalf("open path=%q", options.ProfileDir)
+		}
+		return nil, nil
+	}, "")
+	m.welcomeStep = "open-path"
+	m.welcomePath.Input.SetValue("~/existing")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_ = cmd()
+	m.welcomeBusy, m.welcomeStep = false, "create-path"
+	m.welcomePath.Input.SetValue("~/created")
+	m, _ = updateWelcomeModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.welcomeName.Input.SetValue("created")
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_ = cmd()
 }

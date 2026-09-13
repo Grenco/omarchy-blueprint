@@ -270,11 +270,36 @@ func TestResourceScreenUntrackWarningPreservesLivePath(t *testing.T) {
 	}
 }
 
+func TestResourceUntrackModalSanitizesID(t *testing.T) {
+	screen := &Resources{items: []profile.Resource{{ID: "project\nname\x1b"}}}
+	request := screen.Update(tea.KeyPressMsg{Code: 'u'})().(components.ModalRequest)
+	if strings.Contains(request.Content, "\x1b") || !strings.Contains(request.Content, "project?name?") {
+		t.Fatalf("unsafe modal=%q", request.Content)
+	}
+}
+
 func TestResourcesScreenIgnoresStaleStatus(t *testing.T) {
 	screen := &Resources{requestID: 2}
 	screen.Update(resourcesStatusMsg{requestID: 1, items: []profile.Resource{{ID: "stale"}}})
 	if len(screen.items) != 0 {
 		t.Fatalf("stale status changed items: %#v", screen.items)
+	}
+}
+
+func TestResourcesHandoffUsesCachedEffectivePath(t *testing.T) {
+	screen := &Resources{items: []profile.Resource{{ID: "notes", Kind: "directory"}}, effective: map[string]string{"notes": "/effective/notes"}}
+	cmd := screen.Update(tea.KeyPressMsg{Code: 'o'})
+	request, ok := cmd().(HandoffRequest)
+	if !ok || request.Path != "/effective/notes" || !request.IsDir {
+		t.Fatalf("handoff=%#v", request)
+	}
+}
+
+func TestResourcesSanitizesUntrackedPath(t *testing.T) {
+	screen := &Resources{phase: resourceUntracked, untracked: []string{"line\nnext\x1b"}, chosen: map[string]bool{}}
+	view := screen.View()
+	if strings.ContainsAny(view, "\x1b\r\t") || strings.Count(view, "\n") != 1 || !strings.Contains(view, "line?next?") {
+		t.Fatalf("unsafe resource view=%q", view)
 	}
 }
 

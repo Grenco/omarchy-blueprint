@@ -181,10 +181,14 @@ func (p configStateProvider) InspectConfig(_ context.Context, d profile.Data, lo
 	for _, candidate := range scan.Candidates {
 		if candidate.Path == logical {
 			livePath := filepath.Join(filepath.Dir(provider.UserRoot), filepath.FromSlash(logical))
+			liveHandoffSafe := false
+			if info, statErr := os.Lstat(livePath); statErr == nil {
+				liveHandoffSafe = info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
+			}
 			baselinePath := filepath.Join(provider.BaselineRoot, filepath.FromSlash(strings.TrimPrefix(logical, ".config/")))
 			profilePath := filepath.Join(provider.ProfileDir, "config", "files", filepath.FromSlash(logical))
 			managed := configManaged(d.Config, logical)
-			result := workflow.ConfigInspection{Candidate: candidate, LivePath: livePath, BaselinePath: baselinePath, ProfilePath: profilePath, Managed: managed}
+			result := workflow.ConfigInspection{Candidate: candidate, LivePath: livePath, LiveHandoffSafe: liveHandoffSafe, BaselinePath: baselinePath, ProfilePath: profilePath, Managed: managed}
 			result.BaselineToLive = configDiff("baseline/"+logical, baselinePath, "live/"+logical, livePath)
 			if managed {
 				result.ProfileToLive = configDiff("profile/"+logical, profilePath, "live/"+logical, livePath)

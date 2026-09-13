@@ -109,10 +109,12 @@ omarchy-blueprint tui
 omarchy-blueprint --profile ~/omarchy-profile
 ```
 
-If the default profile path does not exist, interactive startup offers Create,
-Open, and Quit. Create accepts a destination and profile name; Open accepts an
-existing profile path. An explicitly supplied invalid `--profile` path remains
-a strict error rather than opening the chooser.
+If the implicit profile path has no `profile.toml`, interactive startup offers
+Create, Open, and Quit, even when the current directory contains unrelated
+files. Create defaults to a separate destination and profile name; Open accepts
+an existing profile path. Neither choice modifies the current directory unless
+it is explicitly selected. An explicitly supplied invalid `--profile` path
+remains a strict error rather than opening the chooser.
 
 The Overview is a decision inbox. The sidebar begins Overview, Capture,
 Packages; use it, `j`/`k`, `Tab`, or the `:` command palette to navigate. In

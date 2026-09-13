@@ -67,6 +67,14 @@ func TestSyncScreenPullRequiresCleanIndexAndWorktree(t *testing.T) {
 	}
 }
 
+func TestSyncScreenSanitizesGitStatusFilename(t *testing.T) {
+	screen := &Sync{width: 100, status: profilegit.Status{Repository: true, Branch: "main\x1b", Changes: []profilegit.Change{{Path: "bad\x1b[31m\nname", Worktree: "M"}}}}
+	view := screen.View()
+	if strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?[31m?name") {
+		t.Fatalf("unsafe sync view=%q", view)
+	}
+}
+
 func TestSyncScreenSetAndChangeOriginUseSharedInputModal(t *testing.T) {
 	screen := &Sync{status: profilegit.Status{Repository: true}}
 	actions := syncActionsByID(screen.Actions())

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -46,19 +45,9 @@ func CreateProfile(ctx context.Context, deps Dependencies, dir, name string) (st
 	return abs, nil
 }
 
-// IsMissingProfile reports only a safely empty profile root. Existing partial
-// directories are not onboarding candidates and must be surfaced as errors.
-func IsMissingProfile(dir string, err error) bool {
-	if !errors.Is(err, fs.ErrNotExist) {
-		return false
-	}
-	entries, readErr := os.ReadDir(dir)
-	return errors.Is(readErr, fs.ErrNotExist) || readErr == nil && len(entries) == 0
-}
-
 func ensureEmptyProfileRoot(dir string) error {
 	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {

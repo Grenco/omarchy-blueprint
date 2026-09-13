@@ -317,22 +317,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, navigation
 	}
 	if complete, ok := msg.(screens.CaptureComplete); ok {
-		if complete.Err != nil {
-			m.notification = "Capture failed: " + complete.Err.Error()
-			return m, nil
-		}
-		m.notification = "Capture complete. Overview and Profile Git status refreshed."
-		commands := []tea.Cmd{}
-		if overview, ok := m.screens[ScreenOverview].(*overviewScreen); ok {
-			commands = append(commands, overview.Update(tea.KeyPressMsg{Code: 'r'}))
-		}
-		if sync, ok := m.screens[ScreenSync].(*syncScreen); ok {
-			commands = append(commands, sync.Update(tea.KeyPressMsg{Code: 'r'}))
-		}
-		if provider, ok := m.screens[ScreenID(complete.Provider)].(*providerScreen); ok {
-			commands = append(commands, provider.Refresh())
-		}
-		return m, tea.Batch(commands...)
+		return m.handleCaptureComplete(complete)
 	}
 	if notice, ok := msg.(screens.Notice); ok {
 		m.notification = notice.Message
@@ -567,7 +552,7 @@ func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, te
 			return m, tea.Quit
 		case "enter":
 			if m.welcomeStep == "create-path" {
-				path := strings.TrimSpace(m.welcomePath.Value())
+				path := expandWelcomePath(strings.TrimSpace(m.welcomePath.Value()))
 				if path == "" {
 					m.welcomeError = fmt.Errorf("profile path is required")
 					return m, nil
@@ -577,7 +562,7 @@ func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, te
 				return m, m.welcomeName.Focus()
 			}
 			if m.welcomeStep == "open-path" {
-				path := strings.TrimSpace(m.welcomePath.Value())
+				path := expandWelcomePath(strings.TrimSpace(m.welcomePath.Value()))
 				if path == "" {
 					m.welcomeError = fmt.Errorf("profile path is required")
 					return m, nil
@@ -622,6 +607,20 @@ func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, te
 	return m, cmd
 }
 
+func expandWelcomePath(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+}
+
 func (m model) stop() {
 	if m.cancel != nil {
 		m.cancel()
@@ -654,6 +653,9 @@ func (m model) handleCaptureComplete(complete screens.CaptureComplete) (tea.Mode
 		return m, nil
 	}
 	m.notification = "Capture complete. Overview and Profile Git status refreshed."
+	if complete.Warning != nil {
+		m.notification = "Capture applied; cleanup warning: " + complete.Warning.Error()
+	}
 	commands := []tea.Cmd{}
 	if capture, ok := m.screens[ScreenCapture].(*captureScreen); ok {
 		commands = append(commands, wrapScreenCmd(ScreenCapture, capture.Init()))
@@ -765,6 +767,7 @@ func (m *model) updatePalette(msg tea.Msg, key string, isKey bool) (tea.Model, t
 			if m.paletteSelected > 0 {
 				m.paletteSelected--
 			}
+			m.paletteScroll.ensure(m.paletteSelected, len(items), layoutForSize(m.width, m.height).contentHeight-2)
 			return *m, nil
 		case "down":
 			if m.paletteSelected < len(items)-1 {
@@ -791,12 +794,16 @@ func (m *model) updatePalette(msg tea.Msg, key string, isKey bool) (tea.Model, t
 			return *m, nil
 		}
 	}
+	previousQuery := m.paletteQuery
 	cmd := m.paletteInput.Update(msg)
 	m.paletteQuery = m.paletteInput.Value()
 	items = m.paletteActions()
-	if m.paletteSelected >= len(items) {
+	if m.paletteQuery != previousQuery {
+		m.paletteSelected, m.paletteScroll.offset = 0, 0
+	} else if m.paletteSelected >= len(items) {
 		m.paletteSelected = max(0, len(items)-1)
 	}
+	m.paletteScroll.ensure(m.paletteSelected, len(items), layoutForSize(m.width, m.height).contentHeight-2)
 	return *m, cmd
 }
 
@@ -905,7 +912,7 @@ func (m model) View() tea.View {
 	header := m.header()
 	footer := m.footer()
 	if m.notification != "" {
-		footer += "  " + m.notification
+		footer += "  " + components.DisplayText(m.notification)
 	}
 	content := m.contentView(layout)
 	if m.modal != modalNone {
@@ -953,9 +960,9 @@ func (m model) footer() string {
 func (m model) header() string {
 	profileName, machine := "default", "portable default"
 	if m.session != nil {
-		profileName = m.session.Profile().Manifest.Profile.Name
+		profileName = components.DisplayText(m.session.Profile().Manifest.Profile.Name)
 		if selection := m.session.Machine(); selection.Name != "" {
-			machine = selection.Name + " (" + selection.Source + ")"
+			machine = components.DisplayText(selection.Name) + " (" + components.DisplayText(selection.Source) + ")"
 		}
 	}
 	state := components.Icons.Ready + " overview clean"
@@ -1067,7 +1074,11 @@ func (m model) modalView(base string, layout layout) string {
 	case modalPalette:
 		title = "Command palette"
 		items := m.paletteActions()
-		content := "Search: " + m.paletteInput.View() + "\n" + components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
+		paletteContent := components.PaletteItems(paletteItems(items, m.bindings()), m.paletteSelected, styles)
+		if len(items) == 0 {
+			paletteContent = "No matching commands"
+		}
+		content := "Search: " + m.paletteInput.View() + "\n" + paletteContent
 		lines := strings.Split(content, "\n")
 		overlay = m.paletteScroll.render(lines, innerWidth, innerHeight)
 	case modalHelp:
@@ -1099,13 +1110,13 @@ func (m model) modalView(base string, layout layout) string {
 			}
 			lines = append(lines, action, "", m.welcomePath.View())
 		} else {
-			lines = append(lines, "Create a new profile at:", m.profileDir, "", "Profile name: "+m.welcomeName.View())
+			lines = append(lines, "Create a new profile at:", components.DisplayText(m.profileDir), "", "Profile name: "+m.welcomeName.View())
 		}
 		if m.welcomeBusy {
 			lines = append(lines, "", "Working...")
 		}
 		if m.welcomeError != nil {
-			lines = append(lines, "Error: "+m.welcomeError.Error())
+			lines = append(lines, "Error: "+components.DisplayText(m.welcomeError.Error()))
 		}
 		overlay = strings.Join(lines, "\n")
 	case modalConfirm:
@@ -1131,12 +1142,12 @@ func (m model) helpLines() []string {
 	if m.helpQuery != "" {
 		registry := ActionRegistry{Actions: m.actions(), Bindings: m.bindings()}
 		lines := []string{}
-		for _, action := range registry.Search(m.helpQuery) {
-			key := registry.Key(action.ID)
-			if key == "" {
-				key = "-"
+		for _, entry := range registry.SearchHelp(m.helpQuery) {
+			context := entry.Context
+			if context == "" {
+				context = entry.Group
 			}
-			lines = append(lines, fmt.Sprintf("%-14s %s: %s", key, action.Group, action.Label))
+			lines = append(lines, fmt.Sprintf("%-14s %s: %s", entry.Key, context, entry.Label))
 		}
 		if len(lines) == 0 {
 			return []string{"No matching help."}
@@ -1165,7 +1176,7 @@ func (m model) helpLines() []string {
 }
 
 func (m model) bindings() []Binding {
-	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global"}, {Label: "Command palette", Key: ":", Context: "Global"}}
+	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global"}, {Label: "Commands", Key: ":", Context: "Global"}}
 	if current, ok := m.activeScreen().(bindingScreen); ok {
 		bindings = append(bindings, current.Bindings()...)
 	}
@@ -1401,7 +1412,7 @@ func (s *captureScreen) Actions() []Action {
 		{ID: "capture.select", Label: "Toggle provider selection", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
 		{ID: "capture.select-all", Label: "Select changed providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
 		{ID: "capture.run", Label: "Capture selected providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
-		{ID: "capture.capture-all", Label: "Capture all changed providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'C'}) }},
+		{ID: "capture.capture-all", Label: "Capture all providers", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'C'}) }},
 		{ID: "capture.refresh", Label: "Refresh capture status", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 	}
 }

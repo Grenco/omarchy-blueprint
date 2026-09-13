@@ -80,10 +80,12 @@ All existing subcommands keep their current behavior.
 
 When bare `omarchy-blueprint` is executed without an interactive terminal, it must not attempt to start a TUI. It prints normal CLI help and exits successfully. Explicit `omarchy-blueprint tui` without a usable terminal fails with actionable guidance.
 
-TUI v1 uses the same profile-path resolution as the CLI. If the implicit default
-path is missing, interactive startup offers Create, Open, and Quit with an
-editable path. Explicit invalid or partial `--profile` paths remain strict
-errors. This does not introduce a profile registry or automatic discovery.
+TUI v1 uses the same profile-path resolution as the CLI. If the implicit path
+has no `profile.toml`, interactive startup offers Create, Open, and Quit with an
+editable path, regardless of unrelated files in the current directory. It does
+not initialize that directory automatically. Explicit invalid or partial
+`--profile` paths remain strict errors. This does not introduce a profile
+registry or automatic discovery.
 
 ### 3. CLI capability parity is a product invariant
 
