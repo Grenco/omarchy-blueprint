@@ -15,7 +15,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-func TestResourceScreenBrowseStrategyConfirmStartsOneTrack(t *testing.T) {
+func TestResourceScreenBrowseStrategyStartsOneTrack(t *testing.T) {
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, "candidate"), 0o755); err != nil {
 		t.Fatal(err)
@@ -29,14 +29,8 @@ func TestResourceScreenBrowseStrategyConfirmStartsOneTrack(t *testing.T) {
 	deliverResourceBrowser(t, &browser, cmd)
 	screen := &Resources{browser: &browser, phase: resourceBrowse}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if screen.phase != resourceCandidateInspect || screen.candidate.Path == "" || screen.browser.Inspection().Path != screen.candidate.Path {
-		t.Fatalf("candidate was not immediately inspected: phase=%q candidate=%#v inspection=%#v", screen.phase, screen.candidate, screen.browser.Inspection())
-	}
-	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	screen.Update(tea.KeyPressMsg{Code: '1'})
-	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if screen.phase != resourceConfirm || screen.confirm != "track" {
-		t.Fatalf("browse flow did not reach track confirmation: phase=%q confirm=%q", screen.phase, screen.confirm)
+	if screen.phase != resourceStrategy || screen.candidate.Path == "" || screen.browser != nil || screen.candidateInspection.Path != screen.candidate.Path {
+		t.Fatalf("candidate did not open strategy picker: phase=%q candidate=%#v inspection=%#v", screen.phase, screen.candidate, screen.candidateInspection)
 	}
 	first := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	second := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -190,32 +184,66 @@ func TestResourceScreenUntrackedSelectorUsesSpaceAndAll(t *testing.T) {
 		t.Fatalf("a did not select all untracked files: %#v", screen.chosen)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if screen.phase != resourceConfirm || screen.confirm != "track" {
-		t.Fatalf("selector did not advance to confirmation: phase=%q confirm=%q", screen.phase, screen.confirm)
+	if screen.phase != resourcePending {
+		t.Fatalf("selector did not apply selection: phase=%q", screen.phase)
 	}
 }
 
-func TestResourceConfirmEscapeRestoresOriginPhase(t *testing.T) {
-	screen := &Resources{phase: resourceStrategy, strategy: "copy"}
-	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if screen.phase != resourceConfirm || screen.confirmFrom != resourceStrategy {
-		t.Fatalf("track confirmation: phase=%q from=%q", screen.phase, screen.confirmFrom)
-	}
+func TestResourceEditorEscapeLeavesTrackedSelectionUnchanged(t *testing.T) {
+	screen := &Resources{phase: resourceStrategy, strategy: "copy", selected: 1, editingResourceID: "second", items: []profile.Resource{{ID: "first"}, {ID: "second"}}}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if screen.phase != resourceStrategy || screen.confirm != "" {
-		t.Fatalf("cancelled track: phase=%q confirm=%q", screen.phase, screen.confirm)
+	if screen.phase != resourceBrowse || screen.selected != 1 || screen.editingResourceID != "" {
+		t.Fatalf("cancelled editor: phase=%q selected=%d editing=%q", screen.phase, screen.selected, screen.editingResourceID)
 	}
 }
 
-func TestResourceGitDiffConfirmationCancelReturnsToUntracked(t *testing.T) {
+func TestResourceGitDiffEscapeReturnsToStrategy(t *testing.T) {
 	screen := &Resources{phase: resourceUntracked, untracked: []string{"chosen.txt"}, chosen: map[string]bool{}}
-	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if screen.phase != resourceConfirm || screen.confirmFrom != resourceUntracked {
-		t.Fatalf("git+diff confirmation: phase=%q from=%q", screen.phase, screen.confirmFrom)
-	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if screen.phase != resourceUntracked || screen.confirm != "" {
-		t.Fatalf("cancelled git+diff: phase=%q confirm=%q", screen.phase, screen.confirm)
+	if screen.phase != resourceStrategy {
+		t.Fatalf("cancelled git+diff: phase=%q", screen.phase)
+	}
+}
+
+func TestResourceStrategyPickerUsesNavigationAndGitCapability(t *testing.T) {
+	screen := &Resources{phase: resourceStrategy, strategy: "copy", candidateInspection: workflow.PathInspection{Git: &workflow.GitInspection{}}}
+	screen.selectStrategy("copy")
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if screen.strategy != "git" || !strings.Contains(screen.View(), "> git:") {
+		t.Fatalf("strategy picker did not navigate: strategy=%q view=%q", screen.strategy, screen.View())
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if screen.strategy != "git+diff" || screen.phase != resourceUntracked {
+		t.Fatalf("git+diff did not open selector: strategy=%q phase=%q", screen.strategy, screen.phase)
+	}
+}
+
+func TestResourceTrackRequestKeepsEditedIdentityAndDiffSelections(t *testing.T) {
+	screen := &Resources{selected: 0, items: []profile.Resource{{ID: "first"}, {ID: "second"}}, editingResourceID: "second", candidate: components.BrowserEntry{Path: "/work/second"}, strategy: "git+diff", untracked: []string{"kept.txt", "removed.txt", "added.txt"}, chosen: map[string]bool{"kept.txt": true, "added.txt": true}}
+	request := screen.trackRequest()
+	if request.ID != "second" || !reflect.DeepEqual(request.IncludeUntracked, []string{"kept.txt", "added.txt"}) || !reflect.DeepEqual(request.ExcludeUntracked, []string{"removed.txt"}) {
+		t.Fatalf("request=%#v", request)
+	}
+	screen.strategy = "git"
+	request = screen.trackRequest()
+	if len(request.IncludeUntracked) != 0 || len(request.ExcludeUntracked) != 0 {
+		t.Fatalf("git request retained diff state: %#v", request)
+	}
+}
+
+func TestExistingGitDiffPreselectsSavedUntrackedWithoutMovingTableSelection(t *testing.T) {
+	screen := &Resources{selected: 1, items: []profile.Resource{{ID: "first"}, {ID: "second", Strategy: "git+diff", Untracked: []profile.GitUntrackedFile{{Path: "kept.txt"}}}}, requestID: 3}
+	screen.Update(resourceExistingInspectMsg{requestID: 3, item: screen.items[1], inspection: workflow.ResourceInspection{EffectivePath: "/work/second"}, path: workflow.PathInspection{Git: &workflow.GitInspection{UntrackedPaths: []string{"kept.txt", "other.txt"}}}})
+	if screen.selected != 1 || screen.editingResourceID != "second" || !screen.chosen["kept.txt"] || screen.phase != resourceStrategy {
+		t.Fatalf("editor state=%#v selected=%d editing=%q chosen=%#v phase=%q", screen.candidate, screen.selected, screen.editingResourceID, screen.chosen, screen.phase)
+	}
+}
+
+func TestResourceEditCompletionRefocusesEditedResource(t *testing.T) {
+	screen := &Resources{requestID: 4, editingResourceID: "second"}
+	if cmd := screen.Update(resourceTrackedMsg{requestID: 4}); cmd == nil || screen.focusID != "second" || screen.editingResourceID != "" {
+		t.Fatalf("completion did not retain focus: focus=%q editing=%q cmd=%v", screen.focusID, screen.editingResourceID, cmd != nil)
 	}
 }
 
@@ -250,12 +278,12 @@ func TestResourceCandidateSnapshotIgnoresLateBrowserUpdates(t *testing.T) {
 	screen := &Resources{browser: &browser, phase: resourceBrowse}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	screen.chosen["chosen.txt"] = true
-	screen.selected = 0
+	screen.untrackedCursor = 0
 	screen.Update(components.BrowserReadDirMsg{})
 	screen.Update(components.BrowserChildReadDirMsg{})
 	screen.Update(components.BrowserInspectionMsg{})
-	if !screen.chosen["chosen.txt"] || screen.selected != 0 || !reflect.DeepEqual(screen.untracked, []string{"chosen.txt"}) {
-		t.Fatalf("late browser update reset selection: chosen=%#v selected=%d untracked=%#v", screen.chosen, screen.selected, screen.untracked)
+	if !screen.chosen["chosen.txt"] || screen.untrackedCursor != 0 || !reflect.DeepEqual(screen.untracked, []string{"chosen.txt"}) {
+		t.Fatalf("late browser update reset selection: chosen=%#v cursor=%d untracked=%#v", screen.chosen, screen.untrackedCursor, screen.untracked)
 	}
 }
 

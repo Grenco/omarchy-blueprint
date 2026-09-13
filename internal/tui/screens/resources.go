@@ -15,13 +15,12 @@ import (
 type resourcePhase string
 
 const (
-	resourceBrowse           resourcePhase = "browse"
-	resourceCandidateInspect resourcePhase = "candidate-inspect"
-	resourceStrategy         resourcePhase = "strategy"
-	resourceUntracked        resourcePhase = "untracked-selector"
-	resourceConfirm          resourcePhase = "confirm"
-	resourcePending          resourcePhase = "pending"
-	resourceResult           resourcePhase = "result"
+	resourceBrowse    resourcePhase = "browse"
+	resourceStrategy  resourcePhase = "strategy"
+	resourceUntracked resourcePhase = "untracked-selector"
+	resourceConfirm   resourcePhase = "confirm"
+	resourcePending   resourcePhase = "pending"
+	resourceResult    resourcePhase = "result"
 )
 
 type Resources struct {
@@ -36,6 +35,9 @@ type Resources struct {
 	phase                   resourcePhase
 	confirmFrom             resourcePhase
 	strategy                string
+	strategyCursor          int
+	untrackedCursor         int
+	editingResourceID       string
 	candidate               components.BrowserEntry
 	candidateInspection     workflow.PathInspection
 	untracked               []string
@@ -75,6 +77,7 @@ type resourceExistingInspectMsg struct {
 	requestID  uint64
 	item       profile.Resource
 	inspection workflow.ResourceInspection
+	path       workflow.PathInspection
 	err        error
 }
 
@@ -163,6 +166,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			s.phase = resourceResult
 			return nil
 		}
+		s.focusID = s.editingResourceID
 		s.resetDiscovery()
 		return s.rescan()
 	case resourceUntrackedMsg:
@@ -184,11 +188,18 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.candidate = components.BrowserEntry{Path: msg.inspection.EffectivePath, Type: msg.inspection.Resource.Kind}
+		s.candidateInspection = msg.path
+		s.editingResourceID = msg.item.ID
 		s.strategy, s.phase = msg.item.Strategy, resourceStrategy
-		if msg.inspection.Git != nil {
-			s.untracked = append([]string(nil), msg.inspection.Git.Untracked...)
+		if msg.path.Git != nil {
+			s.untracked = append([]string(nil), msg.path.Git.UntrackedPaths...)
 		}
-		s.chosen, s.selected = make(map[string]bool), 0
+		s.chosen = make(map[string]bool, len(msg.item.Untracked))
+		for _, file := range msg.item.Untracked {
+			s.chosen[file.Path] = true
+		}
+		s.selectStrategy(msg.item.Strategy)
+		s.untrackedCursor = 0
 		return nil
 	}
 	key, ok := msg.(tea.KeyPressMsg)
@@ -220,8 +231,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		if key.String() == "enter" && s.phase == resourceBrowse && s.browser.CanSelect() {
 			s.candidate, _ = s.browser.Selected()
 			s.candidateInspection = clonePathInspection(s.browser.Inspection())
+			s.browser = nil
 			s.setCandidateInspection()
-			s.phase = resourceCandidateInspect
+			s.phase = resourceStrategy
 			return nil
 		}
 		cmd := s.browser.Update(msg)
@@ -236,32 +248,22 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
 		return nil
 	}
-	if s.phase == resourceCandidateInspect {
-		switch key.String() {
-		case "esc":
-			s.resetDiscovery()
-		case "enter":
-			s.phase = resourceStrategy
-		}
-		return nil
-	}
 	if s.phase == resourceStrategy {
 		switch key.String() {
 		case "esc":
-			s.phase = resourceCandidateInspect
-		case "1":
-			s.strategy = "copy"
-		case "2":
-			s.strategy = "git"
-		case "3":
-			s.strategy = "git+diff"
+			s.resetDiscovery()
+		case "j", "down":
+			s.strategyCursor = min(len(s.strategies())-1, s.strategyCursor+1)
+			s.strategy = s.strategies()[s.strategyCursor]
+		case "k", "up":
+			s.strategyCursor = max(0, s.strategyCursor-1)
+			s.strategy = s.strategies()[s.strategyCursor]
 		case "enter":
-			if s.strategy == "git+diff" && len(s.untracked) > 0 {
+			if s.strategy == "git+diff" {
 				s.phase = resourceUntracked
 			} else if s.strategy != "" {
-				s.confirmFrom = s.phase
-				s.phase, s.confirm = resourceConfirm, "track"
-				return s.confirmTrackModal()
+				s.phase = resourcePending
+				return s.track()
 			}
 		}
 		return nil
@@ -271,12 +273,12 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		case "esc":
 			s.phase = resourceStrategy
 		case "j", "down":
-			s.selected = min(len(s.untracked)-1, s.selected+1)
+			s.untrackedCursor = min(len(s.untracked)-1, s.untrackedCursor+1)
 		case "k", "up":
-			s.selected = max(0, s.selected-1)
+			s.untrackedCursor = max(0, s.untrackedCursor-1)
 		case "space", " ":
 			if len(s.untracked) > 0 {
-				path := s.untracked[s.selected]
+				path := s.untracked[s.untrackedCursor]
 				s.chosen[path] = !s.chosen[path]
 			}
 		case "a":
@@ -284,9 +286,8 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 				s.chosen[path] = true
 			}
 		case "enter":
-			s.confirmFrom = s.phase
-			s.phase, s.confirm = resourceConfirm, "track"
-			return s.confirmTrackModal()
+			s.phase = resourcePending
+			return s.track()
 		}
 		return nil
 	}
@@ -342,12 +343,6 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (s *Resources) confirmTrackModal() tea.Cmd {
-	return func() tea.Msg {
-		return components.ModalRequest{Title: "Confirm tracked resource", Content: components.Confirm("Track selected path with strategy " + s.strategy + "?")}
-	}
-}
-
 func (s *Resources) View() string {
 	phase := s.phase
 	if phase == resourceConfirm {
@@ -365,11 +360,16 @@ func (s *Resources) View() string {
 	if s.browser != nil && phase == resourceBrowse {
 		return s.browser.View()
 	}
-	if phase == resourceCandidateInspect {
-		return "Candidate: " + components.DisplayText(s.candidate.Path)
-	}
 	if phase == resourceStrategy {
-		return components.Confirm("Choose tracking strategy\n\ncopy: snapshot files and directories\ngit: portable repository provenance only\ngit+diff: repository plus selected local changes\n\n1 copy   2 git   3 git+diff\nSelected: " + components.DisplayText(s.strategy))
+		lines := []string{"Choose tracking strategy"}
+		for i, strategy := range s.strategies() {
+			line := "  " + strategy + ": " + strategyDescription(strategy)
+			if i == s.strategyCursor {
+				line = components.Icons.Selected + line[1:]
+			}
+			lines = append(lines, line)
+		}
+		return strings.Join(lines, "\n")
 	}
 	if phase == resourceUntracked {
 		lines := []string{"Select eligible untracked files"}
@@ -379,7 +379,7 @@ func (s *Resources) View() string {
 				selected = "x"
 			}
 			line := fmt.Sprintf("  [%s] %s", selected, components.DisplayText(path))
-			if i == s.selected {
+			if i == s.untrackedCursor {
 				if !s.styles.Palette.ColorEnabled {
 					line = components.Icons.Selected + line[1:]
 				}
@@ -420,7 +420,7 @@ func (s *Resources) DetailView() string {
 	if s.browser != nil {
 		return s.browser.DetailView()
 	}
-	if s.phase == resourceCandidateInspect || s.phase == resourceStrategy || s.phase == resourceUntracked {
+	if s.phase == resourceStrategy || s.phase == resourceUntracked {
 		return resourceDetail(s.candidate.Path, s.candidateInspection)
 	}
 	if item := s.selectedResource(); item.ID != "" {
@@ -461,26 +461,39 @@ func (s *Resources) inspectPath(requestID uint64, path string) tea.Cmd {
 func (s *Resources) track() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
-	request := workflow.TrackRequest{Path: s.candidate.Path, Strategy: s.strategy}
-	if current := s.selectedResource(); current.ID != "" && s.browser == nil {
-		request.ID = current.ID
-	}
-	for _, path := range s.untracked {
-		if s.chosen[path] {
-			request.IncludeUntracked = append(request.IncludeUntracked, path)
-		}
-	}
+	request := s.trackRequest()
 	return func() tea.Msg {
 		_, _, err := s.session.TrackResource(s.ctx, request)
 		return resourceTrackedMsg{requestID: requestID, err: err}
 	}
+}
+func (s *Resources) trackRequest() workflow.TrackRequest {
+	request := workflow.TrackRequest{Path: s.candidate.Path, Strategy: s.strategy}
+	if s.editingResourceID != "" {
+		request.ID = s.editingResourceID
+	}
+	if s.strategy != "git+diff" {
+		return request
+	}
+	for _, path := range s.untracked {
+		if s.chosen[path] {
+			request.IncludeUntracked = append(request.IncludeUntracked, path)
+		} else {
+			request.ExcludeUntracked = append(request.ExcludeUntracked, path)
+		}
+	}
+	return request
 }
 func (s *Resources) inspectExisting(item profile.Resource) tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
 	return func() tea.Msg {
 		inspection, err := s.session.InspectResource(s.ctx, item.ID)
-		return resourceExistingInspectMsg{requestID: requestID, item: item, inspection: inspection, err: err}
+		if err != nil {
+			return resourceExistingInspectMsg{requestID: requestID, item: item, err: err}
+		}
+		path, err := s.session.InspectPath(s.ctx, inspection.EffectivePath)
+		return resourceExistingInspectMsg{requestID: requestID, item: item, inspection: inspection, path: path, err: err}
 	}
 }
 func (s *Resources) untrack() tea.Cmd {
@@ -493,7 +506,7 @@ func (s *Resources) untrack() tea.Cmd {
 	}
 }
 func (s *Resources) resetDiscovery() {
-	s.browser, s.phase, s.strategy, s.candidate, s.candidateInspection, s.untracked, s.chosen, s.confirm, s.err = nil, resourceBrowse, "", components.BrowserEntry{}, workflow.PathInspection{}, nil, nil, "", nil
+	s.browser, s.phase, s.strategy, s.strategyCursor, s.untrackedCursor, s.editingResourceID, s.candidate, s.candidateInspection, s.untracked, s.chosen, s.confirm, s.err = nil, resourceBrowse, "", 0, 0, "", components.BrowserEntry{}, workflow.PathInspection{}, nil, nil, "", nil
 	s.discover = false
 }
 func (s *Resources) rescan() tea.Cmd {
@@ -569,10 +582,33 @@ func (s *Resources) setCandidateInspection() {
 		s.untracked = append([]string(nil), inspection.Git.UntrackedPaths...)
 	}
 	s.chosen = make(map[string]bool)
-	s.selected = 0
+	s.untrackedCursor = 0
 	if s.strategy == "" {
 		s.strategy = inspection.SuggestedStrategy
 	}
+	s.selectStrategy(s.strategy)
+}
+
+func (s *Resources) strategies() []string {
+	strategies := []string{"copy"}
+	if s.candidateInspection.Git != nil {
+		strategies = append(strategies, "git", "git+diff")
+	}
+	return strategies
+}
+
+func (s *Resources) selectStrategy(strategy string) {
+	for i, candidate := range s.strategies() {
+		if strategy == candidate {
+			s.strategy, s.strategyCursor = strategy, i
+			return
+		}
+	}
+	s.strategy, s.strategyCursor = s.strategies()[0], 0
+}
+
+func strategyDescription(strategy string) string {
+	return map[string]string{"copy": "snapshot files and directories", "git": "portable repository provenance only", "git+diff": "repository plus selected local changes"}[strategy]
 }
 
 func clonePathInspection(inspection workflow.PathInspection) workflow.PathInspection {
