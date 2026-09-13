@@ -189,6 +189,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.candidate = components.BrowserEntry{Path: msg.inspection.EffectivePath, Type: msg.inspection.Resource.Kind}
 		s.candidateInspection = msg.path
+		if s.candidateInspection.Git == nil && msg.inspection.Git != nil {
+			s.candidateInspection.Git = &workflow.GitInspection{Untracked: len(msg.inspection.Git.Untracked), UntrackedPaths: append([]string(nil), msg.inspection.Git.Untracked...)}
+		}
 		s.editingResourceID = msg.item.ID
 		s.strategy, s.phase = msg.item.Strategy, resourceStrategy
 		if msg.path.Git != nil {

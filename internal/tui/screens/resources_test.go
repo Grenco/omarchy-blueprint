@@ -232,10 +232,10 @@ func TestResourceTrackRequestKeepsEditedIdentityAndDiffSelections(t *testing.T) 
 	}
 }
 
-func TestExistingGitDiffPreselectsSavedUntrackedWithoutMovingTableSelection(t *testing.T) {
+func TestExistingResourceUsesInspectionGitCapabilityWithoutMovingTableSelection(t *testing.T) {
 	screen := &Resources{selected: 1, items: []profile.Resource{{ID: "first"}, {ID: "second", Strategy: "git+diff", Untracked: []profile.GitUntrackedFile{{Path: "kept.txt"}}}}, requestID: 3}
-	screen.Update(resourceExistingInspectMsg{requestID: 3, item: screen.items[1], inspection: workflow.ResourceInspection{EffectivePath: "/work/second"}, path: workflow.PathInspection{Git: &workflow.GitInspection{UntrackedPaths: []string{"kept.txt", "other.txt"}}}})
-	if screen.selected != 1 || screen.editingResourceID != "second" || !screen.chosen["kept.txt"] || screen.phase != resourceStrategy {
+	screen.Update(resourceExistingInspectMsg{requestID: 3, item: screen.items[1], inspection: workflow.ResourceInspection{EffectivePath: "/work/second", Git: &resourcesprovider.GitWorkingSummary{Untracked: []string{"kept.txt", "other.txt"}}}})
+	if screen.selected != 1 || screen.editingResourceID != "second" || !screen.chosen["kept.txt"] || screen.phase != resourceStrategy || len(screen.strategies()) != 3 {
 		t.Fatalf("editor state=%#v selected=%d editing=%q chosen=%#v phase=%q", screen.candidate, screen.selected, screen.editingResourceID, screen.chosen, screen.phase)
 	}
 }

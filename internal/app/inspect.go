@@ -145,7 +145,7 @@ func (p resourcesStateProvider) InspectResource(ctx context.Context, d profile.D
 		return workflow.ResourceInspection{}, err
 	}
 	result := workflow.ResourceInspection{Resource: item, DefaultPath: item.Path, EffectivePath: effective, Machine: p.machineName(d)}
-	if (item.Strategy == "git" || item.Strategy == "git+diff") && provider.Runner != nil {
+	if provider.Runner != nil {
 		state, ok, err := resourcesprovider.InspectGitWorkingState(ctx, provider.Runner, effective)
 		if err != nil {
 			return workflow.ResourceInspection{}, err
