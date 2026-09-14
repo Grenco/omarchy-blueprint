@@ -56,6 +56,16 @@ func TestCaptureViewLabelsUncapturedProviders(t *testing.T) {
 	}
 }
 
+func TestCaptureUsesCategoryTerminology(t *testing.T) {
+	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "themes"}}, chosen: map[string]bool{}}
+	if view := screen.View(); !strings.Contains(view, "Category") || strings.Contains(view, "Provider") {
+		t.Fatalf("capture terminology=%q", view)
+	}
+	if detail := (&Capture{chosen: map[string]bool{}}).DetailView(); detail != "Select categories to capture." {
+		t.Fatalf("empty detail=%q", detail)
+	}
+}
+
 func TestCaptureSanitizesProviderValuesAndErrors(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "bad\nprovider\x1b"}}, chosen: map[string]bool{}}
 	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?provider?") {

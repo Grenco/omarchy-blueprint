@@ -138,12 +138,12 @@ func (s *Capture) View() string {
 		}
 		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: i == s.cursor, Focused: true})
 	}
-	return s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Provider", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
+	return s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
 }
 func (s *Capture) DetailView() string {
 	p := s.current()
 	if p.ID == "" {
-		return "Select providers to capture."
+		return "Select categories to capture."
 	}
 	return "Category: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected: " + fmt.Sprint(s.chosen[p.ID])
 }
