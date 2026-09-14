@@ -55,6 +55,19 @@ func TestOverviewSectionCollapseAndViewportKeepCursorVisible(t *testing.T) {
 	}
 }
 
+func TestOverviewGroupJumpsMoveBetweenSectionHeaders(t *testing.T) {
+	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{{Severity: workflow.AttentionDecision, Summary: "review"}, {Severity: workflow.AttentionDrift, Summary: "drift"}}, Healthy: []string{"themes"}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	screen.Update(tea.KeyPressMsg{Code: '['})
+	if screen.selected != 0 {
+		t.Fatalf("previous group selected=%d", screen.selected)
+	}
+	screen.Update(tea.KeyPressMsg{Code: ']'})
+	if screen.selected != 2 {
+		t.Fatalf("next group selected=%d", screen.selected)
+	}
+}
+
 func TestOverviewIgnoresStaleRefresh(t *testing.T) {
 	screen := &Overview{requestID: 2, busy: true}
 	screen.Update(overviewMsg{requestID: 1, data: workflow.Overview{Healthy: []string{"stale"}}})

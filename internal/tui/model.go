@@ -1509,7 +1509,7 @@ func (s *overviewScreen) Actions() []Action {
 	}
 }
 func (s *overviewScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "overview.open", Key: "enter"}, {ActionID: "overview.refresh", Key: "r"}}
+	return []Binding{{ActionID: "overview.open", Key: "enter"}, {ActionID: "overview.refresh", Key: "r"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
 }
 
 func bindingsFromResourceActions(actions []screens.ResourceAction, prefix string) []Binding {

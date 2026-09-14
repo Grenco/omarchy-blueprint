@@ -70,6 +70,12 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 		s.selected = s.list.Selected
 		return nil
 	}
+	if key.String() == "[" || key.String() == "]" {
+		if s.list.JumpToAnchor(s.groupAnchors(), key.String() == "]", len(s.rows()), s.listHeight()) {
+			s.selected = s.list.Selected
+		}
+		return nil
+	}
 	switch key.String() {
 	case "j", "down":
 		s.list.Move(1, len(s.rows()), s.listHeight())
@@ -180,6 +186,15 @@ func (s *Overview) selectedRow() overviewRow {
 }
 func (s *Overview) selectedItem() workflow.AttentionItem { return s.selectedRow().item }
 func (s *Overview) CanOpen() bool                        { return s.selectedItem().Target != "" }
+func (s *Overview) groupAnchors() []int {
+	anchors := []int{}
+	for i, row := range s.rows() {
+		if row.isSection() {
+			anchors = append(anchors, i)
+		}
+	}
+	return anchors
+}
 func (s *Overview) rows() []overviewRow {
 	sections := []struct {
 		title string
