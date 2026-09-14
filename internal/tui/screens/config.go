@@ -61,7 +61,18 @@ func NewConfig(session *workflow.Session) *Config {
 func NewConfigContext(ctx context.Context, session *workflow.Session) *Config {
 	return &Config{ctx: ctx, session: session}
 }
-func (s *Config) Focus(path string) tea.Cmd { s.focusPath = path; return s.rescan() }
+func (s *Config) Focus(path string) tea.Cmd {
+	s.focusPath, s.filter, s.filtering = path, "", false
+	for _, candidate := range s.candidates {
+		if candidate.Path == path {
+			if s.collapsed == nil {
+				s.collapsed = defaultConfigCollapsed()
+			}
+			s.collapsed[configPresentationFor(candidate.Classification).Group] = false
+		}
+	}
+	return s.rescan()
+}
 func (s *Config) SetSize(width, height int) {
 	s.width, s.height = width, height
 	if s.diff != nil {
@@ -70,7 +81,7 @@ func (s *Config) SetSize(width, height int) {
 }
 func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Config) Init() tea.Cmd                      { return s.rescan() }
-func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil }
+func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil || s.filtering }
 
 func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -83,6 +94,14 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.candidates, s.err, s.busy = msg.candidates, nil, false
+		for _, candidate := range s.candidates {
+			if candidate.Path == s.focusPath {
+				if s.collapsed == nil {
+					s.collapsed = defaultConfigCollapsed()
+				}
+				s.collapsed[configPresentationFor(candidate.Classification).Group] = false
+			}
+		}
 		s.selected = 0
 		for i, row := range s.rows() {
 			if row.candidate.Path == s.focusPath {
@@ -474,7 +493,11 @@ func (s *Config) DetailView() string {
 		return "Config details"
 	}
 	presentation := configPresentationFor(candidate.Classification)
-	lines := []string{"Path: " + components.DisplayText(candidate.Path), "State: " + presentation.Label, "Policy: " + s.candidatePolicy(candidate.Path), "Meaning: " + presentation.Meaning, "Saved in profile: " + map[bool]string{true: "Yes", false: "No"}[s.inspection.Managed]}
+	policy := s.candidatePolicy(candidate.Path)
+	lines := []string{"Path: " + components.DisplayText(candidate.Path), "State: " + presentation.Label, "Policy: " + policy, "Policy meaning: " + configPolicyMeaning(policy), "Meaning: " + presentation.Meaning, "Saved in profile: " + map[bool]string{true: "Yes", false: "No"}[s.inspection.Managed]}
+	if policy == "Included" {
+		lines = append(lines, "Included never overrides safety rules.")
+	}
 	if s.inspection.LivePath != "" {
 		lines = append(lines, "Live file: "+components.DisplayText(s.inspection.LivePath))
 	}
@@ -485,6 +508,10 @@ func (s *Config) DetailView() string {
 		lines = append(lines, "Saved copy: "+components.DisplayText(s.inspection.ProfilePath))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func configPolicyMeaning(policy string) string {
+	return map[string]string{"Auto": "Blueprint decides based on Omarchy defaults, ownership, and safety rules.", "Included": "You asked Config to manage this path when it is safe to do so.", "Excluded": "You asked Config to leave this path alone."}[policy]
 }
 
 type configDisplayGroup string

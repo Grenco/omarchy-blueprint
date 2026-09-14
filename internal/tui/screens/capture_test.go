@@ -15,7 +15,7 @@ func TestCaptureAllRequestsConfirmation(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "packages"}, {ID: "themes"}}, chosen: map[string]bool{}}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'C'})
 	request, ok := cmd().(components.ModalRequest)
-	if !ok || request.Title != "Capture selected providers" || !screen.chosen["packages"] || !screen.chosen["themes"] || !screen.captureAll {
+	if !ok || request.Title != "Capture selected categories" || !screen.chosen["packages"] || !screen.chosen["themes"] || !screen.captureAll {
 		t.Fatalf("request=%#v chosen=%#v", request, screen.chosen)
 	}
 	if view := screen.View(); view == "" || view == "Capture selected providers?\n\nEnter confirms. Escape cancels." {

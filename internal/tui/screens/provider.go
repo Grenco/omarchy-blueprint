@@ -233,7 +233,7 @@ func (s *Provider) tabLabel() string {
 }
 func emptyTabMessage(tab string, captured bool) string {
 	if !captured && tab == "Saved" {
-		return "Capture this provider to save its desired state."
+		return "Capture this category to save its desired state."
 	}
 	if tab == "Changes" {
 		return "✓ No differences detected."
