@@ -63,6 +63,7 @@ func (s *Provider) Refresh() tea.Cmd                   { return s.refresh() }
 func (s *Provider) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Provider) SetSize(width, height int)          { s.width, s.height = width, height }
 func (s *Provider) Init() tea.Cmd                      { return s.refresh() }
+func (s *Provider) TransientActive() bool              { return s.confirm }
 func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	if s.tab == "" {
 		s.tab = "Saved"
@@ -99,6 +100,22 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	if !ok {
 		return nil
 	}
+	if s.confirm {
+		switch key.String() {
+		case "enter":
+			s.confirm, s.busy = false, true
+			return s.capture()
+		case "esc":
+			s.confirm = false
+		}
+		return nil
+	}
+	if key.String() == "[" || key.String() == "]" {
+		if s.list.JumpToAnchor(s.groupAnchors(), key.String() == "]", len(s.rows()), s.listHeight()) {
+			s.selected = s.list.Selected
+		}
+		return nil
+	}
 	if s.list.Vim(key.String(), len(s.rows()), s.listHeight()) {
 		s.selected = s.list.Selected
 		return nil
@@ -123,10 +140,6 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		s.list.Move(-1, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 	case "enter":
-		if s.confirm {
-			s.confirm, s.busy = false, true
-			return s.capture()
-		}
 		if row := s.selectedSavedRow(); row.group != "" {
 			if s.collapsed == nil {
 				s.collapsed = map[string]bool{}
@@ -253,6 +266,16 @@ func (s *Provider) rows() []providerRow {
 	}
 	return visible
 }
+func (s *Provider) groupAnchors() []int {
+	rows := s.rows()
+	anchors := make([]int, 0, len(rows))
+	for index, row := range rows {
+		if row.group != "" {
+			anchors = append(anchors, index)
+		}
+	}
+	return anchors
+}
 func (s *Provider) activeTab() string {
 	if s.tab == "Changes" {
 		return "Changes"
@@ -319,7 +342,7 @@ func savedRows(snapshot any) []providerRow {
 		group("Current theme", []string{empty(value.Current)}, &rows)
 		themes := make([]string, 0, len(value.Items))
 		for _, item := range value.Items {
-			themes = append(themes, item.ID+valueSuffix(item.Type, item.Revision))
+			themes = append(themes, item.ID+valueSuffix(sourceLabel(item.Type), item.Revision))
 		}
 		group("Saved themes", themes, &rows)
 	case profile.Plugins:
@@ -332,7 +355,7 @@ func savedRows(snapshot any) []providerRow {
 			}
 			group(label, plugins, &rows)
 		}
-		pluginRows("Git plugins", "git")
+		pluginRows("Installed plugins", "git")
 		pluginRows("Local plugins", "local")
 		pluginRows("Built-in plugins", "builtin")
 	case profile.Defaults:
@@ -355,6 +378,18 @@ func valueSuffix(values ...string) string {
 		}
 	}
 	return ""
+}
+func sourceLabel(source string) string {
+	switch source {
+	case "git":
+		return "installed"
+	case "builtin":
+		return "built-in"
+	case "local":
+		return "local"
+	default:
+		return source
+	}
 }
 func (s *Provider) refresh() tea.Cmd {
 	s.requestID++

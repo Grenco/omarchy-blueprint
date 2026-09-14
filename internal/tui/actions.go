@@ -24,6 +24,7 @@ type Binding struct {
 	ActionID, Label, Key, Context string
 	Keys                          []string
 	FooterPriority                int
+	HideFromFooter                bool
 }
 
 // ActionRegistry is the single source for command discovery and key display.
@@ -134,11 +135,22 @@ func lower(s string) string {
 }
 
 func filterActions(actions []Action, query string) []Action {
-	filtered := make([]Action, 0, len(actions))
+	exact, filtered := make([]Action, 0, len(actions)), make([]Action, 0, len(actions))
 	for _, action := range actions {
-		if subsequenceMatch(query, action.Label) || subsequenceMatch(query, action.ID) || subsequenceMatch(query, action.Group) || subsequenceMatch(query, action.Keywords) {
+		if lower(query) == lower(action.Label) || lower(query) == lower(action.ID) || keywordMatch(query, action.Keywords) {
+			exact = append(exact, action)
+		} else if subsequenceMatch(query, action.Label) || subsequenceMatch(query, action.ID) || subsequenceMatch(query, action.Group) || subsequenceMatch(query, action.Keywords) {
 			filtered = append(filtered, action)
 		}
 	}
-	return filtered
+	return append(exact, filtered...)
+}
+
+func keywordMatch(query, keywords string) bool {
+	for _, keyword := range strings.Fields(keywords) {
+		if lower(query) == lower(keyword) {
+			return true
+		}
+	}
+	return false
 }

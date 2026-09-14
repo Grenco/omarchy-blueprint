@@ -28,6 +28,32 @@ func (s *Selectable) Move(delta, count, height int) bool {
 	return before != s.Selected
 }
 
+// JumpToAnchor moves to the preceding or following non-wrapping row anchor.
+func (s *Selectable) JumpToAnchor(anchors []int, forward bool, count, height int) bool {
+	selected := s.Selected
+	destination := selected
+	if forward {
+		for _, anchor := range anchors {
+			if anchor > selected {
+				destination = anchor
+				break
+			}
+		}
+	} else {
+		for _, anchor := range anchors {
+			if anchor >= selected {
+				break
+			}
+			destination = anchor
+		}
+	}
+	if destination == selected {
+		return false
+	}
+	s.SetSelected(destination, count, height)
+	return true
+}
+
 // Vim handles common whole-list and half-page movement keys.
 func (s *Selectable) Vim(key string, count, height int) bool {
 	switch key {
