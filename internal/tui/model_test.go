@@ -647,6 +647,19 @@ func TestCommandPalette(t *testing.T) {
 	}
 }
 
+func TestEmptySearchInputsHaveNoPlaceholderCharacter(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	if view := m.View().Content; strings.Contains(view, "Search: S") {
+		t.Fatalf("palette placeholder leaked into empty input: %q", view)
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
+	if view := m.View().Content; strings.Contains(view, "Search: S") {
+		t.Fatalf("help placeholder leaked into empty input: %q", view)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})

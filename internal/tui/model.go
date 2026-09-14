@@ -458,12 +458,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ":":
 			m.openModal(modalPalette)
 			m.paletteQuery, m.paletteSelected, m.paletteFiltering = "", 0, true
-			m.paletteInput = components.NewTextInputModal("", "Search actions")
+			m.paletteInput = components.NewTextInputModal("", "")
 			return m, m.paletteInput.Focus()
 		case "?":
 			m.openModal(modalHelp)
 			m.helpQuery = ""
-			m.helpInput = components.NewTextInputModal("", "Search help")
+			m.helpInput = components.NewTextInputModal("", "")
 			return m, m.helpInput.Focus()
 		case "tab", "shift+tab":
 			if layoutForSize(m.width, m.height).mode == LayoutCompact {
