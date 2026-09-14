@@ -29,7 +29,7 @@ type Config struct {
 	confirm                 string
 	filter                  string
 	filtering               bool
-	collapsed               map[config.Classification]bool
+	collapsed               map[configDisplayGroup]bool
 	table                   components.Table
 	navigation              components.Selectable
 	styles                  components.Styles
@@ -61,7 +61,18 @@ func NewConfig(session *workflow.Session) *Config {
 func NewConfigContext(ctx context.Context, session *workflow.Session) *Config {
 	return &Config{ctx: ctx, session: session}
 }
-func (s *Config) Focus(path string) tea.Cmd { s.focusPath = path; return s.rescan() }
+func (s *Config) Focus(path string) tea.Cmd {
+	s.focusPath, s.filter, s.filtering = path, "", false
+	for _, candidate := range s.candidates {
+		if candidate.Path == path {
+			if s.collapsed == nil {
+				s.collapsed = defaultConfigCollapsed()
+			}
+			s.collapsed[configPresentationFor(candidate.Classification).Group] = false
+		}
+	}
+	return s.rescan()
+}
 func (s *Config) SetSize(width, height int) {
 	s.width, s.height = width, height
 	if s.diff != nil {
@@ -70,7 +81,7 @@ func (s *Config) SetSize(width, height int) {
 }
 func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Config) Init() tea.Cmd                      { return s.rescan() }
-func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil }
+func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil || s.filtering }
 
 func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -83,6 +94,14 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.candidates, s.err, s.busy = msg.candidates, nil, false
+		for _, candidate := range s.candidates {
+			if candidate.Path == s.focusPath {
+				if s.collapsed == nil {
+					s.collapsed = defaultConfigCollapsed()
+				}
+				s.collapsed[configPresentationFor(candidate.Classification).Group] = false
+			}
+		}
 		s.selected = 0
 		for i, row := range s.rows() {
 			if row.candidate.Path == s.focusPath {
@@ -170,6 +189,17 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		return s.inspectSelected()
 	}
 	s.navigation.Selected = s.selected
+	if key.String() == "[" || key.String() == "]" {
+		if s.navigation.JumpToAnchor(s.groupAnchors(), key.String() == "]", len(s.rows()), max(1, s.listHeight()-1)) {
+			before := s.selected
+			s.selected = s.navigation.Selected
+			s.ensureSelection()
+			if before != s.selected {
+				return s.inspectSelected()
+			}
+		}
+		return nil
+	}
 	if s.navigation.Vim(key.String(), len(s.rows()), max(1, s.listHeight()-1)) {
 		before := s.selected
 		s.selected = s.navigation.Selected
@@ -204,7 +234,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	case "enter":
 		if row := s.selectedRow(); row.group != "" {
 			if s.collapsed == nil {
-				s.collapsed = map[config.Classification]bool{}
+				s.collapsed = defaultConfigCollapsed()
 			}
 			s.collapsed[row.group] = !s.collapsed[row.group]
 			s.ensureSelection()
@@ -272,7 +302,7 @@ func (s *Config) View() string {
 			if s.collapsed[row.group] {
 				marker = components.Icons.Collapsed
 			}
-			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + configState(row.group)), "", ""}, Selected: i == s.selected, Focused: true})
+			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + string(row.group)), "", ""}, Selected: i == s.selected, Focused: true})
 			continue
 		}
 		policy := s.candidatePolicy(row.candidate.Path)
@@ -284,12 +314,12 @@ func (s *Config) View() string {
 		default:
 			policy = s.styles.Muted(policy)
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), configState(row.candidate.Classification), policy}, Selected: i == s.selected, Focused: true})
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), configPresentationFor(row.candidate.Classification).Label, policy}, Selected: i == s.selected, Focused: true})
 	}
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
 	} else {
-		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 22, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 32, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	}
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)
@@ -307,7 +337,7 @@ func (s *Config) selectedCandidate() config.Candidate {
 }
 
 type configRow struct {
-	group     config.Classification
+	group     configDisplayGroup
 	candidate config.Candidate
 }
 
@@ -320,19 +350,19 @@ func (s *Config) selectedRow() configRow {
 }
 func (s *Config) rows() []configRow {
 	items := s.filteredCandidates()
-	rows := make([]configRow, 0, len(items)+len(configClassifications))
-	for _, classification := range configClassifications {
+	rows := make([]configRow, 0, len(items)+len(configDisplayGroups))
+	for _, displayGroup := range configDisplayGroups {
 		group := make([]config.Candidate, 0)
 		for _, candidate := range items {
-			if candidate.Classification == classification {
+			if configPresentationFor(candidate.Classification).Group == displayGroup {
 				group = append(group, candidate)
 			}
 		}
 		if len(group) == 0 {
 			continue
 		}
-		rows = append(rows, configRow{group: classification})
-		if !s.collapsed[classification] {
+		rows = append(rows, configRow{group: displayGroup})
+		if !s.groupCollapsed(displayGroup) {
 			for _, candidate := range group {
 				rows = append(rows, configRow{candidate: candidate})
 			}
@@ -341,33 +371,39 @@ func (s *Config) rows() []configRow {
 	return rows
 }
 
-var configClassifications = []config.Classification{config.ConfigAmbiguousBaseline, config.ConfigAmbiguousDeletion, config.ConfigModifiedBaseline, config.ConfigDeletedBaseline, config.ConfigAdded, config.ConfigUnchangedBaseline, config.ConfigHistoricalBaseline, config.ConfigExcluded, config.ConfigDelegated, config.ConfigVolatile, config.ConfigSensitive, config.ConfigOversized, config.ConfigUnsupported, config.ConfigUnmanagedSymlink}
+func (s *Config) groupAnchors() []int {
+	rows := s.rows()
+	anchors := make([]int, 0, len(rows))
+	for index, row := range rows {
+		if row.group != "" {
+			anchors = append(anchors, index)
+		}
+	}
+	return anchors
+}
 
 func (s *Config) filteredCandidates() []config.Candidate {
 	items := make([]config.Candidate, 0, len(s.candidates))
 	filter := strings.ToLower(s.filter)
 	for _, candidate := range s.candidates {
-		if filter == "" || strings.Contains(strings.ToLower(candidate.Path+" "+string(candidate.Classification)+" "+candidate.Reason), filter) {
+		presentation := configPresentationFor(candidate.Classification)
+		if filter == "" || strings.Contains(strings.ToLower(candidate.Path+" "+string(presentation.Group)+" "+presentation.Label+" "+presentation.Meaning), filter) {
 			items = append(items, candidate)
 		}
 	}
 	return items
 }
 func (s *Config) reviewCounts() string {
-	counts := map[config.Classification]int{}
+	counts := map[configDisplayGroup]int{}
 	for _, candidate := range s.candidates {
-		counts[candidate.Classification]++
+		counts[configPresentationFor(candidate.Classification).Group]++
 	}
-	parts := make([]string, 0, len(counts))
-	for _, classification := range []config.Classification{config.ConfigModifiedBaseline, config.ConfigDeletedBaseline, config.ConfigAdded, config.ConfigAmbiguousBaseline, config.ConfigAmbiguousDeletion, config.ConfigSensitive, config.ConfigOversized, config.ConfigExcluded, config.ConfigDelegated, config.ConfigHistoricalBaseline} {
-		if counts[classification] > 0 {
-			parts = append(parts, fmt.Sprintf("%s:%d", configState(classification), counts[classification]))
-		}
-	}
-	if len(parts) == 0 {
-		return "clean:0"
-	}
-	return strings.Join(parts, "  ")
+	return strings.Join([]string{
+		configCount(counts[configNeedsReview], "needs review", "need review"),
+		configCount(counts[configChanges], "change", "changes"),
+		configCount(counts[configNoActionNeeded], "no action", "no action"),
+		configCount(counts[configNotManaged], "not managed", "not managed"),
+	}, " · ")
 }
 func (s *Config) listHeight() int {
 	if s.height == 0 {
@@ -456,31 +492,82 @@ func (s *Config) DetailView() string {
 	if candidate.Path == "" {
 		return "Config details"
 	}
-	lines := []string{"Path: " + components.DisplayText(candidate.Path), "State: " + configState(candidate.Classification), "Policy: " + s.candidatePolicy(candidate.Path), "Why: " + components.DisplayText(configReason(candidate.Reason))}
+	presentation := configPresentationFor(candidate.Classification)
+	policy := s.candidatePolicy(candidate.Path)
+	lines := []string{"Path: " + components.DisplayText(candidate.Path), "State: " + presentation.Label, "Policy: " + policy, "Policy meaning: " + configPolicyMeaning(policy), "Meaning: " + presentation.Meaning, "Saved in profile: " + map[bool]string{true: "Yes", false: "No"}[s.inspection.Managed]}
+	if policy == "Included" {
+		lines = append(lines, "Included never overrides safety rules.")
+	}
 	if s.inspection.LivePath != "" {
-		lines = append(lines, "Live: "+components.DisplayText(s.inspection.LivePath), "Baseline: "+components.DisplayText(s.inspection.BaselinePath), "Profile: "+components.DisplayText(s.inspection.ProfilePath))
+		lines = append(lines, "Live file: "+components.DisplayText(s.inspection.LivePath))
 	}
-	policy := "automatic"
-	if s.inspection.Managed {
-		policy = "managed"
+	if s.inspection.BaselinePath != "" {
+		lines = append(lines, "Omarchy default: "+components.DisplayText(s.inspection.BaselinePath))
 	}
-	lines = append(lines, "Effective policy: "+policy, "Provider reason: "+components.DisplayText(candidate.Reason), "Available actions: view diff, include, exclude, automatic")
-	if s.validLive() {
-		lines = append(lines, "Edit/open/copy: available")
-	} else {
-		lines = append(lines, "Edit/open/copy: unavailable (live path is not a regular file)")
+	if s.inspection.ProfilePath != "" {
+		lines = append(lines, "Saved copy: "+components.DisplayText(s.inspection.ProfilePath))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func configState(classification config.Classification) string {
-	states := map[config.Classification]string{
-		config.ConfigUnchangedBaseline: "Matches baseline", config.ConfigModifiedBaseline: "Changed from baseline", config.ConfigDeletedBaseline: "Deleted from live system", config.ConfigAdded: "New configuration", config.ConfigDelegated: "Managed elsewhere", config.ConfigExcluded: "Excluded", config.ConfigVolatile: "Not safe to capture", config.ConfigSensitive: "Sensitive", config.ConfigUnmanagedSymlink: "Unmanaged link", config.ConfigUnsupported: "Unsupported", config.ConfigOversized: "Too large", config.ConfigHistoricalBaseline: "Matches older baseline", config.ConfigAmbiguousBaseline: "Needs a decision", config.ConfigAmbiguousDeletion: "Needs a deletion decision",
+func configPolicyMeaning(policy string) string {
+	return map[string]string{"Auto": "Blueprint decides based on Omarchy defaults, ownership, and safety rules.", "Included": "You asked Config to manage this path when it is safe to do so.", "Excluded": "You asked Config to leave this path alone."}[policy]
+}
+
+type configDisplayGroup string
+
+const (
+	configNeedsReview    configDisplayGroup = "Needs review"
+	configChanges        configDisplayGroup = "Changes"
+	configNoActionNeeded configDisplayGroup = "No action needed"
+	configNotManaged     configDisplayGroup = "Not managed by Config"
+)
+
+type configPresentation struct {
+	Group   configDisplayGroup
+	Label   string
+	Meaning string
+}
+
+var configDisplayGroups = []configDisplayGroup{configNeedsReview, configChanges, configNoActionNeeded, configNotManaged}
+
+func configPresentationFor(classification config.Classification) configPresentation {
+	return configPresentations[classification]
+}
+
+var configPresentations = map[config.Classification]configPresentation{
+	config.ConfigAmbiguousBaseline:  {configNeedsReview, "Needs review", "This file differs, but Blueprint cannot safely tell whether it is your change or an Omarchy-version difference."},
+	config.ConfigAmbiguousDeletion:  {configNeedsReview, "Removal needs review", "An Omarchy default is missing, but Blueprint cannot safely tell whether you intentionally removed it."},
+	config.ConfigModifiedBaseline:   {configChanges, "Changed from Omarchy default", "You changed an Omarchy-provided configuration file. Blueprint can remember the change."},
+	config.ConfigDeletedBaseline:    {configChanges, "Omarchy default removed", "An Omarchy-provided file is absent and Blueprint has enough information to treat that removal as intentional."},
+	config.ConfigAdded:              {configChanges, "Added configuration", "This configuration file exists on your system but is not part of Omarchy's defaults."},
+	config.ConfigUnchangedBaseline:  {configNoActionNeeded, "Matches Omarchy default", "This file is unchanged from Omarchy, so there is nothing to save."},
+	config.ConfigHistoricalBaseline: {configNoActionNeeded, "Matches a previous Omarchy default", "This looks like an older Omarchy version rather than a personal customisation. Blueprint leaves it alone unless you explicitly include it."},
+	config.ConfigDelegated:          {configNotManaged, "Handled elsewhere", "Another Blueprint feature owns this path, so Config will not capture it again."},
+	config.ConfigExcluded:           {configNotManaged, "Excluded", "You told Config to leave this path alone."},
+	config.ConfigVolatile:           {configNotManaged, "Not suitable for capture", "This looks like application/runtime state rather than portable configuration."},
+	config.ConfigSensitive:          {configNotManaged, "Sensitive", "Blueprint detected content that should not be saved into the profile."},
+	config.ConfigOversized:          {configNotManaged, "Too large", "This file exceeds Config's safe automatic capture limit."},
+	config.ConfigUnsupported:        {configNotManaged, "Unsupported", "This filesystem entry cannot be handled safely by Config."},
+	config.ConfigUnmanagedSymlink:   {configNotManaged, "Symlink not managed here", "This path is a symbolic link that Config deliberately does not own."},
+}
+
+func defaultConfigCollapsed() map[configDisplayGroup]bool {
+	return map[configDisplayGroup]bool{configNoActionNeeded: true, configNotManaged: true}
+}
+
+func (s *Config) groupCollapsed(group configDisplayGroup) bool {
+	if s.collapsed == nil {
+		return group == configNoActionNeeded || group == configNotManaged
 	}
-	if state := states[classification]; state != "" {
-		return state
+	return s.collapsed[group]
+}
+
+func configCount(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
 	}
-	return string(classification)
+	return fmt.Sprintf("%d %s", count, plural)
 }
 func (s *Config) candidatePolicy(path string) string {
 	if s.session == nil {
@@ -501,10 +588,4 @@ func (s *Config) candidatePolicy(path string) string {
 func configPathWithin(path, root string) bool {
 	root = strings.TrimSuffix(root, "/")
 	return path == root || strings.HasPrefix(path, root+"/")
-}
-func configReason(reason string) string {
-	if reason == "" {
-		return "Blueprint found this path during configuration discovery."
-	}
-	return strings.ReplaceAll(reason, "-", " ")
 }

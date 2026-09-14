@@ -118,7 +118,7 @@ func (s *Capture) View() string {
 		return s.styles.Error("Capture failed: " + components.DisplayText(s.err.Error()))
 	}
 	if s.capturing {
-		return "Capturing selected providers...\n\nThis can take a while while providers inspect the running system."
+		return "Capturing selected categories...\n\nThis can take a while while categories inspect the running system."
 	}
 	if s.busy {
 		return "Loading capture status..."
@@ -138,14 +138,14 @@ func (s *Capture) View() string {
 		}
 		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: i == s.cursor, Focused: true})
 	}
-	return s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Provider", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
+	return s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
 }
 func (s *Capture) DetailView() string {
 	p := s.current()
 	if p.ID == "" {
-		return "Select providers to capture."
+		return "Select categories to capture."
 	}
-	return "Provider: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected: " + fmt.Sprint(s.chosen[p.ID])
+	return "Category: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected: " + fmt.Sprint(s.chosen[p.ID])
 }
 func (s *Capture) current() workflow.ProviderStatus {
 	if s.cursor >= 0 && s.cursor < len(s.statuses) {
@@ -195,6 +195,6 @@ func (s *Capture) confirmCapture() tea.Cmd {
 	}
 	s.confirm = true
 	return func() tea.Msg {
-		return components.ModalRequest{Title: "Capture selected providers", Content: components.Confirm("Capture selected running-system changes into this profile?")}
+		return components.ModalRequest{Title: "Capture selected categories", Content: components.Confirm("Capture selected running-system changes into this profile?")}
 	}
 }

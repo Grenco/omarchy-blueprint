@@ -3,6 +3,7 @@ package components
 import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TextInputModal provides the common input state used by root-owned modals.
@@ -31,4 +32,4 @@ func (m TextInputModal) Value() string {
 	}
 	return m.Input.Value()
 }
-func (m TextInputModal) View() string { return DisplayText(m.Input.View()) }
+func (m TextInputModal) View() string { return DisplayText(ansi.Strip(m.Input.View())) }

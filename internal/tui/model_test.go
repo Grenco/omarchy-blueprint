@@ -54,6 +54,33 @@ func TestPaneRowsAreBoundedToTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestWorkspaceShowsActiveScreenDescriptionAndAccountsForItsHeight(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	width, _ := components.InteriorSize(layoutForSize(m.width, m.height).workspaceWidth, layoutForSize(m.width, m.height).contentHeight)
+	overviewDescription := screenInfo(ScreenOverview).Short
+	assertDescriptionVisibleOnce(t, m.View().Content, overviewDescription, width)
+	m.selectScreen(ScreenConfig)
+	configDescription := screenInfo(ScreenConfig).Short
+	assertDescriptionVisibleOnce(t, m.View().Content, configDescription, width)
+	if strings.Contains(m.activeScreen().(DetailView).DetailView(), configDescription) {
+		t.Fatal("description appeared in details")
+	}
+	width, height := m.screenSize(ScreenConfig)
+	placeholder := m.screens[ScreenConfig].(*placeholderScreen)
+	if placeholder.width != width || placeholder.height != height {
+		t.Fatalf("config size = %dx%d, want %dx%d", placeholder.width, placeholder.height, width, height)
+	}
+}
+
+func assertDescriptionVisibleOnce(t *testing.T, view, description string, width int) {
+	t.Helper()
+	for _, line := range components.WrapText(description, width) {
+		if got := strings.Count(view, line); got != 1 {
+			t.Fatalf("description line %q count = %d, want 1", line, got)
+		}
+	}
+}
+
 func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	owner := &recordingScreen{id: ScreenResources}
@@ -95,9 +122,101 @@ func TestCompactSidebarIsVisibleWhenToggled(t *testing.T) {
 		t.Fatal("compact layout retained invisible sidebar focus")
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if !m.sidebarOpen || !strings.Contains(m.View().Content, "Overview") {
+	if !m.sidebarOpen || m.focus != focusSidebar || !strings.Contains(m.View().Content, "Overview") {
 		t.Fatal("compact sidebar did not open visibly")
 	}
+}
+
+func TestSidebarSectionNavigation(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.focus = focusSidebar
+	for _, test := range []struct {
+		start ScreenID
+		key   rune
+		want  ScreenID
+	}{
+		{ScreenOverview, ']', ScreenCapture},
+		{ScreenRestore, ']', ScreenPackages},
+		{ScreenThemes, '[', ScreenCapture},
+		{ScreenConfig, ']', ScreenMachines},
+		{ScreenSync, '[', ScreenConfig},
+		{ScreenSync, ']', ScreenSync},
+		{ScreenCapture, '[', ScreenOverview},
+	} {
+		m.selected = screenIndex(t, test.start)
+		m = updateModel(t, m, tea.KeyPressMsg{Code: test.key})
+		if got := m.screenID(); got != test.want || m.focus != focusSidebar {
+			t.Fatalf("%s %q = %s (focus %d), want %s sidebar", test.start, test.key, got, m.focus, test.want)
+		}
+	}
+	m.focus = focusWorkspace
+	m.selected = screenIndex(t, ScreenOverview)
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ']'})
+	if m.screenID() != ScreenOverview {
+		t.Fatal("workspace bracket changed ungrouped screen")
+	}
+
+	m = updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ']'})
+	if !m.sidebarOpen || m.screenID() != ScreenCapture || m.focus != focusSidebar {
+		t.Fatalf("compact sidebar section jump failed: open=%v screen=%s focus=%d", m.sidebarOpen, m.screenID(), m.focus)
+	}
+}
+
+func TestGroupNavigationBindingsFollowFocusAndStayOutOfFooter(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	m.screens[ScreenConfig] = &configScreen{Config: screens.NewConfig(nil)}
+	m.selected = screenIndex(t, ScreenConfig)
+	m.focus = focusWorkspace
+	assertBindingLabels(t, m.bindings(), "Previous group", "Next group")
+	if footer := m.footer(); strings.Contains(footer, "Previous group") || strings.Contains(footer, "Next group") {
+		t.Fatalf("group bindings appeared in footer: %q", footer)
+	}
+	m.focus = focusDetails
+	assertBindingLabels(t, m.bindings())
+	m.focus = focusSidebar
+	assertBindingLabels(t, m.bindings(), "Previous sidebar section", "Next sidebar section")
+}
+
+func assertBindingLabels(t *testing.T, bindings []Binding, want ...string) {
+	t.Helper()
+	labels := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		labels = append(labels, binding.Label)
+	}
+	for _, label := range want {
+		if !containsString(labels, label) {
+			t.Fatalf("bindings %q missing %q", labels, label)
+		}
+	}
+	if len(want) == 0 {
+		for _, label := range labels {
+			if label == "Previous group" || label == "Next group" {
+				t.Fatalf("details retained workspace binding %q", label)
+			}
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func screenIndex(t *testing.T, id ScreenID) int {
+	t.Helper()
+	for index, candidate := range screenOrder {
+		if candidate == id {
+			return index
+		}
+	}
+	t.Fatalf("screen %s not found", id)
+	return 0
 }
 
 func TestScreenKeyOwnershipPrecedesRootFocusAndOverlays(t *testing.T) {
@@ -155,7 +274,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	}
 	configScreen := m.activeScreen().(*configScreen)
 	consumeScreenCmd(t, &m, configScreen.Init())
-	if view := configScreen.View(); !strings.Contains(view, "Needs a decision") || !strings.Contains(view, ".config/example/settings.toml") || !strings.Contains(view, "Auto") {
+	if view := configScreen.View(); !strings.Contains(view, "Needs review") || !strings.Contains(view, ".config/example/settings.toml") || !strings.Contains(view, "Auto") {
 		t.Fatalf("config semantic markers missing: %q", view)
 	}
 	consumeScreenCmd(t, &m, configScreen.Update(tea.KeyPressMsg{Code: 'i'}))
@@ -528,6 +647,31 @@ func TestCommandPalette(t *testing.T) {
 	}
 }
 
+func TestEmptySearchInputsHaveNoPlaceholderCharacter(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: ':'})
+	if view := m.View().Content; strings.Contains(view, "Search: S") {
+		t.Fatalf("palette placeholder leaked into empty input: %q", view)
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
+	if view := m.View().Content; strings.Contains(view, "Search: S") {
+		t.Fatalf("help placeholder leaked into empty input: %q", view)
+	}
+}
+
+func TestConfigFilterOwnsReservedPrintableKeysAtRoot(t *testing.T) {
+	m := updateModel(t, newModelWithSession(ThemeLoader{NoColor: true}, integrationSession(t)), tea.WindowSizeMsg{Width: 100, Height: 30})
+	consumeScreenCmd(t, &m, m.selectScreen(ScreenConfig))
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
+	for _, key := range "q?:hl[]" {
+		m = updateModel(t, m, textKey(key))
+	}
+	if !strings.Contains(m.activeScreen().View(), "Filter: q?:hl[]") || m.modal != modalNone || m.focus != focusWorkspace {
+		t.Fatalf("view=%q modal=%d focus=%d", m.activeScreen().View(), m.modal, m.focus)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -536,20 +680,64 @@ func TestHelp(t *testing.T) {
 	m.focus = focusDetails
 	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
 	view := m.View().Content
-	if !m.helpOpen || !strings.Contains(view, "CONFIG") || !strings.Contains(view, "View Config diff") || !strings.Contains(view, "Focus: details") {
+	long := screenInfo(ScreenConfig).Long
+	if !m.helpOpen || !strings.Contains(view, "CONFIG") || !strings.Contains(view, "View Config diff") {
 		t.Fatalf("help is not contextual to screen and focus: %q", view)
 	}
-	for _, key := range "restore" {
+	lines := m.helpLines()
+	for _, want := range []string{"CONFIG", "Search:", "KEYS", "GLOBAL", "Focus: details"} {
+		if !strings.Contains(strings.Join(lines, "\n"), want) {
+			t.Fatalf("default help missing %q: %q", want, lines)
+		}
+	}
+	for _, line := range components.WrapText(long, layoutForSize(m.width, m.height).workspaceWidth-4) {
+		if !strings.Contains(strings.Join(lines, "\n"), line) {
+			t.Fatalf("default help missing description line %q: %q", line, lines)
+		}
+	}
+	if !(indexOf(lines, "CONFIG") < indexOf(lines, "Search:") && indexOf(lines, "Search:") < indexOf(lines, "KEYS") && indexOf(lines, "KEYS") < indexOf(lines, "GLOBAL") && indexOf(lines, "GLOBAL") < indexOf(lines, "Focus: details")) {
+		t.Fatalf("help layout order=%q", lines)
+	}
+	for _, key := range "diff" {
 		m = updateModel(t, m, textKey(key))
 	}
 	view = m.View().Content
-	if !strings.Contains(view, "Restore") || strings.Contains(view, "View Config diff") {
+	if !strings.Contains(view, "Config is about your dotfiles") || !strings.Contains(view, "View Config diff") || strings.Contains(view, "Cycle Config policy") {
 		t.Fatalf("help search did not filter actions: %q", view)
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.helpOpen {
 		t.Fatal("help did not close")
 	}
+}
+
+func TestPaletteScreenAliases(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	for query, want := range map[string]ScreenID{
+		"dotfiles": ScreenConfig,
+		"rebuild":  ScreenRestore,
+		"commit":   ScreenSync,
+		"laptop":   ScreenMachines,
+		"scripts":  ScreenHooks,
+	} {
+		matches := filterActions(m.actions(), query)
+		found := false
+		for _, match := range matches {
+			found = found || match.Screen == want
+		}
+		if !found {
+			t.Errorf("%q matches=%#v, want %s", query, matches, want)
+		}
+	}
+}
+
+func indexOf(lines []string, prefix string) int {
+	for i, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			return i
+		}
+	}
+	return len(lines)
 }
 
 func TestPaletteDoesNotRunDisabledAction(t *testing.T) {
@@ -641,13 +829,20 @@ func TestHelpSearchIncludesBindingKeysLabelsAndBindingOnlyEntries(t *testing.T) 
 	}
 }
 
-func TestCaptureAllActionLabelMatchesSemantics(t *testing.T) {
+func TestCaptureActionLabelsUseCategories(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m.screens[ScreenCapture] = &captureScreen{Capture: screens.NewCaptureContext(context.Background(), nil)}
 	m.selectScreen(ScreenCapture)
+	want := map[string]string{
+		"capture.select":      "Toggle category selection",
+		"capture.select-all":  "Select changed categories",
+		"capture.run":         "Capture selected categories",
+		"capture.capture-all": "Capture all categories",
+		"capture.refresh":     "Refresh capture status",
+	}
 	for _, action := range m.actions() {
-		if action.ID == "capture.capture-all" && action.Label != "Capture all providers" {
-			t.Fatalf("label=%q", action.Label)
+		if label, ok := want[action.ID]; ok && action.Label != label {
+			t.Fatalf("%s label=%q, want %q", action.ID, action.Label, label)
 		}
 	}
 }

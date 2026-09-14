@@ -60,6 +60,32 @@ func TestProviderCollapsesSavedGroup(t *testing.T) {
 	}
 }
 
+func TestProviderGroupNavigationPreservesCollapsedGroups(t *testing.T) {
+	screen := &Provider{id: "packages", status: workflow.ProviderStatus{Captured: true, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}}}}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Official package child.
+	screen.Update(tea.KeyPressMsg{Code: '['})
+	if screen.selected != 0 {
+		t.Fatalf("[ selected %d, want current group heading", screen.selected)
+	}
+	screen.Update(tea.KeyPressMsg{Code: ']'})
+	if screen.selected != 2 {
+		t.Fatalf("] selected %d, want next group heading", screen.selected)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !screen.collapsed["AUR packages"] {
+		t.Fatal("enter did not collapse group")
+	}
+	screen.Update(tea.KeyPressMsg{Code: ']'})
+	if screen.selected != 3 || !screen.collapsed["AUR packages"] {
+		t.Fatalf("jump changed collapsed state or selected %d", screen.selected)
+	}
+	screen.Update(tea.KeyPressMsg{Code: '['})
+	screen.Update(tea.KeyPressMsg{Code: '['})
+	if screen.selected != 0 {
+		t.Fatalf("repeated [ selected %d, want no-wrap first group", screen.selected)
+	}
+}
+
 func TestProviderGroupsIncludedAndExcludedItemsWithStateMarkers(t *testing.T) {
 	screen := &Provider{id: "packages", status: workflow.ProviderStatus{Captured: true, Snapshot: profile.Packages{Official: []string{"git"}, Excluded: []string{"official:1password"}}}}
 	view := screen.View()
@@ -71,13 +97,22 @@ func TestProviderGroupsIncludedAndExcludedItemsWithStateMarkers(t *testing.T) {
 	}
 }
 
-func TestProviderGroupsPluginsBySource(t *testing.T) {
+func TestProviderWordingUsesPresentationOnlySourceLabels(t *testing.T) {
 	snapshot := profile.Plugins{Items: []profile.Plugin{{ID: "clock", Source: "builtin", Enabled: true}, {ID: "repo", Source: "git", Enabled: true}, {ID: "private", Source: "local"}}}
 	view := (&Provider{id: "plugins", status: workflow.ProviderStatus{Captured: true, Snapshot: snapshot}}).View()
-	for _, want := range []string{"Built-in plugins", "clock", "Git plugins", "repo", "Local plugins", "private"} {
+	for _, want := range []string{"Built-in plugins", "clock", "Installed plugins", "repo", "Local plugins", "private"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "Git plugins") || snapshot.Items[1].Source != "git" {
+		t.Fatalf("source presentation changed stored value: view=%q source=%q", view, snapshot.Items[1].Source)
+	}
+
+	themes := profile.Themes{Items: []profile.Theme{{ID: "nord", Type: "git"}}}
+	view = (&Provider{id: "themes", status: workflow.ProviderStatus{Captured: true, Snapshot: themes}}).View()
+	if !strings.Contains(view, "nord (installed)") || strings.Contains(view, "nord (git)") || themes.Items[0].Type != "git" {
+		t.Fatalf("theme source presentation changed stored value: view=%q type=%q", view, themes.Items[0].Type)
 	}
 }
 
