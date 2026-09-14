@@ -1454,7 +1454,7 @@ func (s *providerScreen) Bindings() []Binding {
 
 func (s *configScreen) ID() ScreenID { return ScreenConfig }
 func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}

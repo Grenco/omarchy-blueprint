@@ -660,6 +660,18 @@ func TestEmptySearchInputsHaveNoPlaceholderCharacter(t *testing.T) {
 	}
 }
 
+func TestConfigFilterOwnsReservedPrintableKeysAtRoot(t *testing.T) {
+	m := updateModel(t, newModelWithSession(ThemeLoader{NoColor: true}, integrationSession(t)), tea.WindowSizeMsg{Width: 100, Height: 30})
+	consumeScreenCmd(t, &m, m.selectScreen(ScreenConfig))
+	m = updateModel(t, m, tea.KeyPressMsg{Code: '/'})
+	for _, key := range "q?:hl[]" {
+		m = updateModel(t, m, textKey(key))
+	}
+	if !strings.Contains(m.activeScreen().View(), "Filter: q?:hl[]") || m.modal != modalNone || m.focus != focusWorkspace {
+		t.Fatalf("view=%q modal=%d focus=%d", m.activeScreen().View(), m.modal, m.focus)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})

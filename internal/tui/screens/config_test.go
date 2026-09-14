@@ -149,7 +149,7 @@ func TestConfigScreenDetailUsesPlainLanguage(t *testing.T) {
 	}
 	screen := &Config{selected: 1, candidates: []config.Candidate{{Path: ".config/tool/config", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}, inspection: workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/tool/config"}, LivePath: live, LiveHandoffSafe: true, BaselinePath: "/baseline/config", ProfilePath: "/profile/config", Managed: true}}
 	detail := screen.DetailView()
-	for _, want := range []string{"State: Changed from Omarchy default", "Policy: Auto", "Meaning: You changed an Omarchy-provided configuration file. Blueprint can remember the change.", "Saved in profile: Yes", "Live file: " + live, "Omarchy default: /baseline/config", "Saved copy: /profile/config"} {
+	for _, want := range []string{"State: Changed from Omarchy default", "Policy: Auto", "Policy meaning: Blueprint decides based on Omarchy defaults, ownership, and safety rules.", "Meaning: You changed an Omarchy-provided configuration file. Blueprint can remember the change.", "Saved in profile: Yes", "Live file: " + live, "Omarchy default: /baseline/config", "Saved copy: /profile/config"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail missing %q:\n%s", want, detail)
 		}
@@ -158,6 +158,25 @@ func TestConfigScreenDetailUsesPlainLanguage(t *testing.T) {
 		if strings.Contains(detail, unwanted) {
 			t.Fatalf("detail contains obsolete %q:\n%s", unwanted, detail)
 		}
+	}
+	session, _ := newSyncSession(t)
+	if err := session.SetConfigPolicy(context.Background(), ".config/tool/config", "include"); err != nil {
+		t.Fatal(err)
+	}
+	screen.session = session
+	detail = screen.DetailView()
+	for _, want := range []string{"Policy: Included", "Policy meaning: You asked Config to manage this path when it is safe to do so.", "Included never overrides safety rules."} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("included detail missing %q:\n%s", want, detail)
+		}
+	}
+}
+
+func TestConfigFocusRevealsFilteredCollapsedTarget(t *testing.T) {
+	screen := &Config{filter: "other", filtering: true, collapsed: defaultConfigCollapsed(), candidates: []config.Candidate{{Path: ".config/target", Classification: config.ConfigAdded}}}
+	screen.Focus(".config/target")
+	if screen.filter != "" || screen.filtering || screen.collapsed[configChanges] {
+		t.Fatalf("focus did not reveal target: filter=%q filtering=%v collapsed=%v", screen.filter, screen.filtering, screen.collapsed)
 	}
 }
 
