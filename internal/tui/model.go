@@ -1196,7 +1196,7 @@ func (m model) helpLines() []string {
 	lines = append(lines, components.WrapText(info.Long, max(1, layoutForSize(m.width, m.height).workspaceWidth-4))...)
 	lines = append(lines, "", "Search: "+m.helpInput.View(), "")
 	registry := ActionRegistry{Actions: m.actions(), Bindings: m.bindings()}
-	entries := registry.SearchHelp(m.helpQuery)
+	entries := registry.SearchBindings(m.helpQuery)
 	keyEntries, globalEntries := make([]HelpEntry, 0, len(entries)), make([]HelpEntry, 0, 3)
 	for _, entry := range entries {
 		if entry.Context == "Global" {

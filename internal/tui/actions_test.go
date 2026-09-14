@@ -20,7 +20,7 @@ func TestActionRegistryKeepsNavigationSearchOnlyInitially(t *testing.T) {
 
 func TestFooterHiddenBindingRemainsInHelpSearch(t *testing.T) {
 	registry := ActionRegistry{Actions: []Action{{ID: "previous", Label: "Previous group"}}, Bindings: []Binding{{ActionID: "previous", Label: "Previous group", Key: "[", HideFromFooter: true}}}
-	entries := registry.SearchHelp("previous")
+	entries := registry.SearchBindings("previous")
 	if len(entries) != 1 || entries[0].Key != "[" {
 		t.Fatalf("help entries=%#v", entries)
 	}

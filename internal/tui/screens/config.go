@@ -300,7 +300,7 @@ func (s *Config) View() string {
 	if len(tableRows) == 0 {
 		lines = append(lines, "✓ No configuration needs review.")
 	} else {
-		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 22, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 32, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	}
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)

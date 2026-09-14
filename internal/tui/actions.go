@@ -50,13 +50,12 @@ func (r ActionRegistry) Initial() []Action {
 
 func (r ActionRegistry) Search(query string) []Action { return filterActions(r.Actions, query) }
 
-func (r ActionRegistry) SearchHelp(query string) []HelpEntry {
+func (r ActionRegistry) SearchBindings(query string) []HelpEntry {
 	actions := make(map[string]Action, len(r.Actions))
-	bound := make(map[string]bool, len(r.Bindings))
 	for _, action := range r.Actions {
 		actions[action.ID] = action
 	}
-	entries := make([]HelpEntry, 0, len(r.Bindings)+len(r.Actions))
+	entries := make([]HelpEntry, 0, len(r.Bindings))
 	for _, binding := range r.Bindings {
 		action := actions[binding.ActionID]
 		label := binding.Label
@@ -64,27 +63,11 @@ func (r ActionRegistry) SearchHelp(query string) []HelpEntry {
 			label = action.Label
 		}
 		entry := HelpEntry{Key: binding.DisplayKeys(), Label: label, Context: binding.Context, Group: action.Group, ActionID: action.ID, Keywords: action.Keywords}
-		if helpEntryMatches(entry, query) {
-			entries = append(entries, entry)
-		}
-		if binding.ActionID != "" {
-			bound[binding.ActionID] = true
-		}
-	}
-	for _, action := range r.Actions {
-		if bound[action.ID] {
-			continue
-		}
-		entry := HelpEntry{Key: "-", Label: action.Label, Group: action.Group, ActionID: action.ID, Keywords: action.Keywords}
-		if helpEntryMatches(entry, query) {
+		if searchMatch(query, entry.Key, entry.Label, entry.Context, entry.Group, entry.ActionID, entry.Keywords) {
 			entries = append(entries, entry)
 		}
 	}
 	return entries
-}
-
-func helpEntryMatches(entry HelpEntry, query string) bool {
-	return subsequenceMatch(query, entry.Key) || subsequenceMatch(query, entry.Label) || subsequenceMatch(query, entry.Context) || subsequenceMatch(query, entry.Group) || subsequenceMatch(query, entry.ActionID) || subsequenceMatch(query, entry.Keywords)
 }
 
 func (r ActionRegistry) Key(actionID string) string {
@@ -113,16 +96,6 @@ func visibleActions(actions []Action) []Action {
 	return visible
 }
 
-func subsequenceMatch(query, value string) bool {
-	query, value = lower(query), lower(value)
-	for _, r := range value {
-		if len(query) > 0 && r == rune(query[0]) {
-			query = query[1:]
-		}
-	}
-	return query == ""
-}
-
 func lower(s string) string {
 	result := make([]rune, 0, len(s))
 	for _, r := range s {
@@ -135,15 +108,41 @@ func lower(s string) string {
 }
 
 func filterActions(actions []Action, query string) []Action {
-	exact, filtered := make([]Action, 0, len(actions)), make([]Action, 0, len(actions))
+	exact, prefix, substring := make([]Action, 0, len(actions)), make([]Action, 0, len(actions)), make([]Action, 0, len(actions))
 	for _, action := range actions {
-		if lower(query) == lower(action.Label) || lower(query) == lower(action.ID) || keywordMatch(query, action.Keywords) {
+		rank := searchRank(query, action.Label, action.ID, action.Group, action.Keywords)
+		if rank == 0 {
 			exact = append(exact, action)
-		} else if subsequenceMatch(query, action.Label) || subsequenceMatch(query, action.ID) || subsequenceMatch(query, action.Group) || subsequenceMatch(query, action.Keywords) {
-			filtered = append(filtered, action)
+		} else if rank == 1 {
+			prefix = append(prefix, action)
+		} else if rank == 2 {
+			substring = append(substring, action)
 		}
 	}
-	return append(exact, filtered...)
+	return append(append(exact, prefix...), substring...)
+}
+
+func searchMatch(query string, values ...string) bool { return searchRank(query, values...) < 3 }
+func searchRank(query string, values ...string) int {
+	query = lower(strings.TrimSpace(query))
+	if query == "" {
+		return 0
+	}
+	text := lower(strings.Join(values, " "))
+	for _, word := range strings.Fields(query) {
+		if !strings.Contains(text, word) {
+			return 3
+		}
+	}
+	for _, value := range values {
+		if query == lower(value) || keywordMatch(query, value) {
+			return 0
+		}
+	}
+	if strings.HasPrefix(text, query) {
+		return 1
+	}
+	return 2
 }
 
 func keywordMatch(query, keywords string) bool {
