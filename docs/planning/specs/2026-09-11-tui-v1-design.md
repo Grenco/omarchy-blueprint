@@ -6,7 +6,7 @@
 
 **ADR:** `docs/adr/0017-tui-interactive-client-architecture.md`
 
-**Prerequisite:** `docs/superpowers/specs/2026-09-11-profile-git-sync-v1-design.md`
+**Prerequisite:** `docs/planning/specs/2026-09-11-profile-git-sync-v1-design.md`
 
 > **Historical design note:** This approved v1 design predates the dedicated
 > Capture screen. The implementation clarification below records the current

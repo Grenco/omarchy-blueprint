@@ -3019,7 +3019,7 @@ regular files), and `copy` (filesystem snapshots that exclude `.git`
 administration data for Git worktrees). Missing resources can be reconstructed;
 existing differing destinations remain untouched. See
 [ADR 0015](docs/adr/0015-dirty-git-resource-policies.md) and the [Dirty Git
-State v2 design](docs/superpowers/specs/2026-09-10-dirty-git-state-v2-design.md).
+State v2 design](docs/planning/specs/2026-09-10-dirty-git-state-v2-design.md).
 
 Schema-11 **Machine Overlays v1 / Resource Path Mappings** is delivered.
 Explicit, portable machine overlays map complete Resource roots to a local

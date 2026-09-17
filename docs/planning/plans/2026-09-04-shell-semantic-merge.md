@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, Cobra, standard-library `encoding/json`, existing Blueprint Shell `Document`, provider registry, restore planner/executor/journal.
 
-**Spec:** `docs/superpowers/specs/2026-09-04-shell-semantic-merge-design.md`
+**Spec:** `docs/planning/specs/2026-09-04-shell-semantic-merge-design.md`
 
 ## Global Constraints
 
@@ -40,8 +40,8 @@
 ```text
 internal/providers/shell/merge.go
 internal/providers/shell/merge_test.go
-docs/superpowers/specs/2026-09-04-shell-semantic-merge-design.md
-docs/superpowers/plans/2026-09-04-shell-semantic-merge.md
+docs/planning/specs/2026-09-04-shell-semantic-merge-design.md
+docs/planning/plans/2026-09-04-shell-semantic-merge.md
 docs/adr/0009-semantic-shell-merge.md
 ```
 

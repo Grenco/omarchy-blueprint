@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, Cobra, `github.com/pelletier/go-toml/v2`, system Git CLI through `internal/command`, existing restore journal/executor and content hashing helpers.
 
-**Spec:** `docs/superpowers/specs/2026-09-10-dirty-git-state-v2-design.md`
+**Spec:** `docs/planning/specs/2026-09-10-dirty-git-state-v2-design.md`
 
 ## Global Constraints
 
@@ -58,7 +58,7 @@
 - `internal/model/model.go` — typed `GitPatchApply` restore action.
 - `internal/restore/executor.go`, `internal/restore/executor_test.go` — validate and execute typed Git patch operations.
 - `internal/app/app.go`, `internal/app/providers.go`, `internal/app/app_test.go` — CLI flags, strategy updates, informational Git-state rendering/JSON, and transaction finalization.
-- `README.md`, `docs/manual-test-checklist.md`, `docs/adr/0012-portable-resources.md`, `docs/adr/0015-dirty-git-resource-policies.md`, `docs/superpowers/specs/2026-09-08-portable-resources-design.md`, `ROADMAP.md` — delivered behavior and supersession notes.
+- `README.md`, `docs/manual-test-checklist.md`, `docs/adr/0012-portable-resources.md`, `docs/adr/0015-dirty-git-resource-policies.md`, `docs/planning/specs/2026-09-08-portable-resources-design.md`, `ROADMAP.md` — delivered behavior and supersession notes.
 
 ---
 
@@ -66,7 +66,7 @@
 
 **Files:**
 - Create: `docs/adr/0015-dirty-git-resource-policies.md`
-- Create: `docs/superpowers/specs/2026-09-10-dirty-git-state-v2-design.md`
+- Create: `docs/planning/specs/2026-09-10-dirty-git-state-v2-design.md`
 - Modify: `internal/profile/profile.go`
 - Modify: `internal/profile/profile_test.go`
 
@@ -193,7 +193,7 @@ Expected: PASS.
 
 ```bash
 git add docs/adr/0015-dirty-git-resource-policies.md \
-  docs/superpowers/specs/2026-09-10-dirty-git-state-v2-design.md \
+  docs/planning/specs/2026-09-10-dirty-git-state-v2-design.md \
   internal/profile/profile.go internal/profile/profile_test.go
 git commit -m "feat: add dirty git resource profile state"
 ```
@@ -1386,7 +1386,7 @@ git commit -m "test: cover dirty git resource safety"
 - Modify: `README.md`
 - Modify: `docs/manual-test-checklist.md`
 - Modify: `docs/adr/0012-portable-resources.md`
-- Modify: `docs/superpowers/specs/2026-09-08-portable-resources-design.md`
+- Modify: `docs/planning/specs/2026-09-08-portable-resources-design.md`
 - Modify: `ROADMAP.md`
 
 **Interfaces:**
@@ -1433,7 +1433,7 @@ Review every hit for stale v1 claims that lack an explicit historical/superseded
 
 ```bash
 git add README.md ROADMAP.md docs/manual-test-checklist.md docs/adr/0012-portable-resources.md \
-  docs/superpowers/specs/2026-09-08-portable-resources-design.md
+  docs/planning/specs/2026-09-08-portable-resources-design.md
 git commit -m "docs: document dirty git resource policies"
 ```
 

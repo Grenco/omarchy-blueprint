@@ -5,7 +5,7 @@
 **Date:** 2026-09-10
 **Milestone:** Schema 10 — Git Resource Policies / Dirty Git State v2
 **Companion:** `docs/adr/0015-dirty-git-resource-policies.md`
-**Builds on:** `docs/adr/0012-portable-resources.md` and `docs/superpowers/specs/2026-09-08-portable-resources-design.md`
+**Builds on:** `docs/adr/0012-portable-resources.md` and `docs/planning/specs/2026-09-08-portable-resources-design.md`
 
 ## 1. Summary
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, Cobra, existing `command.Runner`, `github.com/pelletier/go-toml/v2`, current profile/state-provider architecture, current restore journal/executor, native `git` subprocesses, Linux filesystem symlinks.
 
-**Spec:** `docs/superpowers/specs/2026-09-08-portable-resources-design.md`
+**Spec:** `docs/planning/specs/2026-09-08-portable-resources-design.md`
 
 ## Global Constraints
 
@@ -2629,8 +2629,8 @@ git commit -m "test: restore dotfiles resources and inbound links"
 - Modify: `README.md`
 - Modify: `ROADMAP.md`
 - Add: `docs/adr/0012-portable-resources.md`
-- Add: `docs/superpowers/specs/2026-09-08-portable-resources-design.md`
-- Add: `docs/superpowers/plans/2026-09-08-portable-resources.md`
+- Add: `docs/planning/specs/2026-09-08-portable-resources-design.md`
+- Add: `docs/planning/plans/2026-09-08-portable-resources.md`
 
 **Interfaces:**
 - Documents completed behavior.
@@ -2766,8 +2766,8 @@ Expected:
 ```bash
 git add README.md ROADMAP.md \
   docs/adr/0012-portable-resources.md \
-  docs/superpowers/specs/2026-09-08-portable-resources-design.md \
-  docs/superpowers/plans/2026-09-08-portable-resources.md
+  docs/planning/specs/2026-09-08-portable-resources-design.md \
+  docs/planning/plans/2026-09-08-portable-resources.md
 git commit -m "docs: describe portable resources"
 ```
 
