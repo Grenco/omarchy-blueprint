@@ -15,7 +15,7 @@ func TestCaptureAllRequestsConfirmation(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "packages"}, {ID: "themes"}}, chosen: map[string]bool{}}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'C'})
 	request, ok := cmd().(components.ModalRequest)
-	if !ok || request.Title != "Capture selected providers" || !screen.chosen["packages"] || !screen.chosen["themes"] || !screen.captureAll {
+	if !ok || request.Title != "Capture selected categories" || !screen.chosen["packages"] || !screen.chosen["themes"] || !screen.captureAll {
 		t.Fatalf("request=%#v chosen=%#v", request, screen.chosen)
 	}
 	if view := screen.View(); view == "" || view == "Capture selected providers?\n\nEnter confirms. Escape cancels." {
@@ -53,6 +53,16 @@ func TestCaptureViewLabelsUncapturedProviders(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "themes"}}, chosen: map[string]bool{}}
 	if view := screen.View(); !strings.Contains(view, "not captured") {
 		t.Fatalf("view does not label uncaptured provider: %q", view)
+	}
+}
+
+func TestCaptureUsesCategoryTerminology(t *testing.T) {
+	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "themes"}}, chosen: map[string]bool{}}
+	if view := screen.View(); !strings.Contains(view, "Category") || strings.Contains(view, "Provider") {
+		t.Fatalf("capture terminology=%q", view)
+	}
+	if detail := (&Capture{chosen: map[string]bool{}}).DetailView(); detail != "Select categories to capture." {
+		t.Fatalf("empty detail=%q", detail)
 	}
 }
 

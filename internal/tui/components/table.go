@@ -124,7 +124,7 @@ func tableLine(cells []string, widths []int) string {
 		if i < len(cells) {
 			value = cells[i]
 		}
-		parts[i] = lipgloss.NewStyle().Width(width).MaxWidth(width).Render(value)
+		parts[i] = pad(strings.ReplaceAll(value, "\n", " "), width)
 	}
 	return strings.Join(parts, " ")
 }
