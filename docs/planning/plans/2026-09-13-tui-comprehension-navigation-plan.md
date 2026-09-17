@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, Bubble Tea v2, Lip Gloss v2, existing `internal/tui/components`, existing workflow/provider APIs.
 
-**Spec:** `docs/superpowers/specs/2026-09-13-tui-comprehension-design.md`
+**Spec:** `docs/planning/specs/2026-09-13-tui-comprehension-design.md`
 
 ## Global constraints
 
@@ -31,8 +31,8 @@
 - `internal/tui/catalog.go` — screen/section metadata, ordering, descriptions, search aliases, sidebar-section navigation helpers.
 - `internal/tui/catalog_test.go` — catalogue completeness/order/copy/search aliases/section-jump tests.
 - `internal/tui/components/sidebar_test.go` — grouped-sidebar rendering and selected-line tests.
-- `docs/superpowers/specs/2026-09-13-tui-comprehension-design.md` — approved product design.
-- `docs/superpowers/plans/2026-09-13-tui-comprehension-navigation.md` — this plan.
+- `docs/planning/specs/2026-09-13-tui-comprehension-design.md` — approved product design.
+- `docs/planning/plans/2026-09-13-tui-comprehension-navigation.md` — this plan.
 
 ### Modify
 
