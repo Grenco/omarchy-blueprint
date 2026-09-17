@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, Cobra, `pelletier/go-toml/v2`, standard-library filesystem/crypto packages, existing Blueprint provider/restore abstractions.
 
-**Spec:** `docs/superpowers/specs/2026-09-04-hooks-state-design.md`
+**Spec:** `docs/planning/specs/2026-09-04-hooks-state-design.md`
 
 ## Global Constraints
 
@@ -47,8 +47,8 @@ internal/providers/hooks/provider_test.go
 internal/providers/hooks/diff_test.go
 internal/providers/hooks/plan_test.go
 docs/adr/0010-portable-omarchy-hooks.md
-docs/superpowers/specs/2026-09-04-hooks-state-design.md
-docs/superpowers/plans/2026-09-04-hooks-state.md
+docs/planning/specs/2026-09-04-hooks-state-design.md
+docs/planning/plans/2026-09-04-hooks-state.md
 ```
 
 ### Modify
@@ -1493,8 +1493,8 @@ git commit -m "test: cover hooks restore workflow"
 **Files:**
 
 - Create: `docs/adr/0010-portable-omarchy-hooks.md`
-- Ensure present: `docs/superpowers/specs/2026-09-04-hooks-state-design.md`
-- Ensure present: `docs/superpowers/plans/2026-09-04-hooks-state.md`
+- Ensure present: `docs/planning/specs/2026-09-04-hooks-state-design.md`
+- Ensure present: `docs/planning/plans/2026-09-04-hooks-state.md`
 - Modify: `README.md`
 - Modify: `ROADMAP.md`
 - Modify: `docs/manual-test-checklist.md`

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, Cobra, pelletier/go-toml/v2, existing profile/Resources/restore engine, XDG state conventions, standard library filesystem/crypto packages.
 
-**Spec:** `docs/superpowers/specs/2026-09-11-machine-overlay-resource-path-mappings-design.md`
+**Spec:** `docs/planning/specs/2026-09-11-machine-overlay-resource-path-mappings-design.md`
 
 ## Global Constraints
 
@@ -66,8 +66,8 @@ Avoid creating a separate machine “provider”; machine overlays modify contex
 - Modify: `internal/profile/profile.go`
 - Modify: `internal/profile/profile_test.go`
 - Create: `docs/adr/0016-machine-overlay-resource-path-mappings.md`
-- Create: `docs/superpowers/specs/2026-09-11-machine-overlay-resource-path-mappings-design.md`
-- Create: `docs/superpowers/plans/2026-09-11-machine-overlay-resource-path-mappings-implementation-plan.md`
+- Create: `docs/planning/specs/2026-09-11-machine-overlay-resource-path-mappings-design.md`
+- Create: `docs/planning/plans/2026-09-11-machine-overlay-resource-path-mappings-implementation-plan.md`
 
 **Interfaces:**
 - Produces:
@@ -182,8 +182,8 @@ Expected: PASS.
 ```bash
 git add internal/profile/profile.go internal/profile/profile_test.go \
   docs/adr/0016-machine-overlay-resource-path-mappings.md \
-  docs/superpowers/specs/2026-09-11-machine-overlay-resource-path-mappings-design.md \
-  docs/superpowers/plans/2026-09-11-machine-overlay-resource-path-mappings-implementation-plan.md
+  docs/planning/specs/2026-09-11-machine-overlay-resource-path-mappings-design.md \
+  docs/planning/plans/2026-09-11-machine-overlay-resource-path-mappings-implementation-plan.md
 git commit -m "feat: add machine overlay profile state"
 ```
 

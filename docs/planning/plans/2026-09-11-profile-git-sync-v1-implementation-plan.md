@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, existing `command.Runner`, Git CLI invoked without a shell, Cobra, existing sensitive/content helpers, `github.com/sergi/go-diff/diffmatchpatch` v1.4.0, real temporary Git repositories in tests.
 
-**Spec:** `docs/superpowers/specs/2026-09-11-profile-git-sync-v1-design.md`
+**Spec:** `docs/planning/specs/2026-09-11-profile-git-sync-v1-design.md`
 
 ## Global Constraints
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+/1.26, `github.com/pelletier/go-toml/v2`, existing Omarchy Blueprint provider/model/restore architecture, SHA-256 content helpers, pure-Go text merge implementation/library behind a local interface, Linux filesystem primitives.
 
-**Spec:** `docs/superpowers/specs/2026-09-09-config-overlay-design.md`
+**Spec:** `docs/planning/specs/2026-09-09-config-overlay-design.md`
 
 ## Global Constraints
 
@@ -2662,8 +2662,8 @@ git commit -m "test: cover config overlay upgrade and restore"
 - Modify: `ROADMAP.md`
 - Create: `docs/adr/0013-baseline-aware-config-overlay.md`
 - Add/commit:
-  - `docs/superpowers/specs/2026-09-09-config-overlay-design.md`
-  - `docs/superpowers/plans/2026-09-09-config-overlay.md`
+  - `docs/planning/specs/2026-09-09-config-overlay-design.md`
+  - `docs/planning/plans/2026-09-09-config-overlay.md`
 
 **Interfaces:**
 - Produces user/developer documentation matching the implemented behavior.
@@ -2848,7 +2848,7 @@ Confirm the plan states that target data will be backed up before replacement/de
 - [ ] **Step 9: Commit documentation/final cleanup**
 
 ```bash
-git add README.md ROADMAP.md docs/adr/0013-baseline-aware-config-overlay.md docs/manual-test-checklist.md docs/superpowers/specs/2026-09-09-config-overlay-design.md docs/superpowers/plans/2026-09-09-config-overlay.md
+git add README.md ROADMAP.md docs/adr/0013-baseline-aware-config-overlay.md docs/manual-test-checklist.md docs/planning/specs/2026-09-09-config-overlay-design.md docs/planning/plans/2026-09-09-config-overlay.md
 git commit -m "docs: document baseline aware config overlay"
 ```
 

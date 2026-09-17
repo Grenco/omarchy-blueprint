@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25+, Cobra, `github.com/pelletier/go-toml/v2` v2.2.4, existing `command.Runner`, `model.RestorePlan`, generated `FileWrite`, and restore executor/journal.
 
-**Spec:** `docs/superpowers/specs/2026-09-08-mise-packages-design.md`
+**Spec:** `docs/planning/specs/2026-09-08-mise-packages-design.md`
 
 ## Global Constraints
 
@@ -2005,7 +2005,7 @@ Future Portable Resources should explicitly own project-local configs/repos rath
 Run:
 
 ```bash
-grep -RniE 'official.*AUR|AUR.*official|two package|package source|Mise|Tools provider' README.md ROADMAP.md docs/adr docs/superpowers/specs
+grep -RniE 'official.*AUR|AUR.*official|two package|package source|Mise|Tools provider' README.md ROADMAP.md docs/adr docs/planning/specs
 ```
 
 Review each relevant hit and update only statements contradicted by schema-6 behavior.
