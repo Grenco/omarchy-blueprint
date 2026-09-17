@@ -146,5 +146,5 @@ explicitly installed packages, so removal of extra packages stays disabled
 rather than guessed at. Theme, plugin, and config restore favor leaving a
 conflicting target alone over overwriting it. Defaults restore never unsets
 a machine-selected default. Broader machine-specific state, a generic backup
-provider, advanced Git workflows, and agent-assisted migration remain future
+feature, advanced Git workflows, and agent-assisted migration remain future
 work rather than current behavior.
