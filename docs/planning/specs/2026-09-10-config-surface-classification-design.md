@@ -14,7 +14,7 @@ the corresponding path as `modified-baseline` or `deleted-baseline` with reason
 `explicitly-included`; it never overrides safety, ownership, or size policy.
 **Target schema:** 9
 **Date:** 2026-09-10
-**Companion to:** `docs/superpowers/specs/2026-09-09-config-overlay-design.md`
+**Companion to:** `docs/planning/specs/2026-09-09-config-overlay-design.md`
 **Motivation:** real-machine Config v2 acceptance testing on PR #20
 
 ---

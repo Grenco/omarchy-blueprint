@@ -12,15 +12,15 @@
 
 **Tech Stack:** Go 1.25+, Bubble Tea v2, Lip Gloss v2, Bubbles v2, Cobra, `golang.org/x/term`, `github.com/mattn/go-shellwords`, existing Blueprint providers/machine/restore/profilegit packages.
 
-**Spec:** `docs/superpowers/specs/2026-09-11-tui-v1-design.md`
+**Spec:** `docs/planning/specs/2026-09-11-tui-v1-design.md`
 
 ## Prerequisite
 
 Profile Git Sync v1 must be merged first:
 
 ```text
-docs/superpowers/specs/2026-09-11-profile-git-sync-v1-design.md
-docs/superpowers/plans/2026-09-11-profile-git-sync-v1-implementation-plan.md
+docs/planning/specs/2026-09-11-profile-git-sync-v1-design.md
+docs/planning/plans/2026-09-11-profile-git-sync-v1-implementation-plan.md
 ```
 
 The TUI plan assumes `internal/profilegit` and `profile git ...` CLI commands exist and satisfy that spec.
