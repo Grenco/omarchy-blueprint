@@ -7,11 +7,12 @@ per-machine paths are handled.
 
 ## When to use Resources
 
-Config is selective configuration discovery: it compares your files against
-Omarchy's defaults and saves what meaningfully differs. Resources are the
-opposite — an explicit, authoritative file, folder, or Git project you want
-Blueprint to carry as-is, in full, because you decided it matters rather
-than because Blueprint inferred it from a baseline comparison.
+Config selectively discovers configuration worth remembering by comparing it
+with Omarchy defaults. Resources are explicit files, folders, or Git
+projects you deliberately ask Blueprint to reconstruct rather than something
+Blueprint discovers on its own. Their strategy determines whether Blueprint
+records an authoritative Git source, selected local Git changes, or copied
+filesystem content.
 
 ## Track and untrack
 

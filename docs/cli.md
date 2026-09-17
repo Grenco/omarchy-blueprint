@@ -20,8 +20,9 @@ omarchy-blueprint --profile ~/omarchy-profile capture
 ```
 
 Capture reads the current system and updates the profile. A category-less
-`capture` captures every supported category; only content that differs from
-the Omarchy default is written, so clean defaults stay out of the profile.
+`capture` updates every supported category, with each category applying its
+own capture rules. Config saves meaningful customisations relative to
+Omarchy defaults rather than copying unchanged defaults.
 
 ## Check, status, and diff
 
