@@ -1,6 +1,6 @@
 # Contributing
 
-Create a focused branch from `master`, keep commits small and coherent, and
+Create a focused branch from `main`, keep commits small and coherent, and
 include tests for behavior changes. Before opening a pull request, run:
 
 ```sh
