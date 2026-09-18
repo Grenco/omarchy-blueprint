@@ -12,6 +12,68 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
+func TestMachinesWithoutResourcesExplainsWhyScreenIsEmpty(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(
+		workflow.Dependencies{
+			StateHome: func() (string, error) { return stateHome, nil },
+			Hostname:  func() (string, error) { return "desktop", nil },
+		},
+		workflow.Options{ProfileDir: profileDir},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view := NewMachines(session).View()
+	for _, want := range []string{
+		"No machine-specific paths needed",
+		"only matters when a Resource needs a different location",
+		"There is nothing to configure on this screen.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("empty Machines missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestMachinesWithPortableResourcesExplainsOverridesWithoutHidingResource(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{
+		{ID: "projects", Path: "~/Projects"},
+	}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(
+		workflow.Dependencies{
+			StateHome: func() (string, error) { return stateHome, nil },
+			Hostname:  func() (string, error) { return "desktop", nil },
+		},
+		workflow.Options{ProfileDir: profileDir},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view := NewMachines(session).View()
+	for _, want := range []string{
+		"Portable paths are in use",
+		"machine-specific mapping only when one computer needs a different location",
+		"projects",
+		"~/Projects",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("portable Machines missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
 	data := profile.New("test", time.Now())

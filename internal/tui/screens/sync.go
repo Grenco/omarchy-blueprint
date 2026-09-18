@@ -239,7 +239,11 @@ func (s *Sync) View() string {
 		return "Profile Git diff\n" + s.diff.View()
 	}
 	if !s.status.Repository {
-		return "Profile is not a Git repository."
+		return renderEmptyState(s.styles, s.width, emptyStateCopy{
+			Heading:     "Profile Git is not set up",
+			Explanation: "Sync is optional. It keeps the Blueprint profile itself in Git so you can version it and share it between machines.",
+			Guidance:    "Press i to initialize a repository if you want to use Sync.",
+		})
 	}
 	branch := s.status.Branch
 	if branch == "" {
