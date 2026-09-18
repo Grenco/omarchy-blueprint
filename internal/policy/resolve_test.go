@@ -324,3 +324,26 @@ func TestResolveProfileTargetIsExplicitAtProfileDefaultsScope(t *testing.T) {
 		t.Fatalf("got %+v, want Explicit=true: a profile-scope rule is an override at profile-defaults scope", got)
 	}
 }
+
+func TestResolveRejectsMachineRulesAtProfileDefaultsScope(t *testing.T) {
+	// Machine == "" means "resolve profile-defaults scope," which must be
+	// isolated from any machine overlay. Supplying MachineRules anyway
+	// (for example a caller that forgot to clear them, or accidentally
+	// passed the currently selected machine's rules) must fail rather
+	// than silently winning over the profile value or being ignored.
+	_, err := policy.Resolve(policy.ResolveRequest{
+		Axis:     policy.AxisRestore,
+		Machine:  "",
+		Category: "packages",
+		Target:   "official:firefox",
+		MachineRules: policy.Rules{Restore: []policy.Rule{
+			rule("packages", "official:firefox", policy.SettingDisabled),
+		}},
+		ProfileRules: policy.Rules{Restore: []policy.Rule{
+			rule("packages", "official:firefox", policy.SettingEnabled),
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected machine rules at profile-defaults scope (empty Machine) to be rejected")
+	}
+}

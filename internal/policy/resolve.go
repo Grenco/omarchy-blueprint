@@ -38,13 +38,21 @@ type ResolveRequest struct {
 // that only exists in ProfileRules is inherited (Explicit=false) even
 // though it is a direct rule at the profile's own scope. Passing an empty
 // Machine means "resolve profile-defaults scope," where only a profile
-// rule can be Explicit.
+// rule can be Explicit. Profile-defaults resolution must be isolated from
+// any machine overlay: Resolve rejects a request with an empty Machine
+// but non-empty MachineRules rather than silently ignoring or applying
+// them, since either behavior would hide a caller bug that supplied the
+// wrong scope's rules.
 func Resolve(request ResolveRequest) (EffectiveSetting, error) {
 	if err := ValidateAxis(request.Axis); err != nil {
 		return EffectiveSetting{}, err
 	}
 	machineRules := axisRules(request.MachineRules, request.Axis)
 	profileRules := axisRules(request.ProfileRules, request.Axis)
+
+	if request.Machine == "" && len(machineRules) > 0 {
+		return EffectiveSetting{}, fmt.Errorf("policy: machine rules supplied for profile-defaults scope (empty Machine)")
+	}
 
 	if err := validateRules(machineRules); err != nil {
 		return EffectiveSetting{}, fmt.Errorf("policy: machine rules: %w", err)
