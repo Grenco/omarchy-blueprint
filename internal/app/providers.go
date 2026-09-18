@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -412,8 +414,127 @@ func (packagesStateProvider) CategoryEnabled() bool { return true }
 func (packagesStateProvider) Captured(profile.Data) bool { return true }
 
 func (p packagesStateProvider) provider() (packagesprovider.Provider, error) {
-	path, err := p.deps.MiseGlobalConfig()
-	return packagesprovider.Provider{Runner: p.deps.Runner, MiseGlobalConfig: path}, err
+	miseConfig, err := p.deps.MiseGlobalConfig()
+	return packagesprovider.Provider{Runner: p.deps.Runner, MiseGlobalConfig: miseConfig}, err
+}
+
+// InspectTargets reports every portable package (official:<name>, aur:<name>,
+// mise:<id>) currently desired, currently installed, or explicitly excluded.
+// Hardware/machine-specific packages are reported separately and marked
+// CaptureEligible: false, since they are protected inspection metadata, not
+// normal portable targets (see Task 17's classification rules).
+func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desired := d.Packages
+
+	desiredPortable, currentPortable := map[string]bool{}, map[string]bool{}
+	for _, name := range desired.Official {
+		desiredPortable["official:"+name] = true
+	}
+	for _, name := range desired.AUR {
+		desiredPortable["aur:"+name] = true
+	}
+	for id := range desired.Mise {
+		desiredPortable["mise:"+id] = true
+	}
+	for _, name := range current.Official {
+		currentPortable["official:"+name] = true
+	}
+	for _, name := range current.AUR {
+		currentPortable["aur:"+name] = true
+	}
+	for id := range current.Mise {
+		currentPortable["mise:"+id] = true
+	}
+	excluded := map[string]bool{}
+	for _, ref := range desired.Excluded {
+		excluded[ref] = true
+	}
+
+	keys := map[string]bool{}
+	for key := range desiredPortable {
+		keys[key] = true
+	}
+	for key := range currentPortable {
+		keys[key] = true
+	}
+	for key := range excluded {
+		keys[key] = true
+	}
+	sortedKeys := make([]string, 0, len(keys))
+	for key := range keys {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Strings(sortedKeys)
+
+	targets := make([]workflow.TargetInspection, 0, len(sortedKeys)+len(current.MachineSpecific))
+	for _, key := range sortedKeys {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case excluded[key]:
+			desiredState = workflow.TargetAbsent
+		case desiredPortable[key]:
+			desiredState = workflow.TargetPresent
+		}
+		currentState := workflow.TargetAbsent
+		if currentPortable[key] {
+			currentState = workflow.TargetPresent
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             key,
+			Label:           packageLabel(key),
+			Desired:         desiredState,
+			Current:         currentState,
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture:        true,
+				SupportsRestore:        true,
+				SupportsDesiredAbsence: true,
+				SupportsExactRemoval:   true,
+			},
+		})
+	}
+
+	machineSpecific := map[string]bool{}
+	for _, ref := range desired.MachineSpecific {
+		machineSpecific[ref] = true
+	}
+	for _, ref := range current.MachineSpecific {
+		machineSpecific[ref] = true
+	}
+	machineKeys := make([]string, 0, len(machineSpecific))
+	for ref := range machineSpecific {
+		machineKeys = append(machineKeys, ref)
+	}
+	sort.Strings(machineKeys)
+	for _, ref := range machineKeys {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             ref,
+			Label:           packageLabel(ref),
+			Desired:         workflow.TargetUnknown,
+			Current:         workflow.TargetPresent,
+			CaptureEligible: false,
+			RestoreEligible: false,
+			SafetyReason:    "hardware/machine-specific package is not portable across machines",
+		})
+	}
+	return targets, nil
+}
+
+func packageLabel(ref string) string {
+	_, name, ok := strings.Cut(ref, ":")
+	if !ok {
+		return ref
+	}
+	return name
 }
 
 func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -769,6 +890,87 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir, Ownership: claims, History: history}, nil
 }
 
+// InspectTargets reports every scanned Config candidate as a target keyed by
+// its canonical managed path, with a meaningful parent chain. Classification
+// drives both the descriptive Desired/Current state and whether the path is
+// currently safe for Blueprint to manage automatically; safety-blocked
+// classifications (delegated, volatile, sensitive, unmanaged symlink,
+// unsupported, oversized, ambiguous) stay CaptureEligible: false, since
+// provider safety checks remain authoritative over policy.
+func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return nil, err
+	}
+	scan, err := provider.Scan(d.Config)
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]workflow.TargetInspection, 0, len(scan.Candidates))
+	for _, candidate := range scan.Candidates {
+		desired, current, eligible, reason := configTargetState(candidate.Classification)
+		targets = append(targets, workflow.TargetInspection{
+			Key:             candidate.Path,
+			Parent:          configParent(candidate.Path),
+			Label:           candidate.Path,
+			Desired:         desired,
+			Current:         current,
+			CaptureEligible: eligible,
+			RestoreEligible: eligible,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture:        true,
+				SupportsRestore:        true,
+				SupportsDesiredAbsence: true,
+				SupportsExactRemoval:   eligible,
+				Hierarchical:           true,
+			},
+			SafetyReason: reason,
+		})
+	}
+	return targets, nil
+}
+
+// configTargetState maps a Config scan Classification onto the provider-
+// neutral Desired/Current/eligibility triple. Baseline-tracked
+// classifications (unchanged, modified, historical, deleted) reflect a path
+// already known to the profile; everything else reads as not-yet-tracked.
+func configTargetState(classification configprovider.Classification) (desired, current workflow.TargetState, eligible bool, reason string) {
+	switch classification {
+	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline:
+		return workflow.TargetPresent, workflow.TargetPresent, true, ""
+	case configprovider.ConfigDeletedBaseline:
+		return workflow.TargetPresent, workflow.TargetAbsent, true, ""
+	case configprovider.ConfigAdded:
+		return workflow.TargetUnknown, workflow.TargetPresent, true, ""
+	case configprovider.ConfigExcluded:
+		return workflow.TargetAbsent, workflow.TargetPresent, true, ""
+	case configprovider.ConfigDelegated:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "delegated to another provider"
+	case configprovider.ConfigVolatile:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "excluded as state-heavy/volatile by default"
+	case configprovider.ConfigSensitive:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "excluded as a likely secret/credential path"
+	case configprovider.ConfigUnmanagedSymlink:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "existing symlink is not owned by Blueprint"
+	case configprovider.ConfigUnsupported:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "unsupported file type"
+	case configprovider.ConfigOversized:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "exceeds the capture size limit"
+	case configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion:
+		return workflow.TargetUnknown, workflow.TargetPresent, false, "baseline provenance is ambiguous"
+	default:
+		return workflow.TargetUnknown, workflow.TargetUnknown, false, "unrecognized classification"
+	}
+}
+
+func configParent(logical string) string {
+	dir := path.Dir(logical)
+	if dir == "." || dir == "/" {
+		return ""
+	}
+	return dir
+}
+
 func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoot string, recursive bool) ownership.Index {
 	relative, err := filepath.Rel(configRoot, path)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -867,6 +1069,43 @@ func (defaultsStateProvider) Empty(state any) bool {
 
 func (p defaultsStateProvider) provider() defaultsprovider.Provider {
 	return defaultsprovider.Provider{Runner: p.deps.Runner, ProfileDir: p.opt.profileDir}
+}
+
+// InspectTargets reports the four fixed Defaults targets. There is no
+// explicit desired-absence concept for a default application choice: an
+// empty stored value means "never captured," not "explicitly cleared."
+func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	current, err := p.provider().Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fields := []struct{ key, desired, current string }{
+		{"terminal", d.Defaults.Terminal, current.Terminal},
+		{"browser", d.Defaults.Browser, current.Browser},
+		{"editor", d.Defaults.Editor, current.Editor},
+		{"agent", d.Defaults.Agent, current.Agent},
+	}
+	targets := make([]workflow.TargetInspection, 0, len(fields))
+	for _, field := range fields {
+		desiredState := workflow.TargetUnknown
+		if field.desired != "" {
+			desiredState = workflow.TargetPresent
+		}
+		currentState := workflow.TargetAbsent
+		if field.current != "" {
+			currentState = workflow.TargetPresent
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             field.key,
+			Label:           field.key,
+			Desired:         desiredState,
+			Current:         currentState,
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+		})
+	}
+	return targets, nil
 }
 
 func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
