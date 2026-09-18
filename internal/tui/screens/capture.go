@@ -43,9 +43,12 @@ func NewCaptureContext(ctx context.Context, session *workflow.Session) *Capture 
 	return &Capture{ctx: ctx, session: session, chosen: map[string]bool{}}
 }
 func (s *Capture) SetStyles(styles components.Styles) { s.styles = styles }
-func (s *Capture) SetSize(width, height int)          { s.width, s.height = width, height }
-func (s *Capture) Init() tea.Cmd                      { return s.refresh() }
-func (s *Capture) TransientActive() bool              { return s.confirm || s.busy }
+func (s *Capture) SetSize(width, height int) {
+	s.width, s.height = width, height
+	s.ensureCursorVisible()
+}
+func (s *Capture) Init() tea.Cmd         { return s.refresh() }
+func (s *Capture) TransientActive() bool { return s.confirm || s.busy }
 func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case captureStatusMsg:
@@ -53,6 +56,8 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.statuses, s.err, s.busy = msg.statuses, msg.err, false
+		s.cursor = min(s.cursor, max(0, len(s.statuses)-1))
+		s.ensureCursorVisible()
 		return nil
 	case captureDoneMsg:
 		if msg.requestID != s.requestID {
@@ -82,13 +87,16 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 	s.navigation.Selected = s.cursor
 	if s.navigation.Vim(key.String(), len(s.statuses), max(1, s.height-2)) {
 		s.cursor = s.navigation.Selected
+		s.ensureCursorVisible()
 		return nil
 	}
 	switch key.String() {
 	case "j", "down":
 		s.cursor = min(len(s.statuses)-1, s.cursor+1)
+		s.ensureCursorVisible()
 	case "k", "up":
 		s.cursor = max(0, s.cursor-1)
+		s.ensureCursorVisible()
 	case "space", " ":
 		if p := s.current(); p.ID != "" {
 			s.chosen[p.ID] = !s.chosen[p.ID]
@@ -125,24 +133,8 @@ func (s *Capture) View() string {
 		return "Loading capture status..."
 	}
 	lines := []string{}
-	if len(s.statuses) > 0 {
-		anyCaptured := false
-		for _, status := range s.statuses {
-			if status.Captured {
-				anyCaptured = true
-				break
-			}
-		}
-		if !anyCaptured {
-			hintWidth := s.width
-			if hintWidth <= 0 || hintWidth > 60 {
-				hintWidth = 60
-			}
-			lines = append(lines, renderEmptyState(s.styles, hintWidth, emptyStateCopy{
-				Heading:     "Choose what this profile should remember",
-				Explanation: "Nothing has been captured yet. Select the categories you want in this profile; you do not need to capture everything.",
-			}), "")
-		}
+	if hint, ok := s.hint(); ok {
+		lines = append(lines, hint, "")
 	}
 	rows := make([]components.Row, 0, len(s.statuses))
 	for i, p := range s.statuses {
@@ -159,9 +151,82 @@ func (s *Capture) View() string {
 		}
 		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: i == s.cursor, Focused: true})
 	}
-	table := s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
+	table := s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, s.tableRowHeight(), s.styles)
 	lines = append(lines, table)
 	return strings.Join(lines, "\n")
+}
+
+// freshProfile reports whether no category has been captured yet, the
+// condition under which the onboarding hint is offered.
+func (s *Capture) freshProfile() bool {
+	if len(s.statuses) == 0 {
+		return false
+	}
+	for _, status := range s.statuses {
+		if status.Captured {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Capture) hintWidth() int {
+	hintWidth := s.width
+	if hintWidth <= 0 || hintWidth > 60 {
+		hintWidth = 60
+	}
+	return hintWidth
+}
+
+// hint returns the onboarding hint text and whether it should be shown. At
+// constrained heights it compacts to a heading-only line rather than take
+// room the category table needs; it is never shown at the expense of a
+// category becoming unreachable.
+func (s *Capture) hint() (string, bool) {
+	if !s.freshProfile() {
+		return "", false
+	}
+	full := renderEmptyState(s.styles, s.hintWidth(), emptyStateCopy{
+		Heading:     "Choose what this profile should remember",
+		Explanation: "Nothing has been captured yet. Select the categories you want in this profile; you do not need to capture everything.",
+	})
+	if s.height <= 0 || s.height-hintBlockHeight(full) >= minTableRowHeight {
+		return full, true
+	}
+	compact := renderEmptyState(s.styles, s.hintWidth(), emptyStateCopy{
+		Heading: "Choose what this profile should remember",
+	})
+	return compact, true
+}
+
+// minTableRowHeight is the smallest table height (header plus data rows)
+// Capture tries to preserve for the category table before compacting or
+// dropping onboarding prose; the table itself is never hidden below this.
+const minTableRowHeight = 4
+
+func hintBlockHeight(hint string) int {
+	// +1 for the blank separator line View() appends after the hint.
+	return strings.Count(hint, "\n") + 1 + 1
+}
+
+// tableRowHeight is the header+data-row height passed to Table.Render,
+// budgeted from the remaining space after any onboarding hint.
+func (s *Capture) tableRowHeight() int {
+	if s.height <= 0 {
+		return max(2, len(s.statuses)+1)
+	}
+	budget := s.height
+	if hint, ok := s.hint(); ok {
+		budget -= hintBlockHeight(hint)
+	}
+	return max(2, budget)
+}
+
+// ensureCursorVisible keeps the selected category within the table's
+// scrolled viewport using the table's own Offset, rather than a second
+// scrolling mechanism.
+func (s *Capture) ensureCursorVisible() {
+	s.table.Ensure(s.cursor, len(s.statuses), max(1, s.tableRowHeight()-1))
 }
 func (s *Capture) DetailView() string {
 	p := s.current()

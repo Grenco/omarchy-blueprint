@@ -51,6 +51,66 @@ func TestCaptureFreshProfileGuidanceDisappearsOnceAnyCategoryIsCaptured(t *testi
 	}
 }
 
+func freshCaptureCategories() []workflow.ProviderStatus {
+	ids := []string{"packages", "themes", "plugins", "config", "defaults", "shell", "hooks", "resources"}
+	statuses := make([]workflow.ProviderStatus, len(ids))
+	for i, id := range ids {
+		statuses[i] = workflow.ProviderStatus{ID: id}
+	}
+	return statuses
+}
+
+// TestCaptureConstrainedHeightKeepsSelectedCategoryVisible reproduces the
+// supported 80x18 terminal, where Capture receives roughly a 78x10 content
+// budget once header/footer/description overhead is subtracted. The table
+// must scroll to keep the cursor visible instead of the outer panel
+// silently clipping rows that are still "rendered" past its height.
+func TestCaptureConstrainedHeightKeepsSelectedCategoryVisible(t *testing.T) {
+	statuses := freshCaptureCategories()
+	screen := &Capture{statuses: statuses, chosen: map[string]bool{}}
+	screen.SetSize(78, 10) // the real width/height Capture receives at 80x18.
+
+	for i := 0; i < len(statuses)-1; i++ {
+		screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if screen.cursor != len(statuses)-1 {
+		t.Fatalf("cursor = %d, want %d", screen.cursor, len(statuses)-1)
+	}
+
+	view := screen.View()
+	lines := strings.Split(view, "\n")
+	// The outer workspace panel bounds its content to the height Capture was
+	// granted; a taller returned string means the panel (not Capture) decides
+	// which lines survive, which is how the last category silently vanished.
+	if len(lines) > 10 {
+		t.Fatalf("Capture.View() returned %d lines for a 10-line budget; the outer panel would clip it instead of Capture scrolling itself:\n%s", len(lines), view)
+	}
+	if !strings.Contains(view, statuses[len(statuses)-1].ID) {
+		t.Fatalf("final selected category %q not visible at 80x18-equivalent size:\n%s", statuses[len(statuses)-1].ID, view)
+	}
+	if !strings.Contains(view, "Choose what this profile should remember") {
+		t.Fatalf("onboarding guidance disappeared even though space permits it:\n%s", view)
+	}
+}
+
+func TestCaptureConstrainedHeightAtWiderWidthsAlsoKeepsSelectionVisible(t *testing.T) {
+	statuses := freshCaptureCategories()
+	for _, size := range []struct{ width, height int }{{98, 15}, {150, 20}} {
+		screen := &Capture{statuses: statuses, chosen: map[string]bool{}}
+		screen.SetSize(size.width, size.height)
+		for i := 0; i < len(statuses)-1; i++ {
+			screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		}
+		view := screen.View()
+		if !strings.Contains(view, statuses[len(statuses)-1].ID) {
+			t.Fatalf("%dx%d: final selected category not visible:\n%s", size.width, size.height, view)
+		}
+		if !strings.Contains(view, "Choose what this profile should remember") {
+			t.Fatalf("%dx%d: onboarding guidance missing:\n%s", size.width, size.height, view)
+		}
+	}
+}
+
 func TestCaptureAllRequestsConfirmation(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "packages"}, {ID: "themes"}}, chosen: map[string]bool{}}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'C'})
