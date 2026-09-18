@@ -77,15 +77,16 @@ func TestInspectCaptureReportsAbsentForTrackedTargetNoLongerPresent(t *testing.T
 	}
 }
 
-// A provider that cannot express desired absence (e.g. Resources) must never
-// report Absent for a missing-but-desired target: with no way to record the
-// absence, Capture leaves the previously desired state untouched.
-func TestInspectCapturePreservesMissingTargetWhenProviderCannotExpressAbsence(t *testing.T) {
+// A provider that cannot express desired absence but preserves a missing
+// target anyway (e.g. Resources: no way to tell "gone" from "not yet
+// restored" apart) must never report Absent for a missing-but-desired
+// target: Capture leaves the previously desired state untouched.
+func TestInspectCapturePreservesMissingTargetWhenProviderPreservesIt(t *testing.T) {
 	session := newInspectionSession(t)
 	session.SetProviders([]Provider{captureInspectionTestProvider{id: "resources", targets: []TargetInspection{
 		{
 			Key: "resource:dotfiles", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent,
-			Capabilities: TargetCapabilities{SupportsDesiredAbsence: false},
+			Capabilities: TargetCapabilities{SupportsDesiredAbsence: false, PreservesMissingDesired: true},
 		},
 	}}})
 
@@ -96,6 +97,30 @@ func TestInspectCapturePreservesMissingTargetWhenProviderCannotExpressAbsence(t 
 	got := singleCaptureTarget(t, inspection, "resources")
 	if got.Outcome != CaptureOutcomePreserve {
 		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomePreserve)
+	}
+}
+
+// A provider that cannot express desired absence AND does not preserve a
+// missing target (e.g. Defaults/Shell: Capture always writes a fresh full
+// replacement, so a vanished value is silently dropped, not remembered)
+// reports Absent: the target does leave the desired state, just without an
+// explicit tombstone. SupportsDesiredAbsence alone must not decide this.
+func TestInspectCaptureReportsAbsentWhenProviderStopsManagingMissingTarget(t *testing.T) {
+	session := newInspectionSession(t)
+	session.SetProviders([]Provider{captureInspectionTestProvider{id: "defaults", targets: []TargetInspection{
+		{
+			Key: "terminal", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent,
+			Capabilities: TargetCapabilities{SupportsDesiredAbsence: false, PreservesMissingDesired: false},
+		},
+	}}})
+
+	inspection, err := session.InspectCapture(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := singleCaptureTarget(t, inspection, "defaults")
+	if got.Outcome != CaptureOutcomeAbsent {
+		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeAbsent)
 	}
 }
 

@@ -100,11 +100,13 @@ func defaultCapturePolicy(machine, category, target string, decision CaptureDeci
 // per-provider (see Task 17): a target ineligible for Capture is Blocked
 // regardless of policy; Capture Disabled always Preserves whatever is
 // already tracked; otherwise the outcome follows from whether the target is
-// currently present on the machine and whether it was already tracked. A
-// target whose provider cannot express desired absence (Capabilities.
-// SupportsDesiredAbsence is false, e.g. Resources) never reports Absent for
-// a missing-but-desired target: with no way to record the absence, Capture
-// leaves the previously desired state untouched, i.e. Preserve.
+// currently present on the machine and whether it was already tracked. For a
+// missing-but-desired target, SupportsDesiredAbsence alone is not enough to
+// decide the outcome: a provider that cannot record an explicit tombstone
+// either leaves the desired state untouched (Preserve, when
+// Capabilities.PreservesMissingDesired is true, e.g. Resources) or silently
+// stops managing it (shown as Absent, since it does leave the desired state
+// either way, e.g. Defaults/Shell "stop managing").
 func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOutcome {
 	if !target.CaptureEligible {
 		return CaptureOutcomeBlocked
@@ -118,7 +120,7 @@ func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOu
 	case target.Current == TargetPresent && target.Desired != TargetPresent:
 		return CaptureOutcomeAdd
 	case target.Current != TargetPresent && target.Desired == TargetPresent:
-		if !target.Capabilities.SupportsDesiredAbsence {
+		if !target.Capabilities.SupportsDesiredAbsence && target.Capabilities.PreservesMissingDesired {
 			return CaptureOutcomePreserve
 		}
 		return CaptureOutcomeAbsent
