@@ -296,8 +296,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focus--
 				return m, nil
 			}
-		case "l", "right":
-			if m.focus < focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
+		case "l", "right", "enter":
+			if m.focus == focusSidebar && m.sidebarOpen && layoutForSize(m.width, m.height).mode == LayoutCompact {
+				// j/k already moved m.selected to the highlighted screen while
+				// Navigation was open; accept it and return to the workspace.
+				m.sidebarOpen, m.focus = false, focusWorkspace
+				return m, nil
+			}
+			if key != "enter" && m.focus < focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
 				m.focus++
 				return m, nil
 			}
