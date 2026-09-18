@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,6 +11,38 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
+
+func TestRestoreExplainsWhenNothingHasEverBeenCaptured(t *testing.T) {
+	session, _ := newSyncSession(t)
+	screen := NewRestore(session)
+
+	view := screen.View()
+	for _, want := range []string{
+		"Nothing to restore yet",
+		"Restore recreates state that is already saved",
+		"Capture the parts of this machine",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("fresh Restore missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestRestoreCapturedButCleanKeepsNormalZeroOperationState(t *testing.T) {
+	session, _ := newSyncSession(t)
+	if err := session.SetProviderCaptured(context.Background(), "hooks", true); err != nil {
+		t.Fatal(err)
+	}
+	screen := NewRestore(session)
+
+	view := screen.View()
+	if strings.Contains(view, "Nothing to restore yet") {
+		t.Fatalf("captured clean profile shown as uncaptured:\n%s", view)
+	}
+	if !strings.Contains(view, "No restore operations required.") {
+		t.Fatalf("captured clean restore lost normal zero-state:\n%s", view)
+	}
+}
 
 func TestRestoreScreenToggleUsesCachedComparison(t *testing.T) {
 	screen := NewRestore(nil)
