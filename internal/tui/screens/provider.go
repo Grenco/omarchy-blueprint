@@ -179,12 +179,17 @@ func (s *Provider) View() string {
 	if s.busy {
 		lines = append(lines, "Loading...")
 	}
-	if !s.status.Captured {
-		lines = append(lines, "No saved state yet.")
+	if !s.busy {
+		if copy, ok := providerEmptyState(s.id, s.status, s.activeTab()); ok {
+			lines = append(lines, renderEmptyState(s.styles, s.width, copy))
+			return strings.Join(lines, "\n")
+		}
 	}
 	rows := s.rows()
 	if len(rows) == 0 {
-		rows = []providerRow{{value: emptyTabMessage(s.tab, s.status.Captured)}}
+		if message := emptyTabMessage(s.tab, s.status.Captured); message != "" {
+			rows = []providerRow{{value: message}}
+		}
 	}
 	rendered := make([]string, len(rows))
 	for i, row := range rows {
@@ -232,8 +237,8 @@ func (s *Provider) tabLabel() string {
 	return "Saved"
 }
 func emptyTabMessage(tab string, captured bool) string {
-	if !captured && tab == "Saved" {
-		return "Capture this category to save its desired state."
+	if !captured {
+		return ""
 	}
 	if tab == "Changes" {
 		return "✓ No differences detected."
@@ -469,6 +474,9 @@ func (s *Provider) DetailView() string {
 	}
 	if row := s.selectedSavedRow(); row.value != "" {
 		return title + " saved state\n" + components.DisplayText(row.value)
+	}
+	if copy, ok := providerEmptyState(s.id, s.status, "Saved"); ok {
+		return title + " saved state\n" + copy.Heading
 	}
 	return title + " saved state\n" + emptyTabMessage("Saved", s.status.Captured)
 }

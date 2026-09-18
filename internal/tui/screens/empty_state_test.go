@@ -73,3 +73,49 @@ func TestRenderEmptyStateWrapsToWorkspaceWidth(t *testing.T) {
 	}
 }
 
+func TestUncapturedProviderCopyCoversGenericCategoryScreens(t *testing.T) {
+	tests := map[string]string{
+		"packages": "Packages are not saved in this profile yet",
+		"themes":   "Themes are not saved in this profile yet",
+		"plugins":  "Plugins are not saved in this profile yet",
+		"defaults": "Defaults are not saved in this profile yet",
+		"shell":    "Shell state is not saved in this profile yet",
+		"hooks":    "Hooks are not saved in this profile yet",
+	}
+	for id, heading := range tests {
+		copy, ok := uncapturedProviderCopy(id)
+		if !ok || copy.Heading != heading {
+			t.Errorf("%s copy=%#v ok=%v", id, copy, ok)
+		}
+	}
+}
+
+func TestProviderEmptyStateCapturedEmptySemanticsAndPopulatedSuppression(t *testing.T) {
+	tests := []struct {
+		id       string
+		snapshot any
+		wantOK   bool
+	}{
+		{"packages", profile.Packages{}, true},
+		{"packages", profile.Packages{Official: []string{"git"}}, false},
+		{"themes", profile.Themes{}, true},
+		{"themes", profile.Themes{Current: "tokyo-night"}, false},
+		{"plugins", profile.Plugins{}, true},
+		{"plugins", profile.Plugins{Items: []profile.Plugin{{ID: "example"}}}, false},
+		{"hooks", profile.Hooks{}, true},
+		{"hooks", profile.Hooks{Items: []profile.Hook{{Path: "pre-restore"}}}, false},
+		{"shell", profile.Shell{}, true},
+		{"shell", profile.Shell{Hash: "abc"}, false},
+	}
+	for _, test := range tests {
+		_, ok := providerEmptyState(test.id, workflow.ProviderStatus{
+			ID:       test.id,
+			Captured: true,
+			Snapshot: test.snapshot,
+		}, "Saved")
+		if ok != test.wantOK {
+			t.Errorf("%s snapshot=%#v ok=%v, want %v", test.id, test.snapshot, ok, test.wantOK)
+		}
+	}
+}
+

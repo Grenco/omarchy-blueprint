@@ -10,6 +10,106 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
+func TestProviderUncapturedHooksExplainsPurposeWithoutClaimingKnownEmpty(t *testing.T) {
+	screen := &Provider{
+		id:     "hooks",
+		width:  80,
+		status: workflow.ProviderStatus{ID: "hooks"},
+	}
+
+	view := screen.View()
+	for _, want := range []string{
+		"Hooks are not saved in this profile yet",
+		"scripts Omarchy runs automatically",
+		"Capture Hooks only when you want Blueprint to remember them.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("uncaptured hooks missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "No hooks to carry") {
+		t.Fatalf("uncaptured hooks were presented as known-empty:\n%s", view)
+	}
+}
+
+func TestProviderCapturedEmptyHooksReassuresUser(t *testing.T) {
+	screen := &Provider{
+		id:    "hooks",
+		width: 80,
+		status: workflow.ProviderStatus{
+			ID:       "hooks",
+			Captured: true,
+			Snapshot: profile.Hooks{},
+		},
+	}
+
+	view := screen.View()
+	for _, want := range []string{
+		"No hooks to carry",
+		"same automation is available",
+		"completely normal",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("captured-empty hooks missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestProviderUncapturedChangesTabDoesNotClaimNoDifferences(t *testing.T) {
+	screen := &Provider{
+		id:     "plugins",
+		tab:    "Changes",
+		width:  80,
+		status: workflow.ProviderStatus{ID: "plugins"},
+	}
+
+	view := screen.View()
+	if !strings.Contains(view, "Plugins are not saved in this profile yet") {
+		t.Fatalf("uncaptured Changes tab lost guidance:\n%s", view)
+	}
+	if strings.Contains(view, "No differences detected") {
+		t.Fatalf("uncaptured category falsely claims a completed diff:\n%s", view)
+	}
+}
+
+func TestProviderCapturedEmptyShellUsesShellZeroState(t *testing.T) {
+	screen := &Provider{
+		id:    "shell",
+		width: 80,
+		status: workflow.ProviderStatus{
+			ID:       "shell",
+			Captured: true,
+			Snapshot: profile.Shell{Version: 1},
+		},
+	}
+
+	view := screen.View()
+	if !strings.Contains(view, "No Blueprint-managed Shell customisation") ||
+		!strings.Contains(view, "normal Omarchy shell setup") {
+		t.Fatalf("shell zero-state missing:\n%s", view)
+	}
+}
+
+func TestProviderCapturedEmptyDefaultsKeepsConcreteRows(t *testing.T) {
+	screen := &Provider{
+		id:    "defaults",
+		width: 80,
+		status: workflow.ProviderStatus{
+			ID:       "defaults",
+			Captured: true,
+			Snapshot: profile.Defaults{},
+		},
+	}
+
+	view := screen.View()
+	if strings.Contains(view, "nothing to do here") {
+		t.Fatalf("Defaults received a generic captured-empty tutorial:\n%s", view)
+	}
+	if !strings.Contains(view, "Applications") || !strings.Contains(view, "Terminal:") {
+		t.Fatalf("Defaults concrete rows disappeared:\n%s", view)
+	}
+}
+
 func TestProviderDefaultsToSavedTypedDataAndSwitchesToChanges(t *testing.T) {
 	screen := &Provider{id: "packages", status: workflow.ProviderStatus{ID: "packages", Captured: true, Changes: []model.Change{{Summary: "git differs"}}, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}, Excluded: []string{"linux"}}}}
 	view := screen.View()
