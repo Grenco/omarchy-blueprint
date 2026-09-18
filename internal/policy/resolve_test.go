@@ -205,3 +205,122 @@ func TestResolveRejectsInvalidSetting(t *testing.T) {
 		t.Fatal("expected invalid setting to be rejected")
 	}
 }
+
+func TestResolveRejectsEmptyAxis(t *testing.T) {
+	_, err := policy.Resolve(policy.ResolveRequest{
+		Category: "packages",
+		Target:   "official:firefox",
+	})
+	if err == nil {
+		t.Fatal("expected empty axis to be rejected")
+	}
+}
+
+func TestResolveRejectsUnknownAxis(t *testing.T) {
+	_, err := policy.Resolve(policy.ResolveRequest{
+		Axis:     policy.Axis("restroe"),
+		Category: "packages",
+		Target:   "official:firefox",
+	})
+	if err == nil {
+		t.Fatal("expected unknown axis to be rejected")
+	}
+}
+
+func TestResolveUnknownAxisDoesNotSilentlyConsultCaptureRules(t *testing.T) {
+	// A Restore resolution with a mistyped axis must fail rather than fall
+	// through to Capture rules, which could turn a Restore Skip into an
+	// apparent Apply (or vice versa).
+	request := policy.ResolveRequest{
+		Axis:     policy.Axis("restroe"),
+		Category: "packages",
+		Target:   "official:firefox",
+		ProfileRules: policy.Rules{
+			Capture: []policy.Rule{rule("packages", "official:firefox", policy.SettingEnabled)},
+			Restore: []policy.Rule{rule("packages", "official:firefox", policy.SettingDisabled)},
+		},
+	}
+	if _, err := policy.Resolve(request); err == nil {
+		t.Fatal("expected unknown axis to be rejected instead of resolving against Capture rules")
+	}
+}
+
+func TestResolveProfileTargetIsInheritedWhenViewedFromMachineScope(t *testing.T) {
+	got, err := policy.Resolve(policy.ResolveRequest{
+		Axis:     policy.AxisRestore,
+		Machine:  "desktop",
+		Category: "packages",
+		Target:   "official:firefox",
+		ProfileRules: policy.Rules{Restore: []policy.Rule{
+			rule("packages", "official:firefox", policy.SettingEnabled),
+		}},
+		DefaultEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Explicit {
+		t.Fatalf("got %+v, want Explicit=false: a profile-scope rule is inherited, not an override, when viewed from machine scope", got)
+	}
+	if got.Source.Kind != policy.SourceProfileTarget {
+		t.Fatalf("source = %+v, want profile-target", got.Source)
+	}
+}
+
+func TestResolveProfileCategoryIsInheritedWhenViewedFromMachineScope(t *testing.T) {
+	got, err := policy.Resolve(policy.ResolveRequest{
+		Axis:     policy.AxisCapture,
+		Machine:  "desktop",
+		Category: "hooks",
+		Target:   "post-update.d/refresh-icons",
+		ProfileRules: policy.Rules{Capture: []policy.Rule{
+			rule("hooks", "", policy.SettingDisabled),
+		}},
+		DefaultEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Explicit {
+		t.Fatalf("got %+v, want Explicit=false: a profile-category rule is inherited, not an override, when viewed from machine scope", got)
+	}
+	if got.Source.Kind != policy.SourceProfileCategory {
+		t.Fatalf("source = %+v, want profile-category", got.Source)
+	}
+}
+
+func TestResolveMachineTargetIsExplicitAtMachineScope(t *testing.T) {
+	got, err := policy.Resolve(policy.ResolveRequest{
+		Axis:     policy.AxisRestore,
+		Machine:  "desktop",
+		Category: "packages",
+		Target:   "official:firefox",
+		MachineRules: policy.Rules{Restore: []policy.Rule{
+			rule("packages", "official:firefox", policy.SettingDisabled),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Explicit {
+		t.Fatalf("got %+v, want Explicit=true: a machine-scope rule is an override at its own machine's scope", got)
+	}
+}
+
+func TestResolveProfileTargetIsExplicitAtProfileDefaultsScope(t *testing.T) {
+	got, err := policy.Resolve(policy.ResolveRequest{
+		Axis:     policy.AxisRestore,
+		Machine:  "",
+		Category: "packages",
+		Target:   "official:firefox",
+		ProfileRules: policy.Rules{Restore: []policy.Rule{
+			rule("packages", "official:firefox", policy.SettingEnabled),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Explicit {
+		t.Fatalf("got %+v, want Explicit=true: a profile-scope rule is an override at profile-defaults scope", got)
+	}
+}
