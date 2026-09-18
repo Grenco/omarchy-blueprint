@@ -680,11 +680,13 @@ type PolicyScope struct {
     Machine string
 }
 
-func (s *Session) EffectivePolicy(ctx context.Context, category string, target TargetInspection) (policy.Effective, error)
+func (s *Session) EffectivePolicy(ctx context.Context, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error)
 func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, target string, setting policy.Setting) error
 func (s *Session) ClearPolicy(scope PolicyScope, axis policy.Axis, category, target string) error
 func (s *Session) SetMachineRestoreDefaults(machine string, options policy.RestoreOptions) error
 ```
+
+`EffectivePolicy` takes `scope` explicitly rather than resolving against whichever machine the session currently has selected: the TUI must be able to inspect Profile defaults and a named machine independently (per the design's "Policy scope" section), and an implicit current-machine resolution would tie every read to session state instead of the scope the caller is actually viewing. An empty `PolicyScope.Machine` means Profile-defaults scope; this must be passed through to `policy.ResolveRequest.Machine` unchanged so `Resolve`'s scope-relative `Explicit` reporting (see `internal/policy/resolve.go`) stays correct for both scopes.
 
 - [ ] **Step 1: Write mutation/resolution tests**
 

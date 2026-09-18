@@ -1,6 +1,10 @@
 package workflow
 
-import "github.com/Grenco/omarchy-blueprint/internal/policy"
+import (
+	"fmt"
+
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
+)
 
 // TargetState is the presence of a policy target's desired or current
 // state as a provider reports it during read-only inspection.
@@ -52,40 +56,89 @@ type RestoreDecision struct {
 	Resolved bool
 }
 
+// DefaultCaptureDecision is the explicit compatibility decision
+// orchestration must record for every target it inspects before real
+// policy resolution is wired up (PR 3). It is deliberately not returned
+// implicitly for a missing map key: a target with no recorded decision at
+// all means no orchestration ever considered it, which callers must treat
+// as fail-closed rather than as an implicit allow.
+func DefaultCaptureDecision() CaptureDecision { return CaptureDecision{Capture: true, Resolved: false} }
+
+// DefaultRestoreDecision is the explicit compatibility decision
+// orchestration must record for every target it plans before real policy
+// resolution is wired up (PR 4). See DefaultCaptureDecision.
+func DefaultRestoreDecision() RestoreDecision { return RestoreDecision{Restore: true, Resolved: false} }
+
 // CaptureContext carries the resolved Capture decision for every target a
-// provider inspected, for one machine.
+// provider inspected, for one machine. Orchestration must populate an
+// entry for every inspected target (DefaultCaptureDecision while policy
+// resolution is not yet active, or a resolved decision once it is); a
+// target absent from Targets means no orchestration ever considered it.
 type CaptureContext struct {
 	Machine string
 	Targets map[string]CaptureDecision
 }
 
-// Decision returns the resolved CaptureDecision for key, or the
-// compatibility default (Capture enabled, Resolved false) when key is
-// absent. The default lets PR 2 wire providers through CaptureContext
-// before policy persistence and resolution activate in PR 3.
-func (c CaptureContext) Decision(key string) CaptureDecision {
-	if decision, ok := c.Targets[key]; ok {
-		return decision
+// Lookup returns the recorded CaptureDecision for key and whether one was
+// found. It never invents a default: a missing key is a signal that
+// orchestration never resolved this target, which is a bug to surface, not
+// an implicit allow.
+func (c CaptureContext) Lookup(key string) (CaptureDecision, bool) {
+	decision, ok := c.Targets[key]
+	return decision, ok
+}
+
+// Require returns the recorded CaptureDecision for key, or an error if no
+// decision was recorded or the recorded decision was never marked
+// Resolved. PR 3+ must call this (or an equivalent check) before any
+// Capture mutation driven by policy; it intentionally rejects the
+// DefaultCaptureDecision compatibility value PR 2 records, since an
+// unresolved decision must not become write authority.
+func (c CaptureContext) Require(key string) (CaptureDecision, error) {
+	decision, ok := c.Lookup(key)
+	if !ok {
+		return CaptureDecision{}, fmt.Errorf("workflow: no capture decision recorded for target %q", key)
 	}
-	return CaptureDecision{Capture: true, Resolved: false}
+	if !decision.Resolved {
+		return CaptureDecision{}, fmt.Errorf("workflow: capture decision for target %q is unresolved", key)
+	}
+	return decision, nil
 }
 
 // RestoreContext carries the resolved Restore decision for every target a
 // provider is planning, plus the restore run's two independent intent
-// axes, for one machine.
+// axes, for one machine. Orchestration must populate an entry for every
+// planned target (DefaultRestoreDecision while policy resolution is not
+// yet active, or a resolved decision once it is); a target absent from
+// Targets means no orchestration ever considered it.
 type RestoreContext struct {
 	Machine string
 	Options policy.RestoreOptions
 	Targets map[string]RestoreDecision
 }
 
-// Decision returns the resolved RestoreDecision for key, or the
-// compatibility default (Restore enabled, Resolved false) when key is
-// absent. The default lets PR 2 wire providers through RestoreContext
-// before policy persistence and resolution activate in PR 4.
-func (c RestoreContext) Decision(key string) RestoreDecision {
-	if decision, ok := c.Targets[key]; ok {
-		return decision
+// Lookup returns the recorded RestoreDecision for key and whether one was
+// found. It never invents a default: a missing key is a signal that
+// orchestration never resolved this target, which is a bug to surface, not
+// an implicit allow.
+func (c RestoreContext) Lookup(key string) (RestoreDecision, bool) {
+	decision, ok := c.Targets[key]
+	return decision, ok
+}
+
+// Require returns the recorded RestoreDecision for key, or an error if no
+// decision was recorded or the recorded decision was never marked
+// Resolved. PR 4+ must call this (or an equivalent check) before any
+// Restore planning driven by policy; it intentionally rejects the
+// DefaultRestoreDecision compatibility value PR 2 records, since an
+// unresolved decision must not become write authority.
+func (c RestoreContext) Require(key string) (RestoreDecision, error) {
+	decision, ok := c.Lookup(key)
+	if !ok {
+		return RestoreDecision{}, fmt.Errorf("workflow: no restore decision recorded for target %q", key)
 	}
-	return RestoreDecision{Restore: true, Resolved: false}
+	if !decision.Resolved {
+		return RestoreDecision{}, fmt.Errorf("workflow: restore decision for target %q is unresolved", key)
+	}
+	return decision, nil
 }
