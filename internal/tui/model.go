@@ -162,20 +162,7 @@ func (m model) screenID() ScreenID   { return screenOrder[m.selected] }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if created, ok := msg.(profileCreatedMsg); ok {
-		m.welcomeBusy = false
-		if created.err != nil {
-			m.welcomeError = created.err
-			return m, nil
-		}
-		dir := created.dir
-		if dir == "" {
-			dir = m.profileDir
-		}
-		fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, dir, m.createProfile)
-		fresh.width, fresh.height = m.width, m.height
-		fresh.notification = "Profile " + created.verb + " at " + dir
-		fresh.setScreenSizes()
-		return fresh, fresh.Init()
+		return m.handleProfileCreated(created)
 	}
 	if wrapped, ok := msg.(screenMsg); ok {
 		return m.updateScreenMsg(wrapped)
