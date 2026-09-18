@@ -33,6 +33,19 @@ const (
 	AxisRestore Axis = "restore"
 )
 
+// ValidateAxis reports whether axis is one of the accepted values. Resolve
+// rejects any other value rather than silently defaulting to one axis's
+// rules, since a wrong/unknown axis reaching rule selection could consult
+// the wrong policy (for example Capture rules for a Restore resolution).
+func ValidateAxis(axis Axis) error {
+	switch axis {
+	case AxisCapture, AxisRestore:
+		return nil
+	default:
+		return fmt.Errorf("policy: invalid axis %q, want %q or %q", axis, AxisCapture, AxisRestore)
+	}
+}
+
 // Rule is one persisted policy override. Target is empty for a
 // category-level rule and non-empty for a target-specific rule.
 type Rule struct {

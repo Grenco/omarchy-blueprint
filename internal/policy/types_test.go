@@ -17,6 +17,19 @@ func TestValidateSetting(t *testing.T) {
 	}
 }
 
+func TestValidateAxis(t *testing.T) {
+	for _, valid := range []policy.Axis{policy.AxisCapture, policy.AxisRestore} {
+		if err := policy.ValidateAxis(valid); err != nil {
+			t.Fatalf("valid axis %q: %v", valid, err)
+		}
+	}
+	for _, invalid := range []policy.Axis{"", "restroe", "CAPTURE"} {
+		if err := policy.ValidateAxis(invalid); err == nil {
+			t.Fatalf("expected axis %q to be rejected", invalid)
+		}
+	}
+}
+
 func TestValidateRestoreOptions(t *testing.T) {
 	valid := []policy.RestoreOptions{
 		{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive},

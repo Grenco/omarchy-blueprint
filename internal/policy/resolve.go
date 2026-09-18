@@ -31,7 +31,18 @@ type ResolveRequest struct {
 // profile target, nearest profile ancestor, profile category, then the
 // provider default. Providers must not implement this precedence
 // themselves.
+//
+// request.Machine identifies which policy scope is being viewed/resolved,
+// not merely which machine's rules to layer in: passing a non-empty
+// Machine means "resolve as viewed from that machine's scope," so a match
+// that only exists in ProfileRules is inherited (Explicit=false) even
+// though it is a direct rule at the profile's own scope. Passing an empty
+// Machine means "resolve profile-defaults scope," where only a profile
+// rule can be Explicit.
 func Resolve(request ResolveRequest) (EffectiveSetting, error) {
+	if err := ValidateAxis(request.Axis); err != nil {
+		return EffectiveSetting{}, err
+	}
 	machineRules := axisRules(request.MachineRules, request.Axis)
 	profileRules := axisRules(request.ProfileRules, request.Axis)
 
@@ -43,46 +54,28 @@ func Resolve(request ResolveRequest) (EffectiveSetting, error) {
 	}
 
 	if setting, ok := findTarget(machineRules, request.Category, request.Target); ok {
-		return EffectiveSetting{
-			Enabled:  setting == SettingEnabled,
-			Explicit: true,
-			Source:   Source{Kind: SourceMachineTarget, Machine: request.Machine, Category: request.Category, Target: request.Target},
-		}, nil
+		source := Source{Kind: SourceMachineTarget, Machine: request.Machine, Category: request.Category, Target: request.Target}
+		return EffectiveSetting{Enabled: setting == SettingEnabled, Explicit: explicitAt(source.Kind, request.Machine), Source: source}, nil
 	}
 	if setting, ancestor, ok := findAncestor(machineRules, request.Category, request.Ancestors); ok {
-		return EffectiveSetting{
-			Enabled:  setting == SettingEnabled,
-			Explicit: false,
-			Source:   Source{Kind: SourceMachineAncestor, Machine: request.Machine, Category: request.Category, Target: ancestor},
-		}, nil
+		source := Source{Kind: SourceMachineAncestor, Machine: request.Machine, Category: request.Category, Target: ancestor}
+		return EffectiveSetting{Enabled: setting == SettingEnabled, Explicit: explicitAt(source.Kind, request.Machine), Source: source}, nil
 	}
 	if setting, ok := findCategory(machineRules, request.Category); ok {
-		return EffectiveSetting{
-			Enabled:  setting == SettingEnabled,
-			Explicit: true,
-			Source:   Source{Kind: SourceMachineCategory, Machine: request.Machine, Category: request.Category},
-		}, nil
+		source := Source{Kind: SourceMachineCategory, Machine: request.Machine, Category: request.Category}
+		return EffectiveSetting{Enabled: setting == SettingEnabled, Explicit: explicitAt(source.Kind, request.Machine), Source: source}, nil
 	}
 	if setting, ok := findTarget(profileRules, request.Category, request.Target); ok {
-		return EffectiveSetting{
-			Enabled:  setting == SettingEnabled,
-			Explicit: true,
-			Source:   Source{Kind: SourceProfileTarget, Category: request.Category, Target: request.Target},
-		}, nil
+		source := Source{Kind: SourceProfileTarget, Category: request.Category, Target: request.Target}
+		return EffectiveSetting{Enabled: setting == SettingEnabled, Explicit: explicitAt(source.Kind, request.Machine), Source: source}, nil
 	}
 	if setting, ancestor, ok := findAncestor(profileRules, request.Category, request.Ancestors); ok {
-		return EffectiveSetting{
-			Enabled:  setting == SettingEnabled,
-			Explicit: false,
-			Source:   Source{Kind: SourceProfileAncestor, Category: request.Category, Target: ancestor},
-		}, nil
+		source := Source{Kind: SourceProfileAncestor, Category: request.Category, Target: ancestor}
+		return EffectiveSetting{Enabled: setting == SettingEnabled, Explicit: explicitAt(source.Kind, request.Machine), Source: source}, nil
 	}
 	if setting, ok := findCategory(profileRules, request.Category); ok {
-		return EffectiveSetting{
-			Enabled:  setting == SettingEnabled,
-			Explicit: true,
-			Source:   Source{Kind: SourceProfileCategory, Category: request.Category},
-		}, nil
+		source := Source{Kind: SourceProfileCategory, Category: request.Category}
+		return EffectiveSetting{Enabled: setting == SettingEnabled, Explicit: explicitAt(source.Kind, request.Machine), Source: source}, nil
 	}
 	return EffectiveSetting{
 		Enabled:  request.DefaultEnabled,
@@ -91,11 +84,31 @@ func Resolve(request ResolveRequest) (EffectiveSetting, error) {
 	}, nil
 }
 
-func axisRules(rules Rules, axis Axis) []Rule {
-	if axis == AxisRestore {
-		return rules.Restore
+// explicitAt reports whether a match of the given source kind counts as an
+// explicit override at the policy scope currently being resolved (machine
+// scope when machine != "", profile-defaults scope otherwise). Ancestor and
+// default sources are never explicit regardless of scope.
+func explicitAt(kind SourceKind, machine string) bool {
+	switch kind {
+	case SourceMachineTarget, SourceMachineCategory:
+		return machine != ""
+	case SourceProfileTarget, SourceProfileCategory:
+		return machine == ""
+	default:
+		return false
 	}
-	return rules.Capture
+}
+
+func axisRules(rules Rules, axis Axis) []Rule {
+	switch axis {
+	case AxisRestore:
+		return rules.Restore
+	case AxisCapture:
+		return rules.Capture
+	default:
+		// Unreachable: Resolve validates axis before calling axisRules.
+		return nil
+	}
 }
 
 func validateRules(rules []Rule) error {
