@@ -203,6 +203,27 @@ func TestRootOwnedWrappedNoticeIsHandledOnce(t *testing.T) {
 	}
 }
 
+func TestMachineMutationCompletionUpdatesRootAndReturnsToOrigin(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	owner := &allMessageRecordingScreen{id: ScreenMachines}
+	m.screens[ScreenMachines] = owner
+
+	updated, _ := m.Update(screenMsg{
+		Screen: ScreenMachines,
+		Msg: screens.MachineMutationComplete{
+			Notice: "Machine added.",
+		},
+	})
+	m = updated.(model)
+
+	if m.notification != "Machine added." {
+		t.Fatalf("notification = %q", m.notification)
+	}
+	if len(owner.messages) != 1 {
+		t.Fatalf("completion did not return to Machines: %#v", owner.messages)
+	}
+}
+
 func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
 	cmd := wrapScreenCmd(ScreenResources, tea.Batch(
 		func() tea.Msg { return ownedTestMsg{step: 1} },

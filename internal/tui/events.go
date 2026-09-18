@@ -56,6 +56,14 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 		} else {
 			m.notification = "Machine update failed: " + msg.Err.Error()
 		}
+		// Machines.Update also consumes this message to clear its own busy
+		// state and re-clamp selection, so it must still reach the origin
+		// screen in addition to the root notification set above.
+		if origin != "" {
+			if current := m.screens[origin]; current != nil {
+				return m, wrapScreenCmd(origin, current.Update(msg)), true
+			}
+		}
 		return m, nil, true
 	case screens.Notice:
 		m.notification = msg.Message
