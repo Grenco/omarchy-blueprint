@@ -3043,3 +3043,67 @@ func TestHooksInspectTargetsReportsManagedPathsAndUnmanagedSymlinks(t *testing.T
 		t.Fatalf("legacy-hook (unmanaged) = %#v, ok=%v", got, ok)
 	}
 }
+
+func TestShellInspectTargetsReportsSingleStateTarget(t *testing.T) {
+	_, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	if err := os.WriteFile(user, []byte(strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "bottom"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err := (shellStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Key != "state" {
+		t.Fatalf("targets = %#v, want exactly one %q target", targets, "state")
+	}
+	got := targets[0]
+	if got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
+		t.Fatalf("state (uncaptured, live customization present) = %#v", got)
+	}
+}
+
+func TestResourcesInspectTargetsReportsMissingLocalStateAsAbsentNotDeletionIntent(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return home, nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
+	source := filepath.Join(home, "dotfiles", "deploy")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("echo deploy\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", source); code != 0 {
+		t.Fatalf("track code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err := (resourcesStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %#v, want exactly one tracked resource", targets)
+	}
+	got := targets[0]
+	if got.Key != "resource:deploy" || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("target = %#v, want resource:deploy desired=present current=absent", got)
+	}
+	if got.Capabilities.SupportsDesiredAbsence || got.Capabilities.SupportsExactRemoval {
+		t.Fatalf("capabilities = %#v, want no desired-absence or Exact-removal support: missing local state must never imply deletion intent", got.Capabilities)
+	}
+}
