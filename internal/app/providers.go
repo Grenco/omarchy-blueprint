@@ -537,6 +537,36 @@ func packageLabel(ref string) string {
 	return name
 }
 
+// sortedKeys returns a deterministically ordered slice of a string set, so
+// InspectTargets output does not depend on map iteration order.
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// desiredPresence reports the Desired TargetState for a target that has no
+// explicit desired-absence tombstone: present if tracked, otherwise unknown
+// (never captured) rather than absent (explicitly not wanted).
+func desiredPresence(tracked bool) workflow.TargetState {
+	if tracked {
+		return workflow.TargetPresent
+	}
+	return workflow.TargetUnknown
+}
+
+// currentPresence reports the Current TargetState from a live detection
+// membership check: present if detected, otherwise genuinely absent.
+func currentPresence(detected bool) workflow.TargetState {
+	if detected {
+		return workflow.TargetPresent
+	}
+	return workflow.TargetAbsent
+}
+
 func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 		return nil, nil, err
@@ -621,6 +651,64 @@ func (themesStateProvider) Captured(d profile.Data) bool { return d.Manifest.Cap
 
 func (p themesStateProvider) provider() (themesprovider.Provider, error) {
 	return themeProvider(p.deps, p.opt)
+}
+
+// InspectTargets reports "active" (which theme is currently selected) plus
+// one theme:<id> target per non-built-in theme available in either the
+// desired state or the live detection. Built-in themes are Omarchy's own and
+// carry nothing for Blueprint to track a source for, so they are omitted.
+func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	targets := []workflow.TargetInspection{{
+		Key:             "active",
+		Label:           "active",
+		Desired:         desiredPresence(d.Themes.Current != ""),
+		Current:         currentPresence(current.Current != ""),
+		CaptureEligible: true,
+		RestoreEligible: true,
+		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+	}}
+
+	desiredThemes, currentThemes := map[string]bool{}, map[string]bool{}
+	for _, theme := range d.Themes.Items {
+		if theme.Type != "builtin" {
+			desiredThemes[theme.ID] = true
+		}
+	}
+	for _, theme := range current.Items {
+		if theme.Type != "builtin" {
+			currentThemes[theme.ID] = true
+		}
+	}
+	ids := map[string]bool{}
+	for id := range desiredThemes {
+		ids[id] = true
+	}
+	for id := range currentThemes {
+		ids[id] = true
+	}
+	for _, id := range sortedKeys(ids) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "theme:" + id,
+			Label:           id,
+			Desired:         desiredPresence(desiredThemes[id]),
+			Current:         currentPresence(currentThemes[id]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				SupportsDesiredAbsence: true, SupportsExactRemoval: true,
+			},
+		})
+	}
+	return targets, nil
 }
 
 func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -729,6 +817,55 @@ func (pluginsStateProvider) Captured(d profile.Data) bool { return d.Manifest.Ca
 
 func (p pluginsStateProvider) provider() (pluginsprovider.Provider, error) {
 	return pluginProvider(p.deps, p.opt)
+}
+
+// InspectTargets reports plugin:<id> for third-party source availability
+// only; first-party ("builtin") plugins ship with Omarchy and have no source
+// for Blueprint to capture. Plugin enablement itself is Shell's target, not
+// Plugins' (see pluginSemantics).
+func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desiredThirdParty, currentThirdParty := map[string]bool{}, map[string]bool{}
+	for _, plugin := range d.Plugins.Items {
+		if plugin.Source != "builtin" {
+			desiredThirdParty[plugin.ID] = true
+		}
+	}
+	for _, plugin := range current.Items {
+		if plugin.Source != "builtin" {
+			currentThirdParty[plugin.ID] = true
+		}
+	}
+	ids := map[string]bool{}
+	for id := range desiredThirdParty {
+		ids[id] = true
+	}
+	for id := range currentThirdParty {
+		ids[id] = true
+	}
+	targets := make([]workflow.TargetInspection, 0, len(ids))
+	for _, id := range sortedKeys(ids) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "plugin:" + id,
+			Label:           id,
+			Desired:         desiredPresence(desiredThirdParty[id]),
+			Current:         currentPresence(currentThirdParty[id]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				SupportsDesiredAbsence: true, SupportsExactRemoval: true,
+			},
+		})
+	}
+	return targets, nil
 }
 
 func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -1280,6 +1417,66 @@ func (p hooksStateProvider) provider(resources profile.Resources) (hooksprovider
 		return hooksprovider.Provider{}, err
 	}
 	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir, HomeDir: home, Resources: resources}, nil
+}
+
+// InspectTargets reports one target per managed hook path (tracked in the
+// desired state, live-detected, or both). A live unmanaged symlink stays
+// CaptureEligible: false safety state: Blueprint records no source from it
+// and never follows, replaces, or verifies it as portable state.
+func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider(d.Resources)
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	desired, currentManaged := map[string]bool{}, map[string]bool{}
+	for _, hook := range d.Hooks.Items {
+		desired[hook.Path] = true
+	}
+	for _, hook := range current.Items {
+		currentManaged[hook.Path] = true
+	}
+	paths := map[string]bool{}
+	for path := range desired {
+		paths[path] = true
+	}
+	for path := range currentManaged {
+		paths[path] = true
+	}
+	targets := make([]workflow.TargetInspection, 0, len(paths)+len(current.Unmanaged))
+	for _, path := range sortedKeys(paths) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             path,
+			Label:           path,
+			Desired:         desiredPresence(desired[path]),
+			Current:         currentPresence(currentManaged[path]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				SupportsDesiredAbsence: true, SupportsExactRemoval: true,
+			},
+		})
+	}
+	for _, unmanaged := range current.Unmanaged {
+		reason := "unmanaged symlink is not owned by Blueprint"
+		if unmanaged.Broken {
+			reason = "unmanaged symlink is broken"
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             unmanaged.Path,
+			Label:           unmanaged.Path,
+			Desired:         workflow.TargetUnknown,
+			Current:         workflow.TargetPresent,
+			CaptureEligible: false,
+			RestoreEligible: false,
+			SafetyReason:    reason,
+		})
+	}
+	return targets, nil
 }
 
 func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
