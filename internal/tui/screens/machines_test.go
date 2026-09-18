@@ -74,6 +74,85 @@ func TestMachinesWithPortableResourcesExplainsOverridesWithoutHidingResource(t *
 	}
 }
 
+// TestMachinesZeroResourcesWithDormantMappingKeepsNormalPresentation
+// reproduces a machine overlay whose Resource was later untracked: the
+// Resources list is now empty, but the dormant mapping is still meaningful
+// saved state that the full-screen "nothing to configure" guidance must not
+// replace.
+func TestMachinesZeroResourcesWithDormantMappingKeepsNormalPresentation(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = nil
+	data.Machines.Items = []profile.Machine{{Name: "desktop", ResourcePaths: []profile.MachineResourcePath{{Resource: "retired", Path: "/mnt/retired"}}}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(
+		workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "desktop", nil }},
+		workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view := NewMachines(session).View()
+	for _, want := range []string{"desktop", "retired", "/mnt/retired", "dormant"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("dormant mapping missing %q with zero current Resources:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "There is nothing to configure on this screen.") {
+		t.Fatalf("real saved overlay state was replaced with the empty-screen guidance:\n%s", view)
+	}
+}
+
+// TestMachinesPortableGuidanceAtConstrainedHeightKeepsResourceRowsVisible
+// reproduces the supported 80x18 terminal, where Machines receives roughly a
+// 78x10 content budget. The "Portable paths are in use" note must not push
+// the resource mapping table past the outer panel's height budget.
+func TestMachinesPortableGuidanceAtConstrainedHeightKeepsResourceRowsVisible(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{
+		{ID: "alpha", Path: "~/alpha"},
+		{ID: "bravo", Path: "~/bravo"},
+		{ID: "charlie", Path: "~/charlie"},
+		{ID: "delta", Path: "~/delta"},
+		{ID: "echo", Path: "~/echo"},
+		{ID: "foxtrot", Path: "~/foxtrot"},
+	}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(
+		workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "desktop", nil }},
+		workflow.Options{ProfileDir: profileDir},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	screen := NewMachines(session)
+	screen.SetSize(78, 10) // the real width/height Machines receives at 80x18.
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // focus the mapping table.
+	for i := 0; i < len(data.Resources.Items)-1; i++ {
+		screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+
+	view := screen.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > 10 {
+		t.Fatalf("Machines.View() returned %d lines for a 10-line budget; the outer panel would clip it instead of Machines scrolling itself:\n%s", len(lines), view)
+	}
+	if !strings.Contains(view, "Portable paths are in use") {
+		t.Fatalf("portable guidance missing:\n%s", view)
+	}
+	last := data.Resources.Items[len(data.Resources.Items)-1].ID
+	if !strings.Contains(view, last) {
+		t.Fatalf("selected resource %q not visible at 80x18-equivalent size:\n%s", last, view)
+	}
+}
+
 func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
 	data := profile.New("test", time.Now())

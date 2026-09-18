@@ -265,7 +265,7 @@ func (s *Machines) View() string {
 	if s.mode != "" {
 		return "Machine name: " + components.DisplayText(s.name)
 	}
-	if s.session != nil && len(s.session.Profile().Resources.Items) == 0 {
+	if s.session != nil && len(s.machines()) == 0 && len(s.session.Profile().Resources.Items) == 0 {
 		return renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "No machine-specific paths needed",
 			Explanation: "Machines only matters when a Resource needs a different location on one computer. There are no Resources here that need mapping yet.",
@@ -308,24 +308,70 @@ func (s *Machines) View() string {
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
 	existingView := lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
-	hasOverrides := false
-	if s.session != nil {
-		for _, machine := range s.session.Profile().Machines.Items {
-			if len(machine.ResourcePaths) > 0 {
-				hasOverrides = true
-				break
-			}
-		}
-	}
-	if !hasOverrides {
-		guidance := renderEmptyState(s.styles, s.width, emptyStateCopy{
-			Heading:     "Portable paths are in use",
-			Explanation: "Resources normally use the same portable path on every machine.",
-			Guidance:    "Add a machine-specific mapping only when one computer needs a different location. If the normal Resource paths work here, there is nothing to configure.",
-		})
+	if guidance, ok := s.portableGuidance(); ok {
 		return guidance + "\n\n" + existingView
 	}
 	return existingView
+}
+
+// hasOverrides reports whether any machine has a saved Resource mapping,
+// including a dormant one referring to a Resource that no longer exists.
+// Those mappings are meaningful saved state and must never be hidden behind
+// "Portable paths are in use" guidance.
+func (s *Machines) hasOverrides() bool {
+	if s.session == nil {
+		return true
+	}
+	for _, machine := range s.session.Profile().Machines.Items {
+		if len(machine.ResourcePaths) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// portableGuidance returns the "Portable paths are in use" note and whether
+// it should be shown; it never replaces the overlay/mapping panes, only
+// supplements them.
+// minMachinesPaneHeight is the smallest overlay/mapping pane height Machines
+// tries to preserve before compacting the portable-paths guidance down to a
+// heading-only line; the panes are never hidden below this to preserve copy.
+const minMachinesPaneHeight = 5
+
+func (s *Machines) portableGuidance() (string, bool) {
+	if s.hasOverrides() {
+		return "", false
+	}
+	full := renderEmptyState(s.styles, s.width, emptyStateCopy{
+		Heading:     "Portable paths are in use",
+		Explanation: "Resources normally use the same portable path on every machine.",
+		Guidance:    "Add a machine-specific mapping only when one computer needs a different location. If the normal Resource paths work here, there is nothing to configure.",
+	})
+	if s.height <= 0 || s.height-machinesGuidanceBlockHeight(full) >= minMachinesPaneHeight {
+		return full, true
+	}
+	compact := renderEmptyState(s.styles, s.width, emptyStateCopy{
+		Heading: "Portable paths are in use",
+	})
+	return compact, true
+}
+
+func machinesGuidanceBlockHeight(guidance string) int {
+	// +1 for the blank separator line prepended before the two-pane view.
+	return strings.Count(guidance, "\n") + 1 + 1
+}
+
+// contentHeight is the height budget available to the two-pane
+// overlay/mapping view once the "Portable paths are in use" guidance, when
+// shown, has taken its share of the granted height.
+func (s *Machines) contentHeight() int {
+	if s.height <= 0 {
+		return 0
+	}
+	if guidance, ok := s.portableGuidance(); ok {
+		return max(1, s.height-machinesGuidanceBlockHeight(guidance))
+	}
+	return s.height
 }
 
 func (s *Machines) DetailView() string {
@@ -396,16 +442,18 @@ func (s *Machines) resourceExists(id string) bool {
 	return false
 }
 func (s *Machines) listHeight() int {
-	if s.height == 0 {
+	height := s.contentHeight()
+	if height <= 0 {
 		return len(s.machines()) + 2
 	}
-	return max(1, s.height-2)
+	return max(1, height-2)
 }
 func (s *Machines) tableHeight() int {
-	if s.height == 0 {
+	height := s.contentHeight()
+	if height <= 0 {
 		return len(s.mappingRows()) + 1
 	}
-	return max(1, s.height-3)
+	return max(1, height-3)
 }
 func (s *Machines) confirmModal() tea.Cmd {
 	prompt := "Rename machine to " + components.DisplayText(s.name) + "?"
