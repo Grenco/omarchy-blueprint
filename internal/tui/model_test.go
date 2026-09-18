@@ -99,6 +99,39 @@ func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
 	}
 }
 
+type allMessageRecordingScreen struct {
+	id       ScreenID
+	messages []tea.Msg
+}
+
+func (s *allMessageRecordingScreen) ID() ScreenID     { return s.id }
+func (s *allMessageRecordingScreen) SetSize(int, int) {}
+func (s *allMessageRecordingScreen) Update(msg tea.Msg) tea.Cmd {
+	s.messages = append(s.messages, msg)
+	return nil
+}
+func (s *allMessageRecordingScreen) View() string      { return "recording" }
+func (s *allMessageRecordingScreen) Actions() []Action { return nil }
+
+func TestRootOwnedWrappedNoticeIsHandledOnce(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	owner := &allMessageRecordingScreen{id: ScreenResources}
+	m.screens[ScreenResources] = owner
+
+	updated, _ := m.Update(screenMsg{
+		Screen: ScreenResources,
+		Msg:    screens.Notice{Message: "saved"},
+	})
+	m = updated.(model)
+
+	if m.notification != "saved" {
+		t.Fatalf("notification = %q, want saved", m.notification)
+	}
+	if len(owner.messages) != 0 {
+		t.Fatalf("root-owned notice leaked back to screen: %#v", owner.messages)
+	}
+}
+
 func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
 	cmd := wrapScreenCmd(ScreenResources, tea.Batch(
 		func() tea.Msg { return ownedTestMsg{step: 1} },
