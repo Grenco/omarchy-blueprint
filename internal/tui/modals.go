@@ -61,13 +61,7 @@ func (m model) modalFooter() string {
 		}
 		return "enter confirm   esc cancel"
 	case modalWelcome:
-		if m.welcomeChooser && m.welcomeStep == "choose" {
-			return "up/down select   enter continue   esc quit"
-		}
-		if m.welcomeChooser {
-			return "enter continue   esc back"
-		}
-		return "enter create   esc quit"
+		return m.welcomeFooter()
 	default:
 		if m.requestedModal != nil {
 			if m.requestedModal.Input != "" || m.requestedModal.Placeholder != "" {
@@ -255,32 +249,7 @@ func (m model) modalView(base string, layout layout) string {
 		overlay = m.helpScroll.render(lines, innerWidth, innerHeight)
 	case modalWelcome:
 		title = "Welcome to Omarchy Blueprint"
-		lines := []string{}
-		if m.welcomeChooser && m.welcomeStep == "choose" {
-			lines = append(lines, "No Blueprint profile was found.", "", "Choose what to do:")
-			for i, choice := range []string{"Create a new profile", "Open an existing profile", "Quit"} {
-				marker := "  "
-				if i == m.welcomeChoice {
-					marker = "> "
-				}
-				lines = append(lines, marker+choice)
-			}
-		} else if m.welcomeStep == "create-path" || m.welcomeStep == "open-path" {
-			action := "Create profile at:"
-			if m.welcomeStep == "open-path" {
-				action = "Open profile at:"
-			}
-			lines = append(lines, action, "", m.welcomePath.View())
-		} else {
-			lines = append(lines, "Create a new profile at:", components.DisplayText(m.profileDir), "", "Profile name: "+m.welcomeName.View())
-		}
-		if m.welcomeBusy {
-			lines = append(lines, "", "Working...")
-		}
-		if m.welcomeError != nil {
-			lines = append(lines, "Error: "+components.DisplayText(m.welcomeError.Error()))
-		}
-		overlay = strings.Join(lines, "\n")
+		overlay = m.welcomeContent()
 	case modalConfirm:
 		if m.requestedModal != nil {
 			title, overlay = m.requestedModal.Title, m.requestedModal.Content
