@@ -241,6 +241,83 @@ func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
 	}
 }
 
+func TestCompactNavigationEnterActivatesSelectedScreenAndClosesOverlay(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.screenID() != ScreenOverview {
+		t.Fatalf("starting screen = %s, want %s", m.screenID(), ScreenOverview)
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if !m.sidebarOpen || m.focus != focusSidebar {
+		t.Fatal("Tab did not open compact Navigation with sidebar focus")
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
+	if m.screenID() != ScreenCapture {
+		t.Fatalf("j did not move the highlighted destination to %s, got %s", ScreenCapture, m.screenID())
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.sidebarOpen {
+		t.Fatal("enter did not close compact Navigation")
+	}
+	if m.focus != focusWorkspace {
+		t.Fatalf("focus = %d, want focusWorkspace after enter", m.focus)
+	}
+	if m.screenID() != ScreenCapture {
+		t.Fatalf("selected screen changed while closing Navigation: %s", m.screenID())
+	}
+	if !strings.Contains(m.View().Content, "Capture") {
+		t.Fatalf("workspace does not show the selected screen after enter:\n%s", m.View().Content)
+	}
+}
+
+func TestCompactNavigationRightArrowActivatesSelectedScreenAndClosesOverlay(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if !m.sidebarOpen || m.focus != focusSidebar {
+		t.Fatal("Tab did not open compact Navigation with sidebar focus")
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
+	if m.screenID() != ScreenCapture {
+		t.Fatalf("j did not move the highlighted destination: %s", m.screenID())
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if m.sidebarOpen {
+		t.Fatal("right arrow did not close compact Navigation")
+	}
+	if m.focus != focusWorkspace {
+		t.Fatalf("focus = %d, want focusWorkspace after right arrow", m.focus)
+	}
+	if m.screenID() != ScreenCapture {
+		t.Fatalf("selected screen changed while closing Navigation: %s", m.screenID())
+	}
+}
+
+func TestCompactNormalWorkspaceDoesNotTreatEnterOrRightAsNavigationClose(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m.sidebarOpen || m.focus != focusWorkspace {
+		t.Fatal("compact layout should start with the workspace focused and Navigation closed")
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.sidebarOpen || m.focus != focusWorkspace {
+		t.Fatal("enter outside Navigation altered sidebar/focus state")
+	}
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if m.sidebarOpen || m.focus != focusWorkspace {
+		t.Fatal("right arrow outside Navigation altered sidebar/focus state")
+	}
+}
+
+func TestThreePaneRightArrowStillMovesSidebarFocusToWorkspace(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
+	m.focus = focusSidebar
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if m.focus != focusWorkspace {
+		t.Fatalf("three-pane right arrow focus = %d, want focusWorkspace", m.focus)
+	}
+	if m.sidebarOpen {
+		t.Fatal("three-pane right arrow unexpectedly touched compact sidebarOpen state")
+	}
+}
+
 func TestCompactSidebarIsVisibleWhenToggled(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
 	if m.focus == focusSidebar {
