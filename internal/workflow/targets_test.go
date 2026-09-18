@@ -2,55 +2,122 @@ package workflow
 
 import "testing"
 
-func TestCaptureContextDecisionExplicitDisabled(t *testing.T) {
+func TestCaptureContextLookupFindsRecordedDecision(t *testing.T) {
 	ctx := CaptureContext{Targets: map[string]CaptureDecision{
 		"official:firefox": {Capture: false, Resolved: true},
 	}}
-	got := ctx.Decision("official:firefox")
-	if got.Capture || !got.Resolved {
-		t.Fatalf("Decision() = %+v, want explicit disabled", got)
+	got, ok := ctx.Lookup("official:firefox")
+	if !ok || got.Capture || !got.Resolved {
+		t.Fatalf("Lookup() = %+v, %v, want explicit disabled, found", got, ok)
 	}
 }
 
-func TestCaptureContextDecisionMissingKeyDefaultsEnabledUnresolved(t *testing.T) {
+func TestCaptureContextLookupMissingKeyIsNotFound(t *testing.T) {
 	ctx := CaptureContext{Targets: map[string]CaptureDecision{}}
-	got := ctx.Decision("official:firefox")
-	if !got.Capture || got.Resolved {
-		t.Fatalf("Decision() = %+v, want default enabled/unresolved", got)
+	if _, ok := ctx.Lookup("official:firefox"); ok {
+		t.Fatal("Lookup() reported found for a key no orchestration ever recorded")
 	}
 }
 
-func TestCaptureContextDecisionNilTargetsDefaultsEnabledUnresolved(t *testing.T) {
+func TestCaptureContextLookupNilTargetsIsNotFound(t *testing.T) {
 	var ctx CaptureContext
-	got := ctx.Decision("official:firefox")
-	if !got.Capture || got.Resolved {
-		t.Fatalf("Decision() = %+v, want default enabled/unresolved", got)
+	if _, ok := ctx.Lookup("official:firefox"); ok {
+		t.Fatal("Lookup() reported found on a zero-value context")
 	}
 }
 
-func TestRestoreContextDecisionExplicitDisabled(t *testing.T) {
+func TestCaptureContextRequireRejectsMissingKey(t *testing.T) {
+	ctx := CaptureContext{Targets: map[string]CaptureDecision{}}
+	if _, err := ctx.Require("official:firefox"); err == nil {
+		t.Fatal("Require() must fail closed for a target with no recorded decision")
+	}
+}
+
+func TestCaptureContextRequireRejectsUnresolvedDecision(t *testing.T) {
+	ctx := CaptureContext{Targets: map[string]CaptureDecision{
+		"official:firefox": DefaultCaptureDecision(),
+	}}
+	if _, err := ctx.Require("official:firefox"); err == nil {
+		t.Fatal("Require() must reject the PR 2 compatibility default as write authority")
+	}
+}
+
+func TestCaptureContextRequireAcceptsResolvedDecision(t *testing.T) {
+	ctx := CaptureContext{Targets: map[string]CaptureDecision{
+		"official:firefox": {Capture: false, Resolved: true},
+	}}
+	got, err := ctx.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Capture {
+		t.Fatalf("got %+v, want disabled", got)
+	}
+}
+
+func TestDefaultCaptureDecisionIsEnabledUnresolved(t *testing.T) {
+	got := DefaultCaptureDecision()
+	if !got.Capture || got.Resolved {
+		t.Fatalf("DefaultCaptureDecision() = %+v, want enabled/unresolved", got)
+	}
+}
+
+func TestRestoreContextLookupFindsRecordedDecision(t *testing.T) {
 	ctx := RestoreContext{Targets: map[string]RestoreDecision{
 		"official:firefox": {Restore: false, Resolved: true},
 	}}
-	got := ctx.Decision("official:firefox")
-	if got.Restore || !got.Resolved {
-		t.Fatalf("Decision() = %+v, want explicit disabled", got)
+	got, ok := ctx.Lookup("official:firefox")
+	if !ok || got.Restore || !got.Resolved {
+		t.Fatalf("Lookup() = %+v, %v, want explicit disabled, found", got, ok)
 	}
 }
 
-func TestRestoreContextDecisionMissingKeyDefaultsEnabledUnresolved(t *testing.T) {
+func TestRestoreContextLookupMissingKeyIsNotFound(t *testing.T) {
 	ctx := RestoreContext{Targets: map[string]RestoreDecision{}}
-	got := ctx.Decision("official:firefox")
-	if !got.Restore || got.Resolved {
-		t.Fatalf("Decision() = %+v, want default enabled/unresolved", got)
+	if _, ok := ctx.Lookup("official:firefox"); ok {
+		t.Fatal("Lookup() reported found for a key no orchestration ever recorded")
 	}
 }
 
-func TestRestoreContextDecisionNilTargetsDefaultsEnabledUnresolved(t *testing.T) {
+func TestRestoreContextLookupNilTargetsIsNotFound(t *testing.T) {
 	var ctx RestoreContext
-	got := ctx.Decision("official:firefox")
-	if !got.Restore || got.Resolved {
-		t.Fatalf("Decision() = %+v, want default enabled/unresolved", got)
+	if _, ok := ctx.Lookup("official:firefox"); ok {
+		t.Fatal("Lookup() reported found on a zero-value context")
 	}
 }
 
+func TestRestoreContextRequireRejectsMissingKey(t *testing.T) {
+	ctx := RestoreContext{Targets: map[string]RestoreDecision{}}
+	if _, err := ctx.Require("official:firefox"); err == nil {
+		t.Fatal("Require() must fail closed for a target with no recorded decision")
+	}
+}
+
+func TestRestoreContextRequireRejectsUnresolvedDecision(t *testing.T) {
+	ctx := RestoreContext{Targets: map[string]RestoreDecision{
+		"official:firefox": DefaultRestoreDecision(),
+	}}
+	if _, err := ctx.Require("official:firefox"); err == nil {
+		t.Fatal("Require() must reject the PR 2 compatibility default as write authority")
+	}
+}
+
+func TestRestoreContextRequireAcceptsResolvedDecision(t *testing.T) {
+	ctx := RestoreContext{Targets: map[string]RestoreDecision{
+		"official:firefox": {Restore: false, Resolved: true},
+	}}
+	got, err := ctx.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Restore {
+		t.Fatalf("got %+v, want disabled", got)
+	}
+}
+
+func TestDefaultRestoreDecisionIsEnabledUnresolved(t *testing.T) {
+	got := DefaultRestoreDecision()
+	if !got.Restore || got.Resolved {
+		t.Fatalf("DefaultRestoreDecision() = %+v, want enabled/unresolved", got)
+	}
+}
