@@ -15,6 +15,42 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
+func TestResourcesEmptyTrackedViewExplainsOptionalPurpose(t *testing.T) {
+	screen := &Resources{
+		width: 80,
+		phase: resourceBrowse,
+		items: nil,
+	}
+
+	view := screen.View()
+	for _, want := range []string{
+		"No extra resources tracked",
+		"files, folders, or Git projects",
+		"do not fit one of its normal categories",
+		"Press Tab to Discover one.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("empty Resources missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestResourcesDiscoverDoesNotShowTrackedEmptyGuidance(t *testing.T) {
+	screen := &Resources{
+		width:    80,
+		phase:    resourceBrowse,
+		discover: true,
+	}
+
+	view := screen.View()
+	if strings.Contains(view, "No extra resources tracked") {
+		t.Fatalf("Tracked empty-state leaked into Discover:\n%s", view)
+	}
+	if !strings.Contains(view, "Discover") {
+		t.Fatalf("Discover tab missing:\n%s", view)
+	}
+}
+
 func TestResourceScreenBrowseStrategyStartsOneTrack(t *testing.T) {
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, "candidate"), 0o755); err != nil {

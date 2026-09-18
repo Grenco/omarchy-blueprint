@@ -295,6 +295,24 @@ func (s *Config) View() string {
 		lines = append(lines, s.styles.Success(s.notice))
 	}
 	rows := s.rows()
+	if len(s.candidates) == 0 {
+		lines = append(lines, renderEmptyState(s.styles, s.widthOrDefault(), emptyStateCopy{
+			Heading:     "No configuration needs review",
+			Explanation: "Config is for dotfiles and application/system configuration that differs meaningfully from Omarchy defaults.",
+			Guidance:    "If there is nothing suitable for Config to manage, there is nothing to do here.",
+		}))
+		if s.filtering || s.filter != "" {
+			lines = append(lines, "Filter: "+s.filter)
+		}
+		return strings.Join(lines, "\n")
+	}
+	if len(rows) == 0 && s.filter != "" {
+		lines = append(lines, "No configuration matches this filter.")
+		if s.filtering || s.filter != "" {
+			lines = append(lines, "Filter: "+s.filter)
+		}
+		return strings.Join(lines, "\n")
+	}
 	tableRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
 		if row.group != "" {
@@ -316,11 +334,7 @@ func (s *Config) View() string {
 		}
 		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), configPresentationFor(row.candidate.Classification).Label, policy}, Selected: i == s.selected, Focused: true})
 	}
-	if len(tableRows) == 0 {
-		lines = append(lines, "✓ No configuration needs review.")
-	} else {
-		lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 32, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
-	}
+	lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 32, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)
 	}

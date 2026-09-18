@@ -14,6 +14,39 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
+func TestConfigEmptyCandidatesExplainPurpose(t *testing.T) {
+	screen := &Config{width: 80}
+
+	view := screen.View()
+	for _, want := range []string{
+		"No configuration needs review",
+		"dotfiles and application/system configuration",
+		"nothing suitable for Config to manage",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("empty Config missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestConfigEmptyFilterDoesNotClaimGlobalEmptyState(t *testing.T) {
+	screen := &Config{
+		width:  80,
+		filter: "does-not-match",
+		candidates: []config.Candidate{
+			{Path: ".config/nvim/init.lua", Classification: config.ConfigAdded},
+		},
+	}
+
+	view := screen.View()
+	if !strings.Contains(view, "No configuration matches this filter.") {
+		t.Fatalf("filter-empty message missing:\n%s", view)
+	}
+	if strings.Contains(view, "nothing suitable for Config to manage") {
+		t.Fatalf("filter-empty view claimed globally empty Config:\n%s", view)
+	}
+}
+
 func TestConfigPresentationForEveryClassification(t *testing.T) {
 	tests := map[config.Classification]configPresentation{
 		config.ConfigAmbiguousBaseline:  {configNeedsReview, "Needs review", "This file differs, but Blueprint cannot safely tell whether it is your change or an Omarchy-version difference."},

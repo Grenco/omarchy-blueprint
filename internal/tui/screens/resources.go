@@ -414,12 +414,17 @@ func (s *Resources) View() string {
 	if s.discover {
 		return strings.Join(lines, "\n")
 	}
+	if len(s.items) == 0 {
+		lines = append(lines, renderEmptyState(s.styles, s.width, emptyStateCopy{
+			Heading:     "No extra resources tracked",
+			Explanation: "Resources are files, folders, or Git projects you want Blueprint to carry when they do not fit one of its normal categories. You only need this when there is something extra you want to reconstruct.",
+			Guidance:    "Press Tab to Discover one.",
+		}))
+		return strings.Join(lines, "\n")
+	}
 	rows := make([]components.Row, 0, len(s.items))
 	for i, item := range s.items {
 		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.ID), components.DisplayText(item.Strategy), components.DisplayText(item.Path), components.DisplayText(s.effective[item.ID]), components.DisplayText(s.resourceState(item))}, Selected: i == s.selected, Focused: true})
-	}
-	if len(s.items) == 0 {
-		rows = append(rows, components.Row{Cells: []string{"No tracked resources."}})
 	}
 	width := s.width
 	if width == 0 {
