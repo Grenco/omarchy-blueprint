@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -29,6 +30,10 @@ type captureTestProvider struct {
 	commitFail                    bool
 	finalizeFail                  bool
 	commits, rollbacks, finalizes *int
+	targets                       []TargetInspection
+	lastCapture                   *CaptureContext
+	lastPlan                      *RestoreContext
+	lastVerify                    *RestoreContext
 }
 
 func (p captureTestProvider) ID() string               { return p.id }
@@ -36,13 +41,31 @@ func (captureTestProvider) Captured(profile.Data) bool { return true }
 func (captureTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
 	return nil, nil
 }
-func (p captureTestProvider) Capture(_ context.Context, data *profile.Data) (any, []model.Change, error) {
+func (p captureTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return p.targets, nil
+}
+func (p captureTestProvider) Capture(_ context.Context, data *profile.Data, capCtx CaptureContext) (any, []model.Change, error) {
+	if p.lastCapture != nil {
+		*p.lastCapture = capCtx
+	}
 	*p.order = append(*p.order, p.id)
 	if p.fail {
 		return nil, nil, errors.New("capture failed")
 	}
 	data.Packages.Official = append(data.Packages.Official, p.id)
 	return struct{}{}, nil, nil
+}
+func (p captureTestProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, restoreCtx RestoreContext) (model.RestorePlan, error) {
+	if p.lastPlan != nil {
+		*p.lastPlan = restoreCtx
+	}
+	return model.RestorePlan{}, nil
+}
+func (p captureTestProvider) Verify(_ context.Context, _ profile.Data, restoreCtx RestoreContext) (model.VerificationResult, error) {
+	if p.lastVerify != nil {
+		*p.lastVerify = restoreCtx
+	}
+	return model.VerificationResult{OK: true}, nil
 }
 func (p captureTestProvider) CommitCapture() error {
 	*p.commits++
@@ -177,6 +200,32 @@ func TestCaptureManyDoesNotPersistPartialStateOnProviderFailure(t *testing.T) {
 	}
 	if len(loaded.Packages.Official) != 0 || !sameStrings(loaded.Packages.Excluded, []string{"official:excluded"}) {
 		t.Fatalf("partial profile persisted: %#v", loaded.Packages)
+	}
+}
+
+func TestCaptureManyBuildsCompatibilityCaptureContextFromInspectedTargets(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var order []string
+	var lastCapture CaptureContext
+	commits, rollbacks := 0, 0
+	session.SetProviders([]Provider{
+		captureTestProvider{
+			id: "packages", order: &order, commits: &commits, rollbacks: &rollbacks,
+			lastCapture: &lastCapture,
+			targets:     []TargetInspection{{Key: "official:firefox"}, {Key: "official:neovim"}},
+		},
+	})
+	if _, err := session.Capture(context.Background(), "packages"); err != nil {
+		t.Fatal(err)
+	}
+	if len(lastCapture.Targets) != 2 {
+		t.Fatalf("targets = %#v, want 2 inspected targets recorded", lastCapture.Targets)
+	}
+	for _, key := range []string{"official:firefox", "official:neovim"} {
+		got, ok := lastCapture.Lookup(key)
+		if !ok || got != DefaultCaptureDecision() {
+			t.Fatalf("Lookup(%q) = %+v, %v, want the PR 2 compatibility default", key, got, ok)
+		}
 	}
 }
 
