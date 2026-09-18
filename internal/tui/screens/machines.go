@@ -265,6 +265,13 @@ func (s *Machines) View() string {
 	if s.mode != "" {
 		return "Machine name: " + components.DisplayText(s.name)
 	}
+	if s.session != nil && len(s.session.Profile().Resources.Items) == 0 {
+		return renderEmptyState(s.styles, s.width, emptyStateCopy{
+			Heading:     "No machine-specific paths needed",
+			Explanation: "Machines only matters when a Resource needs a different location on one computer. There are no Resources here that need mapping yet.",
+			Guidance:    "There is nothing to configure on this screen.",
+		})
+	}
 	machineLines := make([]string, 0, len(s.machines()))
 	for i, item := range s.machines() {
 		active := ""
@@ -300,7 +307,25 @@ func (s *Machines) View() string {
 		rightWidth = 80
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
-	return lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
+	existingView := lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
+	hasOverrides := false
+	if s.session != nil {
+		for _, machine := range s.session.Profile().Machines.Items {
+			if len(machine.ResourcePaths) > 0 {
+				hasOverrides = true
+				break
+			}
+		}
+	}
+	if !hasOverrides {
+		guidance := renderEmptyState(s.styles, s.width, emptyStateCopy{
+			Heading:     "Portable paths are in use",
+			Explanation: "Resources normally use the same portable path on every machine.",
+			Guidance:    "Add a machine-specific mapping only when one computer needs a different location. If the normal Resource paths work here, there is nothing to configure.",
+		})
+		return guidance + "\n\n" + existingView
+	}
+	return existingView
 }
 
 func (s *Machines) DetailView() string {

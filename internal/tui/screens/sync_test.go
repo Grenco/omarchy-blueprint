@@ -16,6 +16,49 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
+func TestSyncNonRepositoryExplainsOptionalProfileGit(t *testing.T) {
+	screen := &Sync{
+		width:  80,
+		status: profilegit.Status{},
+	}
+
+	view := screen.View()
+	for _, want := range []string{
+		"Profile Git is not set up",
+		"Sync is optional.",
+		"version it and share it between machines",
+		"Press i to initialize a repository",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("non-repo Sync missing %q:\n%s", want, view)
+		}
+	}
+	if action := syncActionsByID(screen.Actions())["sync.init"]; !action.Enabled {
+		t.Fatalf("initialize action disabled in matching empty state: %#v", action)
+	}
+}
+
+func TestSyncCleanRepositoryKeepsNormalRepositoryStatus(t *testing.T) {
+	screen := &Sync{
+		width: 80,
+		status: profilegit.Status{
+			Repository: true,
+			Branch:     "main",
+			Head:       "abc",
+		},
+	}
+
+	view := screen.View()
+	if strings.Contains(view, "Profile Git is not set up") {
+		t.Fatalf("repository shown as unconfigured:\n%s", view)
+	}
+	for _, want := range []string{"Repository", "Branch", "Working tree", "No changes."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("clean repo missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestSyncScreenActionsCoverProfileGitStates(t *testing.T) {
 	managed := profilegit.Change{Path: "profile.toml", Managed: true}
 	unmanaged := profilegit.Change{Path: "notes.txt"}
