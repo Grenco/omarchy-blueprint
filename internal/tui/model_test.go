@@ -99,6 +99,57 @@ func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
 	}
 }
 
+func TestModalFooterTextPreservesCurrentModes(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+
+	m.modal = modalPalette
+	if got := m.modalFooter(); got != "type search   up/down select   enter run   esc close" {
+		t.Fatalf("palette footer = %q", got)
+	}
+
+	m.modal = modalHelp
+	m.requestedModal = nil
+	if got := m.modalFooter(); got != "type search   up/down scroll   esc close" {
+		t.Fatalf("help footer = %q", got)
+	}
+
+	m.requestedModal = &ModalRequest{Content: "confirm"}
+	if got := m.modalFooter(); got != "enter confirm   esc cancel" {
+		t.Fatalf("confirm footer = %q", got)
+	}
+
+	m.requestedModal = &ModalRequest{Input: "value"}
+	if got := m.modalFooter(); got != "enter save   esc cancel" {
+		t.Fatalf("input footer = %q", got)
+	}
+}
+
+func TestRequestedModalResponseReturnsToRequestingScreenAfterNavigation(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	requester := &allMessageRecordingScreen{id: ScreenResources}
+	m.screens[ScreenResources] = requester
+
+	updated, _ := m.Update(screenMsg{
+		Screen: ScreenResources,
+		Msg: components.ModalRequest{
+			Title:   "Confirm",
+			Content: "Proceed?",
+		},
+	})
+	m = updated.(model)
+	m.selected = screenIndex(t, ScreenSync)
+
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if len(requester.messages) != 1 {
+		t.Fatalf("requester messages = %#v", requester.messages)
+	}
+	key, ok := requester.messages[0].(tea.KeyPressMsg)
+	if !ok || key.String() != "enter" {
+		t.Fatalf("modal response = %#v, want enter key", requester.messages[0])
+	}
+}
+
 type allMessageRecordingScreen struct {
 	id       ScreenID
 	messages []tea.Msg
