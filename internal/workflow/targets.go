@@ -31,8 +31,14 @@ type TargetCapabilities struct {
 // descriptive state. Actual Capture and Restore must re-inspect before
 // mutation rather than trusting a stale TargetInspection.
 type TargetInspection struct {
-	Key             string
-	Parent          string
+	Key    string
+	Parent string
+	// Ancestors is the full ancestor chain for a Hierarchical target,
+	// nearest parent first (matching policy.ResolveRequest.Ancestors).
+	// Policy resolution needs the whole chain, not just Parent, to find the
+	// nearest matching ancestor rule when the immediate parent has none.
+	// Non-hierarchical providers leave this nil.
+	Ancestors       []string
 	Label           string
 	Desired         TargetState
 	Current         TargetState

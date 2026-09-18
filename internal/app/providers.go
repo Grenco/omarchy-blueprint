@@ -526,21 +526,26 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 
 	targets := make([]workflow.TargetInspection, 0, len(sortedKeys)+len(current.MachineSpecific))
 	for _, key := range sortedKeys {
-		desiredState := workflow.TargetUnknown
-		switch {
-		case excluded[key]:
-			desiredState = workflow.TargetAbsent
-		case desiredPortable[key]:
-			desiredState = workflow.TargetPresent
-		}
-		currentState := workflow.TargetAbsent
-		if currentPortable[key] {
-			currentState = workflow.TargetPresent
+		currentState := currentPresence(currentPortable[key])
+		if excluded[key] {
+			// Legacy Excluded is Capture Disabled + Restore Disabled with no
+			// desired state, not a deletion tombstone: unmanaged inspection
+			// metadata, never eligible for automatic Capture or Restore.
+			targets = append(targets, workflow.TargetInspection{
+				Key:             key,
+				Label:           packageLabel(key),
+				Desired:         workflow.TargetUnknown,
+				Current:         currentState,
+				CaptureEligible: false,
+				RestoreEligible: false,
+				SafetyReason:    "excluded: legacy Capture Disabled / Restore Disabled",
+			})
+			continue
 		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             key,
 			Label:           packageLabel(key),
-			Desired:         desiredState,
+			Desired:         desiredPresence(desiredPortable[key]),
 			Current:         currentState,
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -1093,12 +1098,45 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	if err != nil {
 		return nil, err
 	}
+	desiredFiles := map[string]bool{}
+	for _, file := range d.Config.Files {
+		desiredFiles[file.Path] = true
+	}
+	desiredDeletes := map[string]bool{}
+	for _, del := range d.Config.Deletes {
+		desiredDeletes[del.Path] = true
+	}
 	targets := make([]workflow.TargetInspection, 0, len(scan.Candidates))
 	for _, candidate := range scan.Candidates {
-		desired, current, eligible, reason := configTargetState(candidate.Classification)
+		tracked := desiredFiles[candidate.Path] || desiredDeletes[candidate.Path]
+		if !tracked && configCaptureInert(candidate.Classification) {
+			// Matches Omarchy's default exactly and was never captured:
+			// real Capture persists nothing for Added/ModifiedBaseline/
+			// DeletedBaseline only, so this path is not yet a managed
+			// target at all, not an implicit "will be updated" one.
+			continue
+		}
+		eligible, reason := configEligibility(candidate.Classification)
+		desired := workflow.TargetUnknown
+		switch {
+		case desiredDeletes[candidate.Path]:
+			desired = workflow.TargetAbsent
+		case desiredFiles[candidate.Path]:
+			desired = workflow.TargetPresent
+		}
+		current := workflow.TargetPresent
+		if candidate.Classification == configprovider.ConfigDeletedBaseline {
+			current = workflow.TargetAbsent
+		}
+		ancestors := configAncestors(candidate.Path)
+		parent := ""
+		if len(ancestors) > 0 {
+			parent = ancestors[0]
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             candidate.Path,
-			Parent:          configParent(candidate.Path),
+			Parent:          parent,
+			Ancestors:       ancestors,
 			Label:           candidate.Path,
 			Desired:         desired,
 			Current:         current,
@@ -1117,45 +1155,66 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	return targets, nil
 }
 
-// configTargetState maps a Config scan Classification onto the provider-
-// neutral Desired/Current/eligibility triple. Baseline-tracked
-// classifications (unchanged, modified, historical, deleted) reflect a path
-// already known to the profile; everything else reads as not-yet-tracked.
-func configTargetState(classification configprovider.Classification) (desired, current workflow.TargetState, eligible bool, reason string) {
+// configCaptureInert reports classifications real Capture never persists
+// (see capture.go: only Added, ModifiedBaseline, and DeletedBaseline ever
+// produce a Files or Deletes entry). An inert, untracked path matches
+// Omarchy's default exactly and carries nothing for Blueprint to manage yet.
+func configCaptureInert(classification configprovider.Classification) bool {
 	switch classification {
-	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline:
-		return workflow.TargetPresent, workflow.TargetPresent, true, ""
-	case configprovider.ConfigDeletedBaseline:
-		return workflow.TargetPresent, workflow.TargetAbsent, true, ""
-	case configprovider.ConfigAdded:
-		return workflow.TargetUnknown, workflow.TargetPresent, true, ""
-	case configprovider.ConfigExcluded:
-		return workflow.TargetAbsent, workflow.TargetPresent, true, ""
-	case configprovider.ConfigDelegated:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "delegated to another provider"
-	case configprovider.ConfigVolatile:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "excluded as state-heavy/volatile by default"
-	case configprovider.ConfigSensitive:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "excluded as a likely secret/credential path"
-	case configprovider.ConfigUnmanagedSymlink:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "existing symlink is not owned by Blueprint"
-	case configprovider.ConfigUnsupported:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "unsupported file type"
-	case configprovider.ConfigOversized:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "exceeds the capture size limit"
-	case configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion:
-		return workflow.TargetUnknown, workflow.TargetPresent, false, "baseline provenance is ambiguous"
+	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigHistoricalBaseline:
+		return true
 	default:
-		return workflow.TargetUnknown, workflow.TargetUnknown, false, "unrecognized classification"
+		return false
 	}
 }
 
-func configParent(logical string) string {
-	dir := path.Dir(logical)
-	if dir == "." || dir == "/" {
-		return ""
+// configEligibility maps a Config scan Classification onto Capture/Restore
+// eligibility. Excluded is the provider-owned "leave this path alone" state
+// -- explicit, permanent, unmanaged metadata, never a deletion tombstone --
+// so it stays ineligible exactly like the other safety-blocked
+// classifications, not merely "desired absent."
+func configEligibility(classification configprovider.Classification) (eligible bool, reason string) {
+	switch classification {
+	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline:
+		return true, ""
+	case configprovider.ConfigExcluded:
+		return false, "excluded: you asked Config to leave this path alone"
+	case configprovider.ConfigDelegated:
+		return false, "delegated to another provider"
+	case configprovider.ConfigVolatile:
+		return false, "excluded as state-heavy/volatile by default"
+	case configprovider.ConfigSensitive:
+		return false, "excluded as a likely secret/credential path"
+	case configprovider.ConfigUnmanagedSymlink:
+		return false, "existing symlink is not owned by Blueprint"
+	case configprovider.ConfigUnsupported:
+		return false, "unsupported file type"
+	case configprovider.ConfigOversized:
+		return false, "exceeds the capture size limit"
+	case configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion:
+		return false, "baseline provenance is ambiguous"
+	default:
+		return false, "unrecognized classification"
 	}
-	return dir
+}
+
+// configAncestors returns logical's full ancestor chain, nearest parent
+// first, down to (and including) the Config root. Policy resolution needs
+// the whole chain -- not just the immediate parent -- to find the nearest
+// matching ancestor rule when closer directories have none.
+func configAncestors(logical string) []string {
+	var ancestors []string
+	dir := path.Dir(logical)
+	for dir != "." && dir != "/" && dir != "" {
+		ancestors = append(ancestors, dir)
+		parent := path.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ancestors
 }
 
 func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoot string, recursive bool) ownership.Index {
@@ -1274,22 +1333,26 @@ func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	}
 	targets := make([]workflow.TargetInspection, 0, len(fields))
 	for _, field := range fields {
-		desiredState := workflow.TargetUnknown
-		if field.desired != "" {
-			desiredState = workflow.TargetPresent
-		}
-		currentState := workflow.TargetAbsent
-		if field.current != "" {
-			currentState = workflow.TargetPresent
+		// Mirrors Plan/Verify's restore exclusions exactly: agent is never
+		// automatically restored (Omarchy's setter launches it), and a
+		// desired value Omarchy cannot replay (a raw .desktop fallback) is
+		// visible drift but not restorable.
+		restoreEligible, reason := true, ""
+		switch {
+		case field.key == "agent":
+			restoreEligible, reason = false, "Omarchy's agent setter launches the selected agent; automatic set-only restore is not currently safe"
+		case field.desired != "" && !defaultsprovider.Portable(field.desired):
+			restoreEligible, reason = false, fmt.Sprintf("%q is not an Omarchy-managed default and may not be portable", field.desired)
 		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             field.key,
 			Label:           field.key,
-			Desired:         desiredState,
-			Current:         currentState,
+			Desired:         desiredPresence(field.desired != ""),
+			Current:         currentPresence(field.current != ""),
 			CaptureEligible: true,
-			RestoreEligible: true,
-			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+			RestoreEligible: restoreEligible,
+			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: restoreEligible},
+			SafetyReason:    reason,
 		})
 	}
 	return targets, nil

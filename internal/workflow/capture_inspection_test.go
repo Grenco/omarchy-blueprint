@@ -61,7 +61,10 @@ func TestInspectCaptureReportsUpdateForAlreadyTrackedPresentTarget(t *testing.T)
 func TestInspectCaptureReportsAbsentForTrackedTargetNoLongerPresent(t *testing.T) {
 	session := newInspectionSession(t)
 	session.SetProviders([]Provider{captureInspectionTestProvider{id: "packages", targets: []TargetInspection{
-		{Key: "official:firefox", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent},
+		{
+			Key: "official:firefox", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent,
+			Capabilities: TargetCapabilities{SupportsDesiredAbsence: true},
+		},
 	}}})
 
 	inspection, err := session.InspectCapture(context.Background(), "")
@@ -71,6 +74,28 @@ func TestInspectCaptureReportsAbsentForTrackedTargetNoLongerPresent(t *testing.T
 	got := singleCaptureTarget(t, inspection, "packages")
 	if got.Outcome != CaptureOutcomeAbsent {
 		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeAbsent)
+	}
+}
+
+// A provider that cannot express desired absence (e.g. Resources) must never
+// report Absent for a missing-but-desired target: with no way to record the
+// absence, Capture leaves the previously desired state untouched.
+func TestInspectCapturePreservesMissingTargetWhenProviderCannotExpressAbsence(t *testing.T) {
+	session := newInspectionSession(t)
+	session.SetProviders([]Provider{captureInspectionTestProvider{id: "resources", targets: []TargetInspection{
+		{
+			Key: "resource:dotfiles", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent,
+			Capabilities: TargetCapabilities{SupportsDesiredAbsence: false},
+		},
+	}}})
+
+	inspection, err := session.InspectCapture(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := singleCaptureTarget(t, inspection, "resources")
+	if got.Outcome != CaptureOutcomePreserve {
+		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomePreserve)
 	}
 }
 
