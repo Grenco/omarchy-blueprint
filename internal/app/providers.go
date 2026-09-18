@@ -257,7 +257,13 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 			Current:         currentPresence(present),
 			CaptureEligible: true,
 			RestoreEligible: true,
-			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				// A missing local resource is preserved, never dropped:
+				// there is no way to tell "gone" apart from "not yet
+				// restored," so Capture must not silently forget it.
+				PreservesMissingDesired: true,
+			},
 		})
 	}
 	return targets, nil
@@ -1106,8 +1112,10 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	for _, del := range d.Config.Deletes {
 		desiredDeletes[del.Path] = true
 	}
+	seen := map[string]bool{}
 	targets := make([]workflow.TargetInspection, 0, len(scan.Candidates))
 	for _, candidate := range scan.Candidates {
+		seen[candidate.Path] = true
 		tracked := desiredFiles[candidate.Path] || desiredDeletes[candidate.Path]
 		if !tracked && configCaptureInert(candidate.Classification) {
 			// Matches Omarchy's default exactly and was never captured:
@@ -1128,31 +1136,69 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 		if candidate.Classification == configprovider.ConfigDeletedBaseline {
 			current = workflow.TargetAbsent
 		}
-		ancestors := configAncestors(candidate.Path)
-		parent := ""
-		if len(ancestors) > 0 {
-			parent = ancestors[0]
+		targets = append(targets, configTarget(candidate.Path, desired, current, eligible, reason, workflow.TargetCapabilities{
+			SupportsCapture:        true,
+			SupportsRestore:        true,
+			SupportsDesiredAbsence: true,
+			SupportsExactRemoval:   eligible,
+			Hierarchical:           true,
+		}))
+	}
+
+	// Scan omits a saved path entirely once it has no baseline counterpart
+	// and is no longer present locally (ScanForCapture never synthesizes it
+	// either, since a profile upgrade must not keep legacy discoveries alive
+	// merely by recapture -- see ScanForCapture's doc comment). Without this,
+	// a previously captured, now locally missing user-added file would
+	// vanish from policy inspection even though Blueprint still has saved
+	// desired state for it, breaking Capture Preserve (nothing to preserve)
+	// and Restore (nothing to recreate from).
+	for _, file := range d.Config.Files {
+		if seen[file.Path] {
+			continue
 		}
-		targets = append(targets, workflow.TargetInspection{
-			Key:             candidate.Path,
-			Parent:          parent,
-			Ancestors:       ancestors,
-			Label:           candidate.Path,
-			Desired:         desired,
-			Current:         current,
-			CaptureEligible: eligible,
-			RestoreEligible: eligible,
-			Capabilities: workflow.TargetCapabilities{
-				SupportsCapture:        true,
-				SupportsRestore:        true,
-				SupportsDesiredAbsence: true,
-				SupportsExactRemoval:   eligible,
-				Hierarchical:           true,
-			},
-			SafetyReason: reason,
-		})
+		// No candidate and no baseline counterpart: the same real Capture
+		// this target would go through on next Update silently drops it
+		// from Files (see capture.go), so it stop-manages rather than
+		// tombstones, exactly like Defaults/Shell.
+		targets = append(targets, configTarget(file.Path, workflow.TargetPresent, workflow.TargetAbsent, true, "", workflow.TargetCapabilities{
+			SupportsCapture: true,
+			SupportsRestore: true,
+			Hierarchical:    true,
+		}))
+	}
+	for _, del := range d.Config.Deletes {
+		if seen[del.Path] {
+			continue
+		}
+		targets = append(targets, configTarget(del.Path, workflow.TargetAbsent, workflow.TargetAbsent, true, "", workflow.TargetCapabilities{
+			SupportsCapture:        true,
+			SupportsRestore:        true,
+			SupportsDesiredAbsence: true,
+			Hierarchical:           true,
+		}))
 	}
 	return targets, nil
+}
+
+func configTarget(logicalPath string, desired, current workflow.TargetState, eligible bool, reason string, capabilities workflow.TargetCapabilities) workflow.TargetInspection {
+	ancestors := configAncestors(logicalPath)
+	parent := ""
+	if len(ancestors) > 0 {
+		parent = ancestors[0]
+	}
+	return workflow.TargetInspection{
+		Key:             logicalPath,
+		Parent:          parent,
+		Ancestors:       ancestors,
+		Label:           logicalPath,
+		Desired:         desired,
+		Current:         current,
+		CaptureEligible: eligible,
+		RestoreEligible: eligible,
+		Capabilities:    capabilities,
+		SafetyReason:    reason,
+	}
 }
 
 // configCaptureInert reports classifications real Capture never persists

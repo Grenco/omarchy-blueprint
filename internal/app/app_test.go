@@ -2951,6 +2951,46 @@ func TestConfigInspectTargetsKeepsExcludedPermanentlyUnmanaged(t *testing.T) {
 	}
 }
 
+// A user-authored file with no Omarchy baseline counterpart, previously
+// captured (tracked in d.Config.Files) and later deleted locally: Scan omits
+// it entirely (no baseline, no live file to discover; ScanForCapture never
+// synthesizes it either), so InspectTargets must union it in from saved
+// state instead of losing it -- otherwise there is no target left to
+// resolve policy for, even though Blueprint still has saved desired state.
+func TestConfigInspectTargetsKeepsSavedFileTargetWhenLocallyMissing(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/widget/settings.conf"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/widget/settings.conf" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want .config/widget/settings.conf still present despite local absence", targets)
+	}
+	if got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("target = %#v, want Desired=present Current=absent", got)
+	}
+	if !got.CaptureEligible || !got.RestoreEligible {
+		t.Fatalf("target = %#v, want Capture/Restore eligible so Restore can recreate it", got)
+	}
+	if got.Capabilities.SupportsDesiredAbsence || got.Capabilities.PreservesMissingDesired {
+		t.Fatalf("capabilities = %#v, want stop-managing semantics: no baseline means no tombstone, and real Capture Update silently drops this from Files on next capture", got.Capabilities)
+	}
+}
+
 func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 	blocked := []configprovider.Classification{
 		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
@@ -3027,6 +3067,9 @@ func TestDefaultsInspectTargetsReportsFourFixedTargets(t *testing.T) {
 	}
 	if got := byKey["browser"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
 		t.Fatalf("browser (absent) = %#v", got)
+	}
+	if got := byKey["browser"]; got.Capabilities.SupportsDesiredAbsence || got.Capabilities.PreservesMissingDesired {
+		t.Fatalf("browser = %#v, want no desired-absence tombstone and no preserve-when-missing: Capture always writes a fresh replacement, so a vanished default is stop-managed, not remembered", got.Capabilities)
 	}
 	if got := byKey["agent"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetAbsent {
 		t.Fatalf("agent (noop) = %#v", got)
@@ -3223,6 +3266,9 @@ func TestResourcesInspectTargetsReportsMissingLocalStateAsAbsentNotDeletionInten
 	}
 	if got.Capabilities.SupportsDesiredAbsence || got.Capabilities.SupportsExactRemoval {
 		t.Fatalf("capabilities = %#v, want no desired-absence or Exact-removal support: missing local state must never imply deletion intent", got.Capabilities)
+	}
+	if !got.Capabilities.PreservesMissingDesired {
+		t.Fatalf("capabilities = %#v, want PreservesMissingDesired: a missing local resource must be preserved, not silently stop-managed", got.Capabilities)
 	}
 }
 
