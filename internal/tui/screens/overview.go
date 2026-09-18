@@ -241,6 +241,9 @@ func (s *Overview) HeaderState() string {
 	if s.err != nil {
 		return "x overview error"
 	}
+	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
+		return "~ nothing captured"
+	}
 	if len(s.data.Items) > 0 {
 		return fmt.Sprintf("! %d attention", len(s.data.Items))
 	}

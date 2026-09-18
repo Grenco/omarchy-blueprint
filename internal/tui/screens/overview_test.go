@@ -38,6 +38,27 @@ func TestOverviewFreshProfileGuidanceDisappearsAfterCapture(t *testing.T) {
 	}
 }
 
+func TestOverviewHeaderStateIsNeutralForFreshProfile(t *testing.T) {
+	session, _ := newSyncSession(t)
+	screen := NewOverview(session)
+
+	if got := screen.HeaderState(); got != "~ nothing captured" {
+		t.Fatalf("fresh profile header state = %q, want %q", got, "~ nothing captured")
+	}
+}
+
+func TestOverviewHeaderStateReturnsToNormalHealthLogicAfterCapture(t *testing.T) {
+	session, _ := newSyncSession(t)
+	if err := session.SetProviderCaptured(context.Background(), "hooks", true); err != nil {
+		t.Fatal(err)
+	}
+	screen := NewOverview(session)
+
+	if got := screen.HeaderState(); got != "✓ overview clean" {
+		t.Fatalf("captured clean profile header state = %q, want %q", got, "✓ overview clean")
+	}
+}
+
 func TestOverviewScreenFlattensExpandedSectionsAndRoutesDecision(t *testing.T) {
 	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{{Severity: workflow.AttentionDecision, Provider: "config", Summary: "choose config", Target: "config", Ref: ".config/nvim"}, {Severity: workflow.AttentionDrift, Summary: "package differs"}, {Severity: workflow.AttentionInfo, Provider: "profile-git", Summary: "profile changes"}}, Healthy: []string{"themes"}}}
 	for _, want := range []string{"▼ Needs review", "▼ Drift", "▼ Profile sync", "▼ Healthy", "Config: choose config", "✓ themes"} {
