@@ -2845,8 +2845,8 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	if got := byKey["official:htop"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
 		t.Fatalf("htop (update) = %#v", got)
 	}
-	if got, ok := byKey["official:vim"]; !ok || got.Desired != workflow.TargetAbsent || got.Current != workflow.TargetAbsent {
-		t.Fatalf("vim (excluded) = %#v, ok=%v", got, ok)
+	if got, ok := byKey["official:vim"]; !ok || got.Desired != workflow.TargetUnknown || got.CaptureEligible || got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("vim (excluded: legacy Capture/Restore Disabled, no desired state) = %#v, ok=%v", got, ok)
 	}
 	if got := byKey["mise:node"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
 		t.Fatalf("mise:node (add) = %#v", got)
@@ -2856,7 +2856,45 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	}
 }
 
-func TestConfigInspectTargetsReportsCanonicalPathWithParentChain(t *testing.T) {
+func TestConfigInspectTargetsReportsTrackedPathWithFullAncestorChain(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(userRoot, "hypr", "lua"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "lua", "plugins.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/hypr/lua/plugins.lua"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/lua/plugins.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want .config/hypr/lua/plugins.lua present", targets)
+	}
+	wantAncestors := []string{".config/hypr/lua", ".config/hypr", ".config"}
+	if got.Parent != ".config/hypr/lua" || !reflect.DeepEqual(got.Ancestors, wantAncestors) {
+		t.Fatalf("target = %#v, want Parent=%q Ancestors=%v", got, ".config/hypr/lua", wantAncestors)
+	}
+	if !got.CaptureEligible || got.Desired != workflow.TargetPresent {
+		t.Fatalf("target = %#v, want the tracked file eligible with Desired=present", got)
+	}
+}
+
+func TestConfigInspectTargetsSkipsUntrackedInertBaselineMatch(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	_, userRoot, err := deps.ConfigDirs()
 	if err != nil {
@@ -2867,7 +2905,32 @@ func TestConfigInspectTargetsReportsCanonicalPathWithParentChain(t *testing.T) {
 	}
 	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
 	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
 	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets {
+		if target.Key == ".config/hypr/bindings.lua" {
+			t.Fatalf("targets = %#v, want the untracked baseline-matching path omitted: real Capture never persists an unchanged-baseline file", targets)
+		}
+	}
+}
+
+func TestConfigInspectTargetsKeepsExcludedPermanentlyUnmanaged(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Excluded: []string{".config/hypr/bindings.lua"}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2878,42 +2941,68 @@ func TestConfigInspectTargetsReportsCanonicalPathWithParentChain(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatalf("targets = %#v, want .config/hypr/bindings.lua present", targets)
+		t.Fatalf("targets = %#v, want the excluded path still surfaced for visibility", targets)
 	}
-	if got.Parent != ".config/hypr" || !got.CaptureEligible || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
-		t.Fatalf("target = %#v", got)
+	if got.CaptureEligible || got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("excluded target = %#v, want permanently unmanaged/ineligible", got)
+	}
+	if got.Desired == workflow.TargetAbsent {
+		t.Fatalf("excluded target = %#v, Desired must never read as a deletion tombstone", got)
 	}
 }
 
-func TestConfigTargetStateMapsBlockedClassificationsIneligible(t *testing.T) {
+func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 	blocked := []configprovider.Classification{
-		configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
+		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
 		configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized,
 		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
 	}
 	for _, classification := range blocked {
-		_, _, eligible, reason := configTargetState(classification)
+		eligible, reason := configEligibility(classification)
 		if eligible || reason == "" {
 			t.Fatalf("%s: eligible=%v reason=%q, want ineligible with a safety reason", classification, eligible, reason)
 		}
 	}
 }
 
-func TestConfigTargetStateMapsTrackedClassificationsToPresentPresent(t *testing.T) {
+func TestConfigEligibilityAllowsCaptureActionableClassifications(t *testing.T) {
 	for _, classification := range []configprovider.Classification{
 		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline,
 	} {
-		desired, current, eligible, _ := configTargetState(classification)
-		if desired != workflow.TargetPresent || current != workflow.TargetPresent || !eligible {
-			t.Fatalf("%s: desired=%s current=%s eligible=%v", classification, desired, current, eligible)
+		if eligible, _ := configEligibility(classification); !eligible {
+			t.Fatalf("%s: want eligible", classification)
 		}
 	}
 }
 
-func TestConfigTargetStateMapsDeletedBaselineToAbsentCurrent(t *testing.T) {
-	desired, current, eligible, _ := configTargetState(configprovider.ConfigDeletedBaseline)
-	if desired != workflow.TargetPresent || current != workflow.TargetAbsent || !eligible {
-		t.Fatalf("desired=%s current=%s eligible=%v", desired, current, eligible)
+func TestConfigCaptureInertOnlyMatchesClassificationsCaptureNeverPersists(t *testing.T) {
+	inert := map[configprovider.Classification]bool{
+		configprovider.ConfigUnchangedBaseline:  true,
+		configprovider.ConfigHistoricalBaseline: true,
+	}
+	all := []configprovider.Classification{
+		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigDeletedBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDelegated, configprovider.ConfigExcluded, configprovider.ConfigVolatile,
+		configprovider.ConfigSensitive, configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported,
+		configprovider.ConfigOversized, configprovider.ConfigHistoricalBaseline, configprovider.ConfigAmbiguousBaseline,
+		configprovider.ConfigAmbiguousDeletion,
+	}
+	for _, classification := range all {
+		if got, want := configCaptureInert(classification), inert[classification]; got != want {
+			t.Fatalf("configCaptureInert(%s) = %v, want %v", classification, got, want)
+		}
+	}
+}
+
+func TestConfigAncestorsReturnsNearestParentFirstDownToRoot(t *testing.T) {
+	got := configAncestors(".config/hypr/lua/plugins.lua")
+	want := []string{".config/hypr/lua", ".config/hypr", ".config"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configAncestors(...) = %v, want %v", got, want)
+	}
+	if got, want := configAncestors(".config/hypr.conf"), []string{".config"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("configAncestors(top-level file) = %v, want %v", got, want)
 	}
 }
 
@@ -2941,6 +3030,34 @@ func TestDefaultsInspectTargetsReportsFourFixedTargets(t *testing.T) {
 	}
 	if got := byKey["agent"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetAbsent {
 		t.Fatalf("agent (noop) = %#v", got)
+	}
+	if got := byKey["agent"]; got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("agent must never be RestoreEligible: automatic set-only restore is not safe; got %#v", got)
+	}
+	if got := byKey["terminal"]; !got.RestoreEligible {
+		t.Fatalf("terminal (portable, non-agent) = %#v, want RestoreEligible", got)
+	}
+}
+
+func TestDefaultsInspectTargetsMarksNonPortableDesiredValueRestoreIneligible(t *testing.T) {
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}
+	deps := Dependencies{Runner: runner}
+	d := profile.Data{Defaults: profile.Defaults{Browser: "some-app.desktop"}}
+
+	targets, err := (defaultsStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	got, ok := byKey["browser"]
+	if !ok || got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("browser (non-portable desired value) = %#v, ok=%v, want RestoreEligible=false with a reason", got, ok)
+	}
+	if !got.CaptureEligible {
+		t.Fatalf("browser = %#v, want CaptureEligible unaffected by restore portability", got)
 	}
 }
 
