@@ -160,7 +160,7 @@ func (s *Session) restorePlan(ctx context.Context, only string, mode RestoreMode
 		plan.Operations, plan.Skipped = append(plan.Operations, part.Operations...), append(plan.Skipped, part.Skipped...)
 	}
 	if s.finalizeRestore != nil {
-		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, mode); err != nil {
+		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, options); err != nil {
 			return model.RestorePlan{}, nil, nil, fmt.Errorf("finalize restore plan: %w", err)
 		}
 	} else if err := restore.ValidatePlan(plan); err != nil {

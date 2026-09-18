@@ -7,6 +7,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
@@ -19,7 +20,7 @@ type Session struct {
 	machine         machine.Selection
 	providers       []Provider
 	profileGit      profilegit.Service
-	finalizeRestore func(context.Context, profile.Data, []Provider, *model.RestorePlan, RestoreMode) error
+	finalizeRestore func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error
 }
 
 func Open(deps Dependencies, opts Options) (*Session, error) {
@@ -191,6 +192,9 @@ func (s *Session) ProfileGitPush(ctx context.Context) (profilegit.Result, error)
 func (s *Session) SetProviders(providers []Provider) { s.providers = providers }
 
 // SetRestoreFinalizer installs application-specific aggregate restore rules.
-func (s *Session) SetRestoreFinalizer(finalize func(context.Context, profile.Data, []Provider, *model.RestorePlan, RestoreMode) error) {
+// The finalizer receives the same policy.RestoreOptions that planned every
+// selected provider, not the legacy RestoreMode, so it can never diverge
+// from the effective Restore intent that produced the plan it is adjusting.
+func (s *Session) SetRestoreFinalizer(finalize func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error) {
 	s.finalizeRestore = finalize
 }

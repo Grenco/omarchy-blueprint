@@ -17,6 +17,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
@@ -3105,5 +3106,22 @@ func TestResourcesInspectTargetsReportsMissingLocalStateAsAbsentNotDeletionInten
 	}
 	if got.Capabilities.SupportsDesiredAbsence || got.Capabilities.SupportsExactRemoval {
 		t.Fatalf("capabilities = %#v, want no desired-absence or Exact-removal support: missing local state must never imply deletion intent", got.Capabilities)
+	}
+}
+
+func TestRestorePlanOptionsFromPolicyDerivesForceFromConflictsOnly(t *testing.T) {
+	cases := []struct {
+		options policy.RestoreOptions
+		force   bool
+	}{
+		{policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive}, false},
+		{policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact}, false},
+		{policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceAdditive}, true},
+		{policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact}, true},
+	}
+	for _, tc := range cases {
+		if got := restorePlanOptionsFromPolicy(tc.options); got.Force != tc.force {
+			t.Fatalf("restorePlanOptionsFromPolicy(%+v) = %+v, want Force=%v: Convergence must stay irrelevant to Shell/plugin dependency conflict resolution", tc.options, got, tc.force)
+		}
 	}
 }
