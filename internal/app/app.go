@@ -20,6 +20,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
@@ -1004,8 +1005,35 @@ type restoreProviderAdapter struct{ stateProvider }
 
 func (p restoreProviderAdapter) StateProvider() stateProvider { return p.stateProvider }
 
-func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, mode workflow.RestoreMode) (model.RestorePlan, error) {
-	return p.stateProvider.Plan(ctx, data, info, restorePlanOptions{Force: mode == workflow.RestoreForced})
+// InspectTargets defers to the wrapped state provider's own inventory when it
+// has one. PR 2 adds real inventories category by category (Tasks 7-9); a
+// provider that has not been given one yet reports no targets rather than
+// fabricating placeholder state.
+func (p restoreProviderAdapter) InspectTargets(ctx context.Context, data profile.Data) ([]workflow.TargetInspection, error) {
+	if provider, ok := p.stateProvider.(interface {
+		InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error)
+	}); ok {
+		return provider.InspectTargets(ctx, data)
+	}
+	return nil, nil
+}
+
+// Capture accepts the workflow CaptureContext for interface compatibility;
+// PR 2 does not yet gate Capture on policy decisions (PR 3), so it is not
+// consulted here.
+func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+	return p.stateProvider.Capture(ctx, data)
+}
+
+func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+	return p.stateProvider.Plan(ctx, data, info, restorePlanOptions{Force: restoreCtx.Options.Conflicts == policy.ConflictForce})
+}
+
+// Verify accepts the workflow RestoreContext for interface compatibility;
+// PR 2 does not yet gate verification on policy decisions (PR 4), so it is
+// not consulted here.
+func (p restoreProviderAdapter) Verify(ctx context.Context, data profile.Data, _ workflow.RestoreContext) (model.VerificationResult, error) {
+	return p.stateProvider.Verify(ctx, data)
 }
 
 // The workflow layer discovers these optional capabilities by interface. Keep

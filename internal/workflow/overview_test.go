@@ -23,7 +23,10 @@ type overviewProvider struct{}
 
 func (overviewProvider) ID() string                 { return "config" }
 func (overviewProvider) Captured(profile.Data) bool { return true }
-func (overviewProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+func (overviewProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return nil, nil
+}
+func (overviewProvider) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
 	return nil, nil, nil
 }
 func (overviewProvider) Diff(context.Context, profile.Data) ([]model.Change, error) { return nil, nil }
@@ -35,7 +38,10 @@ type overviewResources struct{}
 
 func (overviewResources) ID() string                 { return "resources" }
 func (overviewResources) Captured(profile.Data) bool { return true }
-func (overviewResources) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+func (overviewResources) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return nil, nil
+}
+func (overviewResources) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
 	return nil, nil, nil
 }
 func (overviewResources) Diff(context.Context, profile.Data) ([]model.Change, error) { return nil, nil }

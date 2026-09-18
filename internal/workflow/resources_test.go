@@ -12,7 +12,10 @@ type resourceActionTestProvider struct{ data profile.Data }
 
 func (p *resourceActionTestProvider) ID() string                 { return "resources" }
 func (p *resourceActionTestProvider) Captured(profile.Data) bool { return true }
-func (p *resourceActionTestProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+func (p *resourceActionTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return nil, nil
+}
+func (p *resourceActionTestProvider) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
 	return nil, nil, nil
 }
 func (p *resourceActionTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {

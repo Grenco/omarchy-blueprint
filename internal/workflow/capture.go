@@ -73,7 +73,11 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 		return rollbackErr
 	}
 	for _, provider := range selected {
-		state, changes, err := provider.Capture(ctx, &data)
+		capCtx, err := defaultCaptureContext(ctx, provider, data, s.machine.Name)
+		if err != nil {
+			return CaptureResult{}, errors.Join(fmt.Errorf("inspect %s targets: %w", provider.ID(), err), rollback())
+		}
+		state, changes, err := provider.Capture(ctx, &data, capCtx)
 		if err != nil {
 			return CaptureResult{}, errors.Join(fmt.Errorf("capture %s: %w", provider.ID(), err), rollback())
 		}
@@ -116,4 +120,20 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 	s.profile = data
 	result.Profile = data
 	return result, nil
+}
+
+// defaultCaptureContext inspects a provider's targets and records the PR 2
+// compatibility decision (DefaultCaptureDecision) for each one. Real policy
+// resolution replaces this in PR 3; until then every inspected target
+// resolves to enabled/unresolved so current behavior is preserved.
+func defaultCaptureContext(ctx context.Context, provider Provider, data profile.Data, machine string) (CaptureContext, error) {
+	targets, err := provider.InspectTargets(ctx, data)
+	if err != nil {
+		return CaptureContext{}, err
+	}
+	decisions := make(map[string]CaptureDecision, len(targets))
+	for _, target := range targets {
+		decisions[target.Key] = DefaultCaptureDecision()
+	}
+	return CaptureContext{Machine: machine, Targets: decisions}, nil
 }
