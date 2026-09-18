@@ -99,6 +99,26 @@ func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
 	}
 }
 
+func TestWelcomeFooterPreservesChooserModes(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+
+	m.welcomeChooser = true
+	m.welcomeStep = "choose"
+	if got := m.welcomeFooter(); got != "up/down select   enter continue   esc quit" {
+		t.Fatalf("chooser footer = %q", got)
+	}
+
+	m.welcomeStep = "open-path"
+	if got := m.welcomeFooter(); got != "enter continue   esc back" {
+		t.Fatalf("path footer = %q", got)
+	}
+
+	m.welcomeChooser = false
+	if got := m.welcomeFooter(); got != "enter create   esc quit" {
+		t.Fatalf("create footer = %q", got)
+	}
+}
+
 func TestModalFooterTextPreservesCurrentModes(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 
