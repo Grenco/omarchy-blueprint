@@ -983,14 +983,14 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 		}
 	}
 	session.SetProviders(adapters)
-	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, mode workflow.RestoreMode) error {
+	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, options policy.RestoreOptions) error {
 		state := make([]stateProvider, 0, len(selected))
 		for _, provider := range selected {
 			if adapter, ok := provider.(interface{ StateProvider() stateProvider }); ok {
 				state = append(state, adapter.StateProvider())
 			}
 		}
-		return finalizeRestorePlan(ctx, deps, opt, data, state, plan, restorePlanOptions{Force: mode == workflow.RestoreForced})
+		return finalizeRestorePlan(ctx, deps, opt, data, state, plan, restorePlanOptionsFromPolicy(options))
 	})
 	return session, nil
 }
