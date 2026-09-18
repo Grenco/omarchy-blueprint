@@ -2942,3 +2942,104 @@ func TestDefaultsInspectTargetsReportsFourFixedTargets(t *testing.T) {
 		t.Fatalf("agent (noop) = %#v", got)
 	}
 }
+
+func TestThemesInspectTargetsReportsActiveAndNonBuiltinThemes(t *testing.T) {
+	_, deps := configSandbox(t)
+	_, user, err := deps.ThemeDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(user, "dracula"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "dracula", "theme.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Themes: profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "unknown", Enabled: true}}}}
+	targets, err := (themesStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if got := byKey["active"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("active = %#v", got)
+	}
+	if got, ok := byKey["theme:dracula"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
+		t.Fatalf("theme:dracula (add) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
+	_, deps := configSandbox(t)
+	pluginDir := t.TempDir()
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.pluginDir = pluginDir
+	if err := os.MkdirAll(filepath.Join(pluginDir, "cool-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "cool-plugin", "plugin.lua"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Plugins: profile.Plugins{Items: []profile.Plugin{
+		{ID: "old-plugin", Source: "local"},
+		{ID: "builtin-toggle", Source: "builtin"},
+	}}}
+	targets, err := (pluginsStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if _, ok := byKey["plugin:builtin-toggle"]; ok {
+		t.Fatalf("targets = %#v, want the builtin plugin omitted", targets)
+	}
+	if got, ok := byKey["plugin:cool-plugin"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
+		t.Fatalf("plugin:cool-plugin (add) = %#v, ok=%v", got, ok)
+	}
+	if got, ok := byKey["plugin:old-plugin"]; !ok || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("plugin:old-plugin (absent) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestHooksInspectTargetsReportsManagedPathsAndUnmanagedSymlinks(t *testing.T) {
+	_, deps := configSandbox(t)
+	hooksDir, err := deps.HooksDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	deps.HomeDir = func() (string, error) { return home, nil }
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-restore.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "does-not-exist"), filepath.Join(hooksDir, "legacy-hook")); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Hooks: profile.Hooks{Items: []profile.Hook{{Path: "removed.sh"}}}}
+	targets, err := (hooksStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if got, ok := byKey["pre-restore.sh"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
+		t.Fatalf("pre-restore.sh (add) = %#v, ok=%v", got, ok)
+	}
+	if got, ok := byKey["removed.sh"]; !ok || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("removed.sh (absent) = %#v, ok=%v", got, ok)
+	}
+	if got, ok := byKey["legacy-hook"]; !ok || got.CaptureEligible || got.SafetyReason == "" {
+		t.Fatalf("legacy-hook (unmanaged) = %#v, ok=%v", got, ok)
+	}
+}
