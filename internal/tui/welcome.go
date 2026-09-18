@@ -19,6 +19,26 @@ type profileCreatedMsg struct {
 	err     error
 }
 
+// handleProfileCreated is the canonical response to a profile Create/Open
+// attempt: on success it rebuilds the root against the new session, on
+// failure it reports the error inline within the welcome flow.
+func (m model) handleProfileCreated(created profileCreatedMsg) (tea.Model, tea.Cmd) {
+	m.welcomeBusy = false
+	if created.err != nil {
+		m.welcomeError = created.err
+		return m, nil
+	}
+	dir := created.dir
+	if dir == "" {
+		dir = m.profileDir
+	}
+	fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, dir, m.createProfile)
+	fresh.width, fresh.height = m.width, m.height
+	fresh.notification = "Profile " + created.verb + " at " + dir
+	fresh.setScreenSizes()
+	return fresh, fresh.Init()
+}
+
 func (m *model) enableProfileChooser(openSession func(workflow.Options) (*workflow.Session, error), machine string) {
 	m.openSession, m.machine, m.welcomeChooser, m.welcomeStep, m.welcomeChoice = openSession, machine, true, "choose", 0
 	path := filepath.Join(filepath.Dir(m.profileDir), "omarchy-profile")
