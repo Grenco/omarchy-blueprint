@@ -99,6 +99,131 @@ func TestScreenMessagesKeepTheirOwnerAfterNavigation(t *testing.T) {
 	}
 }
 
+func TestWelcomeFooterPreservesChooserModes(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+
+	m.welcomeChooser = true
+	m.welcomeStep = "choose"
+	if got := m.welcomeFooter(); got != "up/down select   enter continue   esc quit" {
+		t.Fatalf("chooser footer = %q", got)
+	}
+
+	m.welcomeStep = "open-path"
+	if got := m.welcomeFooter(); got != "enter continue   esc back" {
+		t.Fatalf("path footer = %q", got)
+	}
+
+	m.welcomeChooser = false
+	if got := m.welcomeFooter(); got != "enter create   esc quit" {
+		t.Fatalf("create footer = %q", got)
+	}
+}
+
+func TestModalFooterTextPreservesCurrentModes(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+
+	m.modal = modalPalette
+	if got := m.modalFooter(); got != "type search   up/down select   enter run   esc close" {
+		t.Fatalf("palette footer = %q", got)
+	}
+
+	m.modal = modalHelp
+	m.requestedModal = nil
+	if got := m.modalFooter(); got != "type search   up/down scroll   esc close" {
+		t.Fatalf("help footer = %q", got)
+	}
+
+	m.requestedModal = &ModalRequest{Content: "confirm"}
+	if got := m.modalFooter(); got != "enter confirm   esc cancel" {
+		t.Fatalf("confirm footer = %q", got)
+	}
+
+	m.requestedModal = &ModalRequest{Input: "value"}
+	if got := m.modalFooter(); got != "enter save   esc cancel" {
+		t.Fatalf("input footer = %q", got)
+	}
+}
+
+func TestRequestedModalResponseReturnsToRequestingScreenAfterNavigation(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	requester := &allMessageRecordingScreen{id: ScreenResources}
+	m.screens[ScreenResources] = requester
+
+	updated, _ := m.Update(screenMsg{
+		Screen: ScreenResources,
+		Msg: components.ModalRequest{
+			Title:   "Confirm",
+			Content: "Proceed?",
+		},
+	})
+	m = updated.(model)
+	m.selected = screenIndex(t, ScreenSync)
+
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if len(requester.messages) != 1 {
+		t.Fatalf("requester messages = %#v", requester.messages)
+	}
+	key, ok := requester.messages[0].(tea.KeyPressMsg)
+	if !ok || key.String() != "enter" {
+		t.Fatalf("modal response = %#v, want enter key", requester.messages[0])
+	}
+}
+
+type allMessageRecordingScreen struct {
+	id       ScreenID
+	messages []tea.Msg
+}
+
+func (s *allMessageRecordingScreen) ID() ScreenID     { return s.id }
+func (s *allMessageRecordingScreen) SetSize(int, int) {}
+func (s *allMessageRecordingScreen) Update(msg tea.Msg) tea.Cmd {
+	s.messages = append(s.messages, msg)
+	return nil
+}
+func (s *allMessageRecordingScreen) View() string      { return "recording" }
+func (s *allMessageRecordingScreen) Actions() []Action { return nil }
+
+func TestRootOwnedWrappedNoticeIsHandledOnce(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	owner := &allMessageRecordingScreen{id: ScreenResources}
+	m.screens[ScreenResources] = owner
+
+	updated, _ := m.Update(screenMsg{
+		Screen: ScreenResources,
+		Msg:    screens.Notice{Message: "saved"},
+	})
+	m = updated.(model)
+
+	if m.notification != "saved" {
+		t.Fatalf("notification = %q, want saved", m.notification)
+	}
+	if len(owner.messages) != 0 {
+		t.Fatalf("root-owned notice leaked back to screen: %#v", owner.messages)
+	}
+}
+
+func TestMachineMutationCompletionUpdatesRootAndReturnsToOrigin(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	owner := &allMessageRecordingScreen{id: ScreenMachines}
+	m.screens[ScreenMachines] = owner
+
+	updated, _ := m.Update(screenMsg{
+		Screen: ScreenMachines,
+		Msg: screens.MachineMutationComplete{
+			Notice: "Machine added.",
+		},
+	})
+	m = updated.(model)
+
+	if m.notification != "Machine added." {
+		t.Fatalf("notification = %q", m.notification)
+	}
+	if len(owner.messages) != 1 {
+		t.Fatalf("completion did not return to Machines: %#v", owner.messages)
+	}
+}
+
 func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
 	cmd := wrapScreenCmd(ScreenResources, tea.Batch(
 		func() tea.Msg { return ownedTestMsg{step: 1} },
