@@ -2809,3 +2809,136 @@ func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
 }
+
+func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *testing.T) {
+	_, deps := configSandbox(t)
+	miseConfig := filepath.Join(t.TempDir(), "mise", "config.toml")
+	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	if err := os.MkdirAll(filepath.Dir(miseConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(miseConfig, []byte("[tools]\nnode = \"24\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{"htop": true, "firefox": true, "nvidia-utils": true}
+	runner.aur = map[string]bool{}
+
+	d := profile.Data{Packages: profile.Packages{
+		Official: []string{"htop"},
+		Excluded: []string{"official:vim"},
+	}}
+
+	targets, err := (packagesStateProvider{deps: deps}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+
+	if got := byKey["official:firefox"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
+		t.Fatalf("firefox (add) = %#v", got)
+	}
+	if got := byKey["official:htop"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("htop (update) = %#v", got)
+	}
+	if got, ok := byKey["official:vim"]; !ok || got.Desired != workflow.TargetAbsent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("vim (excluded) = %#v, ok=%v", got, ok)
+	}
+	if got := byKey["mise:node"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
+		t.Fatalf("mise:node (add) = %#v", got)
+	}
+	if got, ok := byKey["official:nvidia-utils"]; !ok || got.CaptureEligible || got.SafetyReason == "" {
+		t.Fatalf("nvidia-utils (machine-specific) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestConfigInspectTargetsReportsCanonicalPathWithParentChain(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/bindings.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want .config/hypr/bindings.lua present", targets)
+	}
+	if got.Parent != ".config/hypr" || !got.CaptureEligible || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("target = %#v", got)
+	}
+}
+
+func TestConfigTargetStateMapsBlockedClassificationsIneligible(t *testing.T) {
+	blocked := []configprovider.Classification{
+		configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
+		configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized,
+		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
+	}
+	for _, classification := range blocked {
+		_, _, eligible, reason := configTargetState(classification)
+		if eligible || reason == "" {
+			t.Fatalf("%s: eligible=%v reason=%q, want ineligible with a safety reason", classification, eligible, reason)
+		}
+	}
+}
+
+func TestConfigTargetStateMapsTrackedClassificationsToPresentPresent(t *testing.T) {
+	for _, classification := range []configprovider.Classification{
+		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
+	} {
+		desired, current, eligible, _ := configTargetState(classification)
+		if desired != workflow.TargetPresent || current != workflow.TargetPresent || !eligible {
+			t.Fatalf("%s: desired=%s current=%s eligible=%v", classification, desired, current, eligible)
+		}
+	}
+}
+
+func TestConfigTargetStateMapsDeletedBaselineToAbsentCurrent(t *testing.T) {
+	desired, current, eligible, _ := configTargetState(configprovider.ConfigDeletedBaseline)
+	if desired != workflow.TargetPresent || current != workflow.TargetAbsent || !eligible {
+		t.Fatalf("desired=%s current=%s eligible=%v", desired, current, eligible)
+	}
+}
+
+func TestDefaultsInspectTargetsReportsFourFixedTargets(t *testing.T) {
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, defaults: map[string]string{"terminal": "ghostty"}}
+	deps := Dependencies{Runner: runner}
+	d := profile.Data{Defaults: profile.Defaults{Terminal: "foot", Browser: "chromium"}}
+
+	targets, err := (defaultsStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if len(byKey) != 4 {
+		t.Fatalf("targets = %#v, want exactly 4", targets)
+	}
+	if got := byKey["terminal"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("terminal (update) = %#v", got)
+	}
+	if got := byKey["browser"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("browser (absent) = %#v", got)
+	}
+	if got := byKey["agent"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetAbsent {
+		t.Fatalf("agent (noop) = %#v", got)
+	}
+}
