@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -125,6 +126,57 @@ func TestRestoreScreenComparisonTableAndDetailFollowSelection(t *testing.T) {
 	}
 	if detail := screen.DetailView(); !strings.Contains(detail, "Resource: two") || !strings.Contains(detail, "Normal: create") {
 		t.Fatalf("detail did not follow selected consequence: %q", detail)
+	}
+}
+
+// TestRestoreResourceColumnUsesAvailableWidthForLongPaths verifies that the
+// RESOURCE column is the flexible one (components.Column{Width: 0}) rather
+// than capped at 9 characters, so long resource/file paths get substantially
+// more room at normal widths while Provider/Normal/Forced/Risk stay compact.
+func TestRestoreResourceColumnUsesAvailableWidthForLongPaths(t *testing.T) {
+	longPath := "~/.config/omarchy/current/theme/waybar-status-bar-layout.jsonc"
+	screen := NewRestore(nil)
+	screen.width, screen.height = 140, 20
+	screen.comparison.Consequences = []workflow.Consequence{
+		{Provider: "config", Resource: longPath, Normal: workflow.OutcomeCreate, Forced: workflow.OutcomeCreate, Risk: model.RiskLow},
+	}
+
+	view := screen.View()
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > 140 {
+			t.Fatalf("line overflows the configured 140-column width: got %d:\n%q", got, line)
+		}
+	}
+	if !strings.Contains(view, longPath) {
+		t.Fatalf("long resource path was not shown in full at 140 columns (old cap was 9 characters):\n%s", view)
+	}
+	if !strings.Contains(view, "create") {
+		t.Fatalf("Normal/Forced outcome missing at 140 columns:\n%s", view)
+	}
+	if !strings.Contains(view, "low") {
+		t.Fatalf("Risk column missing at 140 columns:\n%s", view)
+	}
+}
+
+func TestRestoreResourceColumnRemainsBoundedAndReadableAt80Columns(t *testing.T) {
+	longPath := "~/.config/omarchy/current/theme/waybar-status-bar-layout.jsonc"
+	screen := NewRestore(nil)
+	screen.width, screen.height = 80, 18
+	screen.comparison.Consequences = []workflow.Consequence{
+		{Provider: "config", Resource: longPath, Normal: workflow.OutcomeCreate, Forced: workflow.OutcomeReplace, Risk: model.RiskMedium},
+	}
+
+	view := screen.View()
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > 80 {
+			t.Fatalf("line overflows the configured 80-column width: got %d:\n%q", got, line)
+		}
+	}
+	if !strings.Contains(view, "create") || !strings.Contains(view, "replace") {
+		t.Fatalf("Normal/Forced outcomes missing at 80 columns:\n%s", view)
+	}
+	if !strings.Contains(view, "MEDIUM") {
+		t.Fatalf("Risk column missing at 80 columns:\n%s", view)
 	}
 }
 

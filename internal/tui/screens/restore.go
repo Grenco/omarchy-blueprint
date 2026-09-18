@@ -182,7 +182,7 @@ func (s *Restore) View() string {
 	if tableWidth == 0 {
 		tableWidth = 80
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "PROVIDER", Width: 9, MinWidth: 8}, {Title: "RESOURCE", Width: 9, MinWidth: 8}, {Title: "NORMAL", Width: 8, MinWidth: 7}, {Title: "FORCED", Width: 8, MinWidth: 7}, {Title: "RISK", MinWidth: 5}}, rows, tableWidth, s.tableHeight()+1, s.styles))
+	lines = append(lines, s.table.Render([]components.Column{{Title: "PROVIDER", Width: 10, MinWidth: 8}, {Title: "RESOURCE", Width: 0, MinWidth: 12}, {Title: "NORMAL", Width: 8, MinWidth: 7}, {Title: "FORCED", Width: 8, MinWidth: 7}, {Title: "RISK", Width: 14, MinWidth: 5}}, rows, tableWidth, s.tableHeight()+1, s.styles))
 	return strings.Join(lines, "\n")
 }
 func (s *Restore) DetailView() string {
