@@ -148,12 +148,23 @@ func (s *Restore) View() string {
 	if s.diff != nil {
 		return "Restore diff\n" + s.diff.View()
 	}
+	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
+		return renderEmptyState(s.styles, s.width, emptyStateCopy{
+			Heading:     "Nothing to restore yet",
+			Explanation: "Restore recreates state that is already saved in this Blueprint profile.",
+			Guidance:    "Capture the parts of this machine you want Blueprint to remember before using Restore.",
+		})
+	}
 	mode := "Normal"
 	if s.mode == workflow.RestoreForced {
 		mode = "Forced"
 	}
 	counts := outcomeCounts(s.plan())
 	lines := []string{"Scope: All captured providers", fmt.Sprintf("Restore comparison  active: [%s]", mode), fmt.Sprintf("Active %s plan: create:%d modify:%d replace:%d delete:%d commands:%d", strings.ToLower(mode), counts.create, counts.modify, counts.replace, counts.delete, counts.commands), "Normal and Forced are both previewed. Enter applies only the active mode."}
+	if len(s.comparison.Consequences) == 0 {
+		lines = append(lines, "", "No restore operations required.")
+		return strings.Join(lines, "\n")
+	}
 	rows := []components.Row{}
 	for i, item := range s.comparison.Consequences {
 		changed := "[same]"
@@ -166,9 +177,6 @@ func (s *Restore) View() string {
 		}
 		risk = s.risk(risk)
 		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.Provider), components.DisplayText(item.Resource), s.outcome(item.Normal), s.outcome(item.Forced), risk + " " + changed}, Selected: i == s.selected})
-	}
-	if len(rows) == 0 {
-		rows = append(rows, components.Row{Cells: []string{"No restore operations required."}})
 	}
 	tableWidth := s.width
 	if tableWidth == 0 {

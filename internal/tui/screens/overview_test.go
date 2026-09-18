@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -8,6 +9,34 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
+
+func TestOverviewExplainsCompletelyUncapturedProfile(t *testing.T) {
+	session, _ := newSyncSession(t)
+	screen := NewOverview(session)
+
+	view := screen.View()
+	for _, want := range []string{
+		"Nothing has been captured yet",
+		"Capture is where you choose which parts of this machine Blueprint should remember.",
+		"open Capture",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("fresh overview missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestOverviewFreshProfileGuidanceDisappearsAfterCapture(t *testing.T) {
+	session, _ := newSyncSession(t)
+	if err := session.SetProviderCaptured(context.Background(), "hooks", true); err != nil {
+		t.Fatal(err)
+	}
+	screen := NewOverview(session)
+
+	if view := screen.View(); strings.Contains(view, "Nothing has been captured yet") {
+		t.Fatalf("fresh-profile guidance remained after capture:\n%s", view)
+	}
+}
 
 func TestOverviewScreenFlattensExpandedSectionsAndRoutesDecision(t *testing.T) {
 	screen := &Overview{data: workflow.Overview{Items: []workflow.AttentionItem{{Severity: workflow.AttentionDecision, Provider: "config", Summary: "choose config", Target: "config", Ref: ".config/nvim"}, {Severity: workflow.AttentionDrift, Summary: "package differs"}, {Severity: workflow.AttentionInfo, Provider: "profile-git", Summary: "profile changes"}}, Healthy: []string{"themes"}}}

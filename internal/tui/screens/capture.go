@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -16,7 +17,7 @@ type Capture struct {
 	session                              *workflow.Session
 	statuses                             []workflow.ProviderStatus
 	selected, cursor                     int
-	height                               int
+	width, height                        int
 	chosen                               map[string]bool
 	table                                components.Table
 	navigation                           components.Selectable
@@ -42,7 +43,7 @@ func NewCaptureContext(ctx context.Context, session *workflow.Session) *Capture 
 	return &Capture{ctx: ctx, session: session, chosen: map[string]bool{}}
 }
 func (s *Capture) SetStyles(styles components.Styles) { s.styles = styles }
-func (s *Capture) SetSize(_, height int)              { s.height = height }
+func (s *Capture) SetSize(width, height int)          { s.width, s.height = width, height }
 func (s *Capture) Init() tea.Cmd                      { return s.refresh() }
 func (s *Capture) TransientActive() bool              { return s.confirm || s.busy }
 func (s *Capture) Update(msg tea.Msg) tea.Cmd {
@@ -123,6 +124,26 @@ func (s *Capture) View() string {
 	if s.busy {
 		return "Loading capture status..."
 	}
+	lines := []string{}
+	if len(s.statuses) > 0 {
+		anyCaptured := false
+		for _, status := range s.statuses {
+			if status.Captured {
+				anyCaptured = true
+				break
+			}
+		}
+		if !anyCaptured {
+			hintWidth := s.width
+			if hintWidth <= 0 || hintWidth > 60 {
+				hintWidth = 60
+			}
+			lines = append(lines, renderEmptyState(s.styles, hintWidth, emptyStateCopy{
+				Heading:     "Choose what this profile should remember",
+				Explanation: "Nothing has been captured yet. Select the categories you want in this profile; you do not need to capture everything.",
+			}), "")
+		}
+	}
 	rows := make([]components.Row, 0, len(s.statuses))
 	for i, p := range s.statuses {
 		changes := "not captured"
@@ -138,7 +159,9 @@ func (s *Capture) View() string {
 		}
 		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: i == s.cursor, Focused: true})
 	}
-	return s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
+	table := s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, max(2, len(rows)+1), s.styles)
+	lines = append(lines, table)
+	return strings.Join(lines, "\n")
 }
 func (s *Capture) DetailView() string {
 	p := s.current()

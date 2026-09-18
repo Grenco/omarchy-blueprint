@@ -21,7 +21,10 @@ type emptyStateCopy struct {
 // using the active theme's accent for the heading.
 func renderEmptyState(styles components.Styles, width int, copy emptyStateCopy) string {
 	if width <= 0 {
-		width = 80
+		// Screens under test that skip SetSize fall back to a width wide
+		// enough that the established onboarding copy is not force-wrapped
+		// mid-sentence. Real usage always calls SetSize before View().
+		width = 100
 	}
 	heading := components.WrapText(copy.Heading, width)
 	for i := range heading {

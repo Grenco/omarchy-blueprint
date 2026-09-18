@@ -11,6 +11,46 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
+func TestCaptureFreshProfileAddsGuidanceWithoutHidingCategories(t *testing.T) {
+	screen := &Capture{
+		width: 80,
+		statuses: []workflow.ProviderStatus{
+			{ID: "packages"},
+			{ID: "themes"},
+			{ID: "hooks"},
+		},
+		chosen: map[string]bool{},
+	}
+
+	view := screen.View()
+	for _, want := range []string{
+		"Choose what this profile should remember",
+		"you do not need to capture everything",
+		"Category",
+		"packages",
+		"themes",
+		"hooks",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("fresh Capture missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestCaptureFreshProfileGuidanceDisappearsOnceAnyCategoryIsCaptured(t *testing.T) {
+	screen := &Capture{
+		statuses: []workflow.ProviderStatus{
+			{ID: "packages", Captured: true},
+			{ID: "themes"},
+		},
+		chosen: map[string]bool{},
+	}
+
+	if view := screen.View(); strings.Contains(view, "Choose what this profile should remember") {
+		t.Fatalf("fresh hint remained after capture:\n%s", view)
+	}
+}
+
 func TestCaptureAllRequestsConfirmation(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "packages"}, {ID: "themes"}}, chosen: map[string]bool{}}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'C'})

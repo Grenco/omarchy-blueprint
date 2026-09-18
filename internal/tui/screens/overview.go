@@ -106,6 +106,13 @@ func (s *Overview) View() string {
 	if s.err != nil {
 		return "Unable to load overview: " + components.DisplayText(s.err.Error())
 	}
+	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
+		return renderEmptyState(s.styles, s.width, emptyStateCopy{
+			Heading:     "Nothing has been captured yet",
+			Explanation: "Capture is where you choose which parts of this machine Blueprint should remember. You can still explore the other sections to understand what each category covers.",
+			Guidance:    "Next: open Capture when you're ready to save something.",
+		})
+	}
 	lines := make([]string, 0, len(s.rows()))
 	for i, row := range s.rows() {
 		switch {
