@@ -223,6 +223,56 @@ func (p resourcesStateProvider) provider(d profile.Data) (resourcesprovider.Prov
 	}
 	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims, ResourcePaths: resourcesprovider.ResourcePaths{Home: home, Overrides: overrides}}, nil
 }
+
+// InspectTargets reports resource:<id> for every explicitly tracked
+// resource. Resources have no explicit desired-absence concept and no Exact
+// removal (see design non-goals: Resources are never deleted by Exact): a
+// resource whose local path is currently missing reports Current: absent,
+// which callers must read only as "needs restore," never as deletion intent
+// (there is no untracked-by-detection case, since resources only exist here
+// once a user explicitly tracks them).
+func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return nil, err
+	}
+	current, _, err := provider.Detect(ctx, d.Resources)
+	if err != nil {
+		return nil, err
+	}
+	currentByID := map[string]profile.Resource{}
+	for _, item := range current.Items {
+		currentByID[item.ID] = item
+	}
+	targets := make([]workflow.TargetInspection, 0, len(d.Resources.Items))
+	for _, item := range d.Resources.Items {
+		present := false
+		if live, ok := currentByID[item.ID]; ok {
+			present = !resourceMissing(live)
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "resource:" + item.ID,
+			Label:           item.ID,
+			Desired:         workflow.TargetPresent,
+			Current:         currentPresence(present),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+		})
+	}
+	return targets, nil
+}
+
+// resourceMissing mirrors how Detect itself recognizes a resource whose
+// local state could not be read: an empty content hash for a copy strategy,
+// or an empty revision for a Git strategy.
+func resourceMissing(item profile.Resource) bool {
+	if item.Strategy == "copy" {
+		return item.Hash == ""
+	}
+	return item.Revision == ""
+}
+
 func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
@@ -1318,6 +1368,35 @@ func (shellStateProvider) Empty(state any) bool {
 func (p shellStateProvider) provider() (shellprovider.Provider, error) {
 	baseline, user, err := p.deps.ShellPaths()
 	return shellprovider.Provider{BaselinePath: baseline, UserPath: user, ProfileDir: p.opt.profileDir}, err
+}
+
+// InspectTargets reports exactly one target, "state", for the whole opaque
+// Shell customization blob. Shell has no explicit desired-absence concept
+// and no Exact cleanup (see design non-goals): an empty captured Hash means
+// "no Blueprint-managed Shell customization," never "explicitly removed."
+func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	eligible, reason := true, ""
+	if current.Status == shellprovider.StatusUnsupported {
+		eligible, reason = false, "Shell version is unsupported"
+	}
+	return []workflow.TargetInspection{{
+		Key:             "state",
+		Label:           "state",
+		Desired:         desiredPresence(d.Shell.Hash != ""),
+		Current:         currentPresence(current.Status == shellprovider.StatusCustomized),
+		CaptureEligible: eligible,
+		RestoreEligible: eligible,
+		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+		SafetyReason:    reason,
+	}}, nil
 }
 
 func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
