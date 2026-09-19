@@ -1215,7 +1215,7 @@ func (p themesStateProvider) Verify(ctx context.Context, d profile.Data, restore
 		saved.Current = ""
 	}
 	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
-	return themesprovider.Verify(saved, current, themesprovider.VerifyOptions{Exact: exact}), nil
+	return provider.Verify(saved, current, themesprovider.VerifyOptions{Exact: exact}), nil
 }
 
 // filterThemesForRestoreSkip returns a copy of saved with the desired
@@ -2721,7 +2721,7 @@ func (p hooksStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx
 		return model.VerificationResult{}, err
 	}
 	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
-	return hooksprovider.Verify(saved, current, hooksprovider.VerifyOptions{Exact: exact}), nil
+	return provider.Verify(saved, current, hooksprovider.VerifyOptions{Exact: exact})
 }
 
 // filterHooksForRestoreSkip returns a copy of saved with every

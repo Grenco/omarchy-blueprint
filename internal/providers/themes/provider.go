@@ -429,7 +429,7 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "themes", Resource: "theme:" + desired.ID, Reason: "installed theme no longer matches the removed profile entry; removal skipped"})
 				continue
 			}
-			if actual.ID == liveCurrent && (saved.Current == "" || saved.Current == actual.ID) {
+			if actual.ID == liveCurrent && !p.activeReplacementEstablished(saved, have) {
 				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "themes", Resource: "theme:" + desired.ID, Reason: "cannot remove the currently active theme without a valid replacement"})
 				continue
 			}
@@ -443,16 +443,59 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 	return plan
 }
 
+// activeReplacementEstablished reports whether saved.Current's own
+// desired-present target (if any) is genuinely safe to activate: already
+// present and provenance-matching in have, a builtin actually available on
+// this Omarchy install, or a git/local/overlay entry with valid enough
+// provenance that Plan would queue a real reconstruction operation for it
+// (not skip it). It mirrors exactly what the Items loop above does for
+// saved.Current's own entry -- Plan and Verify share this single predicate
+// (round-1 review blocker 1/2) so "safety says the replacement isn't
+// established" can never diverge between what Plan refuses to remove and
+// what Verify expects to be gone.
+func (p Provider) activeReplacementEstablished(saved profile.Themes, have map[string]profile.Theme) bool {
+	if saved.Current == "" {
+		return false
+	}
+	for _, desired := range saved.Items {
+		if desired.ID != saved.Current {
+			continue
+		}
+		if !safeID(desired.ID) {
+			return false
+		}
+		if actual, present := have[desired.ID]; present {
+			return equivalent(desired, actual)
+		}
+		switch desired.Type {
+		case "builtin":
+			return isDir(filepath.Join(p.BuiltinDir, desired.ID))
+		case "git":
+			return desired.URL != "" && validRevision(desired.Revision) && installID(desired.URL) == desired.ID
+		case "local", "overlay":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // VerifyOptions controls Exact-only verification; the zero value (Additive)
 // never checks Absent, matching every existing caller that predates it.
 type VerifyOptions struct{ Exact bool }
 
-func Verify(saved, current profile.Themes, options ...VerifyOptions) model.VerificationResult {
+func (p Provider) Verify(saved, current profile.Themes, options ...VerifyOptions) model.VerificationResult {
 	var opts VerifyOptions
 	if len(options) > 0 {
 		opts = options[0]
 	}
 	saved = legacy(saved)
+	// liveCurrent mirrors Plan's own independent capture: Exact
+	// verification's active-theme exemption below must recognize the live
+	// active theme even when there is no desired active theme to compare it
+	// against.
+	liveCurrent := current.Current
 	if saved.Current == "" {
 		current.Current = ""
 	}
@@ -468,13 +511,24 @@ func Verify(saved, current profile.Themes, options ...VerifyOptions) model.Verif
 		missing = append(missing, "active-theme:"+saved.Current)
 	}
 	if opts.Exact {
+		// established mirrors Plan's own removal guard exactly (see
+		// activeReplacementEstablished): a provenance-matched tombstone that
+		// is also the live active theme, with no established replacement,
+		// is precisely the case Plan itself refuses to remove, so Verify
+		// must not expect it gone either.
+		established := p.activeReplacementEstablished(saved, have)
 		for _, desired := range saved.Absent {
 			if desired.Type == "builtin" {
 				continue
 			}
-			if actual, present := have[desired.ID]; present && equivalent(desired, actual) {
-				missing = append(missing, "theme:"+desired.ID)
+			actual, present := have[desired.ID]
+			if !present || !equivalent(desired, actual) {
+				continue
 			}
+			if actual.ID == liveCurrent && !established {
+				continue
+			}
+			missing = append(missing, "theme:"+desired.ID)
 		}
 	}
 	sort.Strings(missing)

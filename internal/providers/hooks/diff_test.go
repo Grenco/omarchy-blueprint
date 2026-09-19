@@ -29,11 +29,18 @@ func TestDiffAndVerifyRespectModesAndExtras(t *testing.T) {
 	if !reflect.DeepEqual([]model.ChangeType{changes[0].Type, changes[1].Type}, []model.ChangeType{model.ChangeAdd, model.ChangeModify}) || changes[1].Summary != "~ hook post-boot mode 0644 → 0755" {
 		t.Fatalf("changes = %#v", changes)
 	}
-	result := Verify(saved, current)
+	result, err := (Provider{}).Verify(saved, current)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.OK || !reflect.DeepEqual(result.Missing, []string{"hook:post-boot"}) {
 		t.Fatalf("verification = %#v", result)
 	}
-	if !Verify(saved, State{Items: []DetectedHook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0644"}, {Path: "extra", Hash: "x", Mode: "0644"}}}).OK {
+	extraResult, err := (Provider{}).Verify(saved, State{Items: []DetectedHook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0644"}, {Path: "extra", Hash: "x", Mode: "0644"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !extraResult.OK {
 		t.Fatal("extra hooks must not fail verification")
 	}
 }

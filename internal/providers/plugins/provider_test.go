@@ -401,6 +401,33 @@ func TestPlanExactNeverRemovesFirstPartyTombstone(t *testing.T) {
 	}
 }
 
+// TestPlanExactSkipsUnsafePluginIdentifier is the round-1 review blocker-4
+// regression: the desired-present Items loop rejects !safeID(want.ID)
+// before issuing any Omarchy command, but the Exact removal loop
+// constructed omarchy plugin remove <id> --yes directly from a tombstoned
+// ID with no such check. Destructive tombstones need at least the same
+// safeID gate as every existing plugin operation.
+func TestPlanExactSkipsUnsafePluginIdentifier(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "../evil", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "../evil", Source: "local", Hash: "hash"}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{}, PlanOptions{Exact: true})
+	if len(plan.Operations) != 0 {
+		t.Fatalf("Operations = %#v, want no removal for an unsafe plugin identifier", plan.Operations)
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:../evil" {
+			found = true
+			if !strings.Contains(skipped.Reason, "unsafe") {
+				t.Fatalf("skip reason = %q, want it to explain the unsafe identifier", skipped.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the unsafe identifier", plan.Skipped)
+	}
+}
+
 func TestPlanExactSkipsChangedPluginProvenanceMismatch(t *testing.T) {
 	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "stale-hash"}}}
 	current := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "different-hash"}}}

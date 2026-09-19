@@ -52,9 +52,71 @@ func lastPluginOperationID(plan model.RestorePlan, pluginID string) string {
 	return last
 }
 
+// blockPluginRemovalsReferencedByEffectiveShell prevents Exact from
+// deleting a third-party plugin the machine's actual, currently effective
+// Shell configuration still references -- independent of whether this run
+// is also restoring Shell, and independent of RequiredThirdPartyPlugins
+// below (which only reports references a proposed Shell merge would newly
+// introduce, never ones the live document already has). Plugin
+// availability is still a prerequisite for an existing Shell reference
+// even though Shell owns enablement/layout separately, so an existing
+// reference is a removal-safety conflict: the removal becomes a visible
+// skip instead of proceeding. Shell detection failing for any reason (no
+// baseline configured, ShellPaths unset in a test double, ...) fails open
+// -- there is no live Shell state on record to conflict with.
+func blockPluginRemovalsReferencedByEffectiveShell(deps Dependencies, opt *options, plan *model.RestorePlan) {
+	if deps.ShellPaths == nil {
+		return
+	}
+	hasRemoval := false
+	for _, operation := range plan.Operations {
+		if operation.Provider == "plugins" && operation.Action == "remove" {
+			hasRemoval = true
+			break
+		}
+	}
+	if !hasRemoval {
+		return
+	}
+	baseline, user, err := deps.ShellPaths()
+	if err != nil {
+		return
+	}
+	current, err := (shellprovider.Provider{BaselinePath: baseline, UserPath: user, ProfileDir: opt.profileDir}).Detect()
+	if err != nil {
+		return
+	}
+	target := current.Baseline
+	if current.UserExists {
+		target = current.Current
+	}
+	referenced := make(map[string]bool, len(target.References))
+	for _, id := range target.References {
+		referenced[id] = true
+	}
+	kept := plan.Operations[:0]
+	for _, operation := range plan.Operations {
+		id := ""
+		if len(operation.Items) > 0 {
+			id = operation.Items[0]
+		}
+		if operation.Provider == "plugins" && operation.Action == "remove" && referenced[id] {
+			plan.Skipped = append(plan.Skipped, model.Skipped{
+				Provider: "plugins",
+				Resource: operation.Resource,
+				Reason:   fmt.Sprintf("plugin %q is still referenced by the effective Shell configuration; removal disabled", id),
+			})
+			continue
+		}
+		kept = append(kept, operation)
+	}
+	plan.Operations = kept
+}
+
 // finalizeRestorePlan links Shell configuration writes to source reconstruction
 // for any third-party plugins the captured document references.
 func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, plan *model.RestorePlan, options restorePlanOptions) error {
+	blockPluginRemovalsReferencedByEffectiveShell(deps, opt, plan)
 	if !providerSelected(providers, "shell") {
 		return restore.ValidatePlan(*plan)
 	}
