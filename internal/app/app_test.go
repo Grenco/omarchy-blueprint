@@ -2096,6 +2096,105 @@ func TestConfigForceDryRunReplacesUnknownTarget(t *testing.T) {
 	}
 }
 
+// TestParseRestoreOverrideFlags is Task 27 Step 1's parsing regression: the
+// restore command's --force/--exact shorthand and --conflicts/--convergence
+// explicit flags parse independently per axis, contradictory
+// shorthand/explicit pairs for the SAME axis are rejected, an invalid
+// explicit value is rejected, and unrelated axes (Force + Exact together)
+// are accepted since they are independent.
+func TestParseRestoreOverrideFlags(t *testing.T) {
+	conflictSafe, conflictForce := policy.ConflictSafe, policy.ConflictForce
+	convergenceAdditive, convergenceExact := policy.ConvergenceAdditive, policy.ConvergenceExact
+	tests := []struct {
+		name                           string
+		force, exact                   bool
+		conflictsFlag, convergenceFlag string
+		want                           restoreOverride
+		wantErr                        bool
+	}{
+		{name: "no flags", want: restoreOverride{}},
+		{name: "force shorthand", force: true, want: restoreOverride{Conflicts: &conflictForce}},
+		{name: "exact shorthand", exact: true, want: restoreOverride{Convergence: &convergenceExact}},
+		{name: "explicit conflicts safe", conflictsFlag: "safe", want: restoreOverride{Conflicts: &conflictSafe}},
+		{name: "explicit conflicts force", conflictsFlag: "force", want: restoreOverride{Conflicts: &conflictForce}},
+		{name: "explicit convergence additive", convergenceFlag: "additive", want: restoreOverride{Convergence: &convergenceAdditive}},
+		{name: "explicit convergence exact", convergenceFlag: "exact", want: restoreOverride{Convergence: &convergenceExact}},
+		{name: "force and exact together (independent axes)", force: true, exact: true, want: restoreOverride{Conflicts: &conflictForce, Convergence: &convergenceExact}},
+		{name: "force and conflicts contradict", force: true, conflictsFlag: "safe", wantErr: true},
+		{name: "exact and convergence contradict", exact: true, convergenceFlag: "additive", wantErr: true},
+		{name: "invalid conflicts value", conflictsFlag: "sometimes", wantErr: true},
+		{name: "invalid convergence value", convergenceFlag: "sometimes", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseRestoreOverride(test.force, test.exact, test.conflictsFlag, test.convergenceFlag)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("invalid/contradictory flags accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got.Conflicts == nil) != (test.want.Conflicts == nil) || (got.Conflicts != nil && *got.Conflicts != *test.want.Conflicts) {
+				t.Fatalf("Conflicts = %v, want %v", got.Conflicts, test.want.Conflicts)
+			}
+			if (got.Convergence == nil) != (test.want.Convergence == nil) || (got.Convergence != nil && *got.Convergence != *test.want.Convergence) {
+				t.Fatalf("Convergence = %v, want %v", got.Convergence, test.want.Convergence)
+			}
+		})
+	}
+}
+
+// TestRestoreOverrideResolve is Task 27's merge regression: an override
+// with neither axis set resolves to nil (no override at all, so
+// PlanRestoreWithContext resolves its own machine-default base); an
+// override with only one axis set replaces only that axis on top of base,
+// leaving the other axis exactly as base already had it -- "the Restore
+// workflow may temporarily override either [axis] for one run," not both
+// unconditionally.
+func TestRestoreOverrideResolve(t *testing.T) {
+	base := policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact}
+
+	if got := (restoreOverride{}).resolve(base); got != nil {
+		t.Fatalf("resolve() = %+v, want nil for an override with nothing set", got)
+	}
+
+	safe := policy.ConflictSafe
+	got := restoreOverride{Conflicts: &safe}.resolve(base)
+	if got == nil || got.Conflicts != policy.ConflictSafe || got.Convergence != policy.ConvergenceExact {
+		t.Fatalf("resolve() = %+v, want Conflicts overridden to safe with Convergence left as base's exact", got)
+	}
+
+	additive := policy.ConvergenceAdditive
+	got = restoreOverride{Convergence: &additive}.resolve(base)
+	if got == nil || got.Conflicts != policy.ConflictForce || got.Convergence != policy.ConvergenceAdditive {
+		t.Fatalf("resolve() = %+v, want Convergence overridden to additive with Conflicts left as base's force", got)
+	}
+
+	got = restoreOverride{Conflicts: &safe, Convergence: &additive}.resolve(base)
+	if got == nil || got.Conflicts != policy.ConflictSafe || got.Convergence != policy.ConvergenceAdditive {
+		t.Fatalf("resolve() = %+v, want both axes overridden", got)
+	}
+}
+
+// TestRestoreCommandRejectsContradictoryOverrideFlags is a CLI-wiring
+// regression confirming parseRestoreOverride's validation actually reaches
+// the restore command (not just the parsing function in isolation).
+func TestRestoreCommandRejectsContradictoryOverrideFlags(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	if code, out := configRun(t, deps, profileDir, "restore", "--force", "--conflicts", "safe", "--dry-run"); code == 0 || !strings.Contains(out, "contradictory") {
+		t.Fatalf("--force --conflicts safe: code=%d out=%q, want a contradictory-flags error", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "--exact", "--convergence", "additive", "--dry-run"); code == 0 || !strings.Contains(out, "contradictory") {
+		t.Fatalf("--exact --convergence additive: code=%d out=%q, want a contradictory-flags error", code, out)
+	}
+	if code, _ := configRun(t, deps, profileDir, "restore", "--force", "--exact", "--dry-run"); code != 0 {
+		t.Fatalf("--force --exact (independent axes) rejected")
+	}
+}
+
 func TestConfigIncludedInAggregateRestore(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	_, userRoot, _ := deps.ConfigDirs()

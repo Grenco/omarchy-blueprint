@@ -713,15 +713,20 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 }
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
-	var dryRun, yes, force bool
+	var dryRun, yes, force, exact bool
+	var conflictsFlag, convergenceFlag string
 	providers := stateProviders(deps, opt)
 	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+		override, err := parseRestoreOverride(force, exact, conflictsFlag, convergenceFlag)
+		if err != nil {
+			return err
+		}
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
 		if len(args) == 0 {
-			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes, restorePlanOptions{Force: force})
+			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes, override)
 		}
 		provider, ok := categoryProvider(providers, selectedCategory(args))
 		if !ok {
@@ -730,12 +735,83 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 		if !provider.Captured(d) {
 			return captureRequiredError(provider.ID())
 		}
-		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes, restorePlanOptions{Force: force})
+		return restoreProviders(cmd.Context(), deps, opt, d, []stateProvider{provider}, dryRun, yes, override)
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the restore plan without changing the machine")
 	cmd.Flags().BoolVar(&yes, "yes", false, "approve the restore non-interactively")
-	cmd.Flags().BoolVar(&force, "force", false, "resolve supported restore conflicts in favor of the profile")
+	cmd.Flags().BoolVar(&force, "force", false, "one-run shorthand for --conflicts force")
+	cmd.Flags().BoolVar(&exact, "exact", false, "one-run shorthand for --convergence exact")
+	cmd.Flags().StringVar(&conflictsFlag, "conflicts", "", `one-run Restore conflict override: "safe" or "force"`)
+	cmd.Flags().StringVar(&convergenceFlag, "convergence", "", `one-run Restore convergence override: "additive" or "exact"`)
 	return cmd
+}
+
+// restoreOverride is this run's optional one-run RestoreOptions override,
+// parsed from CLI flags. A nil field means that axis was not explicitly
+// requested and should inherit from the resolved base (the selected
+// machine's persisted default, or the built-in Safe+Additive default when
+// no machine is selected) -- "the Restore workflow may temporarily
+// override either [axis] for one run without changing the saved machine
+// default," independently per axis, not as an all-or-nothing pair.
+type restoreOverride struct {
+	Conflicts   *policy.ConflictMode
+	Convergence *policy.ConvergenceMode
+}
+
+func (o restoreOverride) any() bool { return o.Conflicts != nil || o.Convergence != nil }
+
+// resolve merges o onto base (the resolved default this run would use
+// absent any override), returning nil when o overrides nothing at all --
+// nil tells PlanRestore/PlanRestoreWithContext to resolve its own base
+// with no override, rather than needlessly re-deriving the same base here
+// and handing it back unchanged.
+func (o restoreOverride) resolve(base policy.RestoreOptions) *policy.RestoreOptions {
+	if !o.any() {
+		return nil
+	}
+	if o.Conflicts != nil {
+		base.Conflicts = *o.Conflicts
+	}
+	if o.Convergence != nil {
+		base.Convergence = *o.Convergence
+	}
+	return &base
+}
+
+// parseRestoreOverride validates and parses the restore command's one-run
+// override flags. --force/--conflicts are contradictory shorthand/explicit
+// forms for the same axis, as are --exact/--convergence for the other axis;
+// specifying both forms for an axis is rejected rather than silently
+// preferring one.
+func parseRestoreOverride(force, exact bool, conflictsFlag, convergenceFlag string) (restoreOverride, error) {
+	var override restoreOverride
+	switch {
+	case force && conflictsFlag != "":
+		return restoreOverride{}, fmt.Errorf("--force and --conflicts are contradictory; use only one")
+	case force:
+		conflicts := policy.ConflictForce
+		override.Conflicts = &conflicts
+	case conflictsFlag != "":
+		conflicts := policy.ConflictMode(conflictsFlag)
+		if conflicts != policy.ConflictSafe && conflicts != policy.ConflictForce {
+			return restoreOverride{}, fmt.Errorf("invalid --conflicts %q, want %q or %q", conflictsFlag, policy.ConflictSafe, policy.ConflictForce)
+		}
+		override.Conflicts = &conflicts
+	}
+	switch {
+	case exact && convergenceFlag != "":
+		return restoreOverride{}, fmt.Errorf("--exact and --convergence are contradictory; use only one")
+	case exact:
+		convergence := policy.ConvergenceExact
+		override.Convergence = &convergence
+	case convergenceFlag != "":
+		convergence := policy.ConvergenceMode(convergenceFlag)
+		if convergence != policy.ConvergenceAdditive && convergence != policy.ConvergenceExact {
+			return restoreOverride{}, fmt.Errorf("invalid --convergence %q, want %q or %q", convergenceFlag, policy.ConvergenceAdditive, policy.ConvergenceExact)
+		}
+		override.Convergence = &convergence
+	}
+	return override, nil
 }
 
 func checkCommand(deps Dependencies, opt *options) *cobra.Command {
@@ -1599,11 +1675,11 @@ type restorePlanOptions struct {
 	Force bool
 }
 
-func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
-	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes, planOptions)
+func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, override restoreOverride) error {
+	return restoreProviders(ctx, deps, opt, d, capturedProviders(providers, d), dryRun, yes, override)
 }
 
-func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, planOptions restorePlanOptions) error {
+func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, override restoreOverride) error {
 	session, err := openWorkflow(deps, opt)
 	if err != nil {
 		return profileError(opt.profileDir, err)
@@ -1612,15 +1688,23 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if len(providers) == 1 {
 		onlyProvider = providers[0].ID()
 	}
-	mode := workflow.RestoreNormal
-	if planOptions.Force {
-		mode = workflow.RestoreForced
+	// override.resolve only needs a base to merge onto when it actually
+	// overrides something; a nil result here correctly lets
+	// PlanRestoreWithContext resolve the session's own machine defaults
+	// with no override at all, rather than this duplicating that lookup
+	// for a run that never asked for one.
+	var base policy.RestoreOptions
+	if override.any() {
+		base = policy.DefaultRestoreOptions()
+		if m := session.Machine().Machine; m != nil {
+			base = m.EffectiveRestoreDefaults()
+		}
 	}
-	restoreOptions := workflow.RestoreOptionsForMode(mode)
-	plan, restoreProviders, contexts, err := session.PlanRestoreWithContext(ctx, onlyProvider, &restoreOptions)
+	plan, restoreProviders, contexts, resolved, err := session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
 	if err != nil {
 		return err
 	}
+	planOptions := restorePlanOptionsFromPolicy(resolved)
 	d = session.Profile()
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
