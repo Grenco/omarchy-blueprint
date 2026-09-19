@@ -44,6 +44,26 @@ func (s *Session) EffectivePolicy(ctx context.Context, scope PolicyScope, catego
 	return policy.Effective{Capture: capture, Restore: restore}, nil
 }
 
+// resolveCaptureTarget resolves one target's effective Capture policy as
+// viewed from the session's currently selected machine (Capture always
+// happens on the machine running Blueprint, unlike EffectivePolicy's
+// general TUI-facing scope), and derives the final CaptureDecision safety
+// gates policy: a target the provider itself reports ineligible for Capture
+// resolves to disabled regardless of what policy says, since Capabilities
+// are descriptive and provider safety checks remain authoritative. It
+// returns the raw resolved policy.EffectiveSetting alongside the decision so
+// callers (InspectCapture) can show why, without a second resolution.
+func (s *Session) resolveCaptureTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, CaptureDecision, error) {
+	effective, err := s.EffectivePolicy(ctx, PolicyScope{Machine: s.machine.Name}, category, target)
+	if err != nil {
+		return policy.EffectiveSetting{}, CaptureDecision{}, err
+	}
+	if !target.CaptureEligible {
+		return effective.Capture, CaptureDecision{Capture: false, Resolved: true}, nil
+	}
+	return effective.Capture, CaptureDecision{Capture: effective.Capture.Enabled, Resolved: true}, nil
+}
+
 // SetPolicy records an explicit Capture or Restore override for one category
 // or target at scope. An empty target records a category-level rule.
 func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, target string, setting policy.Setting) error {
