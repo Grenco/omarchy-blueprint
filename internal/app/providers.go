@@ -372,6 +372,19 @@ func (p resourcesStateProvider) Check(ctx context.Context, d profile.Data) error
 	return provider.Check(ctx, d.Resources)
 }
 
+// ValidateTarget accepts only a fully qualified resource:<id> reference,
+// canonicalized to itself. It never requires the resource to currently be
+// tracked -- StopManaging rejects the category outright regardless, but a
+// caller resolving a target for a different purpose (e.g. SetPolicy) must
+// still get a validated key shape.
+func (resourcesStateProvider) ValidateTarget(target string) (string, error) {
+	id, ok := strings.CutPrefix(target, "resource:")
+	if !ok || id == "" || strings.ContainsAny(id, " \t\n/") {
+		return "", fmt.Errorf("resources: invalid target %q; use resource:<id>", target)
+	}
+	return target, nil
+}
+
 // StopManaging rejects the generic action: a tracked Resource has no
 // "capture disabled, keep the metadata" state distinct from being tracked at
 // all, and it needs its own dedicated cleanup (files/git-state, links, other
@@ -733,6 +746,26 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 	return provider.Check(ctx, d.Packages)
 }
 
+// ValidateTarget accepts only a fully qualified official:<name>, aur:<name>,
+// or mise:<name> reference, canonicalized to itself. It never requires the
+// package to currently be installed or excluded -- a not-yet-captured or
+// already-tombstoned reference must validate too.
+func (packagesStateProvider) ValidateTarget(target string) (string, error) {
+	kind, name, ok := strings.Cut(target, ":")
+	if !ok || name == "" {
+		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+	}
+	switch kind {
+	case "official", "aur", "mise":
+	default:
+		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+	}
+	if strings.ContainsAny(name, " \t\n") {
+		return "", fmt.Errorf("packages: invalid target %q", target)
+	}
+	return target, nil
+}
+
 // StopManaging permanently forgets one package/tool: its desired present or
 // desired-absent state. Packages persist no artifact beyond the profile
 // metadata itself (unlike Themes/Plugins/Hooks), so there is nothing else on
@@ -975,17 +1008,32 @@ func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	return err
 }
 
+// ValidateTarget accepts only "active" or a fully qualified theme:<id>
+// reference, canonicalized to itself. It never requires the theme to
+// currently exist -- a not-yet-captured or already-tombstoned id must
+// validate too.
+func (themesStateProvider) ValidateTarget(target string) (string, error) {
+	if target == "active" {
+		return target, nil
+	}
+	id, ok := strings.CutPrefix(target, "theme:")
+	if !ok || id == "" || strings.ContainsAny(id, " \t\n/") {
+		return "", fmt.Errorf(`themes: invalid target %q; use "active" or theme:<id>`, target)
+	}
+	return target, nil
+}
+
 // StopManaging permanently forgets one theme: its desired present or
 // desired-absent state, and its local/overlay artifact directory if it has
 // one. Built-in themes carry no Blueprint-owned state to forget, and
 // "active" is a separate target (which theme is selected, not a theme's own
-// availability), so neither is accepted here.
-// StopManaging stages its artifact removal rather than deleting immediately:
-// PrepareStopManagingArtifact renames the theme's local/overlay directory out
-// of the way, and workflow.Session.StopManaging only finalizes (permanently
-// deletes it) after the profile save that forgets the theme's metadata has
-// also succeeded, or rolls the rename back if it has not -- so a failed save
-// can never leave the profile referencing an artifact that is already gone.
+// availability), so neither is accepted here. It stages its artifact removal
+// rather than deleting immediately: PrepareStopManagingArtifact renames the
+// theme's local/overlay directory out of the way, and
+// workflow.Session.StopManaging only finalizes (permanently deletes it)
+// after the profile save that forgets the theme's metadata has also
+// succeeded, or rolls the rename back if it has not -- so a failed save can
+// never leave the profile referencing an artifact that is already gone.
 func (p *themesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
 	id, ok := strings.CutPrefix(target, "theme:")
 	if !ok || id == "" {
@@ -1198,10 +1246,21 @@ func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	return err
 }
 
+// ValidateTarget accepts only a fully qualified plugin:<id> reference,
+// canonicalized to itself. It never requires the plugin to currently exist
+// -- a not-yet-captured or already-tombstoned id must validate too.
+func (pluginsStateProvider) ValidateTarget(target string) (string, error) {
+	id, ok := strings.CutPrefix(target, "plugin:")
+	if !ok || id == "" || strings.ContainsAny(id, " \t\n/") {
+		return "", fmt.Errorf("plugins: invalid target %q; use plugin:<id>", target)
+	}
+	return target, nil
+}
+
 // StopManaging permanently forgets one third-party plugin: its desired
 // present or desired-absent state, and its local clone artifact directory.
 // First-party (built-in) plugins carry no Blueprint-owned state to forget.
-// StopManaging stages its artifact removal rather than deleting immediately:
+// It stages its artifact removal rather than deleting immediately:
 // PrepareStopManagingArtifact renames the plugin's local clone directory out
 // of the way, and workflow.Session.StopManaging only finalizes (permanently
 // deletes it) after the profile save that forgets the plugin's metadata has
@@ -1574,6 +1633,14 @@ func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
 	return provider.Check(d.Config)
 }
 
+// ValidateTarget canonicalizes a raw or ergonomic (~/.config/-prefixed)
+// config path to the canonical HOME-relative form ConfigFile.Path uses,
+// reusing the same normalizer the exclude/include CLI already relies on. It
+// never requires the path to currently exist or be captured.
+func (configStateProvider) ValidateTarget(target string) (string, error) {
+	return configprovider.NormalizeConfigPolicyPath(target)
+}
+
 // StopManaging rejects the generic action: Config already has its own
 // per-path policy controls (see SetConfigPolicy and the Excluded mechanism),
 // which are more precise than a single flat target key here.
@@ -1687,6 +1754,16 @@ func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data) (mode
 func (p defaultsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	_, err := p.provider().Detect(ctx)
 	return err
+}
+
+// ValidateTarget accepts only one of the four fixed slot names.
+func (defaultsStateProvider) ValidateTarget(target string) (string, error) {
+	switch target {
+	case "terminal", "browser", "editor", "agent":
+		return target, nil
+	default:
+		return "", fmt.Errorf("defaults: invalid target %q; use terminal, browser, editor, or agent", target)
+	}
 }
 
 // StopManaging clears one default slot back to unmanaged. There is no
@@ -1842,6 +1919,14 @@ func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Shell, d.Plugins)
+}
+
+// ValidateTarget accepts only Shell's single fixed target.
+func (shellStateProvider) ValidateTarget(target string) (string, error) {
+	if target != "state" {
+		return "", fmt.Errorf(`shell: invalid target %q; use "state"`, target)
+	}
+	return target, nil
 }
 
 // StopManaging rejects the generic action: Shell is one merge unit spanning
@@ -2024,6 +2109,16 @@ func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
 
 // StopManaging permanently forgets one hook: its desired present or
 // desired-absent state, and its captured snapshot file.
+// ValidateTarget reuses the same path shape validation Capture itself
+// enforces on every hook path, so a target can never validate here in a
+// shape Capture could not otherwise have produced.
+func (hooksStateProvider) ValidateTarget(target string) (string, error) {
+	if err := hooksprovider.ValidatePath(target); err != nil {
+		return "", fmt.Errorf("hooks: %w", err)
+	}
+	return target, nil
+}
+
 // StopManaging stages its artifact removal rather than deleting immediately:
 // PrepareStopManagingArtifact renames the hook's captured snapshot file out
 // of the way, and workflow.Session.StopManaging only finalizes (permanently

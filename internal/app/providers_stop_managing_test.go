@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 func TestPackagesStopManagingRemovesDesiredPresentState(t *testing.T) {
@@ -174,6 +176,20 @@ func TestResourcesStopManagingIsRejectedAndMentionsUntrack(t *testing.T) {
 func TestShellStopManagingIsRejected(t *testing.T) {
 	if _, err := (shellStateProvider{}).StopManaging(context.Background(), profile.Data{}, "state"); err == nil {
 		t.Fatal("shell Stop Managing accepted")
+	}
+}
+
+// TestSetPolicyRejectsMalformedTargetThroughRealWorkflowSession proves
+// ValidateTarget is reached the same way through the real adapter chain
+// openWorkflow builds, not just a direct unit call on the bare provider.
+func TestSetPolicyRejectsMalformedTargetThroughRealWorkflowSession(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	session, err := openWorkflow(deps, &options{profileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPolicy(workflow.PolicyScope{}, policy.AxisCapture, "packages", "not-a-valid-target", policy.SettingDisabled); err == nil {
+		t.Fatal("malformed target accepted through the real workflow session")
 	}
 }
 

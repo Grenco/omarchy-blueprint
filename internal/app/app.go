@@ -1078,6 +1078,19 @@ func (p restoreProviderAdapter) StopManaging(ctx context.Context, data profile.D
 	return provider.StopManaging(ctx, data, target)
 }
 
+// ValidateTarget defers to the wrapped state provider's own target shape
+// validation/canonicalization when it has one. A category without a
+// structured target key (none currently omits this) has no shape to
+// validate, so it accepts target unchanged.
+func (p restoreProviderAdapter) ValidateTarget(target string) (string, error) {
+	if provider, ok := p.stateProvider.(interface {
+		ValidateTarget(string) (string, error)
+	}); ok {
+		return provider.ValidateTarget(target)
+	}
+	return target, nil
+}
+
 type configWorkflowProvider struct{ restoreProviderAdapter }
 
 func (p configWorkflowProvider) DiffWithScan(ctx context.Context, data profile.Data) ([]model.Change, configprovider.ScanSummary, error) {

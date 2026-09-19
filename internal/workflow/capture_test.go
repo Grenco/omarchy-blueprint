@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,19 @@ func (p captureTestProvider) Verify(_ context.Context, _ profile.Data, restoreCt
 		*p.lastVerify = restoreCtx
 	}
 	return model.VerificationResult{OK: true}, nil
+}
+
+// ValidateTarget mimics packages' real "kind:name" shape check when this
+// fake stands in for the packages category specifically, closely enough to
+// exercise the workflow-level wiring without depending on the real
+// packagesStateProvider. Other ids accept any non-empty target, since tests
+// using them (e.g. a "config" fake with a raw path target) are not
+// exercising target-shape validation.
+func (p captureTestProvider) ValidateTarget(target string) (string, error) {
+	if p.id == "packages" && !strings.Contains(target, ":") {
+		return "", errors.New("invalid target shape")
+	}
+	return target, nil
 }
 func (p captureTestProvider) StopManaging(_ context.Context, data profile.Data, target string) (profile.Data, error) {
 	if p.stopManagingFail {
