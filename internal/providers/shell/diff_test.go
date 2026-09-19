@@ -18,7 +18,7 @@ func captureIntent(t *testing.T, desired string) (shellFixture, Provider, profil
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := p.Capture(state)
+	saved, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestCaptureChangesDescribeProfileUpdateNotRestoreIntent(t *testing.T) {
 	if err != nil || len(changes) != 1 || changes[0].Type != model.ChangeAdd || !strings.Contains(changes[0].Summary, "captured") {
 		t.Fatalf("changes=%#v err=%v", changes, err)
 	}
-	saved, err := p.Capture(current)
+	saved, err := p.Capture(current, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

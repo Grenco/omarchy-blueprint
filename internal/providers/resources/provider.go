@@ -218,7 +218,7 @@ func (p Provider) PrepareTrack(ctx context.Context, saved profile.Resources, pat
 			tracked.Untracked = append(tracked.Untracked, profile.GitUntrackedFile{Path: path})
 		}
 	}
-	return p.PrepareCapture(ctx, next, CaptureOptions{})
+	return p.PrepareCapture(ctx, next, CaptureOptions{}, func(string) bool { return true })
 }
 
 func canonicalPath(path string) (string, error) {
@@ -235,8 +235,8 @@ func canonicalPath(path string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func (p Provider) Capture(ctx context.Context, saved profile.Resources) (profile.Resources, []model.Change, error) {
-	prepared, err := p.PrepareCapture(ctx, saved, CaptureOptions{})
+func (p Provider) Capture(ctx context.Context, saved profile.Resources, enabled func(id string) bool) (profile.Resources, []model.Change, error) {
+	prepared, err := p.PrepareCapture(ctx, saved, CaptureOptions{}, enabled)
 	if err != nil {
 		return saved, nil, err
 	}
@@ -257,8 +257,14 @@ func (p Provider) Capture(ctx context.Context, saved profile.Resources) (profile
 type CaptureOptions struct{}
 
 // PrepareCapture builds a complete Resources generation while retaining the
-// current generation until the caller has persisted profile metadata.
-func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, options CaptureOptions) (_ *PreparedCapture, err error) {
+// current generation until the caller has persisted profile metadata. enabled
+// resolves the per-resource Capture decision. A disabled resource, or one
+// whose local root no longer exists, preserves its prior generation exactly
+// as captured (metadata, staged snapshot/git-state, and resource-internal
+// links) rather than being re-scanned live: a missing local Resource has no
+// desired-absence concept here, so it must never be silently untracked or
+// tombstoned, only left as it was.
+func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, options CaptureOptions, enabled func(id string) bool) (_ *PreparedCapture, err error) {
 	if p.ProfileDir == "" || p.HomeDir == "" {
 		return nil, errors.New("home and profile directories are required")
 	}
@@ -274,11 +280,25 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	fail := func(err error) (*PreparedCapture, error) { _ = prepared.Rollback(); return nil, err }
 	staging := prepared.stage
 	rawLinks := make(map[string][]RawLink)
+	preserved := make(map[string]bool)
 	for i := range next.Items {
 		item := &next.Items[i]
 		root, err := p.resourceRoot(*item)
 		if err != nil {
 			return fail(err)
+		}
+		missing := false
+		if _, statErr := os.Lstat(root); os.IsNotExist(statErr) {
+			missing = true
+		} else if statErr != nil {
+			return fail(statErr)
+		}
+		if missing || !enabled(item.ID) {
+			preserved[item.ID] = true
+			if err := preserveResourceGeneration(parent, staging, *item); err != nil {
+				return fail(fmt.Errorf("preserve resource %s: %w", item.ID, err))
+			}
+			continue
 		}
 		if item.Strategy == "git" {
 			if p.Runner == nil {
@@ -368,7 +388,7 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	}
 	next.Links = nil
 	for _, item := range next.Items {
-		if item.Strategy != "copy" {
+		if item.Strategy != "copy" || preserved[item.ID] {
 			continue
 		}
 		roots, err := p.resourceRoots(next.Items)
@@ -384,6 +404,14 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 				return fail(fmt.Errorf("resource %s contains %s symlink at %s", item.ID, link.Classification, link.Source))
 			}
 			next.Links = append(next.Links, resourceLink(link, "resource"))
+		}
+	}
+	// A preserved item was not re-scanned live, so its resource-internal
+	// links were never rediscovered above; carry its prior links forward
+	// unchanged instead of silently dropping them.
+	for _, link := range saved.Links {
+		if link.Origin == "resource" && preserved[link.SourceResource] {
+			next.Links = append(next.Links, link)
 		}
 	}
 	roots, err := p.resourceRoots(next.Items)
@@ -805,4 +833,30 @@ func resourceSnapshotPath(root string, item profile.Resource) string {
 		return filepath.Join(path, "content")
 	}
 	return path
+}
+
+// preserveResourceGeneration copies an item's prior generation (its staged
+// snapshot, if the item's strategy stages one, and its git-state directory,
+// if the item's strategy stages one) from the current generation forward
+// into the new staging generation untouched, without reading anything live.
+// Metadata is preserved implicitly: next is cloned from saved before this
+// runs, so a preserved item's profile.Resource fields are already unchanged.
+func preserveResourceGeneration(parent, staging string, item profile.Resource) error {
+	source := resourceSnapshotPath(parent, item)
+	if _, err := os.Lstat(source); err == nil {
+		if _, err := StageCopyResourceWithOptions(source, resourceSnapshotPath(staging, item), SnapshotOptions{}); err != nil {
+			return fmt.Errorf("preserve snapshot: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	gitSource := filepath.Join(parent, "git-state", item.ID)
+	if _, err := os.Lstat(gitSource); err == nil {
+		if _, err := StageCopyResourceWithOptions(gitSource, filepath.Join(staging, "git-state", item.ID), SnapshotOptions{}); err != nil {
+			return fmt.Errorf("preserve git state: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
