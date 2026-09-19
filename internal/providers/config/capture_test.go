@@ -463,6 +463,65 @@ func TestCaptureEnabledDropsFileMatchingTrustedHistoricalBaseline(t *testing.T) 
 	}
 }
 
+// TestCaptureDisabledPreservesDeletionTombstoneWhoseFileReappearsMatchingBaseline
+// and TestCaptureEnabledDropsDeletionTombstoneWhoseFileReappearsMatchingBaseline
+// are regressions for a round-3 review finding on PR 3 (the Config-side
+// companion to the workflow-level NoActionableUpdate generalization): a
+// saved ConfigDelete tombstone whose file reappears exactly matching the
+// baseline scans as ConfigUnchangedBaseline, the same baseline-derived,
+// not-real-customization classification a saved file reverting to the
+// baseline gets (see TestCaptureEnabledDropsFileRevertedToUnchangedBaseline).
+// Capture's ConfigUnchangedBaseline/HistoricalBaseline branch is already
+// desired-shape-agnostic (preserve() freezes whichever of savedFiles or
+// savedDeletes actually has the path), so this locks down that a deletion
+// tombstone gets the identical enabled-drops/disabled-preserves treatment a
+// saved file does, matching what the Capture preview now also reports.
+func TestCaptureDisabledPreservesDeletionTombstoneWhoseFileReappearsMatchingBaseline(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "gone.conf"), "default")
+	writeFile(t, filepath.Join(user, "gone.conf"), "default")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", "gone.conf"), "default")
+	saved := profile.Configs{
+		Deletes: []profile.ConfigDelete{{
+			Path:         "gone.conf",
+			BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", "gone.conf")),
+			BaselineMode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return false }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(false)}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Deletes) != 1 || result.State.Deletes[0].BaselineHash != saved.Deletes[0].BaselineHash {
+		t.Fatalf("state.Deletes = %#v, want the tombstone preserved while Capture is disabled", result.State.Deletes)
+	}
+}
+
+func TestCaptureEnabledDropsDeletionTombstoneWhoseFileReappearsMatchingBaseline(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "gone.conf"), "default")
+	writeFile(t, filepath.Join(user, "gone.conf"), "default")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", "gone.conf"), "default")
+	saved := profile.Configs{
+		Deletes: []profile.ConfigDelete{{
+			Path:         "gone.conf",
+			BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", "gone.conf")),
+			BaselineMode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return true }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(false)}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Deletes) != 0 {
+		t.Fatalf("state.Deletes = %#v, want the stale deletion tombstone dropped once the file reappears matching the baseline and Capture is enabled", result.State.Deletes)
+	}
+}
+
 // TestCaptureDisabledPreservesDeletionTombstoneWhenBaselineDisappears is a
 // regression for a review finding on PR 3: an existing ConfigDelete
 // tombstone whose baseline has since disappeared entirely (no longer a scan

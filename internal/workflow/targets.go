@@ -50,16 +50,19 @@ type TargetCapabilities struct {
 	// recorded desired state, present or an explicit desired-absent
 	// tombstone alike, since real Capture drops both the same way.
 	DropsDesiredWhenIneligible bool
-	// NoActionableUpdate reports that this target's classification means
-	// Capture can never produce a genuinely fresh captured value for it,
-	// even though it is currently present and desired present (Config's
-	// UnchangedBaseline/HistoricalBaseline: the live bytes are
-	// baseline-derived, not real user customization, so there is nothing
-	// new to adopt). When true, captureOutcome reports
-	// CaptureOutcomeStopManaging for the present-and-desired-present
-	// transition instead of the default Update, matching what real Capture
-	// does: enabling Capture converges by dropping the stale desired value
-	// rather than updating it, and Capture Disabled still Preserves it as
+	// NoActionableUpdate reports that this target's classification is
+	// baseline-derived, not real user customization (Config's
+	// UnchangedBaseline/HistoricalBaseline: the current live bytes exactly
+	// match the current or a trusted historical baseline), so Capture can
+	// never produce a genuinely fresh captured value for it -- whether the
+	// previously desired state was a captured value (present) or an
+	// explicit desired-absent tombstone (a saved deletion whose file
+	// reappeared matching the baseline is no less stale). When true,
+	// captureOutcome reports CaptureOutcomeStopManaging for any recorded
+	// desired state once Capture is enabled, instead of the generic Update
+	// or Add transition, matching what real Capture does: enabling Capture
+	// converges by dropping the stale desired state entirely rather than
+	// updating or re-adding it, and Capture Disabled still Preserves it as
 	// usual.
 	NoActionableUpdate bool
 }

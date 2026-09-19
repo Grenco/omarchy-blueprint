@@ -99,14 +99,17 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 // tombstone alike -- actively loses it (StopManaging), same as it really
 // will under Capture; a target with no recorded desired state at all has
 // nothing to drop, so it stays Blocked. Capture Disabled always Preserves
-// whatever is already tracked; otherwise the outcome follows from whether
-// the target is currently present on the machine and whether it was already
-// tracked. A present-and-desired-present target normally means a genuinely
-// fresh value would be captured (Update) -- unless the provider says its
-// classification can never actually produce one (see
+// whatever is already tracked; a classification the provider says never
+// actually yields a fresh captured value at all (see
 // TargetCapabilities.NoActionableUpdate: Config's UnchangedBaseline/
-// HistoricalBaseline are baseline-derived, not real user customization, so
-// enabling Capture converges by dropping the stale value instead). A
+// HistoricalBaseline are baseline-derived, not real user customization)
+// StopManages any recorded desired state instead once enabled, whether that
+// state was a captured value or a desired-absent tombstone -- a saved
+// deletion tombstone whose file reappears matching the baseline is no less
+// stale than a saved file that reverts to it, so both converge the same
+// way; only a target with no desired state at all has nothing to drop.
+// Otherwise the outcome follows from whether the target is currently
+// present on the machine and whether it was already tracked. A
 // missing-but-desired target has three genuinely different transitions, not
 // two: a provider that can record an explicit tombstone does so (Absent --
 // Blueprint keeps managing the target and remembers its removal); one that
@@ -126,11 +129,22 @@ func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOu
 	if !decision.Capture {
 		return CaptureOutcomePreserve
 	}
+	// NoActionableUpdate means the classification is baseline-derived, not
+	// real user customization, regardless of whether the previously desired
+	// state was a captured value or a deletion tombstone: enabling Capture
+	// converges by dropping either one entirely, since neither carries any
+	// meaningful customization to keep. This must be checked before the
+	// presence switch below, not folded into its present-and-desired-present
+	// case alone -- a saved ConfigDelete tombstone whose file reappears
+	// matching the baseline is Current=Present/Desired=Absent, and would
+	// otherwise fall through to the switch's Add case ("add it back") even
+	// though real Capture drops the stale deletion intent the same way it
+	// drops a stale captured value.
+	if target.Capabilities.NoActionableUpdate && target.Desired != TargetUnknown {
+		return CaptureOutcomeStopManaging
+	}
 	switch {
 	case target.Current == TargetPresent && target.Desired == TargetPresent:
-		if target.Capabilities.NoActionableUpdate {
-			return CaptureOutcomeStopManaging
-		}
 		return CaptureOutcomeUpdate
 	case target.Current == TargetPresent && target.Desired != TargetPresent:
 		return CaptureOutcomeAdd

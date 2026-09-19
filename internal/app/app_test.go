@@ -3175,6 +3175,54 @@ func TestConfigInspectTargetsMarksTrackedUnchangedBaselineNoActionableUpdate(t *
 	}
 }
 
+// TestConfigInspectTargetsMarksReappearedDeletionTombstoneNoActionableUpdate
+// is a regression for a round-3 review finding on PR 3: a saved ConfigDelete
+// tombstone whose local file reappears exactly matching the baseline scans
+// as ConfigUnchangedBaseline just like a saved file reverting to the
+// baseline does, producing Current=Present/Desired=Absent with
+// NoActionableUpdate set. captureOutcome previously checked
+// NoActionableUpdate only inside its present-and-desired-present case, so
+// this target would have fallen through to the generic Add transition
+// ("add it back") instead of agreeing with what real Capture does (drop the
+// stale deletion intent). This locks down that InspectTargets produces the
+// exact target shape that regression needs.
+func TestConfigInspectTargetsMarksReappearedDeletionTombstoneNoActionableUpdate(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Deletes: []profile.ConfigDelete{{Path: ".config/hypr/bindings.lua", BaselineHash: "stale-hash", BaselineMode: "0644"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/bindings.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want the reappeared-and-unchanged deletion tombstone path still surfaced", targets)
+	}
+	if got.Desired != workflow.TargetAbsent || got.Current != workflow.TargetPresent {
+		t.Fatalf("target = %#v, want Desired=absent Current=present", got)
+	}
+	if !got.CaptureEligible {
+		t.Fatalf("target = %#v, want capture eligible: policy still governs the enabled/disabled drop-vs-preserve transition", got)
+	}
+	if !got.Capabilities.NoActionableUpdate {
+		t.Fatalf("capabilities = %#v, want NoActionableUpdate: real Capture never keeps the deletion intent once the file reappears matching the baseline", got.Capabilities)
+	}
+}
+
 func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 	blocked := []configprovider.Classification{
 		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
