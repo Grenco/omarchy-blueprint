@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -79,6 +80,85 @@ func TestCaptureDoesNotPersistSensitiveContent(t *testing.T) {
 	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil || len(result.State.Files) != 0 || result.Scan.Candidates[0].Classification != ConfigSensitive {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+// TestCapturePreservesPreviouslyCapturedFileThatBecameSensitive is a
+// regression for a review finding on PR 3: the existing sensitive-content
+// test only covered an unmanaged new sensitive file, not a previously
+// captured (already-safe) file that later has sensitive content added to
+// it. Safety blocks updating from the unsafe current bytes; it must never
+// erase the already-safe remembered desired state, and this holds
+// regardless of the enabled decision, since capturing fresh would be
+// unsafe no matter what policy says.
+func TestCapturePreservesPreviouslyCapturedFileThatBecameSensitive(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			base, user, _, profileDir := sandbox(t)
+			writeFile(t, filepath.Join(profileDir, "config", "files", "secret.conf"), "safe content")
+			writeFile(t, filepath.Join(user, "secret.conf"), "api_token = 'abcdefghijklmnopqrstuvwxyz'\n")
+			saved := profile.Configs{
+				Files: []profile.ConfigFile{{Path: "secret.conf", Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "secret.conf")), Mode: "0644"}},
+			}
+			result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(saved, func(string) bool { return enabled })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.State.Files) != 1 || result.State.Files[0].Hash != saved.Files[0].Hash {
+				t.Fatalf("state.Files = %#v, want the previously-safe content preserved", result.State.Files)
+			}
+			if _, err := os.Lstat(filepath.Join(profileDir, "config", "files", "secret.conf")); err != nil {
+				t.Fatalf("preserved artifact missing: %v", err)
+			}
+		})
+	}
+}
+
+// TestCaptureDropsPreviouslyDesiredFileThatBecomesExcluded confirms the
+// ownership-management exception still holds after broadening safety
+// preservation: Excluded is an explicit "leave this path alone" from the
+// user, not a safety freeze, so Capture still drops it from desired state
+// -- freezing it would mean Capture Preserve silently adopting the excluded
+// meaning, which must never happen.
+func TestCaptureDropsPreviouslyDesiredFileThatBecomesExcluded(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(profileDir, "config", "files", "app.conf"), "captured before exclusion")
+	writeFile(t, filepath.Join(user, "app.conf"), "captured before exclusion")
+	saved := profile.Configs{
+		Files:    []profile.ConfigFile{{Path: "app.conf", Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "app.conf")), Mode: "0644"}},
+		Excluded: []string{"app.conf"},
+	}
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 0 {
+		t.Fatalf("state.Files = %#v, want the newly-excluded path dropped, not preserved", result.State.Files)
+	}
+}
+
+// TestCapturePreservesLegacyArtifactAtItsPreSchema8Path is a regression for
+// a review finding on PR 3: a path saved before the schema-8 HOME-relative
+// rewrite has its logical metadata path already rewritten to the
+// ".config/"-prefixed form (see profile.migrateLegacyConfigPaths), but the
+// on-disk snapshot itself is never relocated to match, since loading must
+// never rewrite anything on disk. Preserving such an entry must still find
+// its snapshot at the pre-rewrite path rather than failing.
+func TestCapturePreservesLegacyArtifactAtItsPreSchema8Path(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(profileDir, "config", "files", "legacy.conf"), "legacy content")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{Path: ".config/legacy.conf", Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "legacy.conf")), Mode: "0644"}},
+	}
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 1 || result.State.Files[0].Hash != saved.Files[0].Hash {
+		t.Fatalf("state.Files = %#v, want the legacy entry preserved", result.State.Files)
+	}
+	if _, err := os.Lstat(filepath.Join(profileDir, "config", "files", ".config", "legacy.conf")); err != nil {
+		t.Fatalf("preserved artifact missing at the new-style path: %v", err)
 	}
 }
 

@@ -157,6 +157,47 @@ func TestInspectCaptureReportsBlockedRegardlessOfPresence(t *testing.T) {
 	}
 }
 
+// TestInspectCaptureReportsStopManagingForOwnershipTransitionInsteadOfBlocked
+// is a regression for a review finding on PR 3: an ineligible target whose
+// provider marks it DropsDesiredWhenIneligible (an intentional ownership-
+// management transition, e.g. Config Delegated/Excluded) actually loses its
+// desired state when Capture runs, unlike a generic safety freeze. Reporting
+// it as Blocked (implying nothing changes) would be misleading, so it must
+// report StopManaging instead when it was desired-present.
+func TestInspectCaptureReportsStopManagingForOwnershipTransitionInsteadOfBlocked(t *testing.T) {
+	session := newInspectionSession(t)
+	session.SetProviders([]Provider{captureInspectionTestProvider{id: "config", targets: []TargetInspection{
+		{
+			Key: ".config/nvim/init.lua", CaptureEligible: false, Current: TargetPresent, Desired: TargetPresent,
+			SafetyReason: "delegated to another provider",
+			Capabilities: TargetCapabilities{DropsDesiredWhenIneligible: true},
+		},
+	}}})
+
+	inspection, err := session.InspectCapture(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := singleCaptureTarget(t, inspection, "config")
+	if got.Outcome != CaptureOutcomeStopManaging {
+		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeStopManaging)
+	}
+}
+
+// TestInspectCaptureOwnershipTransitionWithNoPriorDesiredStateStaysBlocked
+// confirms the distinction only applies when there was something to drop:
+// a target that was never desired-present has nothing for Capture to
+// actively remove, so it stays a plain Blocked report.
+func TestInspectCaptureOwnershipTransitionWithNoPriorDesiredStateStaysBlocked(t *testing.T) {
+	got := captureOutcome(TargetInspection{
+		CaptureEligible: false, Current: TargetPresent, Desired: TargetUnknown,
+		Capabilities: TargetCapabilities{DropsDesiredWhenIneligible: true},
+	}, CaptureDecision{Capture: false, Resolved: true})
+	if got != CaptureOutcomeBlocked {
+		t.Fatalf("Outcome = %s, want %s", got, CaptureOutcomeBlocked)
+	}
+}
+
 func TestInspectCapturePreservesWhenCaptureDecisionIsDisabled(t *testing.T) {
 	if got := captureOutcome(TargetInspection{CaptureEligible: true, Current: TargetPresent, Desired: TargetPresent}, CaptureDecision{Capture: false, Resolved: true}); got != CaptureOutcomePreserve {
 		t.Fatalf("Outcome = %s, want %s", got, CaptureOutcomePreserve)
