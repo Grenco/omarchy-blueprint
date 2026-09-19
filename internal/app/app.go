@@ -1018,11 +1018,12 @@ func (p restoreProviderAdapter) InspectTargets(ctx context.Context, data profile
 	return nil, nil
 }
 
-// Capture accepts the workflow CaptureContext for interface compatibility;
-// PR 2 does not yet gate Capture on policy decisions (PR 3), so it is not
-// consulted here.
-func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
-	return p.stateProvider.Capture(ctx, data)
+// Capture threads the resolved workflow CaptureContext down to the wrapped
+// state provider, which decides for itself whether/how to consult it (PR 3
+// activates this category by category; a provider that does not yet consult
+// its decisions simply ignores the parameter).
+func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
+	return p.stateProvider.Capture(ctx, data, capCtx)
 }
 
 func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {

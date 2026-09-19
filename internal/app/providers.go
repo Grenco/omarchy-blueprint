@@ -30,7 +30,7 @@ import (
 type stateProvider interface {
 	ID() string
 	Captured(profile.Data) bool
-	Capture(context.Context, *profile.Data) (any, []model.Change, error)
+	Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
 	Plan(context.Context, profile.Data, omarchy.Info, restorePlanOptions) (model.RestorePlan, error)
 	Verify(context.Context, profile.Data) (model.VerificationResult, error)
@@ -279,7 +279,7 @@ func resourceMissing(item profile.Resource) bool {
 	return item.Revision == ""
 }
 
-func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
 	}
@@ -513,6 +513,10 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	for _, ref := range desired.Excluded {
 		excluded[ref] = true
 	}
+	absent := map[string]bool{}
+	for _, absence := range desired.Absent {
+		absent[absence.Ref] = true
+	}
 
 	keys := map[string]bool{}
 	for key := range desiredPortable {
@@ -522,6 +526,9 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 		keys[key] = true
 	}
 	for key := range excluded {
+		keys[key] = true
+	}
+	for key := range absent {
 		keys[key] = true
 	}
 	sortedKeys := make([]string, 0, len(keys))
@@ -548,10 +555,17 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 			})
 			continue
 		}
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absent[key]:
+			desiredState = workflow.TargetAbsent
+		case desiredPortable[key]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             key,
 			Label:           packageLabel(key),
-			Desired:         desiredPresence(desiredPortable[key]),
+			Desired:         desiredState,
 			Current:         currentState,
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -628,7 +642,12 @@ func currentPresence(detected bool) workflow.TargetState {
 	return workflow.TargetAbsent
 }
 
-func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+// Capture merges live detection into desired state per the Capture merge
+// transition table (see packagesprovider.Merge), driven by capCtx's resolved
+// per-target decision. The legacy Excluded mechanism still applies first
+// (still-active for a manually excluded ref with no policy rule): it is
+// never translated into the new model, only composed with it.
+func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
 		return nil, nil, err
 	}
@@ -642,10 +661,14 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (an
 	}
 	current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
 	current = packagesprovider.PreserveExcludedMise(current, d.Packages)
-	changes := packagesprovider.Diff(d.Packages, current)
-	d.Packages = current
+	merged := packagesprovider.Merge(d.Packages, current, func(ref string) bool {
+		decision, ok := capCtx.Lookup(ref)
+		return ok && decision.Capture
+	})
+	changes := packagesprovider.Diff(d.Packages, merged)
+	d.Packages = merged
 	d.Manifest.Capture.Packages = true
-	return current, changes, nil
+	return merged, changes, nil
 }
 
 func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
@@ -772,7 +795,7 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	return targets, nil
 }
 
-func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -929,7 +952,7 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	return targets, nil
 }
 
-func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -1272,7 +1295,7 @@ func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoo
 	return index
 }
 
-func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p configStateProvider) Capture(_ context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider(*d)
 	if err != nil {
 		return nil, nil, err
@@ -1404,7 +1427,7 @@ func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	return targets, nil
 }
 
-func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	current, err := p.provider().Capture(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -1443,14 +1466,6 @@ func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data) (mode
 func (p defaultsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	_, err := p.provider().Detect(ctx)
 	return err
-}
-
-func captureProvider(ctx context.Context, provider stateProvider, d *profile.Data) (any, []model.Change, error) {
-	state, changes, err := provider.Capture(ctx, d)
-	if err != nil {
-		return nil, nil, fmt.Errorf("capture %s: %w", provider.ID(), err)
-	}
-	return state, changes, nil
 }
 
 // shellStateProvider captures Omarchy Shell state; after capture it owns
@@ -1508,7 +1523,7 @@ func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	}}, nil
 }
 
-func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -1667,7 +1682,7 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	return targets, nil
 }
 
-func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, nil, err
