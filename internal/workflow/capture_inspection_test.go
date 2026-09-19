@@ -100,6 +100,26 @@ func TestInspectCapturePreservesNoActionableUpdateTargetWhenCaptureDisabled(t *t
 	}
 }
 
+// TestInspectCaptureReportsStopManagingForDesiredAbsentTargetWithNoActionableUpdate
+// is a regression for a round-3 review finding on PR 3: NoActionableUpdate
+// was only checked inside the present-and-desired-present switch case, so a
+// target that is Current=Present but Desired=Absent (a saved deletion
+// tombstone whose file reappeared matching the baseline) fell through to
+// the generic Add case ("add it back") instead. Real Capture treats a
+// baseline-derived classification's stale desired state the same way
+// whether it was a captured value or a deletion tombstone: enabling Capture
+// drops it entirely, since matching the baseline again means the deletion
+// intent is no longer meaningful customization either.
+func TestInspectCaptureReportsStopManagingForDesiredAbsentTargetWithNoActionableUpdate(t *testing.T) {
+	got := captureOutcome(TargetInspection{
+		CaptureEligible: true, Current: TargetPresent, Desired: TargetAbsent,
+		Capabilities: TargetCapabilities{NoActionableUpdate: true},
+	}, CaptureDecision{Capture: true, Resolved: true})
+	if got != CaptureOutcomeStopManaging {
+		t.Fatalf("Outcome = %s, want %s", got, CaptureOutcomeStopManaging)
+	}
+}
+
 func TestInspectCaptureReportsAbsentForTrackedTargetNoLongerPresent(t *testing.T) {
 	session := newInspectionSession(t)
 	session.SetProviders([]Provider{captureInspectionTestProvider{id: "packages", targets: []TargetInspection{
