@@ -1,7 +1,7 @@
 package app
 
 import (
-	"sort"
+	"fmt"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -14,25 +14,34 @@ type restoreSkip struct {
 	Key, Reason string
 }
 
-// restoreSkips extracts every target key restoreCtx resolved to Restore
-// Skip, sorted by key for deterministic plan output. A provider consults
-// this to exclude Restore-Skip targets from the desired state it feeds its
-// own Plan/Verify logic -- filtering the input is the only way to reliably
-// stop a provider whose Plan can batch several targets into one Operation
-// (e.g. Packages' bulk official/AUR installs) from ever batching a
-// Restore-Skip target together with an Apply one.
-func restoreSkips(restoreCtx workflow.RestoreContext) []restoreSkip {
-	skips := make([]restoreSkip, 0, len(restoreCtx.Targets))
-	for key, decision := range restoreCtx.Targets {
-		if !decision.Restore {
-			skips = append(skips, restoreSkip{Key: key, Reason: decision.Reason})
-		}
+// resolveRestoreSkip resolves key's RestoreContext decision via Require,
+// failing closed (a non-nil error) rather than treating a missing or
+// unresolved decision as an implicit Apply. RestoreContext.Require's own
+// contract is that PR 4+ must reject these before Restore planning uses
+// the decision: an inventory/orchestration omission (a provider-owned
+// desired target key with no corresponding InspectTargets entry, or a
+// decision workflow never marked Resolved) must never silently broaden
+// Restore's authority by falling through as "not skipped." Every provider
+// filter function calls this once per desired target key it owns --
+// present state and desired-absent tombstones alike -- rather than
+// consulting a permissive lookup map built from whatever restoreCtx.Targets
+// happens to already contain.
+//
+// Returns (skip, entry, nil) when resolved: skip is true and entry is
+// populated only when the decision says Restore Skip; skip is false
+// (entry zero) when it says Apply.
+func resolveRestoreSkip(restoreCtx workflow.RestoreContext, provider, key string) (bool, restoreSkip, error) {
+	decision, err := restoreCtx.Require(key)
+	if err != nil {
+		return false, restoreSkip{}, fmt.Errorf("%s: %w", provider, err)
 	}
-	sort.Slice(skips, func(i, j int) bool { return skips[i].Key < skips[j].Key })
-	return skips
+	if decision.Restore {
+		return false, restoreSkip{}, nil
+	}
+	return true, restoreSkip{Key: key, Reason: decision.Reason}, nil
 }
 
-// restoreSkipSet indexes skips by key for filtering lookups.
+// restoreSkipSet indexes skips by key for Resource-matching lookups.
 func restoreSkipSet(skips []restoreSkip) map[string]string {
 	set := make(map[string]string, len(skips))
 	for _, skip := range skips {
