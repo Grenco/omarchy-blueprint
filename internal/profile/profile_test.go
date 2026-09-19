@@ -1199,6 +1199,47 @@ func TestLoadSchema11MigratesLegacyPackageExclusionsToPolicy(t *testing.T) {
 	}
 }
 
+// TestLoadSchema11MigrationRemovesTheExcludedMiseDeclaration is a
+// regression for a review finding on PR 3: a legacy excluded Mise
+// declaration stayed in Packages.Mise even after migration, since the old
+// Excluded mechanism never stripped Mise (only Official/AUR). Migration
+// must leave the excluded target with no desired state at all, including
+// Mise.
+func TestLoadSchema11MigrationRemovesTheExcludedMiseDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n\n[capture]\npackages = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("mise:node\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "mise.toml"), []byte("[tools.node]\nversion = \"22\"\n\n[tools.python]\nversion = \"3.13\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Packages.Mise["node"]; ok {
+		t.Fatalf("Mise = %#v, want the excluded node declaration removed", got.Packages.Mise)
+	}
+	if _, ok := got.Packages.Mise["python"]; !ok {
+		t.Fatalf("Mise = %#v, want the unrelated python declaration left alone", got.Packages.Mise)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "mise:node", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "mise:node", Setting: policy.SettingDisabled}},
+	}
+	if !reflect.DeepEqual(got.Policy, want) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, want)
+	}
+}
+
 func TestLoadSchema11MigrationDoesNotDuplicateAnAlreadyPresentPolicyRule(t *testing.T) {
 	dir := t.TempDir()
 	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n"

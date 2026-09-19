@@ -156,12 +156,68 @@ func migrateLegacyPackageExclusions(d *Data) error {
 		if err := validateLegacyPackageExclusionRef(ref); err != nil {
 			return err
 		}
+		RemoveDesiredPackageState(&d.Packages, ref)
 		d.Policy = upsertRuleIfMissing(d.Policy, policy.AxisCapture, policy.Rule{Category: "packages", Target: ref, Setting: policy.SettingDisabled})
 		d.Policy = upsertRuleIfMissing(d.Policy, policy.AxisRestore, policy.Rule{Category: "packages", Target: ref, Setting: policy.SettingDisabled})
 	}
 	d.Packages.Excluded = nil
 	d.Packages.MachineSpecific = nil
 	return nil
+}
+
+// RemoveDesiredPackageState strips every trace of ref's desired state from
+// packages: desired-present (Official/AUR/Mise) and any desired-absence
+// tombstone (Absent). This is the single "no desired state at all"
+// primitive both legacy exclusion migration and explicit package exclusion
+// (workflow.Session.SetPackageExcluded) use, so excluding a package/tool --
+// whether freshly or via a migrated legacy exclusion -- always means
+// neither present nor absent. Without clearing Absent too, a package
+// excluded while tombstoned would keep that tombstone; later including it
+// would silently revive the old desired-absence intent on the next Capture
+// instead of leaving the ref genuinely unmanaged.
+func RemoveDesiredPackageState(packages *Packages, ref string) {
+	kind, name, ok := strings.Cut(ref, ":")
+	if ok {
+		switch kind {
+		case "official":
+			packages.Official = removePackageRefName(packages.Official, name)
+		case "aur":
+			packages.AUR = removePackageRefName(packages.AUR, name)
+		case "mise":
+			if _, exists := packages.Mise[name]; exists {
+				next := make(MiseTools, len(packages.Mise))
+				for id, tool := range packages.Mise {
+					if id != name {
+						next[id] = tool
+					}
+				}
+				packages.Mise = next
+			}
+		}
+	}
+	if len(packages.Absent) == 0 {
+		return
+	}
+	absent := make([]PackageAbsence, 0, len(packages.Absent))
+	for _, item := range packages.Absent {
+		if item.Ref != ref {
+			absent = append(absent, item)
+		}
+	}
+	packages.Absent = absent
+}
+
+// removePackageRefName returns a new slice with name removed, never
+// mutating names' own backing array (which may be shared with the caller's
+// stored profile).
+func removePackageRefName(names []string, name string) []string {
+	out := make([]string, 0, len(names))
+	for _, existing := range names {
+		if existing != name {
+			out = append(out, existing)
+		}
+	}
+	return out
 }
 
 func validateLegacyPackageExclusionRef(ref string) error {

@@ -1484,6 +1484,39 @@ func TestJSONRestoreRequiresExplicitMode(t *testing.T) {
 	}
 }
 
+// TestExcludeRejectsWholeBatchWhenALaterRefIsInvalid is a regression for a
+// review finding on PR 3: exclude/include accept multiple refs and used to
+// apply them sequentially, so a later invalid ref could leave earlier,
+// valid refs already applied. The whole batch is now validated/canonicalized
+// before any ref is mutated.
+func TestExcludeRejectsWholeBatchWhenALaterRefIsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture: %s", errout.String())
+	}
+	if code := run("--profile", dir, "exclude", "official:base", "not-a-valid-ref"); code == 0 {
+		t.Fatalf("batch with an invalid ref succeeded: out=%s", out.String())
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "packages", "official.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "base\n" {
+		t.Fatalf("official file = %q, want base left untouched by the rejected batch", b)
+	}
+}
+
 func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}
