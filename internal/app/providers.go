@@ -1426,6 +1426,14 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			SupportsExactRemoval:       eligible,
 			Hierarchical:               true,
 			DropsDesiredWhenIneligible: ownershipTransition,
+			// A tracked instance of a classification configCaptureInert
+			// treats as "nothing to capture" (UnchangedBaseline/
+			// HistoricalBaseline) is not skipped like its untracked
+			// counterpart above, since Blueprint still has desired state to
+			// account for -- but real Capture still never produces a fresh
+			// value for it (see capture.go), so the present-present
+			// transition must report StopManaging, not the generic Update.
+			NoActionableUpdate: configCaptureInert(candidate.Classification),
 		}))
 	}
 

@@ -3132,6 +3132,49 @@ func TestConfigInspectTargetsKeepsSavedFileTargetWhenLocallyMissing(t *testing.T
 	}
 }
 
+// TestConfigInspectTargetsMarksTrackedUnchangedBaselineNoActionableUpdate is
+// a regression for a round-3 review finding on PR 3: a tracked path whose
+// live bytes exactly match the baseline (ConfigUnchangedBaseline) was
+// reported Capture-eligible with no special capability, so the generic
+// present-and-desired-present preview logic said "Update" -- but real
+// Capture never actually produces a fresh value for it (see capture.go):
+// enabling Capture converges by dropping the stale desired value instead.
+// The preview must carry that distinction via NoActionableUpdate rather
+// than disagreeing with what Capture actually does.
+func TestConfigInspectTargetsMarksTrackedUnchangedBaselineNoActionableUpdate(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/hypr/bindings.lua", Hash: "stale-hash", Mode: "0644"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/bindings.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want the tracked unchanged-baseline path still surfaced", targets)
+	}
+	if !got.CaptureEligible {
+		t.Fatalf("target = %#v, want capture eligible: policy still governs the enabled/disabled drop-vs-preserve transition", got)
+	}
+	if !got.Capabilities.NoActionableUpdate {
+		t.Fatalf("capabilities = %#v, want NoActionableUpdate: real Capture never produces a fresh value for an unchanged baseline", got.Capabilities)
+	}
+}
+
 func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 	blocked := []configprovider.Classification{
 		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
