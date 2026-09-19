@@ -429,15 +429,18 @@ func Load(dir string) (Data, error) {
 	if err != nil {
 		return d, err
 	}
-	if loadedSchema < policySchema {
-		// A legacy Packages.Excluded ref is migrated once, in memory, into
-		// an equivalent portable Capture Disabled + Restore Disabled policy
-		// rule pair; MachineSpecific becomes pure runtime inspection
-		// metadata rather than persisted desired state. Migration never
-		// consults the current machine to infer desired absence -- it only
-		// rewrites the exclusion mechanism itself, not what is
-		// desired-present.
-		migrateLegacyPackageExclusions(&d)
+	// A Packages.Excluded ref -- whether freshly read from a legacy (pre-
+	// schema-12) profile, or a stray packages/excluded.txt left over from
+	// before this cutover -- is migrated, in memory, into an equivalent
+	// portable Capture Disabled + Restore Disabled policy rule pair;
+	// MachineSpecific becomes pure runtime inspection metadata rather than
+	// persisted desired state. This runs on every load, not only a legacy
+	// schema, so Save's pruning of both obsolete files (see Save) can never
+	// be undone by a load that still finds one on disk. Migration never
+	// consults the current machine to infer desired absence -- it only
+	// rewrites the exclusion mechanism itself, not what is desired-present.
+	if err := migrateLegacyPackageExclusions(&d); err != nil {
+		return d, fmt.Errorf("migrate legacy package exclusions: %w", err)
 	}
 	return d, nil
 }
@@ -446,8 +449,6 @@ func Save(dir string, d Data) error {
 	d.Manifest.Schema = Schema
 	d.Packages.Official = normalize(d.Packages.Official)
 	d.Packages.AUR = normalize(d.Packages.AUR)
-	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
-	d.Packages.Excluded = normalize(d.Packages.Excluded)
 	if err := normalizeConfigs(&d.Config); err != nil {
 		return err
 	}
@@ -540,8 +541,6 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "packages", "official.txt"), []byte(joinList(d.Packages.Official))},
 		{filepath.Join(dir, "packages", "aur.txt"), []byte(joinList(d.Packages.AUR))},
 		{filepath.Join(dir, "packages", "mise.toml"), mise},
-		{filepath.Join(dir, "packages", "machine-specific.txt"), []byte(joinList(d.Packages.MachineSpecific))},
-		{filepath.Join(dir, "packages", "excluded.txt"), []byte(joinList(d.Packages.Excluded))},
 		{filepath.Join(dir, "themes", "themes.toml"), themes},
 		{filepath.Join(dir, "plugins", "plugins.toml"), plugins},
 		{filepath.Join(dir, "config", "config.toml"), configs},
@@ -552,6 +551,18 @@ func Save(dir string, d Data) error {
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {
+			return err
+		}
+	}
+	// machine-specific.txt and excluded.txt are obsolete: MachineSpecific is
+	// pure runtime inspection metadata now (never persisted), and an
+	// exclusion is a Capture Disabled + Restore Disabled policy rule with no
+	// desired state (see migrateLegacyPackageExclusions and
+	// Session.SetPackageExcluded). Every save prunes both files, whether
+	// they came from a legacy profile or a stray write from before this
+	// cutover.
+	for _, name := range []string{"machine-specific.txt", "excluded.txt"} {
+		if err := os.Remove(filepath.Join(dir, "packages", name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

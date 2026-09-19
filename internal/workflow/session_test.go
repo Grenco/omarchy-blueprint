@@ -80,11 +80,20 @@ func TestSessionSetProviderCapturedSavesOptionalProvider(t *testing.T) {
 	}
 }
 
-func TestSessionReloadRejectsInvalidPackageExclusionWithoutMutation(t *testing.T) {
+// TestSessionOpenRejectsInvalidLegacyPackageExclusionWithoutMutation is
+// updated for the profile-layer cutover: Packages.Excluded is no longer
+// persisted by Save at all (Session.SetPackageExcluded is the sole write
+// path now), so a malformed exclusion can only be observed by Load through
+// a stray packages/excluded.txt file, exactly like a legacy pre-schema-12
+// profile. migrateLegacyPackageExclusions rejects a malformed ref rather
+// than silently turning it into a garbage policy target.
+func TestSessionOpenRejectsInvalidLegacyPackageExclusionWithoutMutation(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
 	data := profile.New("test", time.Now())
-	data.Packages.Excluded = []string{"1password", "aur:valid-package"}
 	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "packages", "excluded.txt"), []byte("1password\naur:valid-package\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(profileDir, "profile.toml")
@@ -92,7 +101,7 @@ func TestSessionReloadRejectsInvalidPackageExclusionWithoutMutation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir}); err == nil || !strings.Contains(err.Error(), "validate package exclusions") {
+	if _, err := Open(Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir}); err == nil || !strings.Contains(err.Error(), "migrate legacy package exclusions") {
 		t.Fatalf("err=%v", err)
 	}
 	after, err := os.ReadFile(path)

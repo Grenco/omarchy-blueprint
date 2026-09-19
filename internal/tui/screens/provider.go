@@ -300,43 +300,28 @@ func savedRows(snapshot any) []providerRow {
 	rows := []providerRow{}
 	switch value := snapshot.(type) {
 	case profile.Packages:
-		packageRows := func(section, kind string, values []string) {
-			items, states := append([]string{}, values...), map[string]string{}
-			for _, ref := range value.Excluded {
-				if strings.HasPrefix(ref, kind+":") {
-					name := strings.TrimPrefix(ref, kind+":")
-					present := false
-					for _, item := range items {
-						if item == name {
-							present = true
-							break
-						}
-					}
-					if !present {
-						items = append(items, name)
-					}
-					states[name] = "not included"
-				}
-			}
-			sort.SliceStable(items, func(i, j int) bool { return states[items[i]] != "not included" && states[items[j]] == "not included" })
+		// A package/tool with Capture Disabled (excluded) now has no desired
+		// state at all -- it is stripped from Official/AUR/Mise immediately
+		// (Session.SetPackageExcluded), rather than staying listed with a
+		// separate "not included" marker, so every row shown here is simply
+		// included.
+		packageRows := func(section string, values []string) {
+			items := append([]string{}, values...)
 			group(section, items, &rows)
 			for i := range rows {
 				if rows[i].section == section {
 					rows[i].state = "included"
-					if states[rows[i].key] != "" {
-						rows[i].state = states[rows[i].key]
-					}
 				}
 			}
 		}
-		packageRows("Official packages", "official", value.Official)
-		packageRows("AUR packages", "aur", value.AUR)
+		packageRows("Official packages", value.Official)
+		packageRows("AUR packages", value.AUR)
 		tools := make([]string, 0, len(value.Mise))
 		for tool := range value.Mise {
 			tools = append(tools, tool)
 		}
 		sort.Strings(tools)
-		packageRows("Mise tools", "mise", tools)
+		packageRows("Mise tools", tools)
 		group("Machine-specific packages", value.MachineSpecific, &rows)
 		for i := range rows {
 			if rows[i].section == "Machine-specific packages" {

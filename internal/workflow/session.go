@@ -10,7 +10,6 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
-	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 )
 
 type Session struct {
@@ -46,9 +45,6 @@ func (s *Session) Reload() error {
 	data, err := profile.Load(dir)
 	if err != nil {
 		return err
-	}
-	if err := packagesprovider.ValidateExclusions(data.Packages); err != nil {
-		return fmt.Errorf("validate package exclusions: %w", err)
 	}
 	state, err := s.deps.StateHome()
 	if err != nil {
@@ -103,49 +99,18 @@ func (s *Session) SetProviderCaptured(_ context.Context, id string, captured boo
 	return nil
 }
 
-// SetProviderItemEnabled toggles a saved package item's desired state.
+// SetProviderItemEnabled toggles a saved package item's exclusion via
+// SetPackageExcluded, which is also what the exclude/include CLI verbs use.
 func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, key string) error {
-	data := s.profile
-	switch provider {
-	case "packages":
-		kind := map[string]string{"Official packages": "official", "AUR packages": "aur", "Mise tools": "mise"}[section]
-		if kind == "" {
-			return fmt.Errorf("package group %s cannot be toggled", section)
-		}
-		ref := kind + ":" + key
-		var err error
-		if containsString(data.Packages.Excluded, ref) {
-			data.Packages, _, err = packagesprovider.Include(data.Packages, []string{ref})
-		} else {
-			data.Packages, _, err = packagesprovider.Exclude(data.Packages, []string{ref})
-		}
-		if err != nil {
-			return err
-		}
-	default:
+	if provider != "packages" {
 		return fmt.Errorf("%s does not support item selection", provider)
 	}
-	if err := profile.Save(s.opts.ProfileDir, data); err != nil {
-		return fmt.Errorf("save profile: %w", err)
+	kind := map[string]string{"Official packages": "official", "AUR packages": "aur", "Mise tools": "mise"}[section]
+	if kind == "" {
+		return fmt.Errorf("package group %s cannot be toggled", section)
 	}
-	s.profile = data
-	return nil
-}
-func removeString(values []string, value string) []string {
-	for i, current := range values {
-		if current == value {
-			return append(values[:i], values[i+1:]...)
-		}
-	}
-	return values
-}
-func containsString(values []string, value string) bool {
-	for _, current := range values {
-		if current == value {
-			return true
-		}
-	}
-	return false
+	ref := kind + ":" + key
+	return s.SetPackageExcluded(ref, !s.packageExcluded(ref))
 }
 
 // Profile Git operations remain owned by profilegit; workflow only exposes the

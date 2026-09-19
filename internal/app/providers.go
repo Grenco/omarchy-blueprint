@@ -669,13 +669,11 @@ func currentPresence(detected bool) workflow.TargetState {
 
 // Capture merges live detection into desired state per the Capture merge
 // transition table (see packagesprovider.Merge), driven by capCtx's resolved
-// per-target decision. The legacy Excluded mechanism still applies first
-// (still-active for a manually excluded ref with no policy rule): it is
-// never translated into the new model, only composed with it.
+// per-target decision. A manually excluded ref has no desired state at all
+// by the time Capture runs (Session.SetPackageExcluded already stripped it),
+// so Merge's own disabled-preserve rule keeps it unmanaged; there is no
+// separate legacy exclusion mechanism to compose with here.
 func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return nil, nil, err
-	}
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -684,8 +682,6 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, cap
 	if err != nil {
 		return nil, nil, err
 	}
-	current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
-	current = packagesprovider.PreserveExcludedMise(current, d.Packages)
 	merged := packagesprovider.Merge(d.Packages, current, func(ref string) bool {
 		decision, ok := capCtx.Lookup(ref)
 		return ok && decision.Capture
@@ -697,9 +693,6 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, cap
 }
 
 func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return nil, err
-	}
 	provider, err := p.provider()
 	if err != nil {
 		return nil, err
@@ -712,9 +705,6 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 }
 
 func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return model.RestorePlan{}, err
-	}
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
