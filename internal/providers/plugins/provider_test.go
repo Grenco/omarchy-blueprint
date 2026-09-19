@@ -56,7 +56,7 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 		}
 	})
 	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
-	got, err := provider.Capture(context.Background())
+	got, err := provider.Capture(context.Background(), profile.Plugins{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +74,95 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 	}
 	if restored, err := os.ReadFile(previous); err != nil || string(restored) != `{"id":"old"}` {
 		t.Fatalf("restored snapshot=%q err=%v", restored, err)
+	}
+}
+
+func TestCapturePreservesExistingArtifactWhenDisabled(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(user, "mine.local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "mine.local", "manifest.json"), []byte(`{"id":"new"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(profileDir, "plugins", "local", "mine.local", "manifest.json")
+	if err := os.MkdirAll(filepath.Dir(existing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existing, []byte(`{"id":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[{"id":"mine.local","enabled":true,"firstParty":false}]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "mine.local", Source: "local", Hash: "old-hash"}}}
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Hash != "old-hash" {
+		t.Fatalf("items = %#v, want the preserved saved metadata (old hash), not a fresh re-hash of the changed local content", got.Items)
+	}
+	content, err := os.ReadFile(filepath.Join(profileDir, "plugins", "local", "mine.local", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != `{"id":"old"}` {
+		t.Fatalf("staged artifact = %q, want the preserved prior content, not the changed local file", content)
+	}
+}
+
+func TestCaptureTombstonesPluginRemovedLocally(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "gone.local", Source: "local", Hash: "abc"}}}
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "gone.local" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want a tombstone for gone.local preserving its prior hash", got.Absent)
+	}
+	for _, item := range got.Items {
+		if item.ID == "gone.local" {
+			t.Fatalf("items = %#v, want gone.local removed from present items", got.Items)
+		}
+	}
+}
+
+func TestCaptureNeverTombstonesAFirstPartyPlugin(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	// "omarchy.clock" was previously known present; the catalog no longer
+	// reports it at all (e.g. removed upstream), so a naive merge would see
+	// it as present -> absent and tombstone it were first-party plugins not
+	// excluded from Capture merge entirely.
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 0 {
+		t.Fatalf("absent = %#v, want no tombstones for a first-party plugin no longer reported", got.Absent)
 	}
 }
 
