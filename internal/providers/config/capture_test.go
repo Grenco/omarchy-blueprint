@@ -137,6 +137,40 @@ func TestCaptureDropsPreviouslyDesiredFileThatBecomesExcluded(t *testing.T) {
 	}
 }
 
+// TestCaptureDropsPreviouslyDesiredDeletionTombstoneThatBecomesExcluded is a
+// regression for a round-3 review finding on PR 3: the ownership-transition
+// drop branch (ConfigDelegated/ConfigExcluded) already applied to a saved
+// file, but inspection's preview only checked Desired == TargetPresent, so
+// a saved deletion tombstone whose path later became Excluded still
+// previewed as generic Blocked even though actual Capture drops it exactly
+// the same way (this test locks down the actual-Capture half of that gap;
+// see TestInspectCaptureReportsStopManagingForOwnershipTransitionOfADesiredAbsentTombstone
+// in internal/workflow for the preview half).
+func TestCaptureDropsPreviouslyDesiredDeletionTombstoneThatBecomesExcluded(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	// The real Omarchy baseline still ships the file -- that is what "the
+	// user deleted their instance of it" (a ConfigDelete tombstone) means --
+	// so it must remain findable as a scan candidate for its classification
+	// to become Excluded, unlike the disappeared-baseline case covered by
+	// TestCaptureDisabledPreservesDeletionTombstoneWhenBaselineDisappears.
+	writeFile(t, filepath.Join(base, "gone.conf"), "was-here")
+	saved := profile.Configs{
+		Deletes: []profile.ConfigDelete{{
+			Path:         "gone.conf",
+			BaselineHash: hashOf(t, filepath.Join(base, "gone.conf")),
+			BaselineMode: "0644",
+		}},
+		Excluded: []string{"gone.conf"},
+	}
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Deletes) != 0 {
+		t.Fatalf("state.Deletes = %#v, want the newly-excluded deletion tombstone dropped, not preserved", result.State.Deletes)
+	}
+}
+
 // TestCapturePreservesLegacyArtifactAtItsPreSchema8Path is a regression for
 // a review finding on PR 3: a path saved before the schema-8 HOME-relative
 // rewrite has its logical metadata path already rewritten to the

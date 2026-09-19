@@ -46,8 +46,22 @@ type TargetCapabilities struct {
 	// Excluded): Capture actively drops the target's desired state
 	// regardless of policy, so reporting it as "blocked" (implying nothing
 	// happens) would be misleading; captureOutcome reports
-	// CaptureOutcomeStopManaging for it instead when it was desired-present.
+	// CaptureOutcomeStopManaging for it instead whenever the target has any
+	// recorded desired state, present or an explicit desired-absent
+	// tombstone alike, since real Capture drops both the same way.
 	DropsDesiredWhenIneligible bool
+	// NoActionableUpdate reports that this target's classification means
+	// Capture can never produce a genuinely fresh captured value for it,
+	// even though it is currently present and desired present (Config's
+	// UnchangedBaseline/HistoricalBaseline: the live bytes are
+	// baseline-derived, not real user customization, so there is nothing
+	// new to adopt). When true, captureOutcome reports
+	// CaptureOutcomeStopManaging for the present-and-desired-present
+	// transition instead of the default Update, matching what real Capture
+	// does: enabling Capture converges by dropping the stale desired value
+	// rather than updating it, and Capture Disabled still Preserves it as
+	// usual.
+	NoActionableUpdate bool
 }
 
 // TargetInspection is one provider-defined policy target's read-only,
