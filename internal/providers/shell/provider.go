@@ -92,8 +92,14 @@ func (p Provider) Detect() (State, error) {
 
 // Capture stores the already-detected Shell state into the profile. It writes
 // the exact bytes Detect inspected and never re-reads the machine files, so
-// the captured snapshot is internally coherent.
-func (p Provider) Capture(state State) (profile.Shell, error) {
+// the captured snapshot is internally coherent. Shell is a single merge unit,
+// not a per-key hierarchy: when enabled is false, Capture leaves the prior
+// saved desired state and its staged artifacts untouched and returns saved
+// unchanged, rather than partially freezing pieces of it.
+func (p Provider) Capture(state State, saved profile.Shell, enabled bool) (profile.Shell, error) {
+	if !enabled {
+		return saved, nil
+	}
 	if state.Status == StatusUnsupported {
 		return profile.Shell{}, fmt.Errorf("%w %d; supported: %d", errUnsupportedShell, state.Version, SupportedVersion)
 	}

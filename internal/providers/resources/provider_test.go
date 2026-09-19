@@ -96,7 +96,7 @@ func TestCaptureFailureLeavesOldSnapshotsAndMetadataUntouched(t *testing.T) {
 	}
 	saved := profile.Resources{Items: []profile.Resource{{ID: "scripts", Path: "~/Scripts", Kind: "directory", Strategy: "copy", Hash: "old", Mode: "0755"}}}
 	p := Provider{HomeDir: home, ProfileDir: profileDir}
-	got, _, err := p.Capture(context.Background(), saved)
+	got, _, err := p.Capture(context.Background(), saved, func(string) bool { return true })
 	if err == nil || !strings.Contains(err.Error(), "contains") {
 		t.Fatalf("err=%v", err)
 	}
@@ -114,6 +114,95 @@ func TestCaptureFailureLeavesOldSnapshotsAndMetadataUntouched(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), ".capture-") {
 			t.Fatalf("staging retained: %s", entry.Name())
 		}
+	}
+}
+
+// TestCaptureDisabledPreservesPriorGeneration is Task 21's disabled case: a
+// resource with Capture Disabled keeps its prior generation -- metadata and
+// staged snapshot -- exactly as saved, ignoring local changes entirely.
+func TestCaptureDisabledPreservesPriorGeneration(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	root := filepath.Join(home, "Scripts")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "deploy"), []byte("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	saved, _, err := p.Track(context.Background(), profile.Resources{}, root, TrackOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := saved.Items[0].ID
+	snapshotBefore, err := os.ReadFile(filepath.Join(profileDir, "resources", "files", id, "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "deploy"), []byte("v2 changed locally"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := p.Capture(context.Background(), saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, saved) {
+		t.Fatalf("result = %#v, want unchanged saved %#v", result, saved)
+	}
+	snapshotAfter, err := os.ReadFile(filepath.Join(profileDir, "resources", "files", id, "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snapshotAfter) != string(snapshotBefore) {
+		t.Fatal("preserved snapshot changed despite Capture Disabled")
+	}
+}
+
+// TestCaptureMissingLocalResourcePreservesStateWithoutTombstone is Task 21's
+// missing-local case: a tracked resource whose local root no longer exists
+// has no desired-absence concept, so Capture must preserve its prior
+// generation exactly and leave it tracked, never silently untrack or
+// tombstone it.
+func TestCaptureMissingLocalResourcePreservesStateWithoutTombstone(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	root := filepath.Join(home, "Scripts")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "deploy"), []byte("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	saved, _, err := p.Track(context.Background(), profile.Resources{}, root, TrackOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := saved.Items[0].ID
+	snapshotBefore, err := os.ReadFile(filepath.Join(profileDir, "resources", "files", id, "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := p.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, saved) {
+		t.Fatalf("result = %#v, want unchanged saved %#v", result, saved)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("result.Items = %#v, resource must remain tracked", result.Items)
+	}
+	snapshotAfter, err := os.ReadFile(filepath.Join(profileDir, "resources", "files", id, "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snapshotAfter) != string(snapshotBefore) {
+		t.Fatal("preserved snapshot changed despite missing local root")
 	}
 }
 
@@ -438,7 +527,7 @@ func TestCaptureGitDiffRecapturesSelectedUntrackedAndIsIdempotent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, changes, err := p.Capture(context.Background(), saved)
+	again, changes, err := p.Capture(context.Background(), saved, func(string) bool { return true })
 	if err != nil || len(changes) != 0 || !reflect.DeepEqual(again, saved) {
 		t.Fatalf("recapture=%#v changes=%#v err=%v", again, changes, err)
 	}
@@ -454,7 +543,7 @@ func TestCaptureGitDiffRecapturesSelectedUntrackedAndIsIdempotent(t *testing.T) 
 	if err := os.Chmod(note, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	updated, _, err := p.Capture(context.Background(), saved)
+	updated, _, err := p.Capture(context.Background(), saved, func(string) bool { return true })
 	if err != nil || updated.Items[0].Untracked[0].Hash == saved.Items[0].Untracked[0].Hash || updated.Items[0].Untracked[0].Mode != "0644" {
 		t.Fatalf("updated=%#v err=%v", updated, err)
 	}
@@ -484,7 +573,7 @@ func TestCaptureGitDiffDropsMissingSelectedUntrackedAndPreservesUnsafeState(t *t
 	missingRunner := gitDiffTestRunner(root, "")
 	missingRunner.err["git -C "+root+" check-ignore -q -- notes.md"] = errors.New("not ignored")
 	p.Runner = missingRunner
-	dropped, _, err := p.Capture(context.Background(), saved)
+	dropped, _, err := p.Capture(context.Background(), saved, func(string) bool { return true })
 	if err != nil || len(dropped.Items[0].Untracked) != 0 {
 		t.Fatalf("dropped=%#v err=%v", dropped, err)
 	}
@@ -498,7 +587,7 @@ func TestCaptureGitDiffDropsMissingSelectedUntrackedAndPreservesUnsafeState(t *t
 		t.Fatal(err)
 	}
 	p.Runner = gitDiffTestRunner(root, "")
-	if _, _, err := p.Capture(context.Background(), saved); err == nil || !strings.Contains(err.Error(), "now ignored") {
+	if _, _, err := p.Capture(context.Background(), saved, func(string) bool { return true }); err == nil || !strings.Contains(err.Error(), "now ignored") {
 		t.Fatalf("ignored selection err=%v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(profileDir, "resources", "resources.toml")); !reflect.DeepEqual(got, before) {
@@ -525,7 +614,7 @@ func TestCaptureGitDiffUnsafeStateLeavesArtifactsUntouched(t *testing.T) {
 	for name, status := range map[string]string{"conflict": "u UU N... 100644 100644 100644 100644 a b c file.txt\x00", "submodule": "1 M. S.M... 160000 160000 160000 a b module\x00"} {
 		t.Run(name, func(t *testing.T) {
 			p.Runner = gitDiffTestRunner(root, status)
-			if _, _, err := p.Capture(context.Background(), saved); err == nil {
+			if _, _, err := p.Capture(context.Background(), saved, func(string) bool { return true }); err == nil {
 				t.Fatal("unsafe Git state captured")
 			}
 			if got, _ := os.ReadFile(artifact); !reflect.DeepEqual(got, before) {
@@ -571,7 +660,7 @@ func TestDetectGitDiffWithSensitiveChangesSucceedsWhileCapturePreservesState(t *
 	if err != nil || detection.Git["dotfiles"].UnstagedTracked != 1 || len(detection.Git["dotfiles"].Untracked) != 1 || len(Diff(saved, detection.Resources)) == 0 {
 		t.Fatalf("detection=%#v diff=%#v err=%v", detection, Diff(saved, detection.Resources), err)
 	}
-	if _, _, err := p.Capture(context.Background(), saved); err == nil || !strings.Contains(err.Error(), "sensitive tracked content") {
+	if _, _, err := p.Capture(context.Background(), saved, func(string) bool { return true }); err == nil || !strings.Contains(err.Error(), "sensitive tracked content") {
 		t.Fatalf("capture err=%v", err)
 	}
 	if got, err := os.ReadFile(resourcesPath); err != nil || !reflect.DeepEqual(got, beforeResources) {
@@ -581,7 +670,7 @@ func TestDetectGitDiffWithSensitiveChangesSucceedsWhileCapturePreservesState(t *
 		t.Fatalf("untracked artifact changed after rejected capture: %v", err)
 	}
 	writeGitFile(t, root, "tracked.txt", "safe\n")
-	if _, _, err := p.Capture(context.Background(), saved); err == nil || !strings.Contains(err.Error(), "sensitive untracked content") {
+	if _, _, err := p.Capture(context.Background(), saved, func(string) bool { return true }); err == nil || !strings.Contains(err.Error(), "sensitive untracked content") {
 		t.Fatalf("capture err=%v", err)
 	}
 	if got, err := os.ReadFile(resourcesPath); err != nil || !reflect.DeepEqual(got, beforeResources) {
@@ -634,7 +723,7 @@ func TestMappedRootsCaptureAndDetectAllStrategiesWithoutRewritingPortablePaths(t
 		{ID: "diff", Path: "~/Projects/diff", Kind: "directory", Strategy: "git+diff", Remote: "https://example.invalid/repo.git", Revision: revision},
 	}}
 	p := Provider{HomeDir: home, ProfileDir: profileDir, Runner: runner, ResourcePaths: ResourcePaths{Home: home, Overrides: map[string]string{"copy": "~/Code/copy", "git": "~/Code/git", "diff": "~/Code/diff"}}}
-	captured, _, err := p.Capture(context.Background(), saved)
+	captured, _, err := p.Capture(context.Background(), saved, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}

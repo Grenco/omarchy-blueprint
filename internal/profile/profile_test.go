@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 )
 
 func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
@@ -18,7 +20,7 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 		t.Fatalf("new profile schema = %d, want %d", d.Manifest.Schema, Schema)
 	}
 	d.Manifest.Capture.Packages = true
-	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
+	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}}
 	d.Themes = Themes{Current: "custom", Items: []Theme{{ID: "custom", Type: "local", Hash: "abc", Enabled: true}, {ID: "remote", Type: "git", URL: "https://example.test/theme.git", Revision: "def"}}}
 	d.Plugins = Plugins{Items: []Plugin{{ID: "omarchy.clock", Enabled: true}, {ID: "omarchy.media", Enabled: false}}}
 	if err := Save(dir, d); err != nil {
@@ -37,12 +39,6 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	}
 	if string(b) != "git\nzoxide\n" {
 		t.Fatalf("unexpected file: %q", b)
-	}
-	if !reflect.DeepEqual(got.Packages.MachineSpecific, []string{"official:nvidia-open"}) {
-		t.Fatalf("machine-specific = %#v", got.Packages.MachineSpecific)
-	}
-	if !reflect.DeepEqual(got.Packages.Excluded, []string{"aur:dislocker-git"}) {
-		t.Fatalf("excluded = %#v", got.Packages.Excluded)
 	}
 	if !reflect.DeepEqual(got.Themes, d.Themes) {
 		t.Fatalf("themes = %#v", got.Themes)
@@ -114,8 +110,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 11\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 11", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 12\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 12", savedManifest)
 	}
 }
 
@@ -670,7 +666,7 @@ func TestSchema10ResourceGitDiffRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 11 || !reflect.DeepEqual(got.Resources, d.Resources) {
+	if got.Manifest.Schema != Schema || !reflect.DeepEqual(got.Resources, d.Resources) {
 		t.Fatalf("round trip=%#v", got.Resources)
 	}
 }
@@ -693,7 +689,7 @@ func TestSchema9GitResourceLoadsWithoutInventedGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := got.Resources.Items[0]
-	if got.Manifest.Schema != 11 || r.Strategy != "git" || r.IndexPatchHash != "" || r.WorktreePatchHash != "" || len(r.Untracked) != 0 {
+	if got.Manifest.Schema != Schema || r.Strategy != "git" || r.IndexPatchHash != "" || r.WorktreePatchHash != "" || len(r.Untracked) != 0 {
 		t.Fatalf("migrated resource=%#v", r)
 	}
 }
@@ -708,7 +704,7 @@ func TestLoadSchema10MigratesWithNoMachines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 11 || len(got.Machines.Items) != 0 {
+	if got.Manifest.Schema != Schema || len(got.Machines.Items) != 0 {
 		t.Fatalf("migration = %#v", got)
 	}
 }
@@ -778,8 +774,8 @@ func TestSaveLoadMachinesRoundTripInCanonicalOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), "schema = 11\n") {
-		t.Fatalf("profile.toml = %q, want schema 11", manifest)
+	if !strings.Contains(string(manifest), "schema = 12\n") {
+		t.Fatalf("profile.toml = %q, want schema 12", manifest)
 	}
 	framework, err := os.ReadFile(filepath.Join(dir, "machines", "framework.toml"))
 	if err != nil {
@@ -812,5 +808,534 @@ func TestSaveRejectsDuplicateMachineState(t *testing.T) {
 		if err := Save(t.TempDir(), d); err == nil {
 			t.Fatalf("invalid machines accepted: %#v", machines)
 		}
+	}
+}
+
+func TestSavePolicyRoundTripsInSortedCanonicalOrder(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{
+		Capture: []policy.Rule{
+			{Category: "themes", Setting: policy.SettingDisabled},
+			{Category: "packages", Target: "official:vim", Setting: policy.SettingDisabled},
+			{Category: "packages", Target: "official:firefox", Setting: policy.SettingEnabled},
+		},
+		Restore: []policy.Rule{
+			{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled},
+		},
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "policy", "policy.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[[capture]]\ncategory = 'packages'\ntarget = 'official:firefox'\nsetting = 'enabled'\n\n[[capture]]\ncategory = 'packages'\ntarget = 'official:vim'\nsetting = 'disabled'\n\n[[capture]]\ncategory = 'themes'\nsetting = 'disabled'\n\n[[restore]]\ncategory = 'config'\ntarget = '.config/nvim'\nsetting = 'disabled'\n"
+	if string(raw) != want {
+		t.Fatalf("policy.toml = %q, want %q", raw, want)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRules := policy.Rules{
+		Capture: []policy.Rule{
+			{Category: "packages", Target: "official:firefox", Setting: policy.SettingEnabled},
+			{Category: "packages", Target: "official:vim", Setting: policy.SettingDisabled},
+			{Category: "themes", Setting: policy.SettingDisabled},
+		},
+		Restore: []policy.Rule{
+			{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled},
+		},
+	}
+	if !reflect.DeepEqual(got.Policy, wantRules) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, wantRules)
+	}
+}
+
+func TestSavePolicyRemovesFileWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{Capture: []policy.Rule{{Category: "packages", Setting: policy.SettingDisabled}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy", "policy.toml")); err != nil {
+		t.Fatalf("expected policy.toml to exist: %v", err)
+	}
+	d.Policy = policy.Rules{}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy", "policy.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected policy.toml to be removed once empty, stat err=%v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Policy, policy.Rules{}) {
+		t.Fatalf("policy = %#v, want empty", got.Policy)
+	}
+}
+
+func TestLoadPolicyMissingFileMeansNoOverrides(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Policy, policy.Rules{}) {
+		t.Fatalf("policy = %#v, want empty", got.Policy)
+	}
+}
+
+func TestSaveRejectsInvalidPolicySetting(t *testing.T) {
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{Capture: []policy.Rule{{Category: "packages", Setting: "maybe"}}}
+	if err := Save(t.TempDir(), d); err == nil {
+		t.Fatal("invalid policy setting accepted")
+	}
+}
+
+func TestSaveRejectsUnknownPolicyCategory(t *testing.T) {
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{Capture: []policy.Rule{{Category: "bogus", Setting: policy.SettingDisabled}}}
+	if err := Save(t.TempDir(), d); err == nil {
+		t.Fatal("unknown policy category accepted")
+	}
+}
+
+func TestSaveRejectsDuplicatePolicyRule(t *testing.T) {
+	for _, rules := range []policy.Rules{
+		{Capture: []policy.Rule{{Category: "packages", Target: "official:vim", Setting: policy.SettingDisabled}, {Category: "packages", Target: "official:vim", Setting: policy.SettingEnabled}}},
+		{Restore: []policy.Rule{{Category: "shell", Setting: policy.SettingDisabled}, {Category: "shell", Setting: policy.SettingEnabled}}},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Policy = rules
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("duplicate policy rule accepted: %#v", rules)
+		}
+	}
+}
+
+func TestSaveMachineRestoreDefaultsAndPolicyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Machines = Machines{Items: []Machine{{
+		Name:               "desktop",
+		RestoreConflicts:   policy.ConflictForce,
+		RestoreConvergence: policy.ConvergenceExact,
+		Policy:             policy.Rules{Capture: []policy.Rule{{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled}}},
+	}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Machines.Items) != 1 {
+		t.Fatalf("machines = %#v", got.Machines.Items)
+	}
+	machine := got.Machines.Items[0]
+	if machine.RestoreConflicts != policy.ConflictForce || machine.RestoreConvergence != policy.ConvergenceExact {
+		t.Fatalf("restore defaults = %+v, want Force/Exact", machine)
+	}
+	wantPolicy := policy.Rules{Capture: []policy.Rule{{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled}}}
+	if !reflect.DeepEqual(machine.Policy, wantPolicy) {
+		t.Fatalf("machine policy = %#v, want %#v", machine.Policy, wantPolicy)
+	}
+}
+
+func TestMachineEffectiveRestoreDefaultsNormalizesEmptyToSafeAdditive(t *testing.T) {
+	var m Machine
+	got := m.EffectiveRestoreDefaults()
+	want := policy.DefaultRestoreOptions()
+	if got != want {
+		t.Fatalf("EffectiveRestoreDefaults() = %+v, want %+v", got, want)
+	}
+	m.RestoreConflicts = policy.ConflictForce
+	if got := m.EffectiveRestoreDefaults(); got.Conflicts != policy.ConflictForce || got.Convergence != policy.ConvergenceAdditive {
+		t.Fatalf("partial override = %+v, want Force/Additive", got)
+	}
+}
+
+func TestSaveRejectsInvalidMachineRestoreDefaults(t *testing.T) {
+	for _, machine := range []Machine{
+		{Name: "desktop", RestoreConflicts: "sometimes"},
+		{Name: "desktop", RestoreConvergence: "mostly"},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Machines = Machines{Items: []Machine{machine}}
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("invalid restore defaults accepted: %#v", machine)
+		}
+	}
+}
+
+func TestLoadSchema11MachineFileHasDefaultRestoreOptionsAndEmptyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, "profile.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "machines"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schema11-machine.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "machines", "desktop.toml"), fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest.Schema != Schema {
+		t.Fatalf("schema = %d, want %d", got.Manifest.Schema, Schema)
+	}
+	if !reflect.DeepEqual(got.Policy, policy.Rules{}) {
+		t.Fatalf("policy = %#v, want empty", got.Policy)
+	}
+	if len(got.Machines.Items) != 1 {
+		t.Fatalf("machines = %#v", got.Machines.Items)
+	}
+	machine := got.Machines.Items[0]
+	if machine.RestoreConflicts != "" || machine.RestoreConvergence != "" || !reflect.DeepEqual(machine.Policy, policy.Rules{}) {
+		t.Fatalf("machine = %#v, want empty restore/policy overrides", machine)
+	}
+	if got := machine.EffectiveRestoreDefaults(); got != policy.DefaultRestoreOptions() {
+		t.Fatalf("EffectiveRestoreDefaults() = %+v, want Safe/Additive default", got)
+	}
+
+	// Load must never mutate the profile on disk.
+	after, err := os.ReadFile(filepath.Join(dir, "profile.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("Load mutated profile.toml on disk: before=%q after=%q", before, after)
+	}
+}
+
+func TestSavePackageAbsenceRoundTripsWithPriorMiseDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Absent = []PackageAbsence{
+		{Ref: "official:htop"},
+		{Ref: "mise:node", Mise: MiseTool{"version": "24"}},
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "packages", "absent.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "[[package]]") {
+		t.Fatalf("absent.toml = %q, want [[package]] entries", raw)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Packages.Absent, d.Packages.Absent) {
+		t.Fatalf("absent = %#v, want %#v", got.Packages.Absent, d.Packages.Absent)
+	}
+}
+
+func TestSavePackageAbsenceRemovesFileWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Absent = []PackageAbsence{{Ref: "official:htop"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "absent.toml")); err != nil {
+		t.Fatalf("expected absent.toml to exist: %v", err)
+	}
+	d.Packages.Absent = nil
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "absent.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected absent.toml to be removed once empty, stat err=%v", err)
+	}
+}
+
+func TestSaveRejectsPackageBothPresentAndAbsent(t *testing.T) {
+	for _, packages := range []Packages{
+		{Official: []string{"htop"}, Absent: []PackageAbsence{{Ref: "official:htop"}}},
+		{AUR: []string{"yay"}, Absent: []PackageAbsence{{Ref: "aur:yay"}}},
+		{Mise: MiseTools{"node": {}}, Absent: []PackageAbsence{{Ref: "mise:node"}}},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Packages = packages
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("package both present and absent accepted: %#v", packages)
+		}
+	}
+}
+
+func TestSaveRejectsDuplicatePackageAbsence(t *testing.T) {
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Absent = []PackageAbsence{{Ref: "official:htop"}, {Ref: "official:htop"}}
+	if err := Save(t.TempDir(), d); err == nil {
+		t.Fatal("duplicate package absence accepted")
+	}
+}
+
+func TestSaveThemesPluginsHooksRejectBothPresentAndAbsent(t *testing.T) {
+	themes := New("main", time.Unix(0, 0))
+	themes.Themes = Themes{Items: []Theme{{ID: "catppuccin"}}, Absent: []Theme{{ID: "catppuccin"}}}
+	if err := Save(t.TempDir(), themes); err == nil {
+		t.Fatal("theme both present and absent accepted")
+	}
+
+	plugins := New("main", time.Unix(0, 0))
+	plugins.Plugins = Plugins{Items: []Plugin{{ID: "acme.weather"}}, Absent: []Plugin{{ID: "acme.weather"}}}
+	if err := Save(t.TempDir(), plugins); err == nil {
+		t.Fatal("plugin both present and absent accepted")
+	}
+
+	hooks := New("main", time.Unix(0, 0))
+	hooks.Hooks = Hooks{Items: []Hook{{Path: "post-update.d/refresh-icons"}}, Absent: []Hook{{Path: "post-update.d/refresh-icons"}}}
+	if err := Save(t.TempDir(), hooks); err == nil {
+		t.Fatal("hook both present and absent accepted")
+	}
+}
+
+func TestSaveThemesPluginsHooksAbsenceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Themes = Themes{Current: "nord", Items: []Theme{{ID: "nord", Type: "builtin", Enabled: true}}, Absent: []Theme{{ID: "catppuccin", Type: "git", URL: "https://example.test/theme.git"}}}
+	d.Plugins = Plugins{Items: []Plugin{{ID: "omarchy.clock", Enabled: true}}, Absent: []Plugin{{ID: "acme.weather", Source: "git"}}}
+	d.Hooks = Hooks{Items: []Hook{{Path: "pre-restore.sh", Hash: "aaa", Mode: "0755"}}, Absent: []Hook{{Path: "post-update.d/refresh-icons", Hash: "bbb", Mode: "0644"}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Themes, d.Themes) {
+		t.Fatalf("themes = %#v, want %#v", got.Themes, d.Themes)
+	}
+	if !reflect.DeepEqual(got.Plugins, d.Plugins) {
+		t.Fatalf("plugins = %#v, want %#v", got.Plugins, d.Plugins)
+	}
+	if !reflect.DeepEqual(got.Hooks, d.Hooks) {
+		t.Fatalf("hooks = %#v, want %#v", got.Hooks, d.Hooks)
+	}
+}
+
+func TestLoadSchema11MigratesLegacyPackageExclusionsToPolicy(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n\n[capture]\npackages = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "official.txt"), []byte("htop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("aur:dislocker-git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "machine-specific.txt"), []byte("official:nvidia-open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeExcluded, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Packages.Excluded) != 0 {
+		t.Fatalf("Excluded = %#v, want migrated away", got.Packages.Excluded)
+	}
+	if len(got.Packages.MachineSpecific) != 0 {
+		t.Fatalf("MachineSpecific = %#v, want cleared: it is runtime inspection metadata now, not persisted state", got.Packages.MachineSpecific)
+	}
+	if !reflect.DeepEqual(got.Packages.Official, []string{"htop"}) {
+		t.Fatalf("Official = %#v, want unchanged: migration never consults the current machine to infer desired absence", got.Packages.Official)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+	}
+	if !reflect.DeepEqual(got.Policy, want) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, want)
+	}
+
+	// Loading a legacy profile must never mutate it on disk.
+	afterExcluded, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeExcluded, afterExcluded) {
+		t.Fatalf("Load mutated packages/excluded.txt: before=%q after=%q", beforeExcluded, afterExcluded)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy", "policy.toml")); !os.IsNotExist(err) {
+		t.Fatalf("Load must not write policy/policy.toml, stat err=%v", err)
+	}
+}
+
+// TestLoadSchema11MigrationRemovesTheExcludedMiseDeclaration is a
+// regression for a review finding on PR 3: a legacy excluded Mise
+// declaration stayed in Packages.Mise even after migration, since the old
+// Excluded mechanism never stripped Mise (only Official/AUR). Migration
+// must leave the excluded target with no desired state at all, including
+// Mise.
+func TestLoadSchema11MigrationRemovesTheExcludedMiseDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n\n[capture]\npackages = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("mise:node\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "mise.toml"), []byte("[tools.node]\nversion = \"22\"\n\n[tools.python]\nversion = \"3.13\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Packages.Mise["node"]; ok {
+		t.Fatalf("Mise = %#v, want the excluded node declaration removed", got.Packages.Mise)
+	}
+	if _, ok := got.Packages.Mise["python"]; !ok {
+		t.Fatalf("Mise = %#v, want the unrelated python declaration left alone", got.Packages.Mise)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "mise:node", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "mise:node", Setting: policy.SettingDisabled}},
+	}
+	if !reflect.DeepEqual(got.Policy, want) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, want)
+	}
+}
+
+func TestLoadSchema11MigrationDoesNotDuplicateAnAlreadyPresentPolicyRule(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("official:htop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A hand-authored policy.toml already carries an equivalent rule.
+	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyTOML := "[[capture]]\ncategory = 'packages'\ntarget = 'official:htop'\nsetting = 'disabled'\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy", "policy.toml"), []byte(policyTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Policy.Capture) != 1 {
+		t.Fatalf("capture rules = %#v, want exactly one (no duplicate)", got.Policy.Capture)
+	}
+	if len(got.Policy.Restore) != 1 || got.Policy.Restore[0].Target != "official:htop" {
+		t.Fatalf("restore rules = %#v, want the migrated restore-disabled rule", got.Policy.Restore)
+	}
+}
+
+// TestLoadMigratesStalePackagesFilesEvenAtTheCurrentSchema is a regression
+// for a review finding on PR 3: migration must not be gated to a legacy
+// schema, since a stray packages/excluded.txt or machine-specific.txt left
+// over from before this cutover (or written by code that had not yet been
+// fixed) would otherwise never be cleaned up on an already-current-schema
+// profile.
+func TestLoadMigratesStalePackagesFilesEvenAtTheCurrentSchema(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Now())
+	d.Packages.Official = []string{"htop"}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a stray leftover from before the cutover on an otherwise
+	// current-schema profile.
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("aur:dislocker-git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "machine-specific.txt"), []byte("official:nvidia-open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Packages.Excluded) != 0 || len(got.Packages.MachineSpecific) != 0 {
+		t.Fatalf("packages = %#v, want both cleared even at the current schema", got.Packages)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+	}
+	if !reflect.DeepEqual(got.Policy, want) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, want)
+	}
+}
+
+// TestSavePrunesObsoletePackagesFiles is a regression for a review finding
+// on PR 3: Save must never write packages/excluded.txt or
+// packages/machine-specific.txt, and must actively remove either file if it
+// already exists, so a schema-12 save can never leave two authorities for
+// the same state.
+func TestSavePrunesObsoletePackagesFiles(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Now())
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("aur:dislocker-git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "machine-specific.txt"), []byte("official:nvidia-open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "excluded.txt")); !os.IsNotExist(err) {
+		t.Fatal("packages/excluded.txt was not pruned")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "machine-specific.txt")); !os.IsNotExist(err) {
+		t.Fatal("packages/machine-specific.txt was not pruned")
 	}
 }

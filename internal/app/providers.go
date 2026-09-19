@@ -30,7 +30,7 @@ import (
 type stateProvider interface {
 	ID() string
 	Captured(profile.Data) bool
-	Capture(context.Context, *profile.Data) (any, []model.Change, error)
+	Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
 	Plan(context.Context, profile.Data, omarchy.Info, restorePlanOptions) (model.RestorePlan, error)
 	Verify(context.Context, profile.Data) (model.VerificationResult, error)
@@ -68,7 +68,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
 		shellStateProvider{deps: deps, opt: opt},
-		hooksStateProvider{deps: deps, opt: opt},
+		&hooksStateProvider{deps: deps, opt: opt},
 	}
 }
 
@@ -279,7 +279,7 @@ func resourceMissing(item profile.Resource) bool {
 	return item.Revision == ""
 }
 
-func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
 	}
@@ -287,7 +287,11 @@ func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (
 	if err != nil {
 		return nil, nil, err
 	}
-	prepared, err := provider.PrepareCapture(ctx, d.Resources, resourcesprovider.CaptureOptions{})
+	enabled := func(id string) bool {
+		decision, ok := capCtx.Lookup("resource:" + id)
+		return ok && decision.Capture
+	}
+	prepared, err := provider.PrepareCapture(ctx, d.Resources, resourcesprovider.CaptureOptions{}, enabled)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -366,6 +370,27 @@ func (p resourcesStateProvider) Check(ctx context.Context, d profile.Data) error
 		return err
 	}
 	return provider.Check(ctx, d.Resources)
+}
+
+// ValidateTarget accepts only a fully qualified resource:<id> reference,
+// canonicalized to itself. It never requires the resource to currently be
+// tracked -- StopManaging rejects the category outright regardless, but a
+// caller resolving a target for a different purpose (e.g. SetPolicy) must
+// still get a validated key shape.
+func (resourcesStateProvider) ValidateTarget(target string) (string, error) {
+	id, ok := strings.CutPrefix(target, "resource:")
+	if !ok || id == "" || strings.ContainsAny(id, " \t\n/") {
+		return "", fmt.Errorf("resources: invalid target %q; use resource:<id>", target)
+	}
+	return target, nil
+}
+
+// StopManaging rejects the generic action: a tracked Resource has no
+// "capture disabled, keep the metadata" state distinct from being tracked at
+// all, and it needs its own dedicated cleanup (files/git-state, links, other
+// resources' overlap checks), which Untrack already performs correctly.
+func (resourcesStateProvider) StopManaging(context.Context, profile.Data, string) (profile.Data, error) {
+	return profile.Data{}, fmt.Errorf("resources does not support Stop Managing; use Untrack instead")
 }
 
 func captureRequiredError(id string) error {
@@ -513,6 +538,10 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	for _, ref := range desired.Excluded {
 		excluded[ref] = true
 	}
+	absent := map[string]bool{}
+	for _, absence := range desired.Absent {
+		absent[absence.Ref] = true
+	}
 
 	keys := map[string]bool{}
 	for key := range desiredPortable {
@@ -522,6 +551,9 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 		keys[key] = true
 	}
 	for key := range excluded {
+		keys[key] = true
+	}
+	for key := range absent {
 		keys[key] = true
 	}
 	sortedKeys := make([]string, 0, len(keys))
@@ -548,10 +580,17 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 			})
 			continue
 		}
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absent[key]:
+			desiredState = workflow.TargetAbsent
+		case desiredPortable[key]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             key,
 			Label:           packageLabel(key),
-			Desired:         desiredPresence(desiredPortable[key]),
+			Desired:         desiredState,
 			Current:         currentState,
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -628,10 +667,13 @@ func currentPresence(detected bool) workflow.TargetState {
 	return workflow.TargetAbsent
 }
 
-func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return nil, nil, err
-	}
+// Capture merges live detection into desired state per the Capture merge
+// transition table (see packagesprovider.Merge), driven by capCtx's resolved
+// per-target decision. A manually excluded ref has no desired state at all
+// by the time Capture runs (Session.SetPackageExcluded already stripped it),
+// so Merge's own disabled-preserve rule keeps it unmanaged; there is no
+// separate legacy exclusion mechanism to compose with here.
+func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -640,18 +682,17 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (an
 	if err != nil {
 		return nil, nil, err
 	}
-	current = packagesprovider.ApplyExclusions(current, d.Packages.Excluded)
-	current = packagesprovider.PreserveExcludedMise(current, d.Packages)
-	changes := packagesprovider.Diff(d.Packages, current)
-	d.Packages = current
+	merged := packagesprovider.Merge(d.Packages, current, func(ref string) bool {
+		decision, ok := capCtx.Lookup(ref)
+		return ok && decision.Capture
+	})
+	changes := packagesprovider.Diff(d.Packages, merged)
+	d.Packages = merged
 	d.Manifest.Capture.Packages = true
-	return current, changes, nil
+	return merged, changes, nil
 }
 
 func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return nil, err
-	}
 	provider, err := p.provider()
 	if err != nil {
 		return nil, err
@@ -664,9 +705,6 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 }
 
 func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
-	if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-		return model.RestorePlan{}, err
-	}
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -696,6 +734,92 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 		return err
 	}
 	return provider.Check(ctx, d.Packages)
+}
+
+// ValidateTarget accepts only a fully qualified official:<name>, aur:<name>,
+// or mise:<name> reference, canonicalized to itself. It never requires the
+// package to currently be installed or excluded -- a not-yet-captured or
+// already-tombstoned reference must validate too.
+func (packagesStateProvider) ValidateTarget(target string) (string, error) {
+	kind, name, ok := strings.Cut(target, ":")
+	if !ok || name == "" {
+		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+	}
+	switch kind {
+	case "official", "aur", "mise":
+	default:
+		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+	}
+	if strings.ContainsAny(name, " \t\n") {
+		return "", fmt.Errorf("packages: invalid target %q", target)
+	}
+	return target, nil
+}
+
+// StopManaging permanently forgets one package/tool: its desired present or
+// desired-absent state. Packages persist no artifact beyond the profile
+// metadata itself (unlike Themes/Plugins/Hooks), so there is nothing else on
+// disk to remove.
+func (packagesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	kind, ref, ok := strings.Cut(target, ":")
+	if !ok || ref == "" {
+		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)
+	}
+	found := false
+	switch kind {
+	case "official":
+		if next, removed := removeStringItem(d.Packages.Official, ref); removed {
+			d.Packages.Official, found = next, true
+		}
+	case "aur":
+		if next, removed := removeStringItem(d.Packages.AUR, ref); removed {
+			d.Packages.AUR, found = next, true
+		}
+	case "mise":
+		if _, ok := d.Packages.Mise[ref]; ok {
+			next := make(profile.MiseTools, len(d.Packages.Mise))
+			for id, tool := range d.Packages.Mise {
+				if id != ref {
+					next[id] = tool
+				}
+			}
+			d.Packages.Mise, found = next, true
+		}
+	default:
+		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)
+	}
+	var absent []profile.PackageAbsence
+	for _, a := range d.Packages.Absent {
+		if a.Ref == target {
+			found = true
+			continue
+		}
+		absent = append(absent, a)
+	}
+	d.Packages.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("packages: %q is not managed", target)
+	}
+	return d, nil
+}
+
+// removeStringItem returns a new slice with target removed, and whether it
+// was present. It never mutates items' own backing array, since callers may
+// share it with the session's own profile.Data.
+func removeStringItem(items []string, target string) ([]string, bool) {
+	removed := false
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == target {
+			removed = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !removed {
+		return items, false
+	}
+	return out, true
 }
 
 type themesStateProvider struct {
@@ -748,6 +872,10 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			currentThemes[theme.ID] = true
 		}
 	}
+	absentThemes := map[string]bool{}
+	for _, absent := range d.Themes.Absent {
+		absentThemes[absent.ID] = true
+	}
 	ids := map[string]bool{}
 	for id := range desiredThemes {
 		ids[id] = true
@@ -755,11 +883,21 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	for id := range currentThemes {
 		ids[id] = true
 	}
+	for id := range absentThemes {
+		ids[id] = true
+	}
 	for _, id := range sortedKeys(ids) {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absentThemes[id]:
+			desiredState = workflow.TargetAbsent
+		case desiredThemes[id]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "theme:" + id,
 			Label:           id,
-			Desired:         desiredPresence(desiredThemes[id]),
+			Desired:         desiredState,
 			Current:         currentPresence(currentThemes[id]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -772,21 +910,24 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	return targets, nil
 }
 
-func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
 	p.captureProvider = &provider
-	current, err := p.captureProvider.Capture(ctx)
+	merged, err := p.captureProvider.Capture(ctx, d.Themes, func(ref string) bool {
+		decision, ok := capCtx.Lookup(ref)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		p.captureProvider = nil
 		return nil, nil, err
 	}
-	changes := themesprovider.Diff(d.Themes, current)
-	d.Themes = current
+	changes := themesprovider.Diff(d.Themes, merged)
+	d.Themes = merged
 	d.Manifest.Capture.Themes = true
-	return current, changes, nil
+	return merged, changes, nil
 }
 
 func (p *themesStateProvider) CommitCapture() error {
@@ -857,6 +998,70 @@ func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	return err
 }
 
+// ValidateTarget accepts only "active" or a fully qualified theme:<id>
+// reference, canonicalized to itself. It never requires the theme to
+// currently exist -- a not-yet-captured or already-tombstoned id must
+// validate too.
+func (themesStateProvider) ValidateTarget(target string) (string, error) {
+	if target == "active" {
+		return target, nil
+	}
+	id, ok := strings.CutPrefix(target, "theme:")
+	if !ok || id == "" || strings.ContainsAny(id, " \t\n/") {
+		return "", fmt.Errorf(`themes: invalid target %q; use "active" or theme:<id>`, target)
+	}
+	return target, nil
+}
+
+// StopManaging permanently forgets one theme: its desired present or
+// desired-absent state, and its local/overlay artifact directory if it has
+// one. Built-in themes carry no Blueprint-owned state to forget, and
+// "active" is a separate target (which theme is selected, not a theme's own
+// availability), so neither is accepted here. It stages its artifact removal
+// rather than deleting immediately: PrepareStopManagingArtifact renames the
+// theme's local/overlay directory out of the way, and
+// workflow.Session.StopManaging only finalizes (permanently deletes it)
+// after the profile save that forgets the theme's metadata has also
+// succeeded, or rolls the rename back if it has not -- so a failed save can
+// never leave the profile referencing an artifact that is already gone.
+func (p *themesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	id, ok := strings.CutPrefix(target, "theme:")
+	if !ok || id == "" {
+		return profile.Data{}, fmt.Errorf("themes: invalid target %q", target)
+	}
+	found := false
+	var items []profile.Theme
+	for _, item := range d.Themes.Items {
+		if item.ID == id {
+			if item.Type == "builtin" {
+				return profile.Data{}, fmt.Errorf("themes: built-in theme %q cannot be Stop Managed", id)
+			}
+			found = true
+			continue
+		}
+		items = append(items, item)
+	}
+	d.Themes.Items = items
+	var absent []profile.Theme
+	for _, item := range d.Themes.Absent {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		absent = append(absent, item)
+	}
+	d.Themes.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("themes: %q is not managed", id)
+	}
+	provider := themesprovider.Provider{ProfileDir: p.opt.profileDir}
+	if err := provider.PrepareStopManagingArtifact(id); err != nil {
+		return profile.Data{}, err
+	}
+	p.captureProvider = &provider
+	return d, nil
+}
+
 type pluginsStateProvider struct {
 	deps            Dependencies
 	opt             *options
@@ -904,6 +1109,10 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 			currentThirdParty[plugin.ID] = true
 		}
 	}
+	absentThirdParty := map[string]bool{}
+	for _, absent := range d.Plugins.Absent {
+		absentThirdParty[absent.ID] = true
+	}
 	ids := map[string]bool{}
 	for id := range desiredThirdParty {
 		ids[id] = true
@@ -911,12 +1120,22 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	for id := range currentThirdParty {
 		ids[id] = true
 	}
+	for id := range absentThirdParty {
+		ids[id] = true
+	}
 	targets := make([]workflow.TargetInspection, 0, len(ids))
 	for _, id := range sortedKeys(ids) {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absentThirdParty[id]:
+			desiredState = workflow.TargetAbsent
+		case desiredThirdParty[id]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "plugin:" + id,
 			Label:           id,
-			Desired:         desiredPresence(desiredThirdParty[id]),
+			Desired:         desiredState,
 			Current:         currentPresence(currentThirdParty[id]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -929,21 +1148,24 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	return targets, nil
 }
 
-func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
 	p.captureProvider = &provider
-	current, err := p.captureProvider.Capture(ctx)
+	merged, err := p.captureProvider.Capture(ctx, d.Plugins, func(ref string) bool {
+		decision, ok := capCtx.Lookup(ref)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		p.captureProvider = nil
 		return nil, nil, err
 	}
-	changes := pluginsprovider.Diff(d.Plugins, current, pluginSemantics(*d))
-	d.Plugins = current
+	changes := pluginsprovider.Diff(d.Plugins, merged, pluginSemantics(*d))
+	d.Plugins = merged
 	d.Manifest.Capture.Plugins = true
-	return current, changes, nil
+	return merged, changes, nil
 }
 
 func (p *pluginsStateProvider) CommitCapture() error {
@@ -1012,6 +1234,64 @@ func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	}
 	_, err = provider.Detect(ctx)
 	return err
+}
+
+// ValidateTarget accepts only a fully qualified plugin:<id> reference,
+// canonicalized to itself. It never requires the plugin to currently exist
+// -- a not-yet-captured or already-tombstoned id must validate too.
+func (pluginsStateProvider) ValidateTarget(target string) (string, error) {
+	id, ok := strings.CutPrefix(target, "plugin:")
+	if !ok || id == "" || strings.ContainsAny(id, " \t\n/") {
+		return "", fmt.Errorf("plugins: invalid target %q; use plugin:<id>", target)
+	}
+	return target, nil
+}
+
+// StopManaging permanently forgets one third-party plugin: its desired
+// present or desired-absent state, and its local clone artifact directory.
+// First-party (built-in) plugins carry no Blueprint-owned state to forget.
+// It stages its artifact removal rather than deleting immediately:
+// PrepareStopManagingArtifact renames the plugin's local clone directory out
+// of the way, and workflow.Session.StopManaging only finalizes (permanently
+// deletes it) after the profile save that forgets the plugin's metadata has
+// also succeeded, or rolls the rename back if it has not -- so a failed save
+// can never leave the profile referencing an artifact that is already gone.
+func (p *pluginsStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	id, ok := strings.CutPrefix(target, "plugin:")
+	if !ok || id == "" {
+		return profile.Data{}, fmt.Errorf("plugins: invalid target %q", target)
+	}
+	found := false
+	var items []profile.Plugin
+	for _, item := range d.Plugins.Items {
+		if item.ID == id {
+			if item.Source == "builtin" {
+				return profile.Data{}, fmt.Errorf("plugins: built-in plugin %q cannot be Stop Managed", id)
+			}
+			found = true
+			continue
+		}
+		items = append(items, item)
+	}
+	d.Plugins.Items = items
+	var absent []profile.Plugin
+	for _, item := range d.Plugins.Absent {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		absent = append(absent, item)
+	}
+	d.Plugins.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("plugins: %q is not managed", id)
+	}
+	provider := pluginsprovider.Provider{ProfileDir: p.opt.profileDir}
+	if err := provider.PrepareStopManagingArtifact(id); err != nil {
+		return profile.Data{}, err
+	}
+	p.captureProvider = &provider
+	return d, nil
 }
 
 // configStateProvider captures customized Hyprland configuration files.
@@ -1092,9 +1372,12 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 // its canonical managed path, with a meaningful parent chain. Classification
 // drives both the descriptive Desired/Current state and whether the path is
 // currently safe for Blueprint to manage automatically; safety-blocked
-// classifications (delegated, volatile, sensitive, unmanaged symlink,
-// unsupported, oversized, ambiguous) stay CaptureEligible: false, since
-// provider safety checks remain authoritative over policy.
+// classifications (volatile, sensitive, unmanaged symlink, unsupported,
+// oversized, ambiguous) stay CaptureEligible: false since provider safety
+// checks remain authoritative over policy, but Capabilities marks them
+// distinctly from delegated/excluded (see configEligibility): the former
+// freeze already-safe remembered desired state untouched, the latter
+// actively drop it as an ownership-management transition.
 func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
 	provider, err := p.provider(d)
 	if err != nil {
@@ -1124,7 +1407,7 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			// target at all, not an implicit "will be updated" one.
 			continue
 		}
-		eligible, reason := configEligibility(candidate.Classification)
+		eligible, reason, ownershipTransition := configEligibility(candidate.Classification)
 		desired := workflow.TargetUnknown
 		switch {
 		case desiredDeletes[candidate.Path]:
@@ -1137,11 +1420,20 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			current = workflow.TargetAbsent
 		}
 		targets = append(targets, configTarget(candidate.Path, desired, current, eligible, reason, workflow.TargetCapabilities{
-			SupportsCapture:        true,
-			SupportsRestore:        true,
-			SupportsDesiredAbsence: true,
-			SupportsExactRemoval:   eligible,
-			Hierarchical:           true,
+			SupportsCapture:            true,
+			SupportsRestore:            true,
+			SupportsDesiredAbsence:     true,
+			SupportsExactRemoval:       eligible,
+			Hierarchical:               true,
+			DropsDesiredWhenIneligible: ownershipTransition,
+			// A tracked instance of a classification configCaptureInert
+			// treats as "nothing to capture" (UnchangedBaseline/
+			// HistoricalBaseline) is not skipped like its untracked
+			// counterpart above, since Blueprint still has desired state to
+			// account for -- but real Capture still never produces a fresh
+			// value for it (see capture.go), so the present-present
+			// transition must report StopManaging, not the generic Update.
+			NoActionableUpdate: configCaptureInert(candidate.Classification),
 		}))
 	}
 
@@ -1215,33 +1507,44 @@ func configCaptureInert(classification configprovider.Classification) bool {
 }
 
 // configEligibility maps a Config scan Classification onto Capture/Restore
-// eligibility. Excluded is the provider-owned "leave this path alone" state
-// -- explicit, permanent, unmanaged metadata, never a deletion tombstone --
-// so it stays ineligible exactly like the other safety-blocked
-// classifications, not merely "desired absent."
-func configEligibility(classification configprovider.Classification) (eligible bool, reason string) {
+// eligibility. ownershipTransition distinguishes why an ineligible
+// classification is ineligible, matching what real Capture (capture.go)
+// actually does with previously desired state for it: Delegated (handed off
+// to a stronger owner) and Excluded (the user explicitly said to leave this
+// path alone) are ownership-management transitions -- Capture actively
+// drops the target's desired state for them, regardless of policy. Every
+// other ineligible classification (Sensitive, Volatile, Oversized,
+// Unsupported, ambiguous, an unmanaged symlink) is a safety freeze instead:
+// the current live bytes are unsafe or unreadable right now, so Capture
+// cannot update from them, but it leaves already-safe remembered desired
+// state completely untouched. Reporting both the same way as generic
+// "Blocked" would misrepresent the ownership-transition cases, where
+// something does happen to desired state; captureOutcome consults
+// ownershipTransition (via TargetCapabilities.DropsDesiredWhenIneligible) to
+// tell them apart.
+func configEligibility(classification configprovider.Classification) (eligible bool, reason string, ownershipTransition bool) {
 	switch classification {
 	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
 		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline:
-		return true, ""
+		return true, "", false
 	case configprovider.ConfigExcluded:
-		return false, "excluded: you asked Config to leave this path alone"
+		return false, "excluded: you asked Config to leave this path alone", true
 	case configprovider.ConfigDelegated:
-		return false, "delegated to another provider"
+		return false, "delegated to another provider", true
 	case configprovider.ConfigVolatile:
-		return false, "excluded as state-heavy/volatile by default"
+		return false, "excluded as state-heavy/volatile by default", false
 	case configprovider.ConfigSensitive:
-		return false, "excluded as a likely secret/credential path"
+		return false, "excluded as a likely secret/credential path", false
 	case configprovider.ConfigUnmanagedSymlink:
-		return false, "existing symlink is not owned by Blueprint"
+		return false, "existing symlink is not owned by Blueprint", false
 	case configprovider.ConfigUnsupported:
-		return false, "unsupported file type"
+		return false, "unsupported file type", false
 	case configprovider.ConfigOversized:
-		return false, "exceeds the capture size limit"
+		return false, "exceeds the capture size limit", false
 	case configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion:
-		return false, "baseline provenance is ambiguous"
+		return false, "baseline provenance is ambiguous", false
 	default:
-		return false, "unrecognized classification"
+		return false, "unrecognized classification", false
 	}
 }
 
@@ -1272,12 +1575,15 @@ func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoo
 	return index
 }
 
-func (p configStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p configStateProvider) Capture(_ context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider(*d)
 	if err != nil {
 		return nil, nil, err
 	}
-	result, err := provider.Capture(d.Config)
+	result, err := provider.Capture(d.Config, func(path string) bool {
+		decision, ok := capCtx.Lookup(path)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1338,6 +1644,21 @@ func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Config)
+}
+
+// ValidateTarget canonicalizes a raw or ergonomic (~/.config/-prefixed)
+// config path to the canonical HOME-relative form ConfigFile.Path uses,
+// reusing the same normalizer the exclude/include CLI already relies on. It
+// never requires the path to currently exist or be captured.
+func (configStateProvider) ValidateTarget(target string) (string, error) {
+	return configprovider.NormalizeConfigPolicyPath(target)
+}
+
+// StopManaging rejects the generic action: Config already has its own
+// per-path policy controls (see SetConfigPolicy and the Excluded mechanism),
+// which are more precise than a single flat target key here.
+func (configStateProvider) StopManaging(context.Context, profile.Data, string) (profile.Data, error) {
+	return profile.Data{}, fmt.Errorf("config does not support Stop Managing; use its own path-level policy controls instead")
 }
 
 // defaultsStateProvider captures Omarchy's semantic default applications.
@@ -1404,8 +1725,11 @@ func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	return targets, nil
 }
 
-func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
-	current, err := p.provider().Capture(ctx)
+func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
+	current, err := p.provider().Capture(ctx, d.Defaults, func(kind string) bool {
+		decision, ok := capCtx.Lookup(kind)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1445,12 +1769,38 @@ func (p defaultsStateProvider) Check(ctx context.Context, _ profile.Data) error 
 	return err
 }
 
-func captureProvider(ctx context.Context, provider stateProvider, d *profile.Data) (any, []model.Change, error) {
-	state, changes, err := provider.Capture(ctx, d)
-	if err != nil {
-		return nil, nil, fmt.Errorf("capture %s: %w", provider.ID(), err)
+// ValidateTarget accepts only one of the four fixed slot names.
+func (defaultsStateProvider) ValidateTarget(target string) (string, error) {
+	switch target {
+	case "terminal", "browser", "editor", "agent":
+		return target, nil
+	default:
+		return "", fmt.Errorf("defaults: invalid target %q; use terminal, browser, editor, or agent", target)
 	}
-	return state, changes, nil
+}
+
+// StopManaging clears one default slot back to unmanaged. There is no
+// desired-absence concept or on-disk artifact for a default application
+// choice, so clearing the saved value is the entire mechanism.
+func (defaultsStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	var current *string
+	switch target {
+	case "terminal":
+		current = &d.Defaults.Terminal
+	case "browser":
+		current = &d.Defaults.Browser
+	case "editor":
+		current = &d.Defaults.Editor
+	case "agent":
+		current = &d.Defaults.Agent
+	default:
+		return profile.Data{}, fmt.Errorf("defaults: invalid target %q", target)
+	}
+	if *current == "" {
+		return profile.Data{}, fmt.Errorf("defaults: %q is not managed", target)
+	}
+	*current = ""
+	return d, nil
 }
 
 // shellStateProvider captures Omarchy Shell state; after capture it owns
@@ -1508,7 +1858,7 @@ func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	}}, nil
 }
 
-func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -1517,16 +1867,21 @@ func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, 
 	if err != nil {
 		return nil, nil, err
 	}
-	changes, err := provider.CaptureChanges(d.Shell, current)
-	if err != nil {
-		return nil, nil, err
-	}
-	if current.Status == shellprovider.StatusCustomized {
-		if err := shellprovider.ValidatePluginReferences(current.References, d.Plugins); err != nil {
+	decision, ok := capCtx.Lookup("state")
+	enabled := ok && decision.Capture
+	var changes []model.Change
+	if enabled {
+		changes, err = provider.CaptureChanges(d.Shell, current)
+		if err != nil {
 			return nil, nil, err
 		}
+		if current.Status == shellprovider.StatusCustomized {
+			if err := shellprovider.ValidatePluginReferences(current.References, d.Plugins); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
-	captured, err := provider.Capture(current)
+	captured, err := provider.Capture(current, d.Shell, enabled)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1579,9 +1934,27 @@ func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {
 	return provider.Check(d.Shell, d.Plugins)
 }
 
+// ValidateTarget accepts only Shell's single fixed target.
+func (shellStateProvider) ValidateTarget(target string) (string, error) {
+	if target != "state" {
+		return "", fmt.Errorf(`shell: invalid target %q; use "state"`, target)
+	}
+	return target, nil
+}
+
+// StopManaging rejects the generic action: Shell is one merge unit spanning
+// the whole customization document, and there is currently no existing safe
+// operation that clears just its management state without discarding
+// captured intent Restore would need. Recapturing with the Omarchy default
+// active is the supported way to reset it.
+func (shellStateProvider) StopManaging(context.Context, profile.Data, string) (profile.Data, error) {
+	return profile.Data{}, fmt.Errorf("shell does not support Stop Managing; capture again with the Omarchy default active instead")
+}
+
 type hooksStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps            Dependencies
+	opt             *options
+	captureProvider *hooksprovider.Provider
 }
 
 func (hooksStateProvider) ID() string { return "hooks" }
@@ -1620,12 +1993,15 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	if err != nil {
 		return nil, err
 	}
-	desired, currentManaged := map[string]bool{}, map[string]bool{}
+	desired, currentManaged, absent := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, hook := range d.Hooks.Items {
 		desired[hook.Path] = true
 	}
 	for _, hook := range current.Items {
 		currentManaged[hook.Path] = true
+	}
+	for _, hook := range d.Hooks.Absent {
+		absent[hook.Path] = true
 	}
 	paths := map[string]bool{}
 	for path := range desired {
@@ -1634,12 +2010,22 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	for path := range currentManaged {
 		paths[path] = true
 	}
+	for path := range absent {
+		paths[path] = true
+	}
 	targets := make([]workflow.TargetInspection, 0, len(paths)+len(current.Unmanaged))
 	for _, path := range sortedKeys(paths) {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absent[path]:
+			desiredState = workflow.TargetAbsent
+		case desired[path]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             path,
 			Label:           path,
-			Desired:         desiredPresence(desired[path]),
+			Desired:         desiredState,
 			Current:         currentPresence(currentManaged[path]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -1667,7 +2053,7 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	return targets, nil
 }
 
-func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {
+func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, nil, err
@@ -1676,7 +2062,10 @@ func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []
 	if err != nil {
 		return nil, nil, err
 	}
-	captured, err := provider.Capture(current)
+	captured, err := provider.Capture(current, d.Hooks, func(path string) bool {
+		decision, ok := capCtx.Lookup(path)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1729,4 +2118,76 @@ func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Hooks)
+}
+
+// StopManaging permanently forgets one hook: its desired present or
+// desired-absent state, and its captured snapshot file.
+// ValidateTarget reuses the same path shape validation Capture itself
+// enforces on every hook path, so a target can never validate here in a
+// shape Capture could not otherwise have produced.
+func (hooksStateProvider) ValidateTarget(target string) (string, error) {
+	if err := hooksprovider.ValidatePath(target); err != nil {
+		return "", fmt.Errorf("hooks: %w", err)
+	}
+	return target, nil
+}
+
+// StopManaging stages its artifact removal rather than deleting immediately:
+// PrepareStopManagingArtifact renames the hook's captured snapshot file out
+// of the way, and workflow.Session.StopManaging only finalizes (permanently
+// deletes it) after the profile save that forgets the hook's metadata has
+// also succeeded, or rolls the rename back if it has not -- so a failed save
+// can never leave the profile referencing an artifact that is already gone.
+func (p *hooksStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	found := false
+	var items []profile.Hook
+	for _, item := range d.Hooks.Items {
+		if item.Path == target {
+			found = true
+			continue
+		}
+		items = append(items, item)
+	}
+	d.Hooks.Items = items
+	var absent []profile.Hook
+	for _, item := range d.Hooks.Absent {
+		if item.Path == target {
+			found = true
+			continue
+		}
+		absent = append(absent, item)
+	}
+	d.Hooks.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("hooks: %q is not managed", target)
+	}
+	provider := hooksprovider.Provider{ProfileDir: p.opt.profileDir}
+	if err := provider.PrepareStopManagingArtifact(target); err != nil {
+		return profile.Data{}, err
+	}
+	p.captureProvider = &provider
+	return d, nil
+}
+
+func (p *hooksStateProvider) CommitCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	return p.captureProvider.CommitCapture()
+}
+func (p *hooksStateProvider) FinalizeCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.FinalizeCapture()
+	p.captureProvider = nil
+	return err
+}
+func (p *hooksStateProvider) RollbackCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.RollbackCapture()
+	p.captureProvider = nil
+	return err
 }

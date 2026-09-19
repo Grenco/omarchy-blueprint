@@ -88,7 +88,7 @@ func TestCaptureStoresDetectedDefaults(t *testing.T) {
 	r := newRunner(allDefaults("ghostty\n", "firefox\n", "zed\n", "codex\n"))
 	dir := t.TempDir()
 	p := testProvider(r, dir)
-	got, err := p.Capture(context.Background())
+	got, err := p.Capture(context.Background(), profile.Defaults{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +102,43 @@ func TestCaptureStoresDetectedDefaults(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "terminal = 'ghostty'") {
 		t.Fatalf("defaults.toml = %q", b)
+	}
+}
+
+// TestCaptureDisabledSlotPreservesPreviousValue is Task 21's disabled case:
+// a slot with Capture Disabled keeps its previous saved value regardless of
+// what Omarchy currently reports live.
+func TestCaptureDisabledSlotPreservesPreviousValue(t *testing.T) {
+	r := newRunner(allDefaults("alacritty\n", "firefox\n", "zed\n", "codex\n"))
+	dir := t.TempDir()
+	p := testProvider(r, dir)
+	saved := profile.Defaults{Terminal: "ghostty", Browser: "firefox", Editor: "zed", Agent: "codex"}
+	got, err := p.Capture(context.Background(), saved, func(kind string) bool { return kind != "terminal" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := profile.Defaults{Terminal: "ghostty", Browser: "firefox", Editor: "zed", Agent: "codex"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured = %#v, want terminal preserved as %#v", got, want)
+	}
+}
+
+// TestCaptureEnabledSlotWithNoLiveValueStopsManaging is Task 21's
+// enabled-but-empty case: there is no desired-absence concept for a default
+// application choice, so an enabled slot Omarchy reports as never chosen
+// clears to unmanaged rather than preserving the stale saved value.
+func TestCaptureEnabledSlotWithNoLiveValueStopsManaging(t *testing.T) {
+	r := newRunner(allDefaults("", "firefox\n", "zed\n", "codex\n"))
+	dir := t.TempDir()
+	p := testProvider(r, dir)
+	saved := profile.Defaults{Terminal: "ghostty", Browser: "firefox", Editor: "zed", Agent: "codex"}
+	got, err := p.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := profile.Defaults{Browser: "firefox", Editor: "zed", Agent: "codex"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured = %#v, want terminal cleared to unmanaged %#v", got, want)
 	}
 }
 

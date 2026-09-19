@@ -126,7 +126,7 @@ func TestScanForCaptureRequiresBaselineProvenance(t *testing.T) {
 		if err != nil || scan.Candidates[0].Classification != ConfigAmbiguousBaseline {
 			t.Fatalf("scan=%#v err=%v", scan, err)
 		}
-		result, err := p.Capture(profile.Configs{})
+		result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 		if err != nil || len(result.State.Files) != 0 || len(result.Changes) != 0 {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
@@ -138,7 +138,7 @@ func TestScanForCaptureRequiresBaselineProvenance(t *testing.T) {
 		if err != nil || scan.Candidates[0].Classification != ConfigHistoricalBaseline {
 			t.Fatalf("scan=%#v err=%v", scan, err)
 		}
-		result, err := p.Capture(profile.Configs{})
+		result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 		if err != nil || len(result.State.Files) != 0 {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}
@@ -150,7 +150,7 @@ func TestScanForCaptureRequiresBaselineProvenance(t *testing.T) {
 		if err != nil || scan.Candidates[0].Classification != ConfigModifiedBaseline {
 			t.Fatalf("scan=%#v err=%v", scan, err)
 		}
-		result, err := p.Capture(profile.Configs{})
+		result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 		if err != nil || len(result.State.Files) != 1 || len(result.Changes) != 1 {
 			t.Fatalf("result=%#v err=%v", result, err)
 		}

@@ -57,16 +57,13 @@ func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
 }
 
 func (p Provider) Check(ctx context.Context, saved profile.Packages) error {
-	if err := ValidateExclusions(saved); err != nil {
-		return err
-	}
 	if err := ValidateMiseSecrets(saved.Mise); err != nil {
 		return err
 	}
 	if _, err := p.Detect(ctx); err != nil {
 		return err
 	}
-	if len(ApplyExclusions(saved, saved.Excluded).Mise) > 0 {
+	if len(saved.Mise) > 0 {
 		if _, err := p.Runner.Run(ctx, "mise", "--version"); err != nil {
 			return fmt.Errorf("mise is required to restore mise packages: %w", err)
 		}
@@ -76,8 +73,6 @@ func (p Provider) Check(ctx context.Context, saved profile.Packages) error {
 
 func Diff(saved, current profile.Packages) []model.Change {
 	saved, current = classify(saved), classify(current)
-	saved = ApplyExclusions(saved, saved.Excluded)
-	current = ApplyExclusions(current, saved.Excluded)
 	savedNames := packageNames(saved)
 	currentNames := packageNames(current)
 	var out []model.Change
@@ -99,15 +94,11 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 }
 
 func (p Provider) Plan(saved, current profile.Packages, schema int, from, to string) (model.RestorePlan, error) {
-	if err := ValidateExclusions(saved); err != nil {
-		return model.RestorePlan{}, err
-	}
 	if err := ValidateMiseSecrets(saved.Mise); err != nil {
 		return model.RestorePlan{}, err
 	}
 	saved, physicalCurrent := classify(saved), classify(current)
-	saved = ApplyExclusions(saved, saved.Excluded)
-	current = ApplyExclusions(physicalCurrent, saved.Excluded)
+	current = physicalCurrent
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	currentNames := packageNames(current)
 	var missingOfficial, missingAUR []string
@@ -131,9 +122,6 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	}
 	for _, name := range saved.MachineSpecific {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "machine-specific hardware package"})
-	}
-	for _, name := range saved.Excluded {
-		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "excluded by profile"})
 	}
 	savedNames := packageNames(saved)
 	for _, name := range current.Official {
@@ -191,8 +179,6 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 
 func Verify(saved, current profile.Packages) model.VerificationResult {
 	saved, current = classify(saved), classify(current)
-	saved = ApplyExclusions(saved, saved.Excluded)
-	current = ApplyExclusions(current, saved.Excluded)
 	var missing []string
 	currentNames := packageNames(current)
 	for _, name := range saved.Official {
@@ -338,203 +324,119 @@ func machineSpecific(name string) bool {
 	return false
 }
 
-func ApplyExclusions(packages profile.Packages, excluded []string) profile.Packages {
-	packages.Excluded = lines(strings.Join(excluded, "\n"))
-	for _, ref := range packages.Excluded {
-		kind, name, ok := splitRef(ref)
-		if !ok {
-			continue
-		}
-		switch kind {
-		case "official":
-			packages.Official = remove(packages.Official, name)
-		case "aur":
-			packages.AUR = remove(packages.AUR, name)
-		case "mise":
-			packages.Mise = cloneMiseWithout(packages.Mise, name)
-		}
-		packages.Installed = remove(packages.Installed, name)
-	}
-	return packages
-}
-
-func Exclude(packages profile.Packages, refs []string) (profile.Packages, []string, error) {
-	result := clone(packages)
-	var changed []string
-	for _, ref := range refs {
-		canonical, err := resolveRef(result, ref, false)
-		if err != nil {
-			return packages, nil, err
-		}
-		if contains(result.Excluded, canonical) {
-			continue
-		}
-		kind, name, _ := splitRef(canonical)
-		if kind == "official" {
-			result.Official = remove(result.Official, name)
-		} else if kind == "aur" {
-			result.AUR = remove(result.AUR, name)
-		}
-		result.Excluded = append(result.Excluded, canonical)
-		changed = append(changed, canonical)
-	}
-	result.Excluded = lines(strings.Join(result.Excluded, "\n"))
-	return result, changed, nil
-}
-
-func Include(packages profile.Packages, refs []string) (profile.Packages, []string, error) {
-	result := clone(packages)
-	var changed []string
-	for _, ref := range refs {
-		canonical, err := resolveRef(result, ref, true)
-		if err != nil {
-			return packages, nil, err
-		}
-		if !contains(result.Excluded, canonical) {
-			continue
-		}
-		kind, name, _ := splitRef(canonical)
-		result.Excluded = remove(result.Excluded, canonical)
-		if kind == "official" {
-			result.Official = append(result.Official, name)
-		} else if kind == "aur" {
-			result.AUR = append(result.AUR, name)
-		}
-		changed = append(changed, canonical)
-	}
-	result.Official, result.AUR = lines(strings.Join(result.Official, "\n")), lines(strings.Join(result.AUR, "\n"))
-	return result, changed, nil
-}
-
-func resolveRef(packages profile.Packages, ref string, excludedOnly bool) (string, error) {
-	kind, name, ok := splitRef(ref)
-	if !ok || (kind != "package" && kind != "official" && kind != "aur" && kind != "mise") {
-		return "", fmt.Errorf("invalid package reference %q; use package:<name>, official:<name>, aur:<name>, or mise:<name>", ref)
-	}
-	if name == "" || ((kind == "official" || kind == "aur") && strings.ContainsAny(name, " \t\n:")) || (kind == "mise" && !validMiseRefName(name)) {
-		return "", fmt.Errorf("invalid package name in %q", ref)
-	}
-	candidates := []string{}
-	for _, candidate := range []string{"official:" + name, "aur:" + name, "mise:" + name} {
-		candidateKind, _, _ := splitRef(candidate)
-		_, miseManaged := packages.Mise[name]
-		managed := (candidateKind == "official" && contains(packages.Official, name)) || (candidateKind == "aur" && contains(packages.AUR, name)) || (candidateKind == "mise" && miseManaged)
-		if contains(packages.Excluded, candidate) || (!excludedOnly && managed) {
-			candidates = append(candidates, candidate)
-		}
-	}
-	if kind != "package" {
-		canonical := kind + ":" + name
-		for _, candidate := range candidates {
-			if candidate == canonical {
-				return canonical, nil
-			}
-		}
-		return "", fmt.Errorf("package %s is not %s in this profile", name, kind)
-	}
-	if len(candidates) == 1 {
-		return candidates[0], nil
-	}
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("package %s is not managed by this profile", name)
-	}
-	return "", fmt.Errorf("package %s is ambiguous; use official:%s, aur:%s, or mise:%s", name, name, name, name)
-}
-
-func ValidateExclusions(packages profile.Packages) error {
-	for _, ref := range packages.Excluded {
-		kind, name, ok := splitRef(ref)
-		if !ok || (kind != "official" && kind != "aur" && kind != "mise") || name == "" || ((kind == "official" || kind == "aur") && strings.ContainsAny(name, " \t\n:")) || (kind == "mise" && !validMiseRefName(name)) {
-			return fmt.Errorf("invalid excluded package reference %q", ref)
-		}
-		if kind == "mise" {
-			if _, ok := packages.Mise[name]; !ok {
-				return fmt.Errorf("excluded mise package %s has no stored declaration", name)
-			}
-			continue
-		}
-		if (kind == "official" && contains(packages.Official, name)) || (kind == "aur" && contains(packages.AUR, name)) {
-			return fmt.Errorf("package %s is both managed and excluded", ref)
-		}
-	}
-	return nil
-}
-
-func clone(packages profile.Packages) profile.Packages {
-	packages.Official = append([]string{}, packages.Official...)
-	packages.AUR = append([]string{}, packages.AUR...)
-	packages.MachineSpecific = append([]string{}, packages.MachineSpecific...)
-	packages.Excluded = append([]string{}, packages.Excluded...)
-	packages.Installed = append([]string{}, packages.Installed...)
-	packages.Mise = cloneMise(packages.Mise)
-	return packages
-}
-
-func validMiseRefName(name string) bool {
-	if strings.TrimSpace(name) != name || name == "" {
-		return false
-	}
-	for _, r := range name {
-		if r <= 0x1f || r == 0x7f || r == ' ' || r == '\t' || r == '\n' {
-			return false
-		}
-	}
-	return true
-}
-
-func cloneMise(tools profile.MiseTools) profile.MiseTools {
-	result := make(profile.MiseTools, len(tools))
-	for id, tool := range tools {
-		normalized, err := NormalizeMiseTool(id, map[string]any(tool))
-		if err == nil {
-			result[id] = normalized
-		}
-	}
+// Merge computes the new desired Packages state from the previous desired
+// state (including Absent tombstones), the current live (classified,
+// portable) detection, and the resolved Capture decision for each canonical
+// ref ("official:<name>", "aur:<name>", "mise:<id>"). enabled must already
+// account for provider safety and policy resolution; Merge itself only
+// implements the Capture merge transition table:
+//
+//	unknown + present + enabled  -> present
+//	present + absent  + enabled  -> tombstone
+//	absent  + present + enabled  -> present
+//	*       + *        disabled  -> preserve previous present/absent
+//	unknown + present  disabled  -> remain unmanaged
+//
+// MachineSpecific/Installed are carried from current unchanged: hardware
+// packages are never portable targets (not-portable-by-default), and
+// Installed is a live-detection scratch field, not desired state.
+// MachineSpecific is pure runtime inspection metadata, discovered fresh from
+// current every call, never persisted portable state. There is no legacy
+// Excluded field to carry forward: a manually excluded ref now has no
+// desired state at all (stripped from Official/AUR/Mise by
+// Session.SetPackageExcluded at the moment of exclusion) plus an explicit
+// Capture Disabled + Restore Disabled policy rule, so Merge's own "disabled
+// preserves existing desired state" rule already keeps it unmanaged.
+func Merge(previous, current profile.Packages, enabled func(ref string) bool) profile.Packages {
+	result := profile.Packages{Installed: current.Installed, MachineSpecific: current.MachineSpecific}
+	prevAbsent, prevAbsentMise := absenceIndex(previous.Absent)
+	var absences []profile.PackageAbsence
+	result.Official, absences = mergeNames("official", set(previous.Official), set(current.Official), prevAbsent, enabled, absences)
+	result.AUR, absences = mergeNames("aur", set(previous.AUR), set(current.AUR), prevAbsent, enabled, absences)
+	result.Mise, absences = mergeMise(previous.Mise, current.Mise, prevAbsent, prevAbsentMise, enabled, absences)
+	sort.Strings(result.Official)
+	sort.Strings(result.AUR)
+	sort.Slice(absences, func(i, j int) bool { return absences[i].Ref < absences[j].Ref })
+	result.Absent = absences
 	return result
 }
 
-func cloneMiseWithout(tools profile.MiseTools, excluded string) profile.MiseTools {
-	result := cloneMise(tools)
-	delete(result, excluded)
-	return result
+// transitionResult is the Capture merge outcome for one target: whether it
+// belongs in the new desired-present set, the new desired-absent (tombstone)
+// set, or neither (still unmanaged).
+type transitionResult int
+
+const (
+	transitionNone transitionResult = iota
+	transitionPresent
+	transitionAbsent
+)
+
+// transition implements the Capture merge invariant table generically.
+// wasPresent/wasAbsent describe the previous desired state (both false means
+// "unknown": never captured); isPresent is the current live state; enabled
+// is the resolved Capture decision for this target.
+func transition(wasPresent, wasAbsent, isPresent, enabled bool) transitionResult {
+	if !enabled {
+		switch {
+		case wasPresent:
+			return transitionPresent
+		case wasAbsent:
+			return transitionAbsent
+		default:
+			return transitionNone
+		}
+	}
+	if isPresent {
+		return transitionPresent
+	}
+	if wasPresent || wasAbsent {
+		return transitionAbsent
+	}
+	return transitionNone
 }
 
-func PreserveExcludedMise(current, previous profile.Packages) profile.Packages {
-	if current.Mise == nil {
-		current.Mise = profile.MiseTools{}
+func mergeNames(kind string, prevPresent, curPresent map[string]bool, prevAbsent map[string]bool, enabled func(ref string) bool, absences []profile.PackageAbsence) ([]string, []profile.PackageAbsence) {
+	names := map[string]bool{}
+	for name := range prevPresent {
+		names[name] = true
 	}
-	for _, ref := range previous.Excluded {
-		kind, id, ok := splitRef(ref)
-		if !ok || kind != "mise" {
-			continue
-		}
-		if tool, ok := previous.Mise[id]; ok {
-			current.Mise[id] = cloneMise(profile.MiseTools{id: tool})[id]
+	for name := range curPresent {
+		names[name] = true
+	}
+	for ref := range prevAbsent {
+		if refKind, name, ok := splitRef(ref); ok && refKind == kind {
+			names[name] = true
 		}
 	}
-	return current
+	var result []string
+	for name := range names {
+		ref := kind + ":" + name
+		switch transition(prevPresent[name], prevAbsent[ref], curPresent[name], enabled(ref)) {
+		case transitionPresent:
+			result = append(result, name)
+		case transitionAbsent:
+			absences = append(absences, profile.PackageAbsence{Ref: ref})
+		}
+	}
+	return result, absences
+}
+
+func absenceIndex(absences []profile.PackageAbsence) (map[string]bool, profile.MiseTools) {
+	refs := make(map[string]bool, len(absences))
+	mise := profile.MiseTools{}
+	for _, absence := range absences {
+		refs[absence.Ref] = true
+		if kind, id, ok := splitRef(absence.Ref); ok && kind == "mise" && absence.Mise != nil {
+			mise[id] = absence.Mise
+		}
+	}
+	return refs, mise
 }
 
 func splitRef(ref string) (string, string, bool) {
 	kind, name, ok := strings.Cut(strings.TrimSpace(ref), ":")
 	return kind, name, ok
-}
-func contains(items []string, target string) bool {
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
-}
-func remove(items []string, target string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if item != target {
-			out = append(out, item)
-		}
-	}
-	return out
 }
 
 func set(items []string) map[string]bool {

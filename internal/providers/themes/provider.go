@@ -83,49 +83,139 @@ func (p Provider) Detect(ctx context.Context) (profile.Themes, error) {
 	return state, nil
 }
 
-func (p *Provider) Capture(ctx context.Context) (profile.Themes, error) {
-	state, err := p.Detect(ctx)
+// Capture merges live detection into desired state per the Capture merge
+// transition table, driven by enabled's resolved per-target decision
+// ("active" for Current, "theme:<id>" for each non-builtin theme's
+// availability). A preserved (disabled) or freshly captured (enabled)
+// target's local artifact is staged into the merged generation together --
+// disabled targets keep their existing artifact rather than the staged tree
+// being wholesale replaced by only what this run freshly captured. Built-in
+// themes are never merged/tombstoned: Omarchy owns their availability, so
+// they always pass through from live detection unconditionally.
+func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled func(ref string) bool) (profile.Themes, error) {
+	current, err := p.Detect(ctx)
 	if err != nil {
-		return state, err
+		return current, err
 	}
 	if p.ProfileDir == "" {
-		return state, fmt.Errorf("profile directory is required to capture themes")
+		return current, fmt.Errorf("profile directory is required to capture themes")
 	}
 	parent := filepath.Join(p.ProfileDir, "themes")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return state, err
+		return current, err
 	}
 	staging, err := os.MkdirTemp(parent, ".local-capture-*")
 	if err != nil {
-		return state, err
+		return current, err
 	}
 	defer os.RemoveAll(staging)
-	for i := range state.Items {
-		item := &state.Items[i]
-		if item.Type != "local" && item.Type != "overlay" {
-			continue
-		}
-		source, err := filepath.EvalSymlinks(filepath.Join(p.UserDir, item.ID))
-		if err != nil {
-			return state, fmt.Errorf("resolve theme %q: %w", item.ID, err)
-		}
-		if err := copySnapshot(source, filepath.Join(staging, item.ID)); err != nil {
-			return state, fmt.Errorf("capture theme %q: %w", item.ID, err)
+	existing := filepath.Join(parent, "local")
+
+	result := profile.Themes{}
+	if enabled("active") {
+		result.Current = current.Current
+	} else {
+		result.Current = saved.Current
+	}
+
+	savedByID, currentByID := themeMap(saved.Items), themeMap(current.Items)
+	savedAbsentByID := themeMap(saved.Absent)
+	ids := map[string]bool{}
+	for id, item := range savedByID {
+		if item.Type != "builtin" {
+			ids[id] = true
 		}
 	}
+	for id, item := range currentByID {
+		if item.Type != "builtin" {
+			ids[id] = true
+		}
+	}
+	for id := range savedAbsentByID {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		savedItem, wasPresent := savedByID[id]
+		currentItem, isPresent := currentByID[id]
+		_, wasAbsent := savedAbsentByID[id]
+		isEnabled := enabled("theme:" + id)
+		switch transition(wasPresent, wasAbsent, isPresent, isEnabled) {
+		case transitionPresent:
+			if isEnabled && isPresent {
+				if currentItem.Type == "local" || currentItem.Type == "overlay" {
+					source, err := filepath.EvalSymlinks(filepath.Join(p.UserDir, id))
+					if err != nil {
+						return current, fmt.Errorf("resolve theme %q: %w", id, err)
+					}
+					if err := copySnapshot(source, filepath.Join(staging, id)); err != nil {
+						return current, fmt.Errorf("capture theme %q: %w", id, err)
+					}
+				}
+				result.Items = append(result.Items, currentItem)
+			} else {
+				if savedItem.Type == "local" || savedItem.Type == "overlay" {
+					if err := copySnapshot(filepath.Join(existing, id), filepath.Join(staging, id)); err != nil {
+						return current, fmt.Errorf("preserve theme %q: %w", id, err)
+					}
+				}
+				result.Items = append(result.Items, savedItem)
+			}
+		case transitionAbsent:
+			if wasAbsent {
+				result.Absent = append(result.Absent, savedAbsentByID[id])
+			} else {
+				result.Absent = append(result.Absent, savedItem)
+			}
+		}
+	}
+	for _, item := range currentByID {
+		if item.Type == "builtin" {
+			result.Items = append(result.Items, item)
+		}
+	}
+	sortThemes(result.Items)
+	sortThemes(result.Absent)
+	result.Source = activeSource(result)
+
 	destination, old := filepath.Join(parent, "local"), filepath.Join(parent, ".local-previous")
 	_ = os.RemoveAll(old)
 	if _, err := os.Stat(destination); err == nil {
 		if err := os.Rename(destination, old); err != nil {
-			return state, err
+			return current, err
 		}
 	}
 	if err := os.Rename(staging, destination); err != nil {
 		_ = os.Rename(old, destination)
-		return state, err
+		return current, err
 	}
 	p.captureDestination, p.captureOld, p.capturePending = destination, old, true
-	return state, nil
+	return result, nil
+}
+
+// PrepareStopManagingArtifact stages the removal of one theme's local/overlay
+// artifact directory without deleting it yet: the directory is renamed out
+// of the way, reusing the same pending-swap bookkeeping Capture uses, so the
+// caller can defer the actual deletion until it knows the profile save that
+// forgets the theme's metadata has also succeeded (FinalizeCapture), or undo
+// the rename if it has not (RollbackCapture). A theme with no local artifact
+// (git, or already removed) is a no-op.
+func (p *Provider) PrepareStopManagingArtifact(id string) error {
+	source := filepath.Join(p.ProfileDir, "themes", "local", id)
+	if _, err := os.Lstat(source); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	backup := filepath.Join(p.ProfileDir, "themes", ".stop-managing-"+id)
+	if err := os.RemoveAll(backup); err != nil {
+		return err
+	}
+	if err := os.Rename(source, backup); err != nil {
+		return err
+	}
+	p.captureDestination, p.captureOld, p.capturePending = source, backup, true
+	return nil
 }
 
 func (p *Provider) CommitCapture() error { return nil }
@@ -424,6 +514,44 @@ func operation(action, id string, argv []string) model.Operation {
 func change(kind model.ChangeType, changeKind, id, summary string) model.Change {
 	return model.Change{Type: kind, Provider: "themes", Kind: changeKind, Name: id, Summary: summary}
 }
+
+// transitionResult is the Capture merge outcome for one target: whether it
+// belongs in the new desired-present set, the new desired-absent (tombstone)
+// set, or neither (still unmanaged). See internal/providers/packages'
+// identical helper: each provider owns its own merge/preserve behavior, so
+// this small, stable, pure table is duplicated rather than shared.
+type transitionResult int
+
+const (
+	transitionNone transitionResult = iota
+	transitionPresent
+	transitionAbsent
+)
+
+// transition implements the Capture merge invariant table generically.
+// wasPresent/wasAbsent describe the previous desired state (both false means
+// "unknown": never captured); isPresent is the current live state; enabled
+// is the resolved Capture decision for this target.
+func transition(wasPresent, wasAbsent, isPresent, enabled bool) transitionResult {
+	if !enabled {
+		switch {
+		case wasPresent:
+			return transitionPresent
+		case wasAbsent:
+			return transitionAbsent
+		default:
+			return transitionNone
+		}
+	}
+	if isPresent {
+		return transitionPresent
+	}
+	if wasPresent || wasAbsent {
+		return transitionAbsent
+	}
+	return transitionNone
+}
+
 func themeMap(items []profile.Theme) map[string]profile.Theme {
 	out := map[string]profile.Theme{}
 	for _, item := range items {

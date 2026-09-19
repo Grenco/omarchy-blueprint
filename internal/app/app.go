@@ -771,10 +771,7 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		if len(context.Dormant) > 0 {
 			human += fmt.Sprintf("ℹ dormant machine mappings: %s\n", strings.Join(context.Dormant, ", "))
 		}
-		if len(d.Packages.Excluded) > 0 {
-			human += fmt.Sprintf("ℹ %d excluded package(s): %s\n", len(d.Packages.Excluded), strings.Join(d.Packages.Excluded, ", "))
-		}
-		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "excluded": d.Packages.Excluded, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
+		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
 	}}
 }
 
@@ -785,11 +782,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 		verb, short = "exclude", "Exclude packages from capture, drift, and restore"
 	}
 	return &cobra.Command{Use: verb + " <package-reference>...", Args: cobra.MinimumNArgs(1), Short: short, RunE: func(_ *cobra.Command, refs []string) error {
-		d, err := profile.Load(opt.profileDir)
-		if err != nil {
-			return profileError(opt.profileDir, err)
-		}
 		if strings.HasPrefix(refs[0], "config:") {
+			d, err := profile.Load(opt.profileDir)
+			if err != nil {
+				return profileError(opt.profileDir, err)
+			}
 			if len(refs) != 1 {
 				return fmt.Errorf("config policy accepts exactly one config:<path> reference")
 			}
@@ -819,21 +816,26 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			}
 			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude, "included": !exclude}, fmt.Sprintf("%s config %s.\n", action, path))
 		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
+		// Validate/canonicalize the whole batch before mutating anything, so
+		// a later invalid ref can never leave earlier refs applied.
+		canonicalRefs := make([]string, len(refs))
+		for i, ref := range refs {
+			canonical, err := (packagesStateProvider{}).ValidateTarget(ref)
+			if err != nil {
+				return err
+			}
+			canonicalRefs[i] = canonical
+		}
+		session, err := openWorkflow(deps, opt)
+		if err != nil {
+			return profileError(opt.profileDir, err)
 		}
 		var changed []string
-		if exclude {
-			d.Packages, changed, err = packagesprovider.Exclude(d.Packages, refs)
-		} else {
-			d.Packages, changed, err = packagesprovider.Include(d.Packages, refs)
-		}
-		if err != nil {
-			return err
-		}
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
+		for _, canonical := range canonicalRefs {
+			if err := session.SetPackageExcluded(canonical, exclude); err != nil {
+				return err
+			}
+			changed = append(changed, canonical)
 		}
 		action := "Included"
 		if exclude {
@@ -841,11 +843,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 		}
 		human := fmt.Sprintf("%s %d package(s).\n", action, len(changed))
 		if exclude {
-			for _, association := range configprovider.RelatedConfig(changed, d.Config) {
+			for _, association := range configprovider.RelatedConfig(changed, session.Profile().Config) {
 				human += fmt.Sprintf("Related Config state remains included:\n  ~/.config/%s\nRun:\n  omarchy-blueprint exclude config:%s\n", association.ConfigPath, association.ConfigPath)
 			}
 		}
-		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed, "excluded": d.Packages.Excluded}, human)
+		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed}, human)
 	}}
 }
 
@@ -982,7 +984,9 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 			adapters[i] = adapter
 		}
 	}
-	session.SetProviders(adapters)
+	if err := session.SetProviders(adapters); err != nil {
+		return nil, err
+	}
 	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, options policy.RestoreOptions) error {
 		state := make([]stateProvider, 0, len(selected))
 		for _, provider := range selected {
@@ -1018,11 +1022,12 @@ func (p restoreProviderAdapter) InspectTargets(ctx context.Context, data profile
 	return nil, nil
 }
 
-// Capture accepts the workflow CaptureContext for interface compatibility;
-// PR 2 does not yet gate Capture on policy decisions (PR 3), so it is not
-// consulted here.
-func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
-	return p.stateProvider.Capture(ctx, data)
+// Capture threads the resolved workflow CaptureContext down to the wrapped
+// state provider, which decides for itself whether/how to consult it (PR 3
+// activates this category by category; a provider that does not yet consult
+// its decisions simply ignores the parameter).
+func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
+	return p.stateProvider.Capture(ctx, data, capCtx)
 }
 
 func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
@@ -1061,6 +1066,33 @@ func (p restoreProviderAdapter) RollbackCapture() error {
 		return provider.RollbackCapture()
 	}
 	return nil
+}
+
+// StopManaging defers to the wrapped state provider's own implementation.
+// Every stateProvider implements this (categories that reject Stop Managing
+// return a category-specific error rather than omitting the method), so the
+// !ok branch here is defensive rather than expected in practice.
+func (p restoreProviderAdapter) StopManaging(ctx context.Context, data profile.Data, target string) (profile.Data, error) {
+	provider, ok := p.stateProvider.(interface {
+		StopManaging(context.Context, profile.Data, string) (profile.Data, error)
+	})
+	if !ok {
+		return profile.Data{}, fmt.Errorf("%s does not support Stop Managing", p.stateProvider.ID())
+	}
+	return provider.StopManaging(ctx, data, target)
+}
+
+// ValidateTarget defers to the wrapped state provider's own target shape
+// validation/canonicalization when it has one. A category without a
+// structured target key (none currently omits this) has no shape to
+// validate, so it accepts target unchanged.
+func (p restoreProviderAdapter) ValidateTarget(target string) (string, error) {
+	if provider, ok := p.stateProvider.(interface {
+		ValidateTarget(string) (string, error)
+	}); ok {
+		return provider.ValidateTarget(target)
+	}
+	return target, nil
 }
 
 type configWorkflowProvider struct{ restoreProviderAdapter }

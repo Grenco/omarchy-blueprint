@@ -18,6 +18,7 @@ var ManagedTopLevelPaths = []string{
 	"hooks",
 	"resources",
 	"machines",
+	"policy",
 }
 
 // IsManagedRepositoryPath reports whether raw is a canonical, Blueprint-owned

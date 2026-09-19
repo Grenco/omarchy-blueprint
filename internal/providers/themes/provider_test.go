@@ -53,7 +53,7 @@ func TestCaptureCopiesUserOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "Osaka Jade\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
-	got, err := p.Capture(context.Background())
+	got, err := p.Capture(context.Background(), profile.Themes{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +68,192 @@ func TestCaptureCopiesUserOverride(t *testing.T) {
 	}
 	if restored, err := os.ReadFile(previous); err != nil || string(restored) != "old\n" {
 		t.Fatalf("restored snapshot=%q err=%v", restored, err)
+	}
+}
+
+func TestCapturePreservesExistingArtifactWhenDisabled(t *testing.T) {
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(user, "custom"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "custom", "colors.toml"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profileDir := t.TempDir()
+	existing := filepath.Join(profileDir, "themes", "local", "custom", "colors.toml")
+	if err := os.MkdirAll(filepath.Dir(existing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existing, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Themes{Current: "custom", Items: []profile.Theme{{ID: "custom", Type: "local", Hash: "old-hash"}}}
+	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "custom\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
+
+	got, err := p.Capture(context.Background(), saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Hash != "old-hash" {
+		t.Fatalf("items = %#v, want the preserved saved metadata (old hash), not a fresh re-hash of the changed local content", got.Items)
+	}
+	content, err := os.ReadFile(filepath.Join(profileDir, "themes", "local", "custom", "colors.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "old\n" {
+		t.Fatalf("staged artifact = %q, want the preserved prior content, not the changed local file", content)
+	}
+}
+
+func TestCaptureTombstonesThemeRemovedLocally(t *testing.T) {
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileDir := t.TempDir()
+	saved := profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "custom", Type: "local", Hash: "abc"}}}
+	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "nord\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
+
+	got, err := p.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "custom" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want a tombstone for custom preserving its prior hash", got.Absent)
+	}
+	for _, item := range got.Items {
+		if item.ID == "custom" {
+			t.Fatalf("items = %#v, want custom removed from present items", got.Items)
+		}
+	}
+}
+
+// TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance is a
+// regression for a review finding on PR 3: re-capturing while a theme stays
+// desired-absent must carry the EXISTING tombstone's provenance forward
+// (Type/Hash/URL/Revision), not rebuild an ID-only Theme -- later Exact
+// removal needs that provenance to prove ownership before deleting anything.
+// TestPrepareStopManagingArtifactStagesRenameCommitOrRollback is a
+// regression for a review finding on PR 3: Stop Managing must not delete a
+// theme's local/overlay artifact immediately, since a caller that then fails
+// to save the profile would leave it referencing a destroyed artifact.
+// PrepareStopManagingArtifact stages the removal by rename; RollbackCapture
+// must restore the original directory and its content byte-for-byte, and
+// FinalizeCapture (only called once the caller knows the save succeeded)
+// must permanently delete it.
+func TestPrepareStopManagingArtifactStagesRenameCommitOrRollback(t *testing.T) {
+	profileDir := t.TempDir()
+	artifact := filepath.Join(profileDir, "themes", "local", "custom")
+	if err := os.MkdirAll(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifact, "colors.toml"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{ProfileDir: profileDir}
+	if err := p.PrepareStopManagingArtifact("custom"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("artifact must be staged out of its original location, not left in place")
+	}
+
+	if err := p.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(artifact, "colors.toml"))
+	if err != nil || string(body) != "original" {
+		t.Fatalf("rollback did not restore original content: body=%q err=%v", body, err)
+	}
+
+	if err := p.PrepareStopManagingArtifact("custom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.FinalizeCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("finalize must permanently delete the staged artifact")
+	}
+	entries, err := os.ReadDir(filepath.Join(profileDir, "themes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".stop-managing-") {
+			t.Fatalf("finalize left a staging backup behind: %s", entry.Name())
+		}
+	}
+}
+
+func TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance(t *testing.T) {
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileDir := t.TempDir()
+	saved := profile.Themes{Current: "nord", Absent: []profile.Theme{{ID: "custom", Type: "local", Hash: "abc"}}}
+	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "nord\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
+
+	got, err := p.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "custom" || got.Absent[0].Type != "local" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want the existing tombstone's provenance preserved, not rebuilt ID-only", got.Absent)
+	}
+}
+
+func TestCaptureNeverTombstonesABuiltinTheme(t *testing.T) {
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(builtin, "catppuccin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileDir := t.TempDir()
+	// "nord" was previously known present; the machine has since switched to
+	// the (also builtin) "catppuccin", so a naive merge would see nord as
+	// present -> absent and tombstone it were built-ins not excluded.
+	saved := profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "builtin", Enabled: true}}}
+	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "catppuccin\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
+
+	got, err := p.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 0 {
+		t.Fatalf("absent = %#v, want no tombstones for a builtin theme no longer active/detected", got.Absent)
+	}
+	found := false
+	for _, item := range got.Items {
+		if item.ID == "catppuccin" && item.Type == "builtin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("items = %#v, want the currently active builtin theme present", got.Items)
+	}
+}
+
+func TestCaptureActiveThemeIndependentFromAvailabilityDecision(t *testing.T) {
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(user, "custom"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileDir := t.TempDir()
+	saved := profile.Themes{Current: "old-theme"}
+	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "custom\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
+
+	got, err := p.Capture(context.Background(), saved, func(ref string) bool { return ref != "active" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Current != "old-theme" {
+		t.Fatalf("current = %q, want preserved: active selection is independent from theme:custom availability", got.Current)
 	}
 }
 
@@ -102,6 +288,27 @@ func TestUserOverrideOfSavedBuiltinIsDriftButNotRemoved(t *testing.T) {
 	}
 	if Verify(saved, current).OK {
 		t.Fatal("verification unexpectedly passed")
+	}
+}
+
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
+// gate: a Capture-produced desired-absence tombstone is write-only today --
+// Capture writes it, but Restore's Plan/Verify never read Absent -- so it
+// cannot cause an unexpected removal, skip, or verification failure until
+// PR 4 activates Restore-side policy.
+func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
+	saved := profile.Themes{
+		Current: "nord",
+		Items:   []profile.Theme{{ID: "nord", Type: "builtin", Enabled: true}},
+		Absent:  []profile.Theme{{ID: "gruvbox", Type: "local", Hash: "stale"}},
+	}
+	current := profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "builtin", Enabled: true}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for the tombstoned theme", plan)
+	}
+	if !Verify(saved, current).OK {
+		t.Fatal("verify unexpectedly failed because of a tombstoned theme")
 	}
 }
 

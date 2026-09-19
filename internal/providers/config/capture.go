@@ -25,7 +25,15 @@ var beforeStage func()
 
 // Capture writes both sparse snapshot trees from one staged payload. Snapshots
 // are re-hashed after copying, so metadata always describes persisted bytes.
-func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
+// enabled resolves the per-path effective Capture decision, already
+// ancestor-aware (a child file's own explicit rule outranks its directory's,
+// per the hierarchical policy resolver) -- Capture itself does not
+// re-implement hierarchy. A disabled path's existing desired state (whether
+// a captured file or an existing deletion tombstone) is frozen exactly as
+// saved, artifact included, rather than being translated into Config
+// Excluded: Excluded prunes a path from management outright, Capture
+// Disabled only freezes what is already desired.
+func (p Provider) Capture(saved profile.Configs, enabled func(path string) bool) (CaptureResult, error) {
 	if p.ProfileDir == "" {
 		return CaptureResult{}, fmt.Errorf("profile directory is required to capture config")
 	}
@@ -74,8 +82,148 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if err != nil {
 		return CaptureResult{}, err
 	}
+	savedFiles := make(map[string]profile.ConfigFile, len(saved.Files))
+	for _, f := range saved.Files {
+		savedFiles[f.Path] = f
+	}
+	savedDeletes := make(map[string]profile.ConfigDelete, len(saved.Deletes))
+	for _, d := range saved.Deletes {
+		savedDeletes[d.Path] = d
+	}
 	state := profile.Configs{Included: included, Excluded: excluded}
+	// preserve freezes whatever this path is already desired as (a captured
+	// file or an existing deletion tombstone), artifact included, without
+	// touching its metadata. A path with no existing desired state at all
+	// stays unmanaged: Capture Disabled preserves, it does not adopt.
+	preserve := func(path string) error {
+		if f, ok := savedFiles[path]; ok {
+			if _, _, err := copySnapshot(stage, "files", path, existingSnapshotSource(parent, "files", path)); err != nil {
+				return fmt.Errorf("preserve %s: %w", path, err)
+			}
+			if f.BaselineHash != "" {
+				if _, _, err := copySnapshot(stage, "baseline", path, existingSnapshotSource(parent, "baseline", path)); err != nil {
+					return fmt.Errorf("preserve baseline %s: %w", path, err)
+				}
+			}
+			state.Files = append(state.Files, f)
+			return nil
+		}
+		if d, ok := savedDeletes[path]; ok {
+			if _, _, err := copySnapshot(stage, "baseline", path, existingSnapshotSource(parent, "baseline", path)); err != nil {
+				return fmt.Errorf("preserve baseline %s: %w", path, err)
+			}
+			state.Deletes = append(state.Deletes, d)
+		}
+		return nil
+	}
+	// actionable holds only the candidates whose classification can produce a
+	// fresh captured value this run.
+	actionable := make(map[string]Candidate, len(scan.Candidates))
+	// byPath holds every scan candidate, actionable or not, so a previously
+	// desired path's classification can still be inspected below.
+	byPath := make(map[string]Candidate, len(scan.Candidates))
 	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
+		switch c.Classification {
+		case ConfigAdded, ConfigModifiedBaseline, ConfigDeletedBaseline:
+			actionable[c.Path] = c
+		}
+	}
+	previouslyDesired := make(map[string]bool, len(savedFiles)+len(savedDeletes))
+	for path := range savedFiles {
+		previouslyDesired[path] = true
+	}
+	for path := range savedDeletes {
+		previouslyDesired[path] = true
+	}
+	paths := make(map[string]bool, len(actionable)+len(previouslyDesired))
+	for path := range actionable {
+		paths[path] = true
+	}
+	for path := range previouslyDesired {
+		paths[path] = true
+	}
+	orderedPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		orderedPaths = append(orderedPaths, path)
+	}
+	sort.Strings(orderedPaths)
+	for _, path := range orderedPaths {
+		c, hasCandidate := actionable[path]
+		if !hasCandidate {
+			if !previouslyDesired[path] {
+				continue
+			}
+			if existing, scanned := byPath[path]; scanned {
+				switch existing.Classification {
+				case ConfigDelegated, ConfigExcluded:
+					// An intentional ownership-management transition, not a
+					// safety freeze: the path is handed off to a stronger
+					// owner (Delegated) or the user explicitly said to
+					// leave it alone (Excluded). Capture always drops its
+					// desired state for these, regardless of enabled --
+					// freezing it here would mean Capture Preserve silently
+					// adopting the delegated/excluded meaning, which must
+					// never happen.
+					continue
+				case ConfigUnchangedBaseline, ConfigHistoricalBaseline:
+					// Baseline-derived, not real user customization: the
+					// live bytes exactly match either the current baseline
+					// or a trusted historical one, so there is nothing new
+					// to capture either way. Enabled correctly drops it
+					// (nothing new to adopt); disabled freezes the stale
+					// desired value exactly as before. HistoricalBaseline
+					// must not fall into the safety-freeze default branch
+					// below: it is not unsafe or unreadable, it is simply
+					// not a customization worth remembering once Capture is
+					// enabled again.
+					if !enabled(path) {
+						if err := preserve(path); err != nil {
+							return CaptureResult{}, err
+						}
+					}
+					continue
+				default:
+					// Every other classification (Sensitive, Volatile,
+					// Oversized, Unsupported, ambiguous, an unmanaged
+					// symlink, ...) means the current live bytes are unsafe
+					// or otherwise unreadable right now. Safety blocks
+					// updating from those unsafe bytes; it must never erase
+					// already-safe remembered desired state, so this
+					// preserves unconditionally, independent of enabled --
+					// capturing fresh would be unsafe regardless of policy.
+					if err := preserve(path); err != nil {
+						return CaptureResult{}, err
+					}
+					continue
+				}
+			}
+			// No scan candidate at all: genuinely missing, unless the path
+			// (or an ancestor) has been handed off to a stronger owner,
+			// such as a newly tracked Resource -- the walk itself prunes a
+			// delegated directory before its children are ever classified,
+			// so the same ownership check the walk uses is consulted
+			// directly here.
+			abs, err := p.absoluteUserPath(path)
+			if err != nil {
+				return CaptureResult{}, err
+			}
+			if p.delegated(abs) {
+				continue
+			}
+			if !enabled(path) {
+				if err := preserve(path); err != nil {
+					return CaptureResult{}, err
+				}
+			}
+			continue
+		}
+		if !enabled(path) {
+			if err := preserve(path); err != nil {
+				return CaptureResult{}, err
+			}
+			continue
+		}
 		switch c.Classification {
 		case ConfigAdded, ConfigModifiedBaseline:
 			user, err := p.absoluteUserPath(c.Path)
@@ -238,4 +386,31 @@ func swapCaptureTrees(stage, parent string) error {
 		}
 	}
 	return nil
+}
+
+// existingSnapshotSource resolves the absolute path preserve should read an
+// existing snapshot from. A path saved before the schema-8 HOME-relative
+// rewrite (see profile.migrateLegacyConfigPaths) has its logical metadata
+// path already rewritten to the ".config/"-prefixed form on load, but the
+// on-disk snapshot tree itself is never relocated to match -- loading must
+// never rewrite anything on disk, only the in-memory metadata -- so a
+// legacy snapshot can still be found at its pre-rewrite path. Preserving a
+// path whose current-style snapshot is missing falls back to that legacy
+// location rather than failing outright.
+func existingSnapshotSource(parent, tree, path string) string {
+	current := filepath.Join(parent, tree, filepath.FromSlash(path))
+	if _, err := os.Lstat(current); err == nil {
+		return current
+	}
+	if legacy, ok := strings.CutPrefix(path, ".config/"); ok {
+		if legacySource := filepath.Join(parent, tree, filepath.FromSlash(legacy)); snapshotExists(legacySource) {
+			return legacySource
+		}
+	}
+	return current
+}
+
+func snapshotExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }

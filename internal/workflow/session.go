@@ -10,7 +10,6 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
-	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 )
 
 type Session struct {
@@ -36,7 +35,15 @@ func Open(deps Dependencies, opts Options) (*Session, error) {
 	return s, nil
 }
 
-// Reload resolves data again because external tools may have changed it.
+// Reload resolves data again because external tools may have changed it
+// (including ProfileGitPull, which reloads after fetching remote changes).
+// If providers were already registered (SetProviders already ran once, e.g.
+// this is a running session, not the initial Open), the freshly loaded
+// candidate data is revalidated against them before replacing s.profile:
+// otherwise a pull of a profile with a malformed hand-edited policy target
+// would silently replace an already-open, already-validated session's
+// profile, even though opening that same profile fresh would fail in
+// SetProviders. s.profile is left untouched on validation failure.
 func (s *Session) Reload() error {
 	dir, err := machine.CanonicalProfileRoot(s.opts.ProfileDir)
 	if err != nil {
@@ -47,8 +54,10 @@ func (s *Session) Reload() error {
 	if err != nil {
 		return err
 	}
-	if err := packagesprovider.ValidateExclusions(data.Packages); err != nil {
-		return fmt.Errorf("validate package exclusions: %w", err)
+	if s.providers != nil {
+		if err := validateLoadedPolicyTargets(s.providers, data); err != nil {
+			return err
+		}
 	}
 	state, err := s.deps.StateHome()
 	if err != nil {
@@ -103,49 +112,18 @@ func (s *Session) SetProviderCaptured(_ context.Context, id string, captured boo
 	return nil
 }
 
-// SetProviderItemEnabled toggles a saved package item's desired state.
+// SetProviderItemEnabled toggles a saved package item's exclusion via
+// SetPackageExcluded, which is also what the exclude/include CLI verbs use.
 func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, key string) error {
-	data := s.profile
-	switch provider {
-	case "packages":
-		kind := map[string]string{"Official packages": "official", "AUR packages": "aur", "Mise tools": "mise"}[section]
-		if kind == "" {
-			return fmt.Errorf("package group %s cannot be toggled", section)
-		}
-		ref := kind + ":" + key
-		var err error
-		if containsString(data.Packages.Excluded, ref) {
-			data.Packages, _, err = packagesprovider.Include(data.Packages, []string{ref})
-		} else {
-			data.Packages, _, err = packagesprovider.Exclude(data.Packages, []string{ref})
-		}
-		if err != nil {
-			return err
-		}
-	default:
+	if provider != "packages" {
 		return fmt.Errorf("%s does not support item selection", provider)
 	}
-	if err := profile.Save(s.opts.ProfileDir, data); err != nil {
-		return fmt.Errorf("save profile: %w", err)
+	kind := map[string]string{"Official packages": "official", "AUR packages": "aur", "Mise tools": "mise"}[section]
+	if kind == "" {
+		return fmt.Errorf("package group %s cannot be toggled", section)
 	}
-	s.profile = data
-	return nil
-}
-func removeString(values []string, value string) []string {
-	for i, current := range values {
-		if current == value {
-			return append(values[:i], values[i+1:]...)
-		}
-	}
-	return values
-}
-func containsString(values []string, value string) bool {
-	for _, current := range values {
-		if current == value {
-			return true
-		}
-	}
-	return false
+	ref := kind + ":" + key
+	return s.SetPackageExcluded(ref, !s.packageExcluded(ref))
 }
 
 // Profile Git operations remain owned by profilegit; workflow only exposes the
@@ -188,8 +166,24 @@ func (s *Session) ProfileGitPush(ctx context.Context) (profilegit.Result, error)
 	return s.profileGit.Push(ctx)
 }
 
-// SetProviders installs the application-specific adapters for this session.
-func (s *Session) SetProviders(providers []Provider) { s.providers = providers }
+// SetProviders installs the application-specific adapters for this session,
+// then validates every already-loaded policy rule's target against its
+// category's provider now that validators are actually available.
+// profile.Load can only check structural shape (known category, valid
+// setting, no duplicates -- see profile.validatePolicyRules): it has no
+// reachable provider registry, so a hand-edited policy.toml or machine
+// policy override with a provider-invalid target (e.g. "official:has
+// space") would otherwise load silently and only fail much later, at the
+// first explicit SetPolicy/ClearPolicy/StopManaging call that happens to
+// touch the same target. Providers are left unset if validation fails, so a
+// session that fails to open never ends up in a half-usable state.
+func (s *Session) SetProviders(providers []Provider) error {
+	if err := validateLoadedPolicyTargets(providers, s.profile); err != nil {
+		return err
+	}
+	s.providers = providers
+	return nil
+}
 
 // SetRestoreFinalizer installs application-specific aggregate restore rules.
 // The finalizer receives the same policy.RestoreOptions that planned every
