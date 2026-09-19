@@ -196,7 +196,7 @@ func TestCaptureCustomizedStoresExactDesiredAndBaselineBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	captured, err := p.Capture(state)
+	captured, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +219,48 @@ func TestCaptureCustomizedStoresExactDesiredAndBaselineBytes(t *testing.T) {
 	}
 }
 
+// TestCaptureDisabledPreservesWholeSavedStateAndArtifacts is Task 21's
+// disabled case: Shell is one merge unit, so Capture Disabled must freeze
+// the entire prior desired state and its staged artifacts exactly as saved,
+// ignoring the live document entirely rather than partially adopting it.
+func TestCaptureDisabledPreservesWholeSavedStateAndArtifacts(t *testing.T) {
+	f := newShellFixture(t)
+	f.writeUser(customizedShellJSON)
+	p := Provider{BaselinePath: f.baseline, UserPath: f.user, ProfileDir: f.profile}
+	state, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := p.Capture(state, profile.Shell{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userBytesBefore, err := os.ReadFile(filepath.Join(f.profile, "shell", "shell.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.writeUser(defaultShellJSON)
+	state, err = p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Capture(state, saved, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, saved) {
+		t.Fatalf("result = %#v, want unchanged saved %#v", result, saved)
+	}
+	userBytesAfter, err := os.ReadFile(filepath.Join(f.profile, "shell", "shell.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(userBytesAfter) != string(userBytesBefore) {
+		t.Fatal("preserved shell.json artifact changed despite Capture Disabled")
+	}
+}
+
 func TestCaptureDefaultRemovesStaleSnapshots(t *testing.T) {
 	f := newShellFixture(t)
 	f.writeUser(customizedShellJSON)
@@ -227,7 +269,7 @@ func TestCaptureDefaultRemovesStaleSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Capture(state); err != nil {
+	if _, err := p.Capture(state, profile.Shell{}, true); err != nil {
 		t.Fatal(err)
 	}
 	f.writeUser(defaultShellJSON)
@@ -235,7 +277,7 @@ func TestCaptureDefaultRemovesStaleSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	captured, err := p.Capture(state)
+	captured, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +309,7 @@ func TestCaptureDefaultFailsWhenStaleSnapshotCannotBeRemoved(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stale, "nested"), []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Capture(state); err == nil {
+	if _, err := p.Capture(state, profile.Shell{}, true); err == nil {
 		t.Fatal("default capture must fail when stale snapshot cannot be removed")
 	}
 }
@@ -280,7 +322,7 @@ func TestCaptureUnsupportedStateFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Capture(state)
+	_, err = p.Capture(state, profile.Shell{}, true)
 	if err == nil || !errors.Is(err, errUnsupportedShell) {
 		t.Fatalf("err = %v, want unsupported-shell error", err)
 	}
@@ -311,7 +353,7 @@ func TestCheckValidatesSnapshotHashesVersionsAndPluginReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := p.Capture(state)
+	saved, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +378,7 @@ func TestCheckValidatesSnapshotHashesVersionsAndPluginReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale, err := p.Capture(state)
+	stale, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +409,7 @@ func TestRequiredThirdPartyPlugins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := p.Capture(state)
+	saved, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

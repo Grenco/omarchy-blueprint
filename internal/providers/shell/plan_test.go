@@ -20,7 +20,7 @@ func captureCustomized(t *testing.T) (Provider, profile.Shell, shellFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := p.Capture(state)
+	saved, err := p.Capture(state, profile.Shell{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

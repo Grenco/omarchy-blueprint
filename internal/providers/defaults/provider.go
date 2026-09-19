@@ -61,8 +61,14 @@ func (p Provider) Detect(ctx context.Context) (profile.Defaults, error) {
 	return d, nil
 }
 
-// Capture stores the detected defaults at defaults/defaults.toml.
-func (p Provider) Capture(ctx context.Context) (profile.Defaults, error) {
+// Capture stores the merged defaults at defaults/defaults.toml. Each kind is
+// resolved independently by enabled: a disabled kind preserves its previous
+// saved slot regardless of the live value; an enabled kind adopts the live
+// value; an enabled kind with no live value (Omarchy reports the user never
+// picked one) stops managing that slot -- it clears to unmanaged rather than
+// preserving a stale saved value, since there is no desired-absence concept
+// for a default application choice, only "managed" and "never captured."
+func (p Provider) Capture(ctx context.Context, saved profile.Defaults, enabled func(kind string) bool) (profile.Defaults, error) {
 	current, err := p.Detect(ctx)
 	if err != nil {
 		return profile.Defaults{}, err
@@ -70,14 +76,22 @@ func (p Provider) Capture(ctx context.Context) (profile.Defaults, error) {
 	if p.ProfileDir == "" {
 		return profile.Defaults{}, fmt.Errorf("profile directory is required to capture defaults")
 	}
+	merged := profile.Defaults{}
+	for _, kind := range kinds {
+		if enabled(kind) {
+			setValue(&merged, kind, valueOf(current, kind))
+		} else {
+			setValue(&merged, kind, valueOf(saved, kind))
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(p.ProfileDir, "defaults"), 0o755); err != nil {
 		return profile.Defaults{}, err
 	}
-	b, err := tomlMarshal(current)
+	b, err := tomlMarshal(merged)
 	if err != nil {
 		return profile.Defaults{}, err
 	}
-	return current, atomicWrite(filepath.Join(p.ProfileDir, "defaults", "defaults.toml"), b)
+	return merged, atomicWrite(filepath.Join(p.ProfileDir, "defaults", "defaults.toml"), b)
 }
 
 // Diff compares saved desired defaults with the live machine state. A
@@ -205,6 +219,19 @@ func valueOf(d profile.Defaults, kind string) string {
 		return d.Agent
 	}
 	return ""
+}
+
+func setValue(d *profile.Defaults, kind, value string) {
+	switch kind {
+	case "terminal":
+		d.Terminal = value
+	case "browser":
+		d.Browser = value
+	case "editor":
+		d.Editor = value
+	case "agent":
+		d.Agent = value
+	}
 }
 
 func tomlMarshal(d profile.Defaults) ([]byte, error) {

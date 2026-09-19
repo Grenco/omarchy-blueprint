@@ -279,7 +279,7 @@ func resourceMissing(item profile.Resource) bool {
 	return item.Revision == ""
 }
 
-func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
 	}
@@ -287,7 +287,11 @@ func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data, _
 	if err != nil {
 		return nil, nil, err
 	}
-	prepared, err := provider.PrepareCapture(ctx, d.Resources, resourcesprovider.CaptureOptions{})
+	enabled := func(id string) bool {
+		decision, ok := capCtx.Lookup("resource:" + id)
+		return ok && decision.Capture
+	}
+	prepared, err := provider.PrepareCapture(ctx, d.Resources, resourcesprovider.CaptureOptions{}, enabled)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1464,8 +1468,11 @@ func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	return targets, nil
 }
 
-func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
-	current, err := p.provider().Capture(ctx)
+func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
+	current, err := p.provider().Capture(ctx, d.Defaults, func(kind string) bool {
+		decision, ok := capCtx.Lookup(kind)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1560,7 +1567,7 @@ func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	}}, nil
 }
 
-func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
@@ -1569,16 +1576,21 @@ func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data, _ work
 	if err != nil {
 		return nil, nil, err
 	}
-	changes, err := provider.CaptureChanges(d.Shell, current)
-	if err != nil {
-		return nil, nil, err
-	}
-	if current.Status == shellprovider.StatusCustomized {
-		if err := shellprovider.ValidatePluginReferences(current.References, d.Plugins); err != nil {
+	decision, ok := capCtx.Lookup("state")
+	enabled := ok && decision.Capture
+	var changes []model.Change
+	if enabled {
+		changes, err = provider.CaptureChanges(d.Shell, current)
+		if err != nil {
 			return nil, nil, err
 		}
+		if current.Status == shellprovider.StatusCustomized {
+			if err := shellprovider.ValidatePluginReferences(current.References, d.Plugins); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
-	captured, err := provider.Capture(current)
+	captured, err := provider.Capture(current, d.Shell, enabled)
 	if err != nil {
 		return nil, nil, err
 	}
