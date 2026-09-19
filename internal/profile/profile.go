@@ -65,12 +65,17 @@ type CaptureMeta struct {
 }
 
 type Packages struct {
-	Official        []string  `json:"official"`
-	AUR             []string  `json:"aur"`
-	Mise            MiseTools `json:"mise,omitempty" toml:"-"`
-	MachineSpecific []string  `json:"machine_specific,omitempty"`
-	Excluded        []string  `json:"excluded,omitempty"`
-	Installed       []string  `json:"-" toml:"-"`
+	Official []string  `json:"official"`
+	AUR      []string  `json:"aur"`
+	Mise     MiseTools `json:"mise,omitempty" toml:"-"`
+	// Absent is the explicit desired-absence tombstone list: a previously
+	// managed package/tool the user removed while Capture was Update. It is
+	// persisted separately in packages/absent.toml, not this struct's
+	// (unused) own TOML encoding.
+	Absent          []PackageAbsence `json:"absent,omitempty" toml:"-"`
+	MachineSpecific []string         `json:"machine_specific,omitempty"`
+	Excluded        []string         `json:"excluded,omitempty"`
+	Installed       []string         `json:"-" toml:"-"`
 }
 
 // MiseTool is one normalized global Mise tool declaration.
@@ -83,10 +88,28 @@ type misePackagesFile struct {
 	Tools MiseTools `toml:"tools"`
 }
 
+// PackageAbsence is one explicit desired-absence tombstone for a previously
+// managed package/tool the user removed while Capture was Update. Mise
+// carries the prior validated declaration only for mise:<id> entries, so a
+// later Capture Update that finds it reinstalled can restore its exact
+// configuration; it stays empty for official:/aur: entries.
+type PackageAbsence struct {
+	Ref  string   `json:"ref" toml:"ref"`
+	Mise MiseTool `json:"mise,omitempty" toml:"mise,omitempty"`
+}
+
+type packageAbsenceFile struct {
+	Package []PackageAbsence `toml:"package"`
+}
+
 type Themes struct {
 	Current string  `json:"current" toml:"current"`
 	Source  string  `json:"source,omitempty" toml:"source,omitempty"`
 	Items   []Theme `json:"themes" toml:"theme"`
+	// Absent is the explicit desired-absence tombstone list for a
+	// previously managed user theme removed while Capture was Update. It
+	// reuses Theme's own metadata so removal can prove ownership/provenance.
+	Absent []Theme `json:"absent,omitempty" toml:"absent,omitempty"`
 }
 
 type Theme struct {
@@ -100,6 +123,11 @@ type Theme struct {
 
 type Plugins struct {
 	Items []Plugin `json:"plugins" toml:"plugin"`
+	// Absent is the explicit desired-absence tombstone list for a
+	// previously managed third-party plugin removed while Capture was
+	// Update. It reuses Plugin's own metadata so removal can prove
+	// ownership/provenance.
+	Absent []Plugin `json:"absent,omitempty" toml:"absent,omitempty"`
 }
 
 type Configs struct {
@@ -144,6 +172,12 @@ type Shell struct {
 
 type Hooks struct {
 	Items []Hook `json:"hooks" toml:"hook"`
+	// Absent is the explicit desired-absence tombstone list for a
+	// previously managed hook deleted while Capture was Update. It carries
+	// enough prior provenance (hash, mode) to make future Exact deletion
+	// safe: removal is allowed only if a rediscovered replacement still
+	// matches this provenance.
+	Absent []Hook `json:"absent,omitempty" toml:"absent,omitempty"`
 }
 
 type Resources struct {
@@ -295,6 +329,16 @@ func Load(dir string) (Data, error) {
 	if d.Packages.Mise == nil {
 		d.Packages.Mise = MiseTools{}
 	}
+	absent, err := os.ReadFile(filepath.Join(dir, "packages", "absent.toml"))
+	if err == nil {
+		var file packageAbsenceFile
+		if err := toml.Unmarshal(absent, &file); err != nil {
+			return d, fmt.Errorf("parse packages/absent.toml: %w", err)
+		}
+		d.Packages.Absent = file.Package
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return d, err
+	}
 	themes, err := os.ReadFile(filepath.Join(dir, "themes", "themes.toml"))
 	if err == nil {
 		if err := toml.Unmarshal(themes, &d.Themes); err != nil {
@@ -408,6 +452,10 @@ func Save(dir string, d Data) error {
 	if err := normalizePolicyRules(&d.Policy); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
+	sortProviderDesiredState(&d)
+	if err := validateProviderDesiredState(d); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
 	}
@@ -465,6 +513,9 @@ func Save(dir string, d Data) error {
 	}
 	mise, err := toml.Marshal(misePackagesFile{Tools: d.Packages.Mise})
 	if err != nil {
+		return err
+	}
+	if err := savePackageAbsenceFile(dir, d.Packages.Absent); err != nil {
 		return err
 	}
 	resources, err := MarshalResources(d.Resources)
@@ -631,6 +682,9 @@ func Validate(d Data) error {
 	}
 	if err := validatePolicyRules(d.Policy); err != nil {
 		return fmt.Errorf("policy: %w", err)
+	}
+	if err := validateProviderDesiredState(d); err != nil {
+		return err
 	}
 	return nil
 }

@@ -1036,3 +1036,114 @@ func TestLoadSchema11MachineFileHasDefaultRestoreOptionsAndEmptyPolicy(t *testin
 		t.Fatalf("Load mutated profile.toml on disk: before=%q after=%q", before, after)
 	}
 }
+
+func TestSavePackageAbsenceRoundTripsWithPriorMiseDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Absent = []PackageAbsence{
+		{Ref: "official:htop"},
+		{Ref: "mise:node", Mise: MiseTool{"version": "24"}},
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "packages", "absent.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "[[package]]") {
+		t.Fatalf("absent.toml = %q, want [[package]] entries", raw)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Packages.Absent, d.Packages.Absent) {
+		t.Fatalf("absent = %#v, want %#v", got.Packages.Absent, d.Packages.Absent)
+	}
+}
+
+func TestSavePackageAbsenceRemovesFileWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Absent = []PackageAbsence{{Ref: "official:htop"}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "absent.toml")); err != nil {
+		t.Fatalf("expected absent.toml to exist: %v", err)
+	}
+	d.Packages.Absent = nil
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "absent.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected absent.toml to be removed once empty, stat err=%v", err)
+	}
+}
+
+func TestSaveRejectsPackageBothPresentAndAbsent(t *testing.T) {
+	for _, packages := range []Packages{
+		{Official: []string{"htop"}, Absent: []PackageAbsence{{Ref: "official:htop"}}},
+		{AUR: []string{"yay"}, Absent: []PackageAbsence{{Ref: "aur:yay"}}},
+		{Mise: MiseTools{"node": {}}, Absent: []PackageAbsence{{Ref: "mise:node"}}},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Packages = packages
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("package both present and absent accepted: %#v", packages)
+		}
+	}
+}
+
+func TestSaveRejectsDuplicatePackageAbsence(t *testing.T) {
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Absent = []PackageAbsence{{Ref: "official:htop"}, {Ref: "official:htop"}}
+	if err := Save(t.TempDir(), d); err == nil {
+		t.Fatal("duplicate package absence accepted")
+	}
+}
+
+func TestSaveThemesPluginsHooksRejectBothPresentAndAbsent(t *testing.T) {
+	themes := New("main", time.Unix(0, 0))
+	themes.Themes = Themes{Items: []Theme{{ID: "catppuccin"}}, Absent: []Theme{{ID: "catppuccin"}}}
+	if err := Save(t.TempDir(), themes); err == nil {
+		t.Fatal("theme both present and absent accepted")
+	}
+
+	plugins := New("main", time.Unix(0, 0))
+	plugins.Plugins = Plugins{Items: []Plugin{{ID: "acme.weather"}}, Absent: []Plugin{{ID: "acme.weather"}}}
+	if err := Save(t.TempDir(), plugins); err == nil {
+		t.Fatal("plugin both present and absent accepted")
+	}
+
+	hooks := New("main", time.Unix(0, 0))
+	hooks.Hooks = Hooks{Items: []Hook{{Path: "post-update.d/refresh-icons"}}, Absent: []Hook{{Path: "post-update.d/refresh-icons"}}}
+	if err := Save(t.TempDir(), hooks); err == nil {
+		t.Fatal("hook both present and absent accepted")
+	}
+}
+
+func TestSaveThemesPluginsHooksAbsenceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Themes = Themes{Current: "nord", Items: []Theme{{ID: "nord", Type: "builtin", Enabled: true}}, Absent: []Theme{{ID: "catppuccin", Type: "git", URL: "https://example.test/theme.git"}}}
+	d.Plugins = Plugins{Items: []Plugin{{ID: "omarchy.clock", Enabled: true}}, Absent: []Plugin{{ID: "acme.weather", Source: "git"}}}
+	d.Hooks = Hooks{Items: []Hook{{Path: "pre-restore.sh", Hash: "aaa", Mode: "0755"}}, Absent: []Hook{{Path: "post-update.d/refresh-icons", Hash: "bbb", Mode: "0644"}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Themes, d.Themes) {
+		t.Fatalf("themes = %#v, want %#v", got.Themes, d.Themes)
+	}
+	if !reflect.DeepEqual(got.Plugins, d.Plugins) {
+		t.Fatalf("plugins = %#v, want %#v", got.Plugins, d.Plugins)
+	}
+	if !reflect.DeepEqual(got.Hooks, d.Hooks) {
+		t.Fatalf("hooks = %#v, want %#v", got.Hooks, d.Hooks)
+	}
+}
