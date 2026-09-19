@@ -338,6 +338,114 @@ func machineSpecific(name string) bool {
 	return false
 }
 
+// Merge computes the new desired Packages state from the previous desired
+// state (including Absent tombstones), the current live (classified,
+// portable) detection, and the resolved Capture decision for each canonical
+// ref ("official:<name>", "aur:<name>", "mise:<id>"). enabled must already
+// account for provider safety and policy resolution; Merge itself only
+// implements the Capture merge transition table:
+//
+//	unknown + present + enabled  -> present
+//	present + absent  + enabled  -> tombstone
+//	absent  + present + enabled  -> present
+//	*       + *        disabled  -> preserve previous present/absent
+//	unknown + present  disabled  -> remain unmanaged
+//
+// MachineSpecific/Installed are carried from current unchanged: hardware
+// packages are never portable targets (not-portable-by-default), and
+// Installed is a live-detection scratch field, not desired state. This never
+// translates a disabled decision into the legacy Excluded field -- disabled
+// means preserve the existing desired state exactly, not exclude it.
+func Merge(previous, current profile.Packages, enabled func(ref string) bool) profile.Packages {
+	// Excluded is carried through unchanged: it is the still-active legacy
+	// exclusion mechanism, mutated only by Exclude/Include, never by Capture
+	// merge itself.
+	result := profile.Packages{Installed: current.Installed, MachineSpecific: current.MachineSpecific, Excluded: previous.Excluded}
+	prevAbsent, prevAbsentMise := absenceIndex(previous.Absent)
+	var absences []profile.PackageAbsence
+	result.Official, absences = mergeNames("official", set(previous.Official), set(current.Official), prevAbsent, enabled, absences)
+	result.AUR, absences = mergeNames("aur", set(previous.AUR), set(current.AUR), prevAbsent, enabled, absences)
+	result.Mise, absences = mergeMise(previous.Mise, current.Mise, prevAbsent, prevAbsentMise, enabled, absences)
+	sort.Strings(result.Official)
+	sort.Strings(result.AUR)
+	sort.Slice(absences, func(i, j int) bool { return absences[i].Ref < absences[j].Ref })
+	result.Absent = absences
+	return result
+}
+
+// transitionResult is the Capture merge outcome for one target: whether it
+// belongs in the new desired-present set, the new desired-absent (tombstone)
+// set, or neither (still unmanaged).
+type transitionResult int
+
+const (
+	transitionNone transitionResult = iota
+	transitionPresent
+	transitionAbsent
+)
+
+// transition implements the Capture merge invariant table generically.
+// wasPresent/wasAbsent describe the previous desired state (both false means
+// "unknown": never captured); isPresent is the current live state; enabled
+// is the resolved Capture decision for this target.
+func transition(wasPresent, wasAbsent, isPresent, enabled bool) transitionResult {
+	if !enabled {
+		switch {
+		case wasPresent:
+			return transitionPresent
+		case wasAbsent:
+			return transitionAbsent
+		default:
+			return transitionNone
+		}
+	}
+	if isPresent {
+		return transitionPresent
+	}
+	if wasPresent || wasAbsent {
+		return transitionAbsent
+	}
+	return transitionNone
+}
+
+func mergeNames(kind string, prevPresent, curPresent map[string]bool, prevAbsent map[string]bool, enabled func(ref string) bool, absences []profile.PackageAbsence) ([]string, []profile.PackageAbsence) {
+	names := map[string]bool{}
+	for name := range prevPresent {
+		names[name] = true
+	}
+	for name := range curPresent {
+		names[name] = true
+	}
+	for ref := range prevAbsent {
+		if refKind, name, ok := splitRef(ref); ok && refKind == kind {
+			names[name] = true
+		}
+	}
+	var result []string
+	for name := range names {
+		ref := kind + ":" + name
+		switch transition(prevPresent[name], prevAbsent[ref], curPresent[name], enabled(ref)) {
+		case transitionPresent:
+			result = append(result, name)
+		case transitionAbsent:
+			absences = append(absences, profile.PackageAbsence{Ref: ref})
+		}
+	}
+	return result, absences
+}
+
+func absenceIndex(absences []profile.PackageAbsence) (map[string]bool, profile.MiseTools) {
+	refs := make(map[string]bool, len(absences))
+	mise := profile.MiseTools{}
+	for _, absence := range absences {
+		refs[absence.Ref] = true
+		if kind, id, ok := splitRef(absence.Ref); ok && kind == "mise" && absence.Mise != nil {
+			mise[id] = absence.Mise
+		}
+	}
+	return refs, mise
+}
+
 func ApplyExclusions(packages profile.Packages, excluded []string) profile.Packages {
 	packages.Excluded = lines(strings.Join(excluded, "\n"))
 	for _, ref := range packages.Excluded {

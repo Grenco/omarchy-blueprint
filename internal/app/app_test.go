@@ -916,7 +916,7 @@ func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
 			t.Fatalf("resource ownership for %s = %#v", path, claims)
 		}
 	}
-	state, _, err := provider.Capture(context.Background(), &d)
+	state, _, err := provider.Capture(context.Background(), &d, workflow.CaptureContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3287,4 +3287,43 @@ func TestRestorePlanOptionsFromPolicyDerivesForceFromConflictsOnly(t *testing.T)
 			t.Fatalf("restorePlanOptionsFromPolicy(%+v) = %+v, want Force=%v: Convergence must stay irrelevant to Shell/plugin dependency conflict resolution", tc.options, got, tc.force)
 		}
 	}
+}
+
+// TestPackagesCaptureAppliesTheResolvedCaptureContextToTheRealMerge proves
+// the app-layer wiring, not just the pure Merge function: packagesStateProvider
+// actually threads the workflow.CaptureContext it receives into
+// packagesprovider.Merge, so a resolved Capture-disabled decision preserves
+// desired-present state even though the package is no longer installed.
+func TestPackagesCaptureAppliesTheResolvedCaptureContextToTheRealMerge(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{Official: []string{"htop"}}}
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{
+		"official:htop": {Capture: false, Resolved: true},
+	}}
+
+	state, _, err := (packagesStateProvider{deps: deps}).Capture(context.Background(), &d, capCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := state.(profile.Packages)
+	if !sliceContains(merged.Official, "htop") {
+		t.Fatalf("official = %#v, want htop preserved: Capture Disabled must reach the real merge, not just resolve correctly in isolation", merged.Official)
+	}
+	if !sliceContains(d.Packages.Official, "htop") {
+		t.Fatalf("d.Packages.Official = %#v, want htop preserved in the saved desired state", d.Packages.Official)
+	}
+}
+
+func sliceContains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
