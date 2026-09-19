@@ -423,3 +423,45 @@ func nonNilMiseTools(tools profile.MiseTools) profile.MiseTools {
 	}
 	return tools
 }
+
+// mergeMise applies the Capture merge transition table to Mise tools,
+// keeping the prior validated declaration for the "preserve" outcome
+// (disabled + previously present, or disabled + previously desired-absent)
+// rather than any live re-detected value, so restoring later reproduces the
+// exact configuration that was actually desired.
+func mergeMise(previous, current profile.MiseTools, prevAbsent map[string]bool, prevAbsentMise profile.MiseTools, enabled func(ref string) bool, absences []profile.PackageAbsence) (profile.MiseTools, []profile.PackageAbsence) {
+	ids := map[string]bool{}
+	for id := range previous {
+		ids[id] = true
+	}
+	for id := range current {
+		ids[id] = true
+	}
+	for ref := range prevAbsent {
+		if kind, id, ok := splitRef(ref); ok && kind == "mise" {
+			ids[id] = true
+		}
+	}
+	result := profile.MiseTools{}
+	for id := range ids {
+		ref := "mise:" + id
+		prevTool, wasPresent := previous[id]
+		curTool, isPresent := current[id]
+		isEnabled := enabled(ref)
+		switch transition(wasPresent, prevAbsent[ref], isPresent, isEnabled) {
+		case transitionPresent:
+			if isEnabled && isPresent {
+				result[id] = curTool
+			} else {
+				result[id] = prevTool
+			}
+		case transitionAbsent:
+			mise := prevAbsentMise[id]
+			if wasPresent {
+				mise = prevTool
+			}
+			absences = append(absences, profile.PackageAbsence{Ref: ref, Mise: mise})
+		}
+	}
+	return result, absences
+}

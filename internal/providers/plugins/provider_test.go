@@ -56,7 +56,7 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 		}
 	})
 	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
-	got, err := provider.Capture(context.Background())
+	got, err := provider.Capture(context.Background(), profile.Plugins{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +74,174 @@ func TestCaptureGitAndLocalPlugins(t *testing.T) {
 	}
 	if restored, err := os.ReadFile(previous); err != nil || string(restored) != `{"id":"old"}` {
 		t.Fatalf("restored snapshot=%q err=%v", restored, err)
+	}
+}
+
+func TestCapturePreservesExistingArtifactWhenDisabled(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(user, "mine.local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "mine.local", "manifest.json"), []byte(`{"id":"new"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(profileDir, "plugins", "local", "mine.local", "manifest.json")
+	if err := os.MkdirAll(filepath.Dir(existing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existing, []byte(`{"id":"old"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[{"id":"mine.local","enabled":true,"firstParty":false}]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "mine.local", Source: "local", Hash: "old-hash"}}}
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Hash != "old-hash" {
+		t.Fatalf("items = %#v, want the preserved saved metadata (old hash), not a fresh re-hash of the changed local content", got.Items)
+	}
+	content, err := os.ReadFile(filepath.Join(profileDir, "plugins", "local", "mine.local", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != `{"id":"old"}` {
+		t.Fatalf("staged artifact = %q, want the preserved prior content, not the changed local file", content)
+	}
+}
+
+func TestCaptureTombstonesPluginRemovedLocally(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "gone.local", Source: "local", Hash: "abc"}}}
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "gone.local" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want a tombstone for gone.local preserving its prior hash", got.Absent)
+	}
+	for _, item := range got.Items {
+		if item.ID == "gone.local" {
+			t.Fatalf("items = %#v, want gone.local removed from present items", got.Items)
+		}
+	}
+}
+
+// TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance is a
+// regression for a review finding on PR 3: re-capturing while a plugin stays
+// desired-absent must carry the EXISTING tombstone's provenance forward
+// (Source/URL/Revision/Hash), not rebuild an ID-only Plugin -- later Exact
+// removal needs that provenance to prove ownership before deleting anything.
+// TestPrepareStopManagingArtifactStagesRenameCommitOrRollback is a
+// regression for a review finding on PR 3: Stop Managing must not delete a
+// plugin's local clone artifact immediately, since a caller that then fails
+// to save the profile would leave it referencing a destroyed artifact.
+// PrepareStopManagingArtifact stages the removal by rename; RollbackCapture
+// must restore the original directory and its content byte-for-byte, and
+// FinalizeCapture (only called once the caller knows the save succeeded)
+// must permanently delete it.
+func TestPrepareStopManagingArtifactStagesRenameCommitOrRollback(t *testing.T) {
+	profileDir := t.TempDir()
+	artifact := filepath.Join(profileDir, "plugins", "local", "acme")
+	if err := os.MkdirAll(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifact, "init.lua"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{ProfileDir: profileDir}
+	if err := p.PrepareStopManagingArtifact("acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("artifact must be staged out of its original location, not left in place")
+	}
+
+	if err := p.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(artifact, "init.lua"))
+	if err != nil || string(body) != "original" {
+		t.Fatalf("rollback did not restore original content: body=%q err=%v", body, err)
+	}
+
+	if err := p.PrepareStopManagingArtifact("acme"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.FinalizeCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("finalize must permanently delete the staged artifact")
+	}
+	entries, err := os.ReadDir(filepath.Join(profileDir, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".stop-managing-") {
+			t.Fatalf("finalize left a staging backup behind: %s", entry.Name())
+		}
+	}
+}
+
+func TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "gone.local", Source: "local", Hash: "abc"}}}
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "gone.local" || got.Absent[0].Source != "local" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want the existing tombstone's provenance preserved, not rebuilt ID-only", got.Absent)
+	}
+}
+
+func TestCaptureNeverTombstonesAFirstPartyPlugin(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	// "omarchy.clock" was previously known present; the catalog no longer
+	// reports it at all (e.g. removed upstream), so a naive merge would see
+	// it as present -> absent and tombstone it were first-party plugins not
+	// excluded from Capture merge entirely.
+	saved := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 0 {
+		t.Fatalf("absent = %#v, want no tombstones for a first-party plugin no longer reported", got.Absent)
 	}
 }
 
@@ -124,6 +292,27 @@ func TestDetectDiffPlanAndVerify(t *testing.T) {
 	}
 	if Verify(saved, current, Semantics{ManageEnabled: true}).OK {
 		t.Fatal("verification unexpectedly passed")
+	}
+}
+
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
+// gate: a Capture-produced desired-absence tombstone is write-only today --
+// Capture writes it, but Restore's Plan/Verify never read Absent -- so it
+// cannot cause an unexpected removal, skip, or verification failure until
+// PR 4 activates Restore-side policy.
+func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
+	saved := profile.Plugins{
+		Items:  []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}},
+		Absent: []profile.Plugin{{ID: "acme", Source: "git", URL: "https://example.test/acme.git"}},
+	}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	p := Provider{}
+	plan := p.Plan(saved, current, 1, "4", "4", Semantics{ManageEnabled: true})
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for the tombstoned plugin", plan)
+	}
+	if !Verify(saved, current, Semantics{ManageEnabled: true}).OK {
+		t.Fatal("verify unexpectedly failed because of a tombstoned plugin")
 	}
 }
 

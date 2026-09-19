@@ -45,9 +45,9 @@ type CaptureInspection struct {
 }
 
 // InspectCapture previews what a Capture run would do without mutating the
-// profile or any provider state. In PR 2, every eligible target resolves to
-// the in-memory default-enabled decision (real policy resolution lands in
-// PR 3); provider safety still blocks ineligible targets outright.
+// profile or any provider state, resolving each target's real effective
+// Capture policy against the session's currently selected machine; provider
+// safety still blocks ineligible targets outright regardless of policy.
 func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (CaptureInspection, error) {
 	providers := s.providers
 	if onlyProvider != "" {
@@ -73,11 +73,14 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 		}
 		items := make([]CaptureTarget, 0, len(targets))
 		for _, target := range targets {
-			decision := DefaultCaptureDecision()
+			effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+			if err != nil {
+				return CaptureInspection{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+			}
 			items = append(items, CaptureTarget{
 				Category:   provider.ID(),
 				Inspection: target,
-				Policy:     defaultCapturePolicy(s.machine.Name, provider.ID(), target.Key, decision),
+				Policy:     effective,
 				Decision:   decision,
 				Outcome:    captureOutcome(target, decision),
 			})
@@ -87,42 +90,58 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 	return CaptureInspection{Categories: categories}, nil
 }
 
-// defaultCapturePolicy represents the PR 2 compatibility policy view: no
-// rules exist yet, so every target resolves to the provider default with no
-// explicit source.
-func defaultCapturePolicy(machine, category, target string, decision CaptureDecision) policy.EffectiveSetting {
-	return policy.EffectiveSetting{
-		Enabled:  decision.Capture,
-		Explicit: false,
-		Source: policy.Source{
-			Kind:     policy.SourceDefault,
-			Machine:  machine,
-			Category: category,
-			Target:   target,
-		},
-	}
-}
-
 // captureOutcome mirrors the Capture merge transitions PR 3 implements
 // per-provider (see Task 17): a target ineligible for Capture is Blocked
-// regardless of policy; Capture Disabled always Preserves whatever is
-// already tracked; otherwise the outcome follows from whether the target is
-// currently present on the machine and whether it was already tracked. A
+// regardless of policy -- unless the provider says ineligibility here is an
+// ownership-management transition, not a safety freeze (see
+// TargetCapabilities.DropsDesiredWhenIneligible), in which case any
+// previously recorded desired state -- present or an explicit desired-absent
+// tombstone alike -- actively loses it (StopManaging), same as it really
+// will under Capture; a target with no recorded desired state at all has
+// nothing to drop, so it stays Blocked. Capture Disabled always Preserves
+// whatever is already tracked; a classification the provider says never
+// actually yields a fresh captured value at all (see
+// TargetCapabilities.NoActionableUpdate: Config's UnchangedBaseline/
+// HistoricalBaseline are baseline-derived, not real user customization)
+// StopManages any recorded desired state instead once enabled, whether that
+// state was a captured value or a desired-absent tombstone -- a saved
+// deletion tombstone whose file reappears matching the baseline is no less
+// stale than a saved file that reverts to it, so both converge the same
+// way; only a target with no desired state at all has nothing to drop.
+// Otherwise the outcome follows from whether the target is currently
+// present on the machine and whether it was already tracked. A
 // missing-but-desired target has three genuinely different transitions, not
 // two: a provider that can record an explicit tombstone does so (Absent --
 // Blueprint keeps managing the target and remembers its removal); one that
-// cannot, but leaves prior desired state untouched, Preserves it (Resources:
-// no way to tell "gone" from "not yet restored" apart); one that cannot and
-// does not preserve it silently drops it from desired state entirely
-// (StopManaging -- Defaults/Shell: Capture always writes a fresh full
-// replacement, so an empty/vanished value carries no desired state
+// cannot, but leaves prior desired state untouched, Preserves it
+// (Resources: no way to tell "gone" from "not yet restored" apart); one
+// that cannot and does not preserve it silently drops it from desired state
+// entirely (StopManaging -- Defaults/Shell: Capture always writes a fresh
+// full replacement, so an empty/vanished value carries no desired state
 // afterward, not a remembered absence).
 func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOutcome {
 	if !target.CaptureEligible {
+		if target.Capabilities.DropsDesiredWhenIneligible && target.Desired != TargetUnknown {
+			return CaptureOutcomeStopManaging
+		}
 		return CaptureOutcomeBlocked
 	}
 	if !decision.Capture {
 		return CaptureOutcomePreserve
+	}
+	// NoActionableUpdate means the classification is baseline-derived, not
+	// real user customization, regardless of whether the previously desired
+	// state was a captured value or a deletion tombstone: enabling Capture
+	// converges by dropping either one entirely, since neither carries any
+	// meaningful customization to keep. This must be checked before the
+	// presence switch below, not folded into its present-and-desired-present
+	// case alone -- a saved ConfigDelete tombstone whose file reappears
+	// matching the baseline is Current=Present/Desired=Absent, and would
+	// otherwise fall through to the switch's Add case ("add it back") even
+	// though real Capture drops the stale deletion intent the same way it
+	// drops a stale captured value.
+	if target.Capabilities.NoActionableUpdate && target.Desired != TargetUnknown {
+		return CaptureOutcomeStopManaging
 	}
 	switch {
 	case target.Current == TargetPresent && target.Desired == TargetPresent:

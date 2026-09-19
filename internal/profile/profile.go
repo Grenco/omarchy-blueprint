@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 11
+const Schema = 12
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -30,6 +32,7 @@ const (
 	configOverlaySchema  = 8
 	gitStateSchema       = 10
 	machineOverlaySchema = 11
+	policySchema         = 12
 )
 
 type Manifest struct {
@@ -62,12 +65,17 @@ type CaptureMeta struct {
 }
 
 type Packages struct {
-	Official        []string  `json:"official"`
-	AUR             []string  `json:"aur"`
-	Mise            MiseTools `json:"mise,omitempty" toml:"-"`
-	MachineSpecific []string  `json:"machine_specific,omitempty"`
-	Excluded        []string  `json:"excluded,omitempty"`
-	Installed       []string  `json:"-" toml:"-"`
+	Official []string  `json:"official"`
+	AUR      []string  `json:"aur"`
+	Mise     MiseTools `json:"mise,omitempty" toml:"-"`
+	// Absent is the explicit desired-absence tombstone list: a previously
+	// managed package/tool the user removed while Capture was Update. It is
+	// persisted separately in packages/absent.toml, not this struct's
+	// (unused) own TOML encoding.
+	Absent          []PackageAbsence `json:"absent,omitempty" toml:"-"`
+	MachineSpecific []string         `json:"machine_specific,omitempty"`
+	Excluded        []string         `json:"excluded,omitempty"`
+	Installed       []string         `json:"-" toml:"-"`
 }
 
 // MiseTool is one normalized global Mise tool declaration.
@@ -80,10 +88,28 @@ type misePackagesFile struct {
 	Tools MiseTools `toml:"tools"`
 }
 
+// PackageAbsence is one explicit desired-absence tombstone for a previously
+// managed package/tool the user removed while Capture was Update. Mise
+// carries the prior validated declaration only for mise:<id> entries, so a
+// later Capture Update that finds it reinstalled can restore its exact
+// configuration; it stays empty for official:/aur: entries.
+type PackageAbsence struct {
+	Ref  string   `json:"ref" toml:"ref"`
+	Mise MiseTool `json:"mise,omitempty" toml:"mise,omitempty"`
+}
+
+type packageAbsenceFile struct {
+	Package []PackageAbsence `toml:"package"`
+}
+
 type Themes struct {
 	Current string  `json:"current" toml:"current"`
 	Source  string  `json:"source,omitempty" toml:"source,omitempty"`
 	Items   []Theme `json:"themes" toml:"theme"`
+	// Absent is the explicit desired-absence tombstone list for a
+	// previously managed user theme removed while Capture was Update. It
+	// reuses Theme's own metadata so removal can prove ownership/provenance.
+	Absent []Theme `json:"absent,omitempty" toml:"absent,omitempty"`
 }
 
 type Theme struct {
@@ -97,6 +123,11 @@ type Theme struct {
 
 type Plugins struct {
 	Items []Plugin `json:"plugins" toml:"plugin"`
+	// Absent is the explicit desired-absence tombstone list for a
+	// previously managed third-party plugin removed while Capture was
+	// Update. It reuses Plugin's own metadata so removal can prove
+	// ownership/provenance.
+	Absent []Plugin `json:"absent,omitempty" toml:"absent,omitempty"`
 }
 
 type Configs struct {
@@ -141,6 +172,12 @@ type Shell struct {
 
 type Hooks struct {
 	Items []Hook `json:"hooks" toml:"hook"`
+	// Absent is the explicit desired-absence tombstone list for a
+	// previously managed hook deleted while Capture was Update. It carries
+	// enough prior provenance (hash, mode) to make future Exact deletion
+	// safe: removal is allowed only if a rediscovered replacement still
+	// matches this provenance.
+	Absent []Hook `json:"absent,omitempty" toml:"absent,omitempty"`
 }
 
 type Resources struct {
@@ -154,8 +191,18 @@ type Machines struct {
 }
 
 type Machine struct {
-	Name          string                `json:"name" toml:"name"`
-	ResourcePaths []MachineResourcePath `json:"resource_paths,omitempty" toml:"resource_path,omitempty"`
+	Name string `json:"name" toml:"name"`
+	// RestoreConflicts and RestoreConvergence are sparse: an empty value
+	// means this machine has no override and inherits the built-in
+	// Safe/Additive default. Use EffectiveRestoreDefaults rather than
+	// reading these fields directly.
+	RestoreConflicts   policy.ConflictMode    `json:"restore_conflicts,omitempty" toml:"restore_conflicts,omitempty"`
+	RestoreConvergence policy.ConvergenceMode `json:"restore_convergence,omitempty" toml:"restore_convergence,omitempty"`
+	ResourcePaths      []MachineResourcePath  `json:"resource_paths,omitempty" toml:"resource_path,omitempty"`
+	// Policy is this machine's sparse Capture/Restore overrides. Missing
+	// records mean inherit from the portable profile policy or the
+	// provider default.
+	Policy policy.Rules `json:"policy,omitempty" toml:"policy,omitempty"`
 }
 
 type MachineResourcePath struct {
@@ -221,6 +268,9 @@ type Data struct {
 	Defaults  Defaults  `json:"defaults"`
 	Shell     Shell     `json:"shell"`
 	Hooks     Hooks     `json:"hooks"`
+	// Policy is the portable profile's sparse Capture/Restore overrides.
+	// Missing records mean inherit from the provider default.
+	Policy policy.Rules `json:"policy"`
 }
 
 func New(name string, now time.Time) Data {
@@ -278,6 +328,16 @@ func Load(dir string) (Data, error) {
 	}
 	if d.Packages.Mise == nil {
 		d.Packages.Mise = MiseTools{}
+	}
+	absent, err := os.ReadFile(filepath.Join(dir, "packages", "absent.toml"))
+	if err == nil {
+		var file packageAbsenceFile
+		if err := toml.Unmarshal(absent, &file); err != nil {
+			return d, fmt.Errorf("parse packages/absent.toml: %w", err)
+		}
+		d.Packages.Absent = file.Package
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return d, err
 	}
 	themes, err := os.ReadFile(filepath.Join(dir, "themes", "themes.toml"))
 	if err == nil {
@@ -365,6 +425,23 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	d.Policy, err = loadPolicy(filepath.Join(dir, "policy", "policy.toml"))
+	if err != nil {
+		return d, err
+	}
+	// A Packages.Excluded ref -- whether freshly read from a legacy (pre-
+	// schema-12) profile, or a stray packages/excluded.txt left over from
+	// before this cutover -- is migrated, in memory, into an equivalent
+	// portable Capture Disabled + Restore Disabled policy rule pair;
+	// MachineSpecific becomes pure runtime inspection metadata rather than
+	// persisted desired state. This runs on every load, not only a legacy
+	// schema, so Save's pruning of both obsolete files (see Save) can never
+	// be undone by a load that still finds one on disk. Migration never
+	// consults the current machine to infer desired absence -- it only
+	// rewrites the exclusion mechanism itself, not what is desired-present.
+	if err := migrateLegacyPackageExclusions(&d); err != nil {
+		return d, fmt.Errorf("migrate legacy package exclusions: %w", err)
+	}
 	return d, nil
 }
 
@@ -372,8 +449,6 @@ func Save(dir string, d Data) error {
 	d.Manifest.Schema = Schema
 	d.Packages.Official = normalize(d.Packages.Official)
 	d.Packages.AUR = normalize(d.Packages.AUR)
-	d.Packages.MachineSpecific = normalize(d.Packages.MachineSpecific)
-	d.Packages.Excluded = normalize(d.Packages.Excluded)
 	if err := normalizeConfigs(&d.Config); err != nil {
 		return err
 	}
@@ -383,6 +458,13 @@ func Save(dir string, d Data) error {
 	sortHooks(d.Hooks.Items)
 	sortResources(&d.Resources)
 	if err := normalizeMachines(&d.Machines); err != nil {
+		return err
+	}
+	if err := normalizePolicyRules(&d.Policy); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	sortProviderDesiredState(&d)
+	if err := validateProviderDesiredState(d); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
@@ -444,6 +526,9 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	if err := savePackageAbsenceFile(dir, d.Packages.Absent); err != nil {
+		return err
+	}
 	resources, err := MarshalResources(d.Resources)
 	if err != nil {
 		return err
@@ -456,8 +541,6 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "packages", "official.txt"), []byte(joinList(d.Packages.Official))},
 		{filepath.Join(dir, "packages", "aur.txt"), []byte(joinList(d.Packages.AUR))},
 		{filepath.Join(dir, "packages", "mise.toml"), mise},
-		{filepath.Join(dir, "packages", "machine-specific.txt"), []byte(joinList(d.Packages.MachineSpecific))},
-		{filepath.Join(dir, "packages", "excluded.txt"), []byte(joinList(d.Packages.Excluded))},
 		{filepath.Join(dir, "themes", "themes.toml"), themes},
 		{filepath.Join(dir, "plugins", "plugins.toml"), plugins},
 		{filepath.Join(dir, "config", "config.toml"), configs},
@@ -471,6 +554,18 @@ func Save(dir string, d Data) error {
 			return err
 		}
 	}
+	// machine-specific.txt and excluded.txt are obsolete: MachineSpecific is
+	// pure runtime inspection metadata now (never persisted), and an
+	// exclusion is a Capture Disabled + Restore Disabled policy rule with no
+	// desired state (see migrateLegacyPackageExclusions and
+	// Session.SetPackageExcluded). Every save prunes both files, whether
+	// they came from a legacy profile or a stray write from before this
+	// cutover.
+	for _, name := range []string{"machine-specific.txt", "excluded.txt"} {
+		if err := os.Remove(filepath.Join(dir, "packages", name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
 	for _, machine := range d.Machines.Items {
 		contents, err := toml.Marshal(machine)
 		if err != nil {
@@ -479,6 +574,9 @@ func Save(dir string, d Data) error {
 		if err := atomicWrite(filepath.Join(dir, "machines", machine.Name+".toml"), contents); err != nil {
 			return err
 		}
+	}
+	if err := savePolicyFile(dir, d.Policy); err != nil {
+		return err
 	}
 	return pruneMachineFiles(filepath.Join(dir, "machines"), d.Machines.Items)
 }
@@ -603,6 +701,12 @@ func Validate(d Data) error {
 			}
 		}
 	}
+	if err := validatePolicyRules(d.Policy); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	if err := validateProviderDesiredState(d); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -630,6 +734,12 @@ func validateMachines(machines []Machine) error {
 			if err := validateMachineMappingPath(mapping.Path); err != nil {
 				return fmt.Errorf("machine %q mapping for resource %q: %w", item.Name, mapping.Resource, err)
 			}
+		}
+		if err := validateMachineRestoreDefaults(item.RestoreConflicts, item.RestoreConvergence); err != nil {
+			return fmt.Errorf("machine %q: %w", item.Name, err)
+		}
+		if err := validatePolicyRules(item.Policy); err != nil {
+			return fmt.Errorf("machine %q policy: %w", item.Name, err)
 		}
 	}
 	return nil
@@ -844,6 +954,12 @@ func normalizeMachines(machines *Machines) error {
 				return fmt.Errorf("machine %q has duplicate resource path %q", machine.Name, resourcePath.Resource)
 			}
 			resources[resourcePath.Resource] = true
+		}
+		if err := validateMachineRestoreDefaults(machine.RestoreConflicts, machine.RestoreConvergence); err != nil {
+			return fmt.Errorf("machine %q: %w", machine.Name, err)
+		}
+		if err := normalizePolicyRules(&machine.Policy); err != nil {
+			return fmt.Errorf("machine %q policy: %w", machine.Name, err)
 		}
 	}
 	sortMachines(machines)

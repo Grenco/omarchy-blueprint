@@ -95,6 +95,28 @@ func TestPlanSkipsChildOfUnmanagedSymlinkDirectory(t *testing.T) {
 	}
 }
 
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
+// gate: a Capture-produced desired-absence tombstone is write-only today --
+// Capture writes it, but Restore's Plan/Verify never read Absent -- so it
+// cannot cause an unexpected operation, skip, or verification failure until
+// PR 4 activates Restore-side policy.
+func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	savedHook := planHook(t, p, "post-boot", "x", "0755")
+	saved := profile.Hooks{
+		Items:  []profile.Hook{savedHook},
+		Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: strings.Repeat("a", 64), Mode: "0644"}},
+	}
+	current := State{Items: []DetectedHook{{Path: "post-boot", Hash: savedHook.Hash, Mode: savedHook.Mode}}}
+	plan, err := p.Plan(saved, current, 5, "1", "2")
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan=%#v err=%v, want no operations or skips for the tombstoned hook", plan, err)
+	}
+	if !Verify(saved, current).OK {
+		t.Fatal("verify unexpectedly failed because of a tombstoned hook")
+	}
+}
+
 func TestPlanDefersReservedInboundResourceLink(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")

@@ -856,7 +856,7 @@ func TestConfigStateProviderCapturesKnownAuthoredBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.History = fakeBaselineHistory(false)
-	result, err := p.Capture(profile.Configs{})
+	result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil || len(result.State.Files) != 1 {
 		t.Fatalf("capture=%#v err=%v", result, err)
 	}
@@ -916,7 +916,8 @@ func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
 			t.Fatalf("resource ownership for %s = %#v", path, claims)
 		}
 	}
-	state, _, err := provider.Capture(context.Background(), &d)
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{".config/wezterm/wezterm.lua": {Capture: true, Resolved: true}}}
+	state, _, err := provider.Capture(context.Background(), &d, capCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1010,11 +1011,22 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 			t.Fatalf("recapture code=%d out=%s", code, out)
 		}
 		d, err := profile.Load(profileDir)
-		if err != nil || d.Manifest.Schema != profile.Schema || len(d.Config.Files) != 0 {
+		if err != nil || d.Manifest.Schema != profile.Schema {
 			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
 		}
-		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); !os.IsNotExist(err) {
-			t.Fatal("ambiguous baseline customization was recaptured")
+		// hypr/bindings.lua's baseline provenance is ambiguous with no
+		// BaselineHistory configured in this fixture (its live content
+		// still differs from the baseline, matching the state restore just
+		// reinstated). Safety blocks capturing fresh from that ambiguous
+		// state, but it must not erase the already-safe remembered desired
+		// state from the legacy capture: the entry, and its artifact
+		// (found at its pre-schema-8 path, since Load never relocates an
+		// on-disk snapshot itself), are preserved exactly as before.
+		if len(d.Config.Files) != 1 || d.Config.Files[0].Path != ".config/hypr/bindings.lua" || d.Config.Files[0].Hash != appHash(t, "captured") {
+			t.Fatalf("recaptured profile=%#v, want the ambiguous legacy entry preserved unchanged", d.Config)
+		}
+		if got := readAppFile(t, filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); got != "captured" {
+			t.Fatalf("preserved artifact = %q, want the original captured bytes", got)
 		}
 	})
 
@@ -1483,6 +1495,103 @@ func TestJSONRestoreRequiresExplicitMode(t *testing.T) {
 	}
 }
 
+// TestExcludeRejectsWholeBatchWhenALaterRefIsInvalid is a regression for a
+// review finding on PR 3: exclude/include accept multiple refs and used to
+// apply them sequentially, so a later invalid ref could leave earlier,
+// valid refs already applied. The whole batch is now validated/canonicalized
+// before any ref is mutated.
+func TestExcludeRejectsWholeBatchWhenALaterRefIsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture: %s", errout.String())
+	}
+	if code := run("--profile", dir, "exclude", "official:base", "not-a-valid-ref"); code == 0 {
+		t.Fatalf("batch with an invalid ref succeeded: out=%s", out.String())
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "packages", "official.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "base\n" {
+		t.Fatalf("official file = %q, want base left untouched by the rejected batch", b)
+	}
+}
+
+// TestOpenWorkflowRejectsHandEditedPolicyTargetOnceProvidersAreRegistered is
+// a regression for a review finding on PR 3: profile.Load only validates a
+// policy rule's category/setting/duplicates structurally, since it has no
+// reachable provider registry. A hand-edited policy/policy.toml with a
+// provider-invalid target (e.g. a packages target missing its "kind:"
+// prefix) previously loaded silently and only failed much later, at the
+// first unrelated SetPolicy call touching the same target. It must instead
+// fail every command that opens a workflow session.
+func TestOpenWorkflowRejectsHandEditedPolicyTargetOnceProvidersAreRegistered(t *testing.T) {
+	dir := t.TempDir()
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: &machineRunner{}, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyToml := "capture = [{category = \"packages\", target = \"has space\", setting = \"disabled\"}]\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy", "policy.toml"), []byte(policyToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run("--profile", dir, "capture", "packages"); code == 0 {
+		t.Fatalf("hand-edited invalid policy target accepted: out=%s", out.String())
+	}
+}
+
+// TestOpenWorkflowRejectsNonCanonicalHandEditedConfigTarget is a regression
+// for a round-3 review finding on PR 3: loaded policy validation checked
+// only target syntax, discarding the canonical value ValidateTarget
+// returned. Config explicitly canonicalizes an ergonomic input such as
+// "~/.config/nvim" to the HOME-relative stored key ".config/nvim", so a
+// hand-edited policy containing the ergonomic form passed validation but
+// would never match the canonical target real inspection/resolution emits
+// for the same path. It must fail loudly at load time instead.
+func TestOpenWorkflowRejectsNonCanonicalHandEditedConfigTarget(t *testing.T) {
+	dir := t.TempDir()
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: &machineRunner{}, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyToml := "capture = [{category = \"config\", target = \"~/.config/nvim\", setting = \"disabled\"}]\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy", "policy.toml"), []byte(policyToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run("--profile", dir, "capture", "config"); code == 0 {
+		t.Fatalf("non-canonical hand-edited policy target accepted: out=%s", out.String())
+	}
+}
+
 func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}
@@ -1499,27 +1608,59 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("capture: %s", errout.String())
 	}
-	if code := run("--profile", dir, "exclude", "package:dislocker-git"); code != 0 {
+	if code := run("--profile", dir, "exclude", "aur:dislocker-git"); code != 0 {
 		t.Fatalf("exclude: %s", errout.String())
+	}
+	// Excluding has no desired state at all -- it is stripped from the
+	// profile immediately, via Session.SetPackageExcluded, not deferred to
+	// the next capture.
+	b, err := os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "" {
+		t.Fatalf("aur file = %q, want dislocker-git already stripped", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "excluded.txt")); !os.IsNotExist(err) {
+		t.Fatal("obsolete packages/excluded.txt was written")
 	}
 	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("recapture: %s", errout.String())
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	// A recapture must not silently re-adopt an excluded package that is
+	// still physically installed: Capture Disabled on it preserves "no
+	// desired state," it does not adopt.
+	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != "aur:dislocker-git\n" {
-		t.Fatalf("excluded file = %q", b)
+	if string(b) != "" {
+		t.Fatalf("aur file = %q, want dislocker-git still not re-adopted after recapture", b)
 	}
-	if code := run("--profile", dir, "status"); code != 0 {
+	// An excluded package still physically installed is honest drift now
+	// that Diff no longer hides it: Capture Disabled means Capture leaves
+	// it alone, not that it is invisible to status reporting.
+	if code := run("--profile", dir, "status"); code != 2 || !strings.Contains(out.String(), "+ aur package dislocker-git") {
 		t.Fatalf("status code=%d out=%s err=%s", code, out.String(), errout.String())
 	}
-	if code := run("--profile", dir, "restore", "--dry-run"); code != 0 || !strings.Contains(out.String(), "skip aur:dislocker-git (excluded by profile)") {
+	if code := run("--profile", dir, "restore", "--dry-run"); code != 0 || !strings.Contains(out.String(), "skip aur:dislocker-git (additional package left installed; removal disabled)") {
 		t.Fatalf("dry run code=%d out=%s err=%s", code, out.String(), errout.String())
 	}
 	if code := run("--profile", dir, "include", "aur:dislocker-git"); code != 0 {
 		t.Fatalf("include: %s", errout.String())
+	}
+	// Including only clears the exclusion policy; it does not itself
+	// restore any prior desired state, since excluding left none to
+	// restore. The package is rediscovered by the next capture.
+	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "" {
+		t.Fatalf("aur file = %q, want still unmanaged until the next capture", b)
+	}
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
+		t.Fatalf("post-include recapture: %s", errout.String())
 	}
 	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
 	if err != nil {
@@ -2991,6 +3132,97 @@ func TestConfigInspectTargetsKeepsSavedFileTargetWhenLocallyMissing(t *testing.T
 	}
 }
 
+// TestConfigInspectTargetsMarksTrackedUnchangedBaselineNoActionableUpdate is
+// a regression for a round-3 review finding on PR 3: a tracked path whose
+// live bytes exactly match the baseline (ConfigUnchangedBaseline) was
+// reported Capture-eligible with no special capability, so the generic
+// present-and-desired-present preview logic said "Update" -- but real
+// Capture never actually produces a fresh value for it (see capture.go):
+// enabling Capture converges by dropping the stale desired value instead.
+// The preview must carry that distinction via NoActionableUpdate rather
+// than disagreeing with what Capture actually does.
+func TestConfigInspectTargetsMarksTrackedUnchangedBaselineNoActionableUpdate(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/hypr/bindings.lua", Hash: "stale-hash", Mode: "0644"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/bindings.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want the tracked unchanged-baseline path still surfaced", targets)
+	}
+	if !got.CaptureEligible {
+		t.Fatalf("target = %#v, want capture eligible: policy still governs the enabled/disabled drop-vs-preserve transition", got)
+	}
+	if !got.Capabilities.NoActionableUpdate {
+		t.Fatalf("capabilities = %#v, want NoActionableUpdate: real Capture never produces a fresh value for an unchanged baseline", got.Capabilities)
+	}
+}
+
+// TestConfigInspectTargetsMarksReappearedDeletionTombstoneNoActionableUpdate
+// is a regression for a round-3 review finding on PR 3: a saved ConfigDelete
+// tombstone whose local file reappears exactly matching the baseline scans
+// as ConfigUnchangedBaseline just like a saved file reverting to the
+// baseline does, producing Current=Present/Desired=Absent with
+// NoActionableUpdate set. captureOutcome previously checked
+// NoActionableUpdate only inside its present-and-desired-present case, so
+// this target would have fallen through to the generic Add transition
+// ("add it back") instead of agreeing with what real Capture does (drop the
+// stale deletion intent). This locks down that InspectTargets produces the
+// exact target shape that regression needs.
+func TestConfigInspectTargetsMarksReappearedDeletionTombstoneNoActionableUpdate(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Deletes: []profile.ConfigDelete{{Path: ".config/hypr/bindings.lua", BaselineHash: "stale-hash", BaselineMode: "0644"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/bindings.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want the reappeared-and-unchanged deletion tombstone path still surfaced", targets)
+	}
+	if got.Desired != workflow.TargetAbsent || got.Current != workflow.TargetPresent {
+		t.Fatalf("target = %#v, want Desired=absent Current=present", got)
+	}
+	if !got.CaptureEligible {
+		t.Fatalf("target = %#v, want capture eligible: policy still governs the enabled/disabled drop-vs-preserve transition", got)
+	}
+	if !got.Capabilities.NoActionableUpdate {
+		t.Fatalf("capabilities = %#v, want NoActionableUpdate: real Capture never keeps the deletion intent once the file reappears matching the baseline", got.Capabilities)
+	}
+}
+
 func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 	blocked := []configprovider.Classification{
 		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
@@ -2998,7 +3230,7 @@ func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
 	}
 	for _, classification := range blocked {
-		eligible, reason := configEligibility(classification)
+		eligible, reason, _ := configEligibility(classification)
 		if eligible || reason == "" {
 			t.Fatalf("%s: eligible=%v reason=%q, want ineligible with a safety reason", classification, eligible, reason)
 		}
@@ -3010,8 +3242,33 @@ func TestConfigEligibilityAllowsCaptureActionableClassifications(t *testing.T) {
 		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
 		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline,
 	} {
-		if eligible, _ := configEligibility(classification); !eligible {
+		if eligible, _, _ := configEligibility(classification); !eligible {
 			t.Fatalf("%s: want eligible", classification)
+		}
+	}
+}
+
+// TestConfigEligibilityMarksOnlyOwnershipTransitionsAsDroppingDesiredState
+// is a regression for a review finding on PR 3: Delegated and Excluded
+// actually drop previously desired state when Capture runs (an intentional
+// ownership-management transition), unlike every other safety-blocked
+// classification, which freezes it untouched. Only Delegated/Excluded may
+// report ownershipTransition, so the Capture preview can tell them apart
+// from a generic safety freeze instead of both masquerading as the same
+// "Blocked" outcome.
+func TestConfigEligibilityMarksOnlyOwnershipTransitionsAsDroppingDesiredState(t *testing.T) {
+	ownershipTransitions := map[configprovider.Classification]bool{
+		configprovider.ConfigExcluded:  true,
+		configprovider.ConfigDelegated: true,
+	}
+	for _, classification := range []configprovider.Classification{
+		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
+		configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized,
+		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
+	} {
+		_, _, got := configEligibility(classification)
+		if want := ownershipTransitions[classification]; got != want {
+			t.Fatalf("%s: ownershipTransition=%v, want %v", classification, got, want)
 		}
 	}
 }
@@ -3287,4 +3544,43 @@ func TestRestorePlanOptionsFromPolicyDerivesForceFromConflictsOnly(t *testing.T)
 			t.Fatalf("restorePlanOptionsFromPolicy(%+v) = %+v, want Force=%v: Convergence must stay irrelevant to Shell/plugin dependency conflict resolution", tc.options, got, tc.force)
 		}
 	}
+}
+
+// TestPackagesCaptureAppliesTheResolvedCaptureContextToTheRealMerge proves
+// the app-layer wiring, not just the pure Merge function: packagesStateProvider
+// actually threads the workflow.CaptureContext it receives into
+// packagesprovider.Merge, so a resolved Capture-disabled decision preserves
+// desired-present state even though the package is no longer installed.
+func TestPackagesCaptureAppliesTheResolvedCaptureContextToTheRealMerge(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{Official: []string{"htop"}}}
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{
+		"official:htop": {Capture: false, Resolved: true},
+	}}
+
+	state, _, err := (packagesStateProvider{deps: deps}).Capture(context.Background(), &d, capCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := state.(profile.Packages)
+	if !sliceContains(merged.Official, "htop") {
+		t.Fatalf("official = %#v, want htop preserved: Capture Disabled must reach the real merge, not just resolve correctly in isolation", merged.Official)
+	}
+	if !sliceContains(d.Packages.Official, "htop") {
+		t.Fatalf("d.Packages.Official = %#v, want htop preserved in the saved desired state", d.Packages.Official)
+	}
+}
+
+func sliceContains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

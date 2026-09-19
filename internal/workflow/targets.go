@@ -37,6 +37,34 @@ type TargetCapabilities struct {
 	// field is meaningless when SupportsDesiredAbsence is true, since a
 	// provider that can record explicit absence records it instead.
 	PreservesMissingDesired bool
+	// DropsDesiredWhenIneligible distinguishes two different reasons a
+	// target can be CaptureEligible: false. The default (false) means a
+	// safety freeze: Capture leaves whatever is already desired completely
+	// untouched, so the CaptureOutcomeBlocked preview is accurate -- nothing
+	// changes. true means an intentional ownership-management transition
+	// instead (Config: Delegated to a stronger owner, or explicitly
+	// Excluded): Capture actively drops the target's desired state
+	// regardless of policy, so reporting it as "blocked" (implying nothing
+	// happens) would be misleading; captureOutcome reports
+	// CaptureOutcomeStopManaging for it instead whenever the target has any
+	// recorded desired state, present or an explicit desired-absent
+	// tombstone alike, since real Capture drops both the same way.
+	DropsDesiredWhenIneligible bool
+	// NoActionableUpdate reports that this target's classification is
+	// baseline-derived, not real user customization (Config's
+	// UnchangedBaseline/HistoricalBaseline: the current live bytes exactly
+	// match the current or a trusted historical baseline), so Capture can
+	// never produce a genuinely fresh captured value for it -- whether the
+	// previously desired state was a captured value (present) or an
+	// explicit desired-absent tombstone (a saved deletion whose file
+	// reappeared matching the baseline is no less stale). When true,
+	// captureOutcome reports CaptureOutcomeStopManaging for any recorded
+	// desired state once Capture is enabled, instead of the generic Update
+	// or Add transition, matching what real Capture does: enabling Capture
+	// converges by dropping the stale desired state entirely rather than
+	// updating or re-adding it, and Capture Disabled still Preserves it as
+	// usual.
+	NoActionableUpdate bool
 }
 
 // TargetInspection is one provider-defined policy target's read-only,
