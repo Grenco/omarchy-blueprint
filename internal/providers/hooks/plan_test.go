@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -191,9 +192,13 @@ func TestPlanExactSkipsUnmanagedSymlinkForTombstonedHook(t *testing.T) {
 }
 
 func TestPlanExactDeletesProvenanceMatchedTombstonedHook(t *testing.T) {
-	p, _, _ := hookProvider(t)
-	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
-	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	p, user, _ := hookProvider(t)
+	destination := filepath.Join(user, "post-update.d", "removed")
+	writeHook(t, destination, "old hook body", 0o755)
+	sum := sha256.Sum256([]byte("old hook body"))
+	hash := hex.EncodeToString(sum[:])
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: hash, Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: hash, Mode: "0755"}}}
 	plan, err := p.Plan(saved, current, 5, "1", "2", PlanOptions{Exact: true})
 	if err != nil {
 		t.Fatal(err)
@@ -202,14 +207,22 @@ func TestPlanExactDeletesProvenanceMatchedTombstonedHook(t *testing.T) {
 	if op == nil {
 		t.Fatalf("Operations = %#v, want a deletion for the tombstoned, provenance-matched hook", plan.Operations)
 	}
-	if op.Delete == nil || op.Delete.Destination != filepath.Join(p.UserDir, "post-update.d", "removed") {
+	if op.Delete == nil || op.Delete.Destination != destination {
 		t.Fatalf("operation = %#v", op)
 	}
 	if !op.Delete.Backup || !op.Delete.RejectSymlinkParents {
 		t.Fatalf("operation = %#v, want Backup and RejectSymlinkParents set", op)
 	}
-	if op.Delete.ExpectedExisting == nil || op.Delete.ExpectedExisting.Hash != strings.Repeat("a", 64) || op.Delete.ExpectedExisting.Mode != 0o755 {
-		t.Fatalf("precondition = %#v", op.Delete.ExpectedExisting)
+	// The precondition is the executor's own live-filesystem hash
+	// (content.HashFilesystemObject), deliberately different from the
+	// hooks-package DetectedHook.Hash used for the provenance-match gate
+	// above -- the executor re-verifies against this at execution time.
+	wantLiveHash, err := content.HashFilesystemObject(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Delete.ExpectedExisting == nil || op.Delete.ExpectedExisting.Hash != wantLiveHash || op.Delete.ExpectedExisting.Mode != 0o755 {
+		t.Fatalf("precondition = %#v, want live hash %q", op.Delete.ExpectedExisting, wantLiveHash)
 	}
 	if op.Risk != model.RiskHigh || !op.Reversible {
 		t.Fatalf("operation = %#v, want RiskHigh and Reversible (backup taken)", op)
