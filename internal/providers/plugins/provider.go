@@ -60,48 +60,146 @@ func (p Provider) Detect(ctx context.Context) (profile.Plugins, error) {
 	return state, nil
 }
 
-func (p *Provider) Capture(ctx context.Context) (profile.Plugins, error) {
-	state, err := p.Detect(ctx)
+// Capture merges live detection into desired state per the Capture merge
+// transition table, driven by enabled's resolved per-target decision
+// ("plugin:<id>" for each third-party plugin's source availability). A
+// preserved (disabled) or freshly captured (enabled) target's local artifact
+// is staged into the merged generation together -- disabled targets keep
+// their existing artifact rather than the staged tree being wholesale
+// replaced by only what this run freshly captured. First-party (builtin)
+// plugins are never merged/tombstoned: Omarchy owns their availability, and
+// plugin enablement itself remains Shell-owned, not Plugins' desired state.
+func (p *Provider) Capture(ctx context.Context, saved profile.Plugins, enabled func(ref string) bool) (profile.Plugins, error) {
+	current, err := p.Detect(ctx)
 	if err != nil {
-		return state, err
+		return current, err
 	}
 	if p.ProfileDir == "" {
-		return state, fmt.Errorf("profile directory is required to capture plugins")
+		return current, fmt.Errorf("profile directory is required to capture plugins")
 	}
 	parent := filepath.Join(p.ProfileDir, "plugins")
 	if err := os.MkdirAll(parent, 0755); err != nil {
-		return state, err
+		return current, err
 	}
 	stage, err := os.MkdirTemp(parent, ".local-capture-*")
 	if err != nil {
-		return state, err
+		return current, err
 	}
 	defer os.RemoveAll(stage)
-	for _, item := range state.Items {
-		if item.Source != "local" {
-			continue
-		}
-		source, err := filepath.EvalSymlinks(filepath.Join(p.UserDir, item.ID))
-		if err != nil {
-			return state, err
-		}
-		if err := copyTree(source, filepath.Join(stage, item.ID)); err != nil {
-			return state, fmt.Errorf("capture plugin %q: %w", item.ID, err)
+	existing := filepath.Join(parent, "local")
+
+	savedByID, currentByID := pluginMap(saved.Items), pluginMap(current.Items)
+	savedAbsent := map[string]bool{}
+	for _, absent := range saved.Absent {
+		savedAbsent[absent.ID] = true
+	}
+	ids := map[string]bool{}
+	for id, item := range savedByID {
+		if item.Source != "builtin" {
+			ids[id] = true
 		}
 	}
+	for id, item := range currentByID {
+		if item.Source != "builtin" {
+			ids[id] = true
+		}
+	}
+	for id := range savedAbsent {
+		ids[id] = true
+	}
+
+	var result profile.Plugins
+	for id := range ids {
+		savedItem, wasPresent := savedByID[id]
+		currentItem, isPresent := currentByID[id]
+		isEnabled := enabled("plugin:" + id)
+		switch transition(wasPresent, savedAbsent[id], isPresent, isEnabled) {
+		case transitionPresent:
+			if isEnabled && isPresent {
+				if currentItem.Source == "local" {
+					source, err := filepath.EvalSymlinks(filepath.Join(p.UserDir, id))
+					if err != nil {
+						return current, err
+					}
+					if err := copyTree(source, filepath.Join(stage, id)); err != nil {
+						return current, fmt.Errorf("capture plugin %q: %w", id, err)
+					}
+				}
+				result.Items = append(result.Items, currentItem)
+			} else {
+				if savedItem.Source == "local" {
+					if err := copyTree(filepath.Join(existing, id), filepath.Join(stage, id)); err != nil {
+						return current, fmt.Errorf("preserve plugin %q: %w", id, err)
+					}
+				}
+				result.Items = append(result.Items, savedItem)
+			}
+		case transitionAbsent:
+			tombstone := savedItem
+			if !wasPresent {
+				tombstone = profile.Plugin{ID: id}
+			}
+			result.Absent = append(result.Absent, tombstone)
+		}
+	}
+	for _, item := range currentByID {
+		if item.Source == "builtin" {
+			result.Items = append(result.Items, item)
+		}
+	}
+	sort.Slice(result.Items, func(i, j int) bool { return result.Items[i].ID < result.Items[j].ID })
+	sort.Slice(result.Absent, func(i, j int) bool { return result.Absent[i].ID < result.Absent[j].ID })
+
 	dest, old := filepath.Join(parent, "local"), filepath.Join(parent, ".local-previous")
 	_ = os.RemoveAll(old)
 	if _, err := os.Stat(dest); err == nil {
 		if err := os.Rename(dest, old); err != nil {
-			return state, err
+			return current, err
 		}
 	}
 	if err := os.Rename(stage, dest); err != nil {
 		_ = os.Rename(old, dest)
-		return state, err
+		return current, err
 	}
 	p.captureDestination, p.captureOld, p.capturePending = dest, old, true
-	return state, nil
+	return result, nil
+}
+
+// transitionResult is the Capture merge outcome for one target: whether it
+// belongs in the new desired-present set, the new desired-absent (tombstone)
+// set, or neither (still unmanaged). See internal/providers/packages'
+// identical helper: each provider owns its own merge/preserve behavior, so
+// this small, stable, pure table is duplicated rather than shared.
+type transitionResult int
+
+const (
+	transitionNone transitionResult = iota
+	transitionPresent
+	transitionAbsent
+)
+
+// transition implements the Capture merge invariant table generically.
+// wasPresent/wasAbsent describe the previous desired state (both false means
+// "unknown": never captured); isPresent is the current live state; enabled
+// is the resolved Capture decision for this target.
+func transition(wasPresent, wasAbsent, isPresent, enabled bool) transitionResult {
+	if !enabled {
+		switch {
+		case wasPresent:
+			return transitionPresent
+		case wasAbsent:
+			return transitionAbsent
+		default:
+			return transitionNone
+		}
+	}
+	if isPresent {
+		return transitionPresent
+	}
+	if wasPresent || wasAbsent {
+		return transitionAbsent
+	}
+	return transitionNone
 }
 
 func (p *Provider) CommitCapture() error { return nil }

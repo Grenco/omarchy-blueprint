@@ -771,6 +771,10 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			currentThemes[theme.ID] = true
 		}
 	}
+	absentThemes := map[string]bool{}
+	for _, absent := range d.Themes.Absent {
+		absentThemes[absent.ID] = true
+	}
 	ids := map[string]bool{}
 	for id := range desiredThemes {
 		ids[id] = true
@@ -778,11 +782,21 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	for id := range currentThemes {
 		ids[id] = true
 	}
+	for id := range absentThemes {
+		ids[id] = true
+	}
 	for _, id := range sortedKeys(ids) {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absentThemes[id]:
+			desiredState = workflow.TargetAbsent
+		case desiredThemes[id]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "theme:" + id,
 			Label:           id,
-			Desired:         desiredPresence(desiredThemes[id]),
+			Desired:         desiredState,
 			Current:         currentPresence(currentThemes[id]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -795,21 +809,24 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	return targets, nil
 }
 
-func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
 	p.captureProvider = &provider
-	current, err := p.captureProvider.Capture(ctx)
+	merged, err := p.captureProvider.Capture(ctx, d.Themes, func(ref string) bool {
+		decision, ok := capCtx.Lookup(ref)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		p.captureProvider = nil
 		return nil, nil, err
 	}
-	changes := themesprovider.Diff(d.Themes, current)
-	d.Themes = current
+	changes := themesprovider.Diff(d.Themes, merged)
+	d.Themes = merged
 	d.Manifest.Capture.Themes = true
-	return current, changes, nil
+	return merged, changes, nil
 }
 
 func (p *themesStateProvider) CommitCapture() error {
@@ -927,6 +944,10 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 			currentThirdParty[plugin.ID] = true
 		}
 	}
+	absentThirdParty := map[string]bool{}
+	for _, absent := range d.Plugins.Absent {
+		absentThirdParty[absent.ID] = true
+	}
 	ids := map[string]bool{}
 	for id := range desiredThirdParty {
 		ids[id] = true
@@ -934,12 +955,22 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	for id := range currentThirdParty {
 		ids[id] = true
 	}
+	for id := range absentThirdParty {
+		ids[id] = true
+	}
 	targets := make([]workflow.TargetInspection, 0, len(ids))
 	for _, id := range sortedKeys(ids) {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absentThirdParty[id]:
+			desiredState = workflow.TargetAbsent
+		case desiredThirdParty[id]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "plugin:" + id,
 			Label:           id,
-			Desired:         desiredPresence(desiredThirdParty[id]),
+			Desired:         desiredState,
 			Current:         currentPresence(currentThirdParty[id]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -952,21 +983,24 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	return targets, nil
 }
 
-func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return nil, nil, err
 	}
 	p.captureProvider = &provider
-	current, err := p.captureProvider.Capture(ctx)
+	merged, err := p.captureProvider.Capture(ctx, d.Plugins, func(ref string) bool {
+		decision, ok := capCtx.Lookup(ref)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		p.captureProvider = nil
 		return nil, nil, err
 	}
-	changes := pluginsprovider.Diff(d.Plugins, current, pluginSemantics(*d))
-	d.Plugins = current
+	changes := pluginsprovider.Diff(d.Plugins, merged, pluginSemantics(*d))
+	d.Plugins = merged
 	d.Manifest.Capture.Plugins = true
-	return current, changes, nil
+	return merged, changes, nil
 }
 
 func (p *pluginsStateProvider) CommitCapture() error {
