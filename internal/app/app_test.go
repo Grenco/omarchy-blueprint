@@ -4575,6 +4575,66 @@ func TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
 	}
 }
 
+// TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer
+// proves Convergence: Exact actually threads from RestoreContext.Options
+// through hooksStateProvider.Plan into the low-level provider's
+// PlanOptions, and that a Restore-Skip tombstone is structurally never a
+// deletion candidate (filterHooksForRestoreSkip strips it before Plan ever
+// sees it).
+func TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	deps.HomeDir = func() (string, error) { return t.TempDir(), nil }
+	hooksDir, err := deps.HooksDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "removed.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := profile.Data{Hooks: profile.Hooks{Absent: []profile.Hook{{Path: "removed.sh", Hash: appHash(t, "#!/bin/sh\n"), Mode: "0755"}}}}
+	opt := &options{profileDir: profileDir}
+
+	skipCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"removed.sh": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`}},
+	}
+	plan, err := (hooksStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, skipCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "delete" {
+			t.Fatalf("Operations = %#v, want no deletion for a Restore-Skip tombstone even under Exact", plan.Operations)
+		}
+	}
+
+	applyCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"removed.sh": {Restore: true, Resolved: true}},
+	}
+	plan, err = (hooksStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, applyCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deleted bool
+	for _, op := range plan.Operations {
+		if op.Action == "delete" && op.Resource == "hook:removed.sh" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("Operations = %#v, want a deletion for the tombstoned, provenance-matched hook", plan.Operations)
+	}
+
+	verification, err := (hooksStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, applyCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.OK {
+		t.Fatal("verification unexpectedly passed while the Exact-tombstoned hook is still present on disk")
+	}
+}
+
 func TestShellInspectTargetsReportsSingleStateTarget(t *testing.T) {
 	_, deps := configSandbox(t)
 	baseline, user := shellPathsFixture(t)
