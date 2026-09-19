@@ -1672,12 +1672,15 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	if err != nil {
 		return nil, err
 	}
-	desired, currentManaged := map[string]bool{}, map[string]bool{}
+	desired, currentManaged, absent := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, hook := range d.Hooks.Items {
 		desired[hook.Path] = true
 	}
 	for _, hook := range current.Items {
 		currentManaged[hook.Path] = true
+	}
+	for _, hook := range d.Hooks.Absent {
+		absent[hook.Path] = true
 	}
 	paths := map[string]bool{}
 	for path := range desired {
@@ -1686,12 +1689,22 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	for path := range currentManaged {
 		paths[path] = true
 	}
+	for path := range absent {
+		paths[path] = true
+	}
 	targets := make([]workflow.TargetInspection, 0, len(paths)+len(current.Unmanaged))
 	for _, path := range sortedKeys(paths) {
+		desiredState := workflow.TargetUnknown
+		switch {
+		case absent[path]:
+			desiredState = workflow.TargetAbsent
+		case desired[path]:
+			desiredState = workflow.TargetPresent
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             path,
 			Label:           path,
-			Desired:         desiredPresence(desired[path]),
+			Desired:         desiredState,
 			Current:         currentPresence(currentManaged[path]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -1719,7 +1732,7 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	return targets, nil
 }
 
-func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return nil, nil, err
@@ -1728,7 +1741,10 @@ func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data, _ workfl
 	if err != nil {
 		return nil, nil, err
 	}
-	captured, err := provider.Capture(current)
+	captured, err := provider.Capture(current, d.Hooks, func(path string) bool {
+		decision, ok := capCtx.Lookup(path)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		return nil, nil, err
 	}
