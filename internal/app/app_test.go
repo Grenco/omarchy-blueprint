@@ -4000,6 +4000,139 @@ func TestThemesFilterSkipsRequireForBuiltinItems(t *testing.T) {
 	}
 }
 
+// themesExactRemovalFixture captures a real local theme ("old-custom") so
+// its recorded Hash provenance genuinely matches what Detect will find on
+// disk, then moves it from Items to Absent in memory -- simulating "this
+// theme was captured before, and policy now desires it gone" -- while
+// leaving the active theme as the builtin "nord" throughout, so these tests
+// isolate the Restore-Skip/Exact wiring alone without also exercising the
+// active-theme-without-replacement guard (already covered at the low level).
+func themesExactRemovalFixture(t *testing.T) (Dependencies, *options, profile.Data) {
+	t.Helper()
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(user, "old-custom")
+	if err := os.Mkdir(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(custom, "colors.toml"), []byte("accent = '#123456'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profileDir, deps := configSandbox(t)
+	deps.ThemeDirs = func() (string, string, error) { return builtin, user, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "nord"
+	opt := &options{profileDir: profileDir}
+
+	sp := &themesStateProvider{deps: deps, opt: opt}
+	var d profile.Data
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{
+		"active":           {Capture: true, Resolved: true},
+		"theme:old-custom": {Capture: true, Resolved: true},
+	}}
+	if _, _, err := sp.Capture(context.Background(), &d, capCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	var kept []profile.Theme
+	var tombstoned profile.Theme
+	for _, item := range d.Themes.Items {
+		if item.ID == "old-custom" {
+			tombstoned = item
+		} else {
+			kept = append(kept, item)
+		}
+	}
+	if tombstoned.ID == "" {
+		t.Fatalf("captured items = %#v, want old-custom captured with real provenance", d.Themes.Items)
+	}
+	d.Themes.Items = kept
+	d.Themes.Absent = append(d.Themes.Absent, tombstoned)
+	return deps, opt, d
+}
+
+// TestThemesPlanExactRestoreSkipSuppressesRemoval is the app-layer wiring
+// counterpart to the low-level Task 29 gate: filterThemesForRestoreSkip
+// strips a Restore-Skip Absent entry before provider.Plan ever sees it, so
+// Convergence: Exact never gets a chance to consider it for removal.
+func TestThemesPlanExactRestoreSkipSuppressesRemoval(t *testing.T) {
+	deps, opt, d := themesExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"active":           {Restore: true, Resolved: true},
+			"theme:old-custom": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+		},
+	}
+	plan, err := (themesStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal for a Restore-Skip tombstone even under Exact", plan.Operations)
+		}
+	}
+}
+
+// TestThemesPlanExactRemovesTombstonedThemeThroughAppLayer proves
+// Convergence: Exact actually threads from RestoreContext.Options through
+// themesStateProvider.Plan into the low-level provider's PlanOptions, using
+// a real captured-then-tombstoned local theme so the provenance check
+// (equivalent) genuinely passes against live detection, not a hand-built
+// fixture.
+func TestThemesPlanExactRemovesTombstonedThemeThroughAppLayer(t *testing.T) {
+	deps, opt, d := themesExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"active":           {Restore: true, Resolved: true},
+			"theme:old-custom": {Restore: true, Resolved: true},
+		},
+	}
+	plan, err := (themesStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	for _, op := range plan.Operations {
+		if op.Action == "remove" && op.Resource == "theme:old-custom" {
+			removed = true
+			if want := []string{"omarchy", "theme", "remove", "old-custom"}; !reflect.DeepEqual(op.Command, want) {
+				t.Fatalf("command = %#v, want %#v", op.Command, want)
+			}
+		}
+	}
+	if !removed {
+		t.Fatalf("Operations = %#v, want a removal operation for the tombstoned, provenance-matched local theme", plan.Operations)
+	}
+}
+
+// TestThemesVerifyExactFailsWhenTombstonedThemeStillInstalledThroughAppLayer
+// proves Convergence: Exact also threads into themesStateProvider.Verify,
+// not just Plan: verification must not report success while an Exact-only
+// tombstone the plan should have removed is (in this fixture, deliberately)
+// still present.
+func TestThemesVerifyExactFailsWhenTombstonedThemeStillInstalledThroughAppLayer(t *testing.T) {
+	deps, opt, d := themesExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"active":           {Restore: true, Resolved: true},
+			"theme:old-custom": {Restore: true, Resolved: true},
+		},
+	}
+	verification, err := (themesStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.OK {
+		t.Fatal("verification unexpectedly passed while the Exact-tombstoned theme is still installed on disk")
+	}
+}
+
 func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
 	_, deps := configSandbox(t)
 	pluginDir := t.TempDir()
