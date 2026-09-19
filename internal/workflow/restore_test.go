@@ -131,6 +131,182 @@ func TestApplyRestoreResultStoresResolvedOptions(t *testing.T) {
 	}
 }
 
+// TestRestoreContextResolvesRealPolicyDecisionInsteadOfCompatibilityDefault
+// is a Task 25 regression: an explicit profile-defaults Restore Disabled
+// rule now actually resolves to Skip, replacing the PR 2 compatibility
+// stub that always recorded DefaultRestoreDecision (Restore: true,
+// Resolved: false) regardless of policy.
+func TestRestoreContextResolvesRealPolicyDecisionInsteadOfCompatibilityDefault(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Policy = policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}}}
+	session := newCaptureSession(t, data)
+	var lastPlan RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan,
+		targets:  []TargetInspection{{Key: "official:firefox", RestoreEligible: true}},
+	}})
+
+	if _, err := session.PlanRestore(context.Background(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := lastPlan.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Restore {
+		t.Fatalf("decision = %+v, want Restore Skip for the explicitly disabled target", decision)
+	}
+}
+
+// TestRestoreContextDefaultsToApplyWhenNoPolicyOverride confirms a target
+// with no override resolves to a real, resolved Apply decision (not merely
+// the PR 2 compatibility default, which also happened to read Restore:
+// true but with Resolved: false).
+func TestRestoreContextDefaultsToApplyWhenNoPolicyOverride(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var lastPlan RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan,
+		targets:  []TargetInspection{{Key: "official:firefox", RestoreEligible: true}},
+	}})
+
+	if _, err := session.PlanRestore(context.Background(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := lastPlan.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Restore {
+		t.Fatalf("decision = %+v, want Restore Apply by default", decision)
+	}
+}
+
+// TestRestoreSkipAppliesUnderAllFourOptionCombinations is a Task 25
+// regression matching the design invariant "Restore Skip always narrows
+// authority. Neither Force nor Exact can override it": a policy-disabled
+// target resolves to Skip identically under every Conflicts/Convergence
+// combination.
+func TestRestoreSkipAppliesUnderAllFourOptionCombinations(t *testing.T) {
+	combinations := []policy.RestoreOptions{
+		{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive},
+		{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceAdditive},
+		{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact},
+	}
+	for _, options := range combinations {
+		options := options
+		t.Run(string(options.Conflicts)+"+"+string(options.Convergence), func(t *testing.T) {
+			data := profile.New("test", time.Now())
+			data.Policy = policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}}}
+			session := newCaptureSession(t, data)
+			var lastPlan RestoreContext
+			session.SetProviders([]Provider{captureTestProvider{
+				id: "packages", order: &[]string{},
+				lastPlan: &lastPlan,
+				targets:  []TargetInspection{{Key: "official:firefox", RestoreEligible: true}},
+			}})
+
+			if _, err := session.PlanRestore(context.Background(), "", &options); err != nil {
+				t.Fatal(err)
+			}
+			decision, err := lastPlan.Require("official:firefox")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Restore {
+				t.Fatalf("decision = %+v under options %+v, want Restore Skip regardless of Conflicts/Convergence", decision, options)
+			}
+		})
+	}
+}
+
+// TestRestoreDecisionCarriesStandardizedSkipReasonForMachineOverride is a
+// Task 25 regression for the design's "visible skip/reason in the plan"
+// invariant: a machine-scoped Restore Disabled override records the
+// standardized "restore disabled for machine %q" reason.
+func TestRestoreDecisionCarriesStandardizedSkipReasonForMachineOverride(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{{
+		Name:   "desktop",
+		Policy: policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}}},
+	}}
+	session := newExplicitMachineCaptureSession(t, data, "desktop")
+	var lastPlan RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan,
+		targets:  []TargetInspection{{Key: "official:firefox", RestoreEligible: true}},
+	}})
+
+	if _, err := session.PlanRestore(context.Background(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := lastPlan.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `restore disabled for machine "desktop"`; decision.Reason != want {
+		t.Fatalf("decision.Reason = %q, want %q", decision.Reason, want)
+	}
+}
+
+// TestRestoreDecisionCarriesStandardizedSkipReasonForProfileOverride mirrors
+// the machine case for a portable profile-scoped override, which applies to
+// every machine and so is reported without a machine qualifier.
+func TestRestoreDecisionCarriesStandardizedSkipReasonForProfileOverride(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Policy = policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}}}
+	session := newCaptureSession(t, data)
+	var lastPlan RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan,
+		targets:  []TargetInspection{{Key: "official:firefox", RestoreEligible: true}},
+	}})
+
+	if _, err := session.PlanRestore(context.Background(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := lastPlan.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "restore disabled"; decision.Reason != want {
+		t.Fatalf("decision.Reason = %q, want %q", decision.Reason, want)
+	}
+}
+
+// TestRestoreDecisionCarriesProviderSafetyReasonWhenIneligible confirms a
+// provider-safety-driven skip (RestoreEligible false) carries the
+// provider's own SafetyReason rather than a policy-derived one, even when
+// policy would otherwise allow Restore.
+func TestRestoreDecisionCarriesProviderSafetyReasonWhenIneligible(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var lastPlan RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan,
+		targets:  []TargetInspection{{Key: "official:firefox", RestoreEligible: false, SafetyReason: "hardware profile"}},
+	}})
+
+	if _, err := session.PlanRestore(context.Background(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := lastPlan.Require("official:firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Restore {
+		t.Fatalf("decision = %+v, want Restore Skip for an ineligible target", decision)
+	}
+	if want := "hardware profile"; decision.Reason != want {
+		t.Fatalf("decision.Reason = %q, want the provider's own SafetyReason %q", decision.Reason, want)
+	}
+}
+
 func TestRestoreConsequencesUseTypedOperations(t *testing.T) {
 	normal := model.RestorePlan{Skipped: []model.Skipped{{Provider: "config", Resource: "file"}, {Provider: "config", Resource: "delete"}, {Provider: "other", Resource: "unknown"}}}
 	forced := model.RestorePlan{Operations: []model.Operation{
