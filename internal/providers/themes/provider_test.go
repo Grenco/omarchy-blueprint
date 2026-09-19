@@ -272,7 +272,7 @@ func TestDiffPlanAndVerify(t *testing.T) {
 	if got := plan.Operations[0].Command; !reflect.DeepEqual(got, []string{"omarchy", "theme", "set", "osaka-jade"}) {
 		t.Fatalf("command = %#v", got)
 	}
-	if Verify(saved, current).OK {
+	if (Provider{}).Verify(saved, current).OK {
 		t.Fatal("verification unexpectedly passed")
 	}
 }
@@ -287,7 +287,7 @@ func TestUserOverrideOfSavedBuiltinIsDriftButNotRemoved(t *testing.T) {
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 {
 		t.Fatalf("plan = %#v", plan)
 	}
-	if Verify(saved, current).OK {
+	if (Provider{}).Verify(saved, current).OK {
 		t.Fatal("verification unexpectedly passed")
 	}
 }
@@ -308,7 +308,7 @@ func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
 		t.Fatalf("plan = %#v, want no operations or skips for the tombstoned theme", plan)
 	}
-	if !Verify(saved, current).OK {
+	if !(Provider{}).Verify(saved, current).OK {
 		t.Fatal("verify unexpectedly failed because of a tombstoned theme")
 	}
 }
@@ -529,6 +529,72 @@ func TestPlanExactRemovesActiveThemeAfterEstablishingReplacement(t *testing.T) {
 	}
 }
 
+// TestPlanExactSkipsRemovingActiveThemeWhenReplacementCannotBeEstablished
+// is the round-1 review blocker-1 regression: needsActivation is set purely
+// from string inequality (saved.Current != current.Current), not from
+// whether saved.Current's own desired-present target actually succeeded --
+// a missing/unavailable replacement still leaves needsActivation true and
+// an (futile) activation operation queued. The Exact removal guard must not
+// treat that queued-but-doomed activation as a safe replacement: it must
+// verify saved.Current itself is genuinely establishable (already present,
+// or has a real, non-skipped install/copy path) before allowing removal of
+// the live active theme to depend on it.
+func TestPlanExactSkipsRemovingActiveThemeWhenReplacementCannotBeEstablished(t *testing.T) {
+	saved := profile.Themes{
+		// "missing-builtin" is not available on this Omarchy install (no
+		// BuiltinDir entry), so its own Items-loop pass records a Skipped
+		// entry for it and queues no reconstruction operation -- yet it is
+		// still the desired active theme, so needsActivation is (wrongly,
+		// absent this fix) still true.
+		Current: "missing-builtin",
+		Items:   []profile.Theme{{ID: "missing-builtin", Type: "builtin"}},
+		Absent:  []profile.Theme{{ID: "gruvbox", Type: "local", Hash: "hash"}},
+	}
+	current := profile.Themes{Current: "gruvbox", Items: []profile.Theme{
+		{ID: "gruvbox", Type: "local", Hash: "hash"},
+	}}
+	plan := (Provider{BuiltinDir: t.TempDir()}).Plan(saved, current, 1, "4.0", "4.0", PlanOptions{Exact: true})
+	if op := removalOp(plan, "gruvbox"); op != nil {
+		t.Fatalf("Operations = %#v, want no removal of the live active theme: the desired replacement cannot actually be established", plan.Operations)
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "theme:gruvbox" {
+			found = true
+			if !strings.Contains(skipped.Reason, "active") {
+				t.Fatalf("skip reason = %q, want it to explain the active-theme guard", skipped.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the blocked active-theme removal", plan.Skipped)
+	}
+}
+
+// TestVerifyExactDoesNotExpectRemovalPlanItselfRefusedForSafety is the
+// round-1 review blocker-2 regression: Plan legitimately skips removing the
+// live active theme when no replacement is established (see
+// TestPlanExactSkipsRemovingActiveThemeWhenReplacementCannotBeEstablished),
+// so Verify must not turn that same, correctly-skipped case into a
+// verification failure -- Plan and Verify share activeReplacementEstablished
+// precisely so this cannot diverge.
+func TestVerifyExactDoesNotExpectRemovalPlanItselfRefusedForSafety(t *testing.T) {
+	saved := profile.Themes{
+		Current: "missing-builtin",
+		Items:   []profile.Theme{{ID: "missing-builtin", Type: "builtin"}},
+		Absent:  []profile.Theme{{ID: "gruvbox", Type: "local", Hash: "hash"}},
+	}
+	current := profile.Themes{Current: "gruvbox", Items: []profile.Theme{
+		{ID: "gruvbox", Type: "local", Hash: "hash"},
+	}}
+	result := (Provider{BuiltinDir: t.TempDir()}).Verify(saved, current, VerifyOptions{Exact: true})
+	for _, missing := range result.Missing {
+		if missing == "theme:gruvbox" {
+			t.Fatalf("Missing = %#v, want gruvbox excluded: Plan itself refused to remove it for safety", result.Missing)
+		}
+	}
+}
+
 func TestVerifyExactFailsWhenTombstonedThemeStillInstalled(t *testing.T) {
 	saved := profile.Themes{
 		Current: "nord",
@@ -539,11 +605,11 @@ func TestVerifyExactFailsWhenTombstonedThemeStillInstalled(t *testing.T) {
 		{ID: "nord", Type: "builtin", Enabled: true},
 		{ID: "gruvbox", Type: "local", Hash: "hash"},
 	}}
-	if Verify(saved, current, VerifyOptions{Exact: true}).OK {
+	if (Provider{}).Verify(saved, current, VerifyOptions{Exact: true}).OK {
 		t.Fatal("verification unexpectedly passed with the tombstoned theme still installed under Exact")
 	}
 	// Additive must not hold the same theme to the same bar.
-	if !Verify(saved, current).OK {
+	if !(Provider{}).Verify(saved, current).OK {
 		t.Fatal("Additive verification unexpectedly failed because of a tombstoned theme still present")
 	}
 }
@@ -555,7 +621,7 @@ func TestVerifyExactPassesWhenTombstonedThemeAlreadyRemoved(t *testing.T) {
 		Absent:  []profile.Theme{{ID: "gruvbox", Type: "local", Hash: "hash"}},
 	}
 	current := profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "builtin", Enabled: true}}}
-	if !Verify(saved, current, VerifyOptions{Exact: true}).OK {
+	if !(Provider{}).Verify(saved, current, VerifyOptions{Exact: true}).OK {
 		t.Fatal("verification unexpectedly failed once the tombstoned theme is gone")
 	}
 }

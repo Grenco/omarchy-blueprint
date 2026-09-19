@@ -2686,6 +2686,51 @@ func TestRestoreShellBlocksPluginRequiredButPlannedForExactRemoval(t *testing.T)
 	}
 }
 
+// TestExactPluginRemovalBlockedByEffectiveShellReferenceWithNoShellWrite is
+// the round-1 review blocker-3 regression: RequiredThirdPartyPlugins only
+// reports references a proposed Shell MERGE would newly introduce, and
+// finalizeRestorePlan returns immediately when there is no shell.write
+// operation (or Shell is not even part of this run's providers) -- so a
+// plugin the machine's actual, currently effective Shell configuration
+// already references was never checked at all before this fix, and Exact
+// could remove its availability while Shell's live config kept pointing at
+// it. This exercises exactly that gap: no shell.write operation in the
+// plan, and Shell absent from providers entirely.
+func TestExactPluginRemovalBlockedByEffectiveShellReferenceWithNoShellWrite(t *testing.T) {
+	baseline, user := shellPathsFixture(t)
+	custom := strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)
+	if err := os.WriteFile(user, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps := Dependencies{
+		Runner:     &machineRunner{official: map[string]bool{}, aur: map[string]bool{}},
+		ShellPaths: func() (string, string, error) { return baseline, user, nil },
+	}
+	opt := &options{profileDir: t.TempDir()}
+	plan := model.RestorePlan{Operations: []model.Operation{
+		{ID: "plugins.remove.acme.weather", Provider: "plugins", Action: "remove", Resource: "plugin:acme.weather", Items: []string{"acme.weather"}, Command: []string{"omarchy", "plugin", "remove", "acme.weather", "--yes"}, Risk: model.RiskHigh},
+	}}
+	// No shell.write/restart operation at all, and Shell is not even
+	// selected for this run.
+	if err := finalizeRestorePlan(context.Background(), deps, opt, profile.Data{}, nil, &plan, restorePlanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.ID == "plugins.remove.acme.weather" {
+			t.Fatalf("Operations = %#v, want the removal blocked: the effective Shell configuration still references acme.weather", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the blocked plugin removal", plan.Skipped)
+	}
+}
+
 func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model.RestorePlan, []stateProvider) {
 	t.Helper()
 	profileDir := t.TempDir()

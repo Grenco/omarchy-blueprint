@@ -113,7 +113,11 @@ func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
 	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
 		t.Fatalf("plan=%#v err=%v, want no operations or skips for the tombstoned hook", plan, err)
 	}
-	if !Verify(saved, current).OK {
+	verified, err := (Provider{}).Verify(saved, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verified.OK {
 		t.Fatal("verify unexpectedly failed because of a tombstoned hook")
 	}
 }
@@ -258,20 +262,62 @@ func TestPlanExactSkipsReservedInboundLinkForTombstonedHook(t *testing.T) {
 	}
 }
 
+// TestVerifyExactDoesNotExpectDeletionOfReservedInboundLinkHook is the
+// round-1 review blocker-2 regression: Plan legitimately skips deleting a
+// provenance-matched tombstone whose path is reserved for a tracked
+// Resources inbound link, so Verify must not turn that same,
+// correctly-skipped case into a verification failure.
+func TestVerifyExactDoesNotExpectDeletionOfReservedInboundLinkHook(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	p := Provider{
+		UserDir:    filepath.Join(home, ".config", "omarchy", "hooks"),
+		ProfileDir: filepath.Join(root, "profile"),
+		HomeDir:    home,
+		Resources: profile.Resources{
+			Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}},
+			Links: []profile.ResourceLink{{Source: "~/.config/omarchy/hooks/post-boot", TargetResource: "dotfiles", Target: "hooks/post-boot", Origin: "inbound"}},
+		},
+	}
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	result, err := p.Verify(saved, current, VerifyOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range result.Missing {
+		if missing == "hook:post-boot" {
+			t.Fatalf("Missing = %#v, want post-boot excluded: Plan itself refused to delete it for safety", result.Missing)
+		}
+	}
+}
+
 func TestVerifyExactFailsWhenTombstonedHookStillPresent(t *testing.T) {
 	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
 	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
-	if Verify(saved, current, VerifyOptions{Exact: true}).OK {
+	exact, err := (Provider{}).Verify(saved, current, VerifyOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exact.OK {
 		t.Fatal("verification unexpectedly passed with the tombstoned hook still present under Exact")
 	}
-	if !Verify(saved, current).OK {
+	additive, err := (Provider{}).Verify(saved, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !additive.OK {
 		t.Fatal("Additive verification unexpectedly failed because of a tombstoned hook still present")
 	}
 }
 
 func TestVerifyExactPassesWhenTombstonedHookAlreadyDeleted(t *testing.T) {
 	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
-	if !Verify(saved, State{}, VerifyOptions{Exact: true}).OK {
+	result, err := (Provider{}).Verify(saved, State{}, VerifyOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
 		t.Fatal("verification unexpectedly failed once the tombstoned hook is gone")
 	}
 }

@@ -404,6 +404,10 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 			if desired.Source == "" || desired.Source == "builtin" {
 				continue
 			}
+			if !safeID(desired.ID) {
+				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + desired.ID, Reason: "unsafe plugin identifier"})
+				continue
+			}
 			actual, present := have[desired.ID]
 			if !present {
 				continue
