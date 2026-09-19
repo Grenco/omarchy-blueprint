@@ -90,6 +90,51 @@ func validateTarget(provider Provider, target string) (string, error) {
 	return validator.ValidateTarget(target)
 }
 
+// validateLoadedPolicyTargets validates every target-shaped rule already
+// present in data (the portable profile's Policy plus every machine's
+// Policy) against its category's provider, once providers is the real
+// registry SetProviders was just handed. A category with no registered
+// provider is skipped rather than treated as an error: providers is not
+// guaranteed to cover every category profile.Load's structural validation
+// accepts (e.g. a caller inspecting a narrowed provider subset).
+func validateLoadedPolicyTargets(providers []Provider, data profile.Data) error {
+	if err := validatePolicyRuleTargets(providers, data.Policy, ""); err != nil {
+		return err
+	}
+	for _, m := range data.Machines.Items {
+		if err := validatePolicyRuleTargets(providers, m.Policy, m.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePolicyRuleTargets(providers []Provider, rules policy.Rules, machine string) error {
+	if err := validateAxisRuleTargets(providers, rules.Capture, machine); err != nil {
+		return err
+	}
+	return validateAxisRuleTargets(providers, rules.Restore, machine)
+}
+
+func validateAxisRuleTargets(providers []Provider, rules []policy.Rule, machine string) error {
+	for _, rule := range rules {
+		if rule.Target == "" {
+			continue
+		}
+		provider, ok := ProviderByID(providers, rule.Category)
+		if !ok {
+			continue
+		}
+		if _, err := validateTarget(provider, rule.Target); err != nil {
+			if machine == "" {
+				return fmt.Errorf("workflow: profile policy: category %q target %q: %w", rule.Category, rule.Target, err)
+			}
+			return fmt.Errorf("workflow: machine %q policy: category %q target %q: %w", machine, rule.Category, rule.Target, err)
+		}
+	}
+	return nil
+}
+
 // SetPolicy records an explicit Capture or Restore override for one category
 // or target at scope. An empty target records a category-level rule.
 func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, target string, setting policy.Setting) error {

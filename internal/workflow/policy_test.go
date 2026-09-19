@@ -220,6 +220,86 @@ func TestStopManagingRejectsMalformedTarget(t *testing.T) {
 	}
 }
 
+// TestSetProvidersRejectsHandEditedProfilePolicyTarget is a regression for a
+// review finding on PR 3: profile.Load can only validate a policy rule's
+// category/setting/duplicates structurally -- it has no provider registry
+// to check target shape/canonical identity against. A hand-edited
+// policy.toml with a provider-invalid target (e.g. a packages target
+// missing its "kind:" prefix) must fail once providers become available,
+// rather than loading silently and only surfacing much later at the first
+// unrelated SetPolicy call that happens to touch the same target.
+func TestSetProvidersRejectsHandEditedProfilePolicyTarget(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Policy = policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "not-a-valid-target", Setting: policy.SettingDisabled}}}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Now:       func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}}}); err == nil {
+		t.Fatal("hand-edited invalid policy target accepted")
+	}
+}
+
+// TestSetProvidersRejectsHandEditedMachinePolicyTarget mirrors the
+// profile-scope case for a machine's own policy overrides, which
+// profile.Load validates the same structural way and which real Restore
+// planning would otherwise trip over as an invalid target much later.
+func TestSetProvidersRejectsHandEditedMachinePolicyTarget(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{{
+		Name:   "desktop",
+		Policy: policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "not-a-valid-target", Setting: policy.SettingEnabled}}},
+	}}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Now:       func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}}}); err == nil {
+		t.Fatal("hand-edited invalid machine policy target accepted")
+	}
+}
+
+// TestSetProvidersAcceptsValidHandEditedPolicyTargets is the paired
+// happy-path: a well-formed target, and a category the registered provider
+// set does not even cover, must both be accepted rather than over-rejected.
+func TestSetProvidersAcceptsValidHandEditedPolicyTargets(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Policy = policy.Rules{
+		Capture: []policy.Rule{
+			{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled},
+			{Category: "shell", Target: "shell", Setting: policy.SettingDisabled},
+		},
+	}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Now:       func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSetPolicyRejectsUnknownCategory(t *testing.T) {
 	session := newPolicySession(t, profile.New("test", time.Now()))
 	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "bogus", "", policy.SettingDisabled); err == nil {
