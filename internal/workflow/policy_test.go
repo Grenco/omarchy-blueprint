@@ -78,6 +78,53 @@ func TestEffectivePolicyProfileDefaultsScopeIgnoresOtherMachinesRules(t *testing
 	}
 }
 
+// TestEffectivePolicyAncestorRuleAppliesToDescendantWithoutItsOwnRule is Task
+// 23's "Config hierarchy" scenario proven at the workflow layer: a rule set
+// on an ancestor key (a directory, for Config) governs a descendant target
+// that has no rule of its own, and a more specific rule on the descendant
+// itself still wins over the ancestor -- "directory disabled, child enabled"
+// -- without the provider needing any hierarchy logic of its own, since
+// EffectivePolicy already resolves one decision per exact target using
+// target.Ancestors.
+func TestEffectivePolicyAncestorRuleAppliesToDescendantWithoutItsOwnRule(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Policy = policy.Rules{Capture: []policy.Rule{{Category: "config", Target: "nvim", Setting: policy.SettingDisabled}}}
+	session := newPolicySession(t, data)
+	session.SetProviders([]Provider{
+		captureTestProvider{id: "packages", order: &[]string{}},
+		captureTestProvider{id: "config", order: &[]string{}},
+	})
+
+	child := TargetInspection{Key: "nvim/init.lua", Ancestors: []string{"nvim"}}
+	got, err := session.EffectivePolicy(context.Background(), PolicyScope{}, "config", child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Capture.Enabled || got.Capture.Source.Kind != policy.SourceProfileAncestor {
+		t.Fatalf("capture = %+v, want disabled via the ancestor rule", got.Capture)
+	}
+
+	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "config", "nvim/init.lua", policy.SettingEnabled); err != nil {
+		t.Fatal(err)
+	}
+	got, err = session.EffectivePolicy(context.Background(), PolicyScope{}, "config", child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Capture.Enabled || got.Capture.Source.Kind != policy.SourceProfileTarget {
+		t.Fatalf("capture = %+v, want the child's own rule to win over its directory's", got.Capture)
+	}
+
+	sibling := TargetInspection{Key: "nvim/other.lua", Ancestors: []string{"nvim"}}
+	got, err = session.EffectivePolicy(context.Background(), PolicyScope{}, "config", sibling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Capture.Enabled {
+		t.Fatalf("capture = %+v, want the untouched sibling to still resolve disabled via the ancestor rule", got.Capture)
+	}
+}
+
 func TestSetPolicyPersistsProfileDefaultsRuleAcrossReload(t *testing.T) {
 	session := newPolicySession(t, profile.New("test", time.Now()))
 	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "packages", "official:firefox", policy.SettingDisabled); err != nil {

@@ -366,3 +366,125 @@ func TestCaptureManyPreservesSavedTargetWhenMachineHasCaptureDisabled(t *testing
 		t.Fatalf("official = %#v, want firefox preserved: Capture Disabled on this machine must not remove desired-present state", reloaded.Packages.Official)
 	}
 }
+
+// desiredAbsenceTestProvider simulates a provider whose merge logic forms a
+// desired-absence tombstone when a target that was desired present is now
+// live-absent and Capture resolves enabled, mirroring the real Capture merge
+// invariant table's "present + absent + enabled -> tombstone" row (proven at
+// the provider level for Packages/Themes/Plugins/Hooks in Tasks 17-20).
+type desiredAbsenceTestProvider struct {
+	id      string
+	key     string
+	targets []TargetInspection
+}
+
+func (p desiredAbsenceTestProvider) ID() string               { return p.id }
+func (desiredAbsenceTestProvider) Captured(profile.Data) bool { return true }
+func (p desiredAbsenceTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return p.targets, nil
+}
+func (p desiredAbsenceTestProvider) Capture(_ context.Context, data *profile.Data, capCtx CaptureContext) (any, []model.Change, error) {
+	if decision, ok := capCtx.Lookup(p.key); ok && decision.Capture {
+		data.Packages.Official = nil
+		data.Packages.Absent = append(data.Packages.Absent, profile.PackageAbsence{Ref: p.key})
+	}
+	return struct{}{}, nil, nil
+}
+func (desiredAbsenceTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return nil, nil
+}
+
+// TestCaptureManyFormsDesiredAbsenceTombstoneWhenEnabledAndTargetMissing is
+// Task 23's "desired absence" scenario proven at the session/orchestration
+// level: a target saved present, now live-absent, with Capture resolved
+// enabled (the built-in default; no disabling rule exists), must reach the
+// provider as a real enabled decision that forms a tombstone rather than
+// silently vanishing with no trace.
+func TestCaptureManyFormsDesiredAbsenceTombstoneWhenEnabledAndTargetMissing(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"discord"}
+	session := newCaptureSession(t, data)
+	session.SetProviders([]Provider{desiredAbsenceTestProvider{
+		id: "packages", key: "official:discord",
+		targets: []TargetInspection{{Key: "official:discord", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent}},
+	}})
+
+	if _, err := session.Capture(context.Background(), "packages"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Packages.Official) != 0 {
+		t.Fatalf("official = %#v, want discord no longer desired-present", reloaded.Packages.Official)
+	}
+	if len(reloaded.Packages.Absent) != 1 || reloaded.Packages.Absent[0].Ref != "official:discord" {
+		t.Fatalf("absent = %#v, want a tombstone for official:discord", reloaded.Packages.Absent)
+	}
+}
+
+// adoptingTestProvider simulates a provider that adopts a live-present
+// target into desired state only when Capture resolves enabled for it,
+// mirroring the real "unknown + present + disabled -> remain unmanaged" row
+// of the Capture merge invariant table.
+type adoptingTestProvider struct {
+	id      string
+	key     string
+	name    string
+	targets []TargetInspection
+}
+
+func (p adoptingTestProvider) ID() string               { return p.id }
+func (adoptingTestProvider) Captured(profile.Data) bool { return true }
+func (p adoptingTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return p.targets, nil
+}
+func (p adoptingTestProvider) Capture(_ context.Context, data *profile.Data, capCtx CaptureContext) (any, []model.Change, error) {
+	if decision, ok := capCtx.Lookup(p.key); ok && decision.Capture {
+		data.Packages.Official = append(data.Packages.Official, p.name)
+	}
+	return struct{}{}, nil, nil
+}
+func (adoptingTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return nil, nil
+}
+
+// TestCaptureManyNeverAdoptsNewTargetWhenDisabledFromTheStart is Task 23's
+// "new-disabled" scenario: a target never captured before (Desired:
+// Unknown), live-present, with Capture Disabled on this machine, must stay
+// entirely unmanaged after Capture -- disabled never adopts new state, it
+// only ever preserves what was already desired.
+func TestCaptureManyNeverAdoptsNewTargetWhenDisabledFromTheStart(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{{
+		Name:   "desktop",
+		Policy: policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:steam", Setting: policy.SettingDisabled}}},
+	}}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Runner: captureRunner{}, Now: func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetProviders([]Provider{adoptingTestProvider{
+		id: "packages", key: "official:steam", name: "steam",
+		targets: []TargetInspection{{Key: "official:steam", CaptureEligible: true, Current: TargetPresent, Desired: TargetUnknown}},
+	}})
+
+	if _, err := session.Capture(context.Background(), "packages"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Packages.Official) != 0 {
+		t.Fatalf("official = %#v, want steam never adopted while Capture is disabled", reloaded.Packages.Official)
+	}
+}

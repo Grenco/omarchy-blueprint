@@ -214,6 +214,27 @@ func TestUserOverrideOfSavedBuiltinIsDriftButNotRemoved(t *testing.T) {
 	}
 }
 
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
+// gate: a Capture-produced desired-absence tombstone is write-only today --
+// Capture writes it, but Restore's Plan/Verify never read Absent -- so it
+// cannot cause an unexpected removal, skip, or verification failure until
+// PR 4 activates Restore-side policy.
+func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
+	saved := profile.Themes{
+		Current: "nord",
+		Items:   []profile.Theme{{ID: "nord", Type: "builtin", Enabled: true}},
+		Absent:  []profile.Theme{{ID: "gruvbox", Type: "local", Hash: "stale"}},
+	}
+	current := profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "builtin", Enabled: true}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for the tombstoned theme", plan)
+	}
+	if !Verify(saved, current).OK {
+		t.Fatal("verify unexpectedly failed because of a tombstoned theme")
+	}
+}
+
 func TestPlanRestoresMissingGitAndLocalThemes(t *testing.T) {
 	p := Provider{BuiltinDir: t.TempDir(), UserDir: t.TempDir(), ProfileDir: t.TempDir()}
 	saved := profile.Themes{Current: "custom", Items: []profile.Theme{

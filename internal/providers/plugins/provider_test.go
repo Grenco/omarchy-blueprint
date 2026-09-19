@@ -216,6 +216,27 @@ func TestDetectDiffPlanAndVerify(t *testing.T) {
 	}
 }
 
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
+// gate: a Capture-produced desired-absence tombstone is write-only today --
+// Capture writes it, but Restore's Plan/Verify never read Absent -- so it
+// cannot cause an unexpected removal, skip, or verification failure until
+// PR 4 activates Restore-side policy.
+func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
+	saved := profile.Plugins{
+		Items:  []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}},
+		Absent: []profile.Plugin{{ID: "acme", Source: "git", URL: "https://example.test/acme.git"}},
+	}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	p := Provider{}
+	plan := p.Plan(saved, current, 1, "4", "4", Semantics{ManageEnabled: true})
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for the tombstoned plugin", plan)
+	}
+	if !Verify(saved, current, Semantics{ManageEnabled: true}).OK {
+		t.Fatal("verify unexpectedly failed because of a tombstoned plugin")
+	}
+}
+
 func TestShellOwnedSemanticsIgnoreEnabledDrift(t *testing.T) {
 	saved := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
 	current := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: false}}}

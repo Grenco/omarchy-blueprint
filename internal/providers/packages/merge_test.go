@@ -152,3 +152,26 @@ func TestMergeMiseUnTombstonesWithCurrentDeclaration(t *testing.T) {
 		t.Fatalf("mise[node] = %#v, want the newly captured declaration", got.Mise["node"])
 	}
 }
+
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
+// gate: a Capture-produced desired-absence tombstone is write-only today --
+// Capture writes it, but Restore's Plan/Verify never read the Absent list --
+// so it cannot cause an unexpected removal, skip, or verification failure
+// until PR 4 activates Restore-side policy. This locks the invariant in so a
+// future PR4 change cannot silently wire Absent into a destructive default
+// without this test failing first.
+func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
+	saved := profile.Packages{
+		Official: []string{"firefox"},
+		Absent:   []profile.PackageAbsence{{Ref: "official:discord"}, {Ref: "aur:visual-studio-code-bin"}},
+	}
+	current := profile.Packages{Official: []string{"firefox"}}
+	plan := Plan(saved, current, 1, "4.0.0", "4.0.0")
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for tombstoned refs", plan)
+	}
+	result := Verify(saved, current)
+	if !result.OK || len(result.Missing) != 0 {
+		t.Fatalf("verify = %#v, want OK with a tombstoned ref never reported missing", result)
+	}
+}
