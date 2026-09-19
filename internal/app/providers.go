@@ -1564,7 +1564,8 @@ func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info oma
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d))
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d), pluginsprovider.PlanOptions{Exact: exact})
 	return recordRestoreSkips(plan, "plugins", matched), nil
 }
 
@@ -1581,7 +1582,8 @@ func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data, restor
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return pluginsprovider.Verify(saved, current, pluginSemantics(d)), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return pluginsprovider.Verify(saved, current, pluginSemantics(d), pluginsprovider.VerifyOptions{Exact: exact}), nil
 }
 
 // filterPluginsForRestoreSkip returns a copy of saved with every

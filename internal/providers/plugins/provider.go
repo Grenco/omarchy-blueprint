@@ -309,7 +309,15 @@ func Diff(saved, current profile.Plugins, semantics Semantics) []model.Change {
 	return out
 }
 
-func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to string, semantics Semantics) model.RestorePlan {
+// PlanOptions controls Exact-only behavior; the zero value (Additive) never
+// removes anything, matching every existing caller that predates it.
+type PlanOptions struct{ Exact bool }
+
+func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to string, semantics Semantics, options ...PlanOptions) model.RestorePlan {
+	var opts PlanOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	have := pluginMap(current.Items)
 	wantMap := pluginMap(saved.Items)
@@ -367,15 +375,58 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 			}
 		}
 	}
+	// A plugin tombstoned in saved.Absent is not "additional" -- it has its
+	// own recorded desired state (desired-absent), just not Present state.
+	// Under Additive it is silently left alone entirely (matching Packages'
+	// and Themes' established invariant that Additive never reads Absent at
+	// all); under Exact it gets its own, more specific skip/removal handling
+	// below.
+	wantAbsent := pluginMap(saved.Absent)
 	for _, got := range current.Items {
-		if _, ok := wantMap[got.ID]; !ok && got.Source != "builtin" {
+		_, managed := wantMap[got.ID]
+		_, tombstoned := wantAbsent[got.ID]
+		if !managed && !tombstoned && got.Source != "builtin" {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + got.ID, Reason: "additional plugin left installed; removal disabled"})
+		}
+	}
+
+	// Exact removal only ever considers saved.Absent -- desired-present
+	// Items are never candidates -- and only third-party entries: Capture
+	// never tombstones a first-party plugin (Omarchy owns its availability),
+	// so this guard is defensive, not reachable through legitimate Capture
+	// output. A candidate whose installed provenance no longer matches the
+	// tombstone (Equivalent, the same check install/overwrite safety already
+	// uses) is left alone rather than deleted. omarchy plugin remove --yes
+	// disables the plugin itself before removing it, so no separate
+	// disable/enablement ordering is required here.
+	if opts.Exact {
+		for _, desired := range saved.Absent {
+			if desired.Source == "" || desired.Source == "builtin" {
+				continue
+			}
+			actual, present := have[desired.ID]
+			if !present {
+				continue
+			}
+			if !Equivalent(desired, actual) {
+				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + desired.ID, Reason: "installed plugin no longer matches the removed profile entry; removal skipped"})
+				continue
+			}
+			plan.Operations = append(plan.Operations, model.Operation{ID: "plugins.remove." + desired.ID, Provider: "plugins", Action: "remove", Resource: "plugin:" + desired.ID, Items: []string{desired.ID}, Command: []string{"omarchy", "plugin", "remove", desired.ID, "--yes"}, Risk: model.RiskHigh, Reversible: false})
 		}
 	}
 	return plan
 }
 
-func Verify(saved, current profile.Plugins, semantics Semantics) model.VerificationResult {
+// VerifyOptions controls Exact-only verification; the zero value (Additive)
+// never checks Absent, matching every existing caller that predates it.
+type VerifyOptions struct{ Exact bool }
+
+func Verify(saved, current profile.Plugins, semantics Semantics, options ...VerifyOptions) model.VerificationResult {
+	var opts VerifyOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	have := pluginMap(current.Items)
 	var missing []string
 	for _, want := range saved.Items {
@@ -386,6 +437,16 @@ func Verify(saved, current profile.Plugins, semantics Semantics) model.Verificat
 		}
 		if semantics.ManageEnabled && got.Enabled != want.Enabled {
 			missing = append(missing, "plugin:"+want.ID)
+		}
+	}
+	if opts.Exact {
+		for _, desired := range saved.Absent {
+			if desired.Source == "" || desired.Source == "builtin" {
+				continue
+			}
+			if actual, present := have[desired.ID]; present && Equivalent(desired, actual) {
+				missing = append(missing, "plugin:"+desired.ID)
+			}
 		}
 	}
 	sort.Strings(missing)
