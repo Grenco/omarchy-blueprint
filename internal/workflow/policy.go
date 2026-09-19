@@ -66,6 +66,31 @@ func (s *Session) resolveCaptureTarget(ctx context.Context, category string, tar
 	return effective.Capture, CaptureDecision{Capture: effective.Capture.Enabled, Resolved: true}, nil
 }
 
+// resolveRestoreTarget resolves one target's effective Restore policy as
+// viewed from the session's currently selected machine (Restore always
+// plans for the machine running Blueprint, unlike EffectivePolicy's general
+// TUI-facing scope), and derives the final RestoreDecision: a target the
+// provider itself reports ineligible for Restore (RestoreEligible false)
+// resolves to Skip regardless of what policy says, since provider safety
+// checks remain authoritative -- carrying the provider's own SafetyReason
+// rather than a policy-derived one. Otherwise the resolved policy decides,
+// carrying RestoreSkipReason's standardized explanation when it resolves to
+// Skip. It returns the raw resolved policy.EffectiveSetting alongside the
+// decision so callers can show why, without a second resolution.
+func (s *Session) resolveRestoreTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, RestoreDecision, error) {
+	effective, err := s.EffectivePolicy(ctx, PolicyScope{Machine: s.machine.Name}, category, target)
+	if err != nil {
+		return policy.EffectiveSetting{}, RestoreDecision{}, err
+	}
+	if !target.RestoreEligible {
+		return effective.Restore, RestoreDecision{Restore: false, Resolved: true, Reason: target.SafetyReason}, nil
+	}
+	if !effective.Restore.Enabled {
+		return effective.Restore, RestoreDecision{Restore: false, Resolved: true, Reason: RestoreSkipReason(effective.Restore)}, nil
+	}
+	return effective.Restore, RestoreDecision{Restore: true, Resolved: true}, nil
+}
+
 // targetValidator is implemented by a category's stateProvider when it has a
 // structured target key shape (e.g. "official:<name>" for packages, a raw
 // path for hooks/config). It validates and canonicalizes a target string

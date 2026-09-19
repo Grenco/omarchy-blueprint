@@ -51,7 +51,7 @@ type RestoreComparison struct {
 }
 
 type RestoreResult struct {
-	Mode         RestoreMode
+	Options      policy.RestoreOptions
 	Plan         model.RestorePlan
 	Execution    restore.Result
 	Verification model.VerificationResult
@@ -59,32 +59,60 @@ type RestoreResult struct {
 	Applied      bool
 }
 
+// CompareRestore is the temporary compatibility adapter the PR-2/3 TUI
+// restore screen uses: a fixed Safe+Additive-versus-Force+Additive
+// comparison, independent of the selected machine's persisted defaults or
+// any one-run override. PR 7 removes this once the TUI is redesigned around
+// the real two-axis RestoreOptions/policy Skip model.
 func (s *Session) CompareRestore(ctx context.Context, onlyProvider string) (RestoreComparison, error) {
-	normal, _, _, err := s.restorePlan(ctx, onlyProvider, RestoreNormal)
+	safe := RestoreOptionsForMode(RestoreNormal)
+	normal, _, _, _, err := s.restorePlan(ctx, onlyProvider, &safe)
 	if err != nil {
 		return RestoreComparison{}, err
 	}
-	forced, _, _, err := s.restorePlan(ctx, onlyProvider, RestoreForced)
+	forced := RestoreOptionsForMode(RestoreForced)
+	forcedPlan, _, _, _, err := s.restorePlan(ctx, onlyProvider, &forced)
 	if err != nil {
 		return RestoreComparison{}, err
 	}
-	return RestoreComparison{Normal: normal, Forced: forced, Consequences: restoreConsequences(normal, forced)}, nil
+	return RestoreComparison{Normal: normal, Forced: forcedPlan, Consequences: restoreConsequences(normal, forcedPlan)}, nil
 }
 
 // PlanRestore returns the same validated plan used by comparison and apply.
-func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, mode RestoreMode) (model.RestorePlan, error) {
-	plan, _, _, err := s.restorePlan(ctx, onlyProvider, mode)
+// options is this run's explicit two-axis restore intent; nil means the
+// currently selected machine's persisted Restore defaults, falling back to
+// the built-in Safe+Additive default when no machine is selected. An
+// explicit options value is used verbatim for this run only -- it is never
+// persisted as a new machine default.
+func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, error) {
+	plan, _, _, _, err := s.restorePlan(ctx, onlyProvider, options)
 	return plan, err
 }
 
+// PlanRestoreWithContext is PlanRestore, but also returns each planned
+// provider alongside the exact resolved RestoreContext used to plan it, and
+// the resolved RestoreOptions itself. A caller that must verify separately
+// from ApplyRestore -- e.g. the CLI, which reports live per-operation
+// progress ApplyRestore does not support, so it executes and verifies
+// itself rather than calling ApplyRestore -- needs the providers/contexts
+// to verify against the same effective Restore intent that planned the
+// run, per the design's "Plan intent and verification intent must remain
+// aligned" invariant; it needs the resolved options to know what a nil
+// options argument actually resolved to (e.g. to decide how to render the
+// plan).
+func (s *Session) PlanRestoreWithContext(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
+	return s.restorePlan(ctx, onlyProvider, options)
+}
+
 // ApplyRestore always replans after approval, so the executor validates current
-// filesystem preconditions rather than relying on a preview-time plan.
-func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, mode RestoreMode) (RestoreResult, error) {
-	plan, providers, contexts, err := s.restorePlan(ctx, onlyProvider, mode)
+// filesystem preconditions rather than relying on a preview-time plan. See
+// PlanRestore for how options resolves.
+func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (RestoreResult, error) {
+	plan, providers, contexts, resolved, err := s.restorePlan(ctx, onlyProvider, options)
 	if err != nil {
-		return RestoreResult{Mode: mode}, err
+		return RestoreResult{}, err
 	}
-	result := RestoreResult{Mode: mode, Plan: plan}
+	result := RestoreResult{Options: resolved, Plan: plan}
 	if len(plan.Operations) == 0 {
 		result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
 		return result, err
@@ -114,21 +142,22 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, mode Re
 	return result, nil
 }
 
-func (s *Session) restorePlan(ctx context.Context, only string, mode RestoreMode) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, error) {
-	if mode != RestoreNormal && mode != RestoreForced {
-		return model.RestorePlan{}, nil, nil, fmt.Errorf("unknown restore mode %q", mode)
-	}
+func (s *Session) restorePlan(ctx context.Context, only string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
 	if err := s.Reload(); err != nil {
-		return model.RestorePlan{}, nil, nil, err
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
+	}
+	resolved, err := s.resolveRestoreOptions(options)
+	if err != nil {
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
 	selected := capturedProviders(s.providers, s.profile)
 	if only != "" {
 		provider, ok := ProviderByID(s.providers, only)
 		if !ok {
-			return model.RestorePlan{}, nil, nil, fmt.Errorf("unknown category %s", only)
+			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("unknown category %s", only)
 		}
 		if !provider.Captured(s.profile) {
-			return model.RestorePlan{}, nil, nil, CaptureRequiredError(provider.ID())
+			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, CaptureRequiredError(provider.ID())
 		}
 		selected = []Provider{provider}
 	}
@@ -136,43 +165,64 @@ func (s *Session) restorePlan(ctx context.Context, only string, mode RestoreMode
 	for _, provider := range selected {
 		restoreProvider, ok := provider.(RestoreProvider)
 		if !ok {
-			return model.RestorePlan{}, nil, nil, fmt.Errorf("provider %s does not support restore", provider.ID())
+			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("provider %s does not support restore", provider.ID())
 		}
 		providers = append(providers, restoreProvider)
 	}
 	info, err := omarchy.Detect(ctx, s.deps.Runner)
 	if err != nil {
-		return model.RestorePlan{}, nil, nil, err
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
-	options := restoreOptionsForMode(mode)
 	contexts := make(map[string]RestoreContext, len(providers))
 	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
 	for _, provider := range providers {
-		restoreCtx, err := defaultRestoreContext(ctx, provider, s.profile, s.machine.Name, options)
+		restoreCtx, err := s.resolveRestoreContext(ctx, provider, s.profile, s.machine.Name, resolved)
 		if err != nil {
-			return model.RestorePlan{}, nil, nil, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
+			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
 		}
 		contexts[provider.ID()] = restoreCtx
 		part, err := provider.Plan(ctx, s.profile, info, restoreCtx)
 		if err != nil {
-			return model.RestorePlan{}, nil, nil, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
+			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
 		plan.Operations, plan.Skipped = append(plan.Operations, part.Operations...), append(plan.Skipped, part.Skipped...)
 	}
 	if s.finalizeRestore != nil {
-		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, options); err != nil {
-			return model.RestorePlan{}, nil, nil, fmt.Errorf("finalize restore plan: %w", err)
+		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, resolved); err != nil {
+			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("finalize restore plan: %w", err)
 		}
 	} else if err := restore.ValidatePlan(plan); err != nil {
-		return model.RestorePlan{}, nil, nil, err
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
-	return plan, providers, contexts, nil
+	return plan, providers, contexts, resolved, nil
 }
 
-// restoreOptionsForMode translates the legacy two-value RestoreMode into the
-// two-axis policy.RestoreOptions Plan/Verify now consume. Convergence is
-// always Additive in PR 2; Exact is not selectable until PR 5.
-func restoreOptionsForMode(mode RestoreMode) policy.RestoreOptions {
+// resolveRestoreOptions returns this run's effective two-axis restore
+// intent: an explicit one-run override when the caller supplied one
+// (validated, never persisted), else the currently selected machine's
+// persisted Restore defaults, else the built-in Safe+Additive default when
+// no machine is selected.
+func (s *Session) resolveRestoreOptions(options *policy.RestoreOptions) (policy.RestoreOptions, error) {
+	if options != nil {
+		if err := policy.ValidateRestoreOptions(*options); err != nil {
+			return policy.RestoreOptions{}, err
+		}
+		return *options, nil
+	}
+	if s.machine.Machine != nil {
+		return s.machine.Machine.EffectiveRestoreDefaults(), nil
+	}
+	return policy.DefaultRestoreOptions(), nil
+}
+
+// RestoreOptionsForMode translates the legacy two-value RestoreMode the
+// PR-2/3 TUI restore screen still toggles into the two-axis
+// policy.RestoreOptions CompareRestore/PlanRestore/ApplyRestore consume.
+// Convergence is always Additive: Forced only ever meant Force+Additive, a
+// fixed comparison baseline independent of any machine's persisted
+// defaults. PR 7 removes this alongside CompareRestore and RestoreMode once
+// the TUI is redesigned.
+func RestoreOptionsForMode(mode RestoreMode) policy.RestoreOptions {
 	conflicts := policy.ConflictSafe
 	if mode == RestoreForced {
 		conflicts = policy.ConflictForce
@@ -180,20 +230,41 @@ func restoreOptionsForMode(mode RestoreMode) policy.RestoreOptions {
 	return policy.RestoreOptions{Conflicts: conflicts, Convergence: policy.ConvergenceAdditive}
 }
 
-// defaultRestoreContext inspects a provider's targets and records the PR 2
-// compatibility decision (DefaultRestoreDecision) for each one. Real policy
-// resolution replaces this in PR 4; until then every inspected target
-// resolves to enabled/unresolved so current behavior is preserved.
-func defaultRestoreContext(ctx context.Context, provider Provider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
+// resolveRestoreContext inspects a provider's targets and resolves each
+// one's real effective Restore policy (see resolveRestoreTarget) against
+// the session's currently selected machine. Restore Skip -- whether from
+// provider safety or policy -- is independent of options: Neither Force nor
+// Exact can override it, so this never consults options for the decision
+// itself, only records it on the returned context for providers to plan
+// with.
+func (s *Session) resolveRestoreContext(ctx context.Context, provider Provider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
 	targets, err := provider.InspectTargets(ctx, data)
 	if err != nil {
 		return RestoreContext{}, err
 	}
 	decisions := make(map[string]RestoreDecision, len(targets))
 	for _, target := range targets {
-		decisions[target.Key] = DefaultRestoreDecision()
+		_, decision, err := s.resolveRestoreTarget(ctx, provider.ID(), target)
+		if err != nil {
+			return RestoreContext{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+		}
+		decisions[target.Key] = decision
 	}
 	return RestoreContext{Machine: machine, Options: options, Targets: decisions}, nil
+}
+
+// RestoreSkipReason formats a standardized, human-readable explanation for
+// a policy-resolved Restore Skip decision, for a provider to attach
+// verbatim to the model.Skipped entry it records for the target. It names
+// the machine when the resolved policy came from a machine-scoped rule
+// (target, category, or nearest ancestor override all set Source.Machine);
+// a portable profile-scoped rule applies to every machine, so it is
+// reported without a machine qualifier.
+func RestoreSkipReason(setting policy.EffectiveSetting) string {
+	if setting.Source.Machine != "" {
+		return fmt.Sprintf("restore disabled for machine %q", setting.Source.Machine)
+	}
+	return "restore disabled"
 }
 
 // verifyRestoreProviders reuses the exact RestoreContext restorePlan built
