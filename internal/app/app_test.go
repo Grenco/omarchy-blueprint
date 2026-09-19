@@ -856,7 +856,7 @@ func TestConfigStateProviderCapturesKnownAuthoredBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.History = fakeBaselineHistory(false)
-	result, err := p.Capture(profile.Configs{})
+	result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil || len(result.State.Files) != 1 {
 		t.Fatalf("capture=%#v err=%v", result, err)
 	}
@@ -916,7 +916,8 @@ func TestConfigCaptureDelegatesSavedResourceOwnership(t *testing.T) {
 			t.Fatalf("resource ownership for %s = %#v", path, claims)
 		}
 	}
-	state, _, err := provider.Capture(context.Background(), &d, workflow.CaptureContext{})
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{".config/wezterm/wezterm.lua": {Capture: true, Resolved: true}}}
+	state, _, err := provider.Capture(context.Background(), &d, capCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -162,7 +162,7 @@ func TestCapturePrunesLegacySavedBrowserState(t *testing.T) {
 	writeFile(t, browserPath, "{}")
 	writeFile(t, filepath.Join(user, "arbitrary-browser", "Default", "History"), "")
 	saved := profile.Configs{Files: []profile.ConfigFile{{Path: ".config/arbitrary-browser/Default/Preferences", Hash: "old"}}}
-	result, err := (Provider{HomeDir: home, UserRoot: user, BaselineRoot: t.TempDir(), ProfileDir: profileDir}).Capture(saved)
+	result, err := (Provider{HomeDir: home, UserRoot: user, BaselineRoot: t.TempDir(), ProfileDir: profileDir}).Capture(saved, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}

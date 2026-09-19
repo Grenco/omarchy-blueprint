@@ -25,7 +25,15 @@ var beforeStage func()
 
 // Capture writes both sparse snapshot trees from one staged payload. Snapshots
 // are re-hashed after copying, so metadata always describes persisted bytes.
-func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
+// enabled resolves the per-path effective Capture decision, already
+// ancestor-aware (a child file's own explicit rule outranks its directory's,
+// per the hierarchical policy resolver) -- Capture itself does not
+// re-implement hierarchy. A disabled path's existing desired state (whether
+// a captured file or an existing deletion tombstone) is frozen exactly as
+// saved, artifact included, rather than being translated into Config
+// Excluded: Excluded prunes a path from management outright, Capture
+// Disabled only freezes what is already desired.
+func (p Provider) Capture(saved profile.Configs, enabled func(path string) bool) (CaptureResult, error) {
 	if p.ProfileDir == "" {
 		return CaptureResult{}, fmt.Errorf("profile directory is required to capture config")
 	}
@@ -74,10 +82,49 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 	if err != nil {
 		return CaptureResult{}, err
 	}
+	savedFiles := make(map[string]profile.ConfigFile, len(saved.Files))
+	for _, f := range saved.Files {
+		savedFiles[f.Path] = f
+	}
+	savedDeletes := make(map[string]profile.ConfigDelete, len(saved.Deletes))
+	for _, d := range saved.Deletes {
+		savedDeletes[d.Path] = d
+	}
 	state := profile.Configs{Included: included, Excluded: excluded}
+	// preserve freezes whatever this path is already desired as (a captured
+	// file or an existing deletion tombstone), artifact included, without
+	// touching its metadata. A path with no existing desired state at all
+	// stays unmanaged: Capture Disabled preserves, it does not adopt.
+	preserve := func(path string) error {
+		if f, ok := savedFiles[path]; ok {
+			if _, _, err := copySnapshot(stage, "files", path, filepath.Join(parent, "files", filepath.FromSlash(path))); err != nil {
+				return fmt.Errorf("preserve %s: %w", path, err)
+			}
+			if f.BaselineHash != "" {
+				if _, _, err := copySnapshot(stage, "baseline", path, filepath.Join(parent, "baseline", filepath.FromSlash(path))); err != nil {
+					return fmt.Errorf("preserve baseline %s: %w", path, err)
+				}
+			}
+			state.Files = append(state.Files, f)
+			return nil
+		}
+		if d, ok := savedDeletes[path]; ok {
+			if _, _, err := copySnapshot(stage, "baseline", path, filepath.Join(parent, "baseline", filepath.FromSlash(path))); err != nil {
+				return fmt.Errorf("preserve baseline %s: %w", path, err)
+			}
+			state.Deletes = append(state.Deletes, d)
+		}
+		return nil
+	}
 	for _, c := range scan.Candidates {
 		switch c.Classification {
 		case ConfigAdded, ConfigModifiedBaseline:
+			if !enabled(c.Path) {
+				if err := preserve(c.Path); err != nil {
+					return CaptureResult{}, err
+				}
+				continue
+			}
 			user, err := p.absoluteUserPath(c.Path)
 			if err != nil {
 				return CaptureResult{}, err
@@ -106,6 +153,12 @@ func (p Provider) Capture(saved profile.Configs) (CaptureResult, error) {
 			}
 			state.Files = append(state.Files, file)
 		case ConfigDeletedBaseline:
+			if !enabled(c.Path) {
+				if err := preserve(c.Path); err != nil {
+					return CaptureResult{}, err
+				}
+				continue
+			}
 			base, err := p.absoluteBaselinePath(c.Path)
 			if err != nil {
 				return CaptureResult{}, err
