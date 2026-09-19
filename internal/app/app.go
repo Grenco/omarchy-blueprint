@@ -1030,15 +1030,17 @@ func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data,
 	return p.stateProvider.Capture(ctx, data, capCtx)
 }
 
+// Plan and Verify thread the resolved workflow RestoreContext down to the
+// wrapped state provider directly, exactly like Capture already threads
+// CaptureContext: each category's own Plan/Verify decides for itself how to
+// consult per-target Restore decisions and the Conflicts/Convergence axes
+// (PR 4 Task 26 activates this category by category).
 func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
-	return p.stateProvider.Plan(ctx, data, info, restorePlanOptions{Force: restoreCtx.Options.Conflicts == policy.ConflictForce})
+	return p.stateProvider.Plan(ctx, data, info, restoreCtx)
 }
 
-// Verify accepts the workflow RestoreContext for interface compatibility;
-// PR 2 does not yet gate verification on policy decisions (PR 4), so it is
-// not consulted here.
-func (p restoreProviderAdapter) Verify(ctx context.Context, data profile.Data, _ workflow.RestoreContext) (model.VerificationResult, error) {
-	return p.stateProvider.Verify(ctx, data)
+func (p restoreProviderAdapter) Verify(ctx context.Context, data profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
+	return p.stateProvider.Verify(ctx, data, restoreCtx)
 }
 
 // The workflow layer discovers these optional capabilities by interface. Keep
@@ -1615,7 +1617,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		mode = workflow.RestoreForced
 	}
 	restoreOptions := workflow.RestoreOptionsForMode(mode)
-	plan, err := session.PlanRestore(ctx, onlyProvider, &restoreOptions)
+	plan, restoreProviders, contexts, err := session.PlanRestoreWithContext(ctx, onlyProvider, &restoreOptions)
 	if err != nil {
 		return err
 	}
@@ -1624,7 +1626,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}
 	if len(plan.Operations) == 0 {
-		verification, err := verifyProviders(ctx, d, providers)
+		verification, err := verifyRestoreProviders(ctx, d, restoreProviders, contexts)
 		if err != nil {
 			return err
 		}
@@ -1670,7 +1672,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if err != nil {
 		return err
 	}
-	verification, err := verifyProviders(ctx, d, providers)
+	verification, err := verifyRestoreProviders(ctx, d, restoreProviders, contexts)
 	if err != nil {
 		return err
 	}
@@ -1709,10 +1711,17 @@ func unresolvedShellConflictMessage(plan model.RestorePlan) (string, bool) {
 	return fmt.Sprintf("Safe Shell changes were restored. %d conflict(s) remain: %s\nRun `restore shell --force` to apply captured intent.\n", len(conflicts), strings.Join(conflicts, ", ")), true
 }
 
-func verifyProviders(ctx context.Context, d profile.Data, providers []stateProvider) (model.VerificationResult, error) {
+// verifyRestoreProviders reuses the exact RestoreContext PlanRestoreWithContext
+// resolved for each provider's Plan call, so verification never judges a run
+// against a different effective Restore intent than the one that planned it
+// (workflow.Session.ApplyRestore's own verifyRestoreProviders does the same;
+// this CLI-side counterpart exists only because the CLI executes and
+// verifies itself rather than calling ApplyRestore, to report live
+// per-operation progress ApplyRestore does not support).
+func verifyRestoreProviders(ctx context.Context, d profile.Data, providers []workflow.RestoreProvider, contexts map[string]workflow.RestoreContext) (model.VerificationResult, error) {
 	result := model.VerificationResult{OK: true}
 	for _, provider := range providers {
-		verification, err := provider.Verify(ctx, d)
+		verification, err := provider.Verify(ctx, d, contexts[provider.ID()])
 		if err != nil {
 			return model.VerificationResult{}, fmt.Errorf("verify %s restore: %w", provider.ID(), err)
 		}
