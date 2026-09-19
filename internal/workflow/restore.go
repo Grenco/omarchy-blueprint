@@ -10,6 +10,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
@@ -59,11 +60,11 @@ type RestoreResult struct {
 }
 
 func (s *Session) CompareRestore(ctx context.Context, onlyProvider string) (RestoreComparison, error) {
-	normal, _, err := s.restorePlan(ctx, onlyProvider, RestoreNormal)
+	normal, _, _, err := s.restorePlan(ctx, onlyProvider, RestoreNormal)
 	if err != nil {
 		return RestoreComparison{}, err
 	}
-	forced, _, err := s.restorePlan(ctx, onlyProvider, RestoreForced)
+	forced, _, _, err := s.restorePlan(ctx, onlyProvider, RestoreForced)
 	if err != nil {
 		return RestoreComparison{}, err
 	}
@@ -72,20 +73,20 @@ func (s *Session) CompareRestore(ctx context.Context, onlyProvider string) (Rest
 
 // PlanRestore returns the same validated plan used by comparison and apply.
 func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, mode RestoreMode) (model.RestorePlan, error) {
-	plan, _, err := s.restorePlan(ctx, onlyProvider, mode)
+	plan, _, _, err := s.restorePlan(ctx, onlyProvider, mode)
 	return plan, err
 }
 
 // ApplyRestore always replans after approval, so the executor validates current
 // filesystem preconditions rather than relying on a preview-time plan.
 func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, mode RestoreMode) (RestoreResult, error) {
-	plan, providers, err := s.restorePlan(ctx, onlyProvider, mode)
+	plan, providers, contexts, err := s.restorePlan(ctx, onlyProvider, mode)
 	if err != nil {
 		return RestoreResult{Mode: mode}, err
 	}
 	result := RestoreResult{Mode: mode, Plan: plan}
 	if len(plan.Operations) == 0 {
-		result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers)
+		result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
 		return result, err
 	}
 	stateHome, err := s.deps.StateHome()
@@ -102,7 +103,7 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, mode Re
 	if err != nil {
 		return result, err
 	}
-	result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers)
+	result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
 	if err != nil {
 		return result, err
 	}
@@ -113,21 +114,21 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, mode Re
 	return result, nil
 }
 
-func (s *Session) restorePlan(ctx context.Context, only string, mode RestoreMode) (model.RestorePlan, []RestoreProvider, error) {
+func (s *Session) restorePlan(ctx context.Context, only string, mode RestoreMode) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, error) {
 	if mode != RestoreNormal && mode != RestoreForced {
-		return model.RestorePlan{}, nil, fmt.Errorf("unknown restore mode %q", mode)
+		return model.RestorePlan{}, nil, nil, fmt.Errorf("unknown restore mode %q", mode)
 	}
 	if err := s.Reload(); err != nil {
-		return model.RestorePlan{}, nil, err
+		return model.RestorePlan{}, nil, nil, err
 	}
 	selected := capturedProviders(s.providers, s.profile)
 	if only != "" {
 		provider, ok := ProviderByID(s.providers, only)
 		if !ok {
-			return model.RestorePlan{}, nil, fmt.Errorf("unknown category %s", only)
+			return model.RestorePlan{}, nil, nil, fmt.Errorf("unknown category %s", only)
 		}
 		if !provider.Captured(s.profile) {
-			return model.RestorePlan{}, nil, CaptureRequiredError(provider.ID())
+			return model.RestorePlan{}, nil, nil, CaptureRequiredError(provider.ID())
 		}
 		selected = []Provider{provider}
 	}
@@ -135,36 +136,73 @@ func (s *Session) restorePlan(ctx context.Context, only string, mode RestoreMode
 	for _, provider := range selected {
 		restoreProvider, ok := provider.(RestoreProvider)
 		if !ok {
-			return model.RestorePlan{}, nil, fmt.Errorf("provider %s does not support restore", provider.ID())
+			return model.RestorePlan{}, nil, nil, fmt.Errorf("provider %s does not support restore", provider.ID())
 		}
 		providers = append(providers, restoreProvider)
 	}
 	info, err := omarchy.Detect(ctx, s.deps.Runner)
 	if err != nil {
-		return model.RestorePlan{}, nil, err
+		return model.RestorePlan{}, nil, nil, err
 	}
+	options := restoreOptionsForMode(mode)
+	contexts := make(map[string]RestoreContext, len(providers))
 	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
 	for _, provider := range providers {
-		part, err := provider.Plan(ctx, s.profile, info, mode)
+		restoreCtx, err := defaultRestoreContext(ctx, provider, s.profile, s.machine.Name, options)
 		if err != nil {
-			return model.RestorePlan{}, nil, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
+			return model.RestorePlan{}, nil, nil, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
+		}
+		contexts[provider.ID()] = restoreCtx
+		part, err := provider.Plan(ctx, s.profile, info, restoreCtx)
+		if err != nil {
+			return model.RestorePlan{}, nil, nil, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
 		plan.Operations, plan.Skipped = append(plan.Operations, part.Operations...), append(plan.Skipped, part.Skipped...)
 	}
 	if s.finalizeRestore != nil {
-		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, mode); err != nil {
-			return model.RestorePlan{}, nil, fmt.Errorf("finalize restore plan: %w", err)
+		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, options); err != nil {
+			return model.RestorePlan{}, nil, nil, fmt.Errorf("finalize restore plan: %w", err)
 		}
 	} else if err := restore.ValidatePlan(plan); err != nil {
-		return model.RestorePlan{}, nil, err
+		return model.RestorePlan{}, nil, nil, err
 	}
-	return plan, providers, nil
+	return plan, providers, contexts, nil
 }
 
-func verifyRestoreProviders(ctx context.Context, data profile.Data, providers []RestoreProvider) (model.VerificationResult, error) {
+// restoreOptionsForMode translates the legacy two-value RestoreMode into the
+// two-axis policy.RestoreOptions Plan/Verify now consume. Convergence is
+// always Additive in PR 2; Exact is not selectable until PR 5.
+func restoreOptionsForMode(mode RestoreMode) policy.RestoreOptions {
+	conflicts := policy.ConflictSafe
+	if mode == RestoreForced {
+		conflicts = policy.ConflictForce
+	}
+	return policy.RestoreOptions{Conflicts: conflicts, Convergence: policy.ConvergenceAdditive}
+}
+
+// defaultRestoreContext inspects a provider's targets and records the PR 2
+// compatibility decision (DefaultRestoreDecision) for each one. Real policy
+// resolution replaces this in PR 4; until then every inspected target
+// resolves to enabled/unresolved so current behavior is preserved.
+func defaultRestoreContext(ctx context.Context, provider Provider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
+	targets, err := provider.InspectTargets(ctx, data)
+	if err != nil {
+		return RestoreContext{}, err
+	}
+	decisions := make(map[string]RestoreDecision, len(targets))
+	for _, target := range targets {
+		decisions[target.Key] = DefaultRestoreDecision()
+	}
+	return RestoreContext{Machine: machine, Options: options, Targets: decisions}, nil
+}
+
+// verifyRestoreProviders reuses the exact RestoreContext restorePlan built
+// for each provider's Plan call, so verification never judges a run against
+// a different effective Restore intent than the one that planned it.
+func verifyRestoreProviders(ctx context.Context, data profile.Data, providers []RestoreProvider, contexts map[string]RestoreContext) (model.VerificationResult, error) {
 	result := model.VerificationResult{OK: true}
 	for _, provider := range providers {
-		verification, err := provider.Verify(ctx, data)
+		verification, err := provider.Verify(ctx, data, contexts[provider.ID()])
 		if err != nil {
 			return model.VerificationResult{}, fmt.Errorf("verify %s restore: %w", provider.ID(), err)
 		}

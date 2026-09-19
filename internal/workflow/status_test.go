@@ -16,7 +16,10 @@ type statusTestProvider struct {
 
 func (p statusTestProvider) ID() string               { return p.id }
 func (statusTestProvider) Captured(profile.Data) bool { return true }
-func (p statusTestProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+func (statusTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return nil, nil
+}
+func (p statusTestProvider) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
 	return nil, nil, nil
 }
 func (p statusTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {

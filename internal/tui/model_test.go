@@ -1080,7 +1080,10 @@ type configIntegrationProvider struct{}
 
 func (configIntegrationProvider) ID() string                 { return "config" }
 func (configIntegrationProvider) Captured(profile.Data) bool { return true }
-func (configIntegrationProvider) Capture(context.Context, *profile.Data) (any, []blueprintmodel.Change, error) {
+func (configIntegrationProvider) InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error) {
+	return nil, nil
+}
+func (configIntegrationProvider) Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []blueprintmodel.Change, error) {
 	return nil, nil, nil
 }
 func (configIntegrationProvider) Diff(context.Context, profile.Data) ([]blueprintmodel.Change, error) {
@@ -1092,10 +1095,10 @@ func (configIntegrationProvider) DiffWithScan(context.Context, profile.Data) ([]
 func (configIntegrationProvider) InspectConfig(context.Context, profile.Data, string) (workflow.ConfigInspection, error) {
 	return workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/example/settings.toml", Classification: config.ConfigAmbiguousBaseline, Reason: "ambiguous baseline"}}, nil
 }
-func (configIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreMode) (blueprintmodel.RestorePlan, error) {
+func (configIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (blueprintmodel.RestorePlan, error) {
 	return blueprintmodel.RestorePlan{}, nil
 }
-func (configIntegrationProvider) Verify(context.Context, profile.Data) (blueprintmodel.VerificationResult, error) {
+func (configIntegrationProvider) Verify(context.Context, profile.Data, workflow.RestoreContext) (blueprintmodel.VerificationResult, error) {
 	return blueprintmodel.VerificationResult{OK: true}, nil
 }
 
@@ -1103,7 +1106,10 @@ type resourcesIntegrationProvider struct{}
 
 func (resourcesIntegrationProvider) ID() string                 { return "resources" }
 func (resourcesIntegrationProvider) Captured(profile.Data) bool { return true }
-func (resourcesIntegrationProvider) Capture(context.Context, *profile.Data) (any, []blueprintmodel.Change, error) {
+func (resourcesIntegrationProvider) InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error) {
+	return nil, nil
+}
+func (resourcesIntegrationProvider) Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []blueprintmodel.Change, error) {
 	return nil, nil, nil
 }
 func (resourcesIntegrationProvider) Diff(context.Context, profile.Data) ([]blueprintmodel.Change, error) {

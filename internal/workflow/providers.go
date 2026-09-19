@@ -11,8 +11,8 @@ import (
 // RestoreProvider extends a provider with restore planning and verification.
 type RestoreProvider interface {
 	Provider
-	Plan(context.Context, profile.Data, omarchy.Info, RestoreMode) (model.RestorePlan, error)
-	Verify(context.Context, profile.Data) (model.VerificationResult, error)
+	Plan(context.Context, profile.Data, omarchy.Info, RestoreContext) (model.RestorePlan, error)
+	Verify(context.Context, profile.Data, RestoreContext) (model.VerificationResult, error)
 }
 
 // Provider is the narrow shared contract for status and capture orchestration.
@@ -20,7 +20,11 @@ type RestoreProvider interface {
 type Provider interface {
 	ID() string
 	Captured(profile.Data) bool
-	Capture(context.Context, *profile.Data) (any, []model.Change, error)
+	// InspectTargets returns the provider's read-only, descriptive policy
+	// targets. It must not mutate state; Capture and Plan/Verify re-inspect
+	// before mutation rather than trusting a stale inventory.
+	InspectTargets(context.Context, profile.Data) ([]TargetInspection, error)
+	Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
 }
 

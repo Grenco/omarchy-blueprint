@@ -7,11 +7,21 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
+
+// restorePlanOptionsFromPolicy derives the finalizer's Force flag from the
+// Conflicts axis only. Convergence (Additive/Exact) must stay irrelevant to
+// Shell/plugin dependency conflict resolution: whether a required plugin is
+// missing or provenance-mismatched is a Safe/Force question, never an
+// Additive/Exact one.
+func restorePlanOptionsFromPolicy(options policy.RestoreOptions) restorePlanOptions {
+	return restorePlanOptions{Force: options.Conflicts == policy.ConflictForce}
+}
 
 func providerSelected(providers []stateProvider, id string) bool {
 	for _, provider := range providers {

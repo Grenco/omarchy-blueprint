@@ -1,10 +1,54 @@
 package workflow
 
 import (
+	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
+
+func TestRestorePlanTranslatesModeIntoCompatibilityRestoreContext(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var lastPlan RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan,
+		targets:  []TargetInspection{{Key: "official:firefox"}},
+	}})
+
+	if _, err := session.PlanRestore(context.Background(), "", RestoreForced); err != nil {
+		t.Fatal(err)
+	}
+	want := policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceAdditive}
+	if lastPlan.Options != want {
+		t.Fatalf("Plan received Options = %+v, want %+v", lastPlan.Options, want)
+	}
+	decision, ok := lastPlan.Lookup("official:firefox")
+	if !ok || decision != DefaultRestoreDecision() {
+		t.Fatalf("Plan received Targets[official:firefox] = %+v, %v, want the PR 2 compatibility default", decision, ok)
+	}
+}
+
+func TestRestorePlanAndVerifyReceiveIdenticalRestoreContext(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var lastPlan, lastVerify RestoreContext
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		lastPlan: &lastPlan, lastVerify: &lastVerify,
+		targets: []TargetInspection{{Key: "official:firefox"}},
+	}})
+
+	if _, err := session.ApplyRestore(context.Background(), "", RestoreNormal); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(lastPlan, lastVerify) {
+		t.Fatalf("Plan context %+v != Verify context %+v; verification must judge the same effective Restore intent that planned it", lastPlan, lastVerify)
+	}
+}
 
 func TestRestoreConsequencesUseTypedOperations(t *testing.T) {
 	normal := model.RestorePlan{Skipped: []model.Skipped{{Provider: "config", Resource: "file"}, {Provider: "config", Resource: "delete"}, {Provider: "other", Resource: "unknown"}}}
