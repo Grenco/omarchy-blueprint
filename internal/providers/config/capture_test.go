@@ -374,6 +374,95 @@ func TestCaptureDisabledPreservesFileRevertedToUnchangedBaseline(t *testing.T) {
 	}
 }
 
+// TestCaptureEnabledDropsFileRevertedToUnchangedBaseline is the enabled
+// counterpart to TestCaptureDisabledPreservesFileRevertedToUnchangedBaseline
+// and a regression for a round-3 review finding on PR 3: a tracked path
+// classified ConfigUnchangedBaseline is Capture-eligible in inspection's
+// preview (see configEligibility), so the preview must agree with what real
+// Capture actually does when enabled -- there is nothing new to capture, so
+// it drops the stale desired value (converging to unmanaged) rather than
+// "updating" it to anything.
+func TestCaptureEnabledDropsFileRevertedToUnchangedBaseline(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "theme.conf"), "default")
+	writeFile(t, filepath.Join(user, "theme.conf"), "default")
+	writeFile(t, filepath.Join(profileDir, "config", "files", "theme.conf"), "custom")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", "theme.conf"), "default")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{
+			Path:         "theme.conf",
+			Hash:         hashOf(t, filepath.Join(profileDir, "config", "files", "theme.conf")),
+			Mode:         "0644",
+			BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", "theme.conf")),
+			BaselineMode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return true }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(false)}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 0 {
+		t.Fatalf("state.Files = %#v, want the stale desired value dropped once it reverts to the unchanged baseline and Capture is enabled", result.State.Files)
+	}
+}
+
+// TestCaptureDisabledPreservesFileMatchingTrustedHistoricalBaseline and
+// TestCaptureEnabledDropsFileMatchingTrustedHistoricalBaseline are
+// regressions for a round-3 review finding on PR 3: a tracked path
+// classified ConfigHistoricalBaseline previously fell into Capture's
+// generic safety-freeze default branch (unconditional preserve), even
+// though it is not unsafe or unreadable -- it is baseline-derived, not real
+// user customization, exactly like ConfigUnchangedBaseline. It must get the
+// same enabled/disabled treatment: enabled converges by dropping the stale
+// desired value, disabled preserves it.
+func TestCaptureDisabledPreservesFileMatchingTrustedHistoricalBaseline(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "settings.conf"), "default")
+	writeFile(t, filepath.Join(user, "settings.conf"), "custom")
+	writeFile(t, filepath.Join(profileDir, "config", "files", "settings.conf"), "custom")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{
+			Path: "settings.conf",
+			Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "settings.conf")),
+			Mode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return false }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(true)}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 1 || result.State.Files[0].Hash != saved.Files[0].Hash {
+		t.Fatalf("state.Files = %#v, want the previously-custom file preserved while Capture is disabled", result.State.Files)
+	}
+}
+
+func TestCaptureEnabledDropsFileMatchingTrustedHistoricalBaseline(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "settings.conf"), "default")
+	writeFile(t, filepath.Join(user, "settings.conf"), "custom")
+	writeFile(t, filepath.Join(profileDir, "config", "files", "settings.conf"), "custom")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{
+			Path: "settings.conf",
+			Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "settings.conf")),
+			Mode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return true }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(true)}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 0 {
+		t.Fatalf("state.Files = %#v, want the stale desired value dropped once Capture is enabled, matching a trusted historical baseline is not real customization", result.State.Files)
+	}
+}
+
 // TestCaptureDisabledPreservesDeletionTombstoneWhenBaselineDisappears is a
 // regression for a review finding on PR 3: an existing ConfigDelete
 // tombstone whose baseline has since disappeared entirely (no longer a scan

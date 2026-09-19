@@ -166,11 +166,17 @@ func (p Provider) Capture(saved profile.Configs, enabled func(path string) bool)
 					// adopting the delegated/excluded meaning, which must
 					// never happen.
 					continue
-				case ConfigUnchangedBaseline:
-					// Nothing currently diverges from the baseline to
-					// capture. Enabled correctly drops it (there is nothing
-					// new to adopt); disabled freezes the stale desired
-					// value exactly as before.
+				case ConfigUnchangedBaseline, ConfigHistoricalBaseline:
+					// Baseline-derived, not real user customization: the
+					// live bytes exactly match either the current baseline
+					// or a trusted historical one, so there is nothing new
+					// to capture either way. Enabled correctly drops it
+					// (nothing new to adopt); disabled freezes the stale
+					// desired value exactly as before. HistoricalBaseline
+					// must not fall into the safety-freeze default branch
+					// below: it is not unsafe or unreadable, it is simply
+					// not a customization worth remembering once Capture is
+					// enabled again.
 					if !enabled(path) {
 						if err := preserve(path); err != nil {
 							return CaptureResult{}, err
