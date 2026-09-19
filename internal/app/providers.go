@@ -1329,12 +1329,15 @@ func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoo
 	return index
 }
 
-func (p configStateProvider) Capture(_ context.Context, d *profile.Data, _ workflow.CaptureContext) (any, []model.Change, error) {
+func (p configStateProvider) Capture(_ context.Context, d *profile.Data, capCtx workflow.CaptureContext) (any, []model.Change, error) {
 	provider, err := p.provider(*d)
 	if err != nil {
 		return nil, nil, err
 	}
-	result, err := provider.Capture(d.Config)
+	result, err := provider.Capture(d.Config, func(path string) bool {
+		decision, ok := capCtx.Lookup(path)
+		return ok && decision.Capture
+	})
 	if err != nil {
 		return nil, nil, err
 	}

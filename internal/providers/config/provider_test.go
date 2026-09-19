@@ -154,7 +154,7 @@ func TestCaptureStoresOnlyCustomizedFilesWithBaselineAndMetadata(t *testing.T) {
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "bindings custom")
 	p := testProvider(user, base, profileDir)
 	p.History = fakeBaselineHistory(false)
-	result, err := p.Capture(profile.Configs{})
+	result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,11 +180,11 @@ func TestCaptureRemovesStaleCapturedFileWhenResetToBaseline(t *testing.T) {
 	writeFile(t, filepath.Join(base, "hypr/bindings.lua"), "bindings default")
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "custom")
 	p := testProvider(user, base, profileDir)
-	if _, err := p.Capture(profile.Configs{}); err != nil {
+	if _, err := p.Capture(profile.Configs{}, func(string) bool { return true }); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(user, "hypr/bindings.lua"), "bindings default")
-	result, err := p.Capture(profile.Configs{})
+	result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestCaptureSortsMetadataDeterministically(t *testing.T) {
 		{ID: "hypr.autostart", Path: "hypr/hyprland.lua"},
 		{ID: "hypr.bindings", Path: "hypr/bindings.lua"},
 	}
-	result, err := p.Capture(profile.Configs{})
+	result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestCaptureReportsUserSymlinkWithoutFollowingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := testProvider(user, base, profileDir)
-	result, err := p.Capture(profile.Configs{})
+	result, err := p.Capture(profile.Configs{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
