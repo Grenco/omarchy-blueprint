@@ -429,6 +429,16 @@ func Load(dir string) (Data, error) {
 	if err != nil {
 		return d, err
 	}
+	if loadedSchema < policySchema {
+		// A legacy Packages.Excluded ref is migrated once, in memory, into
+		// an equivalent portable Capture Disabled + Restore Disabled policy
+		// rule pair; MachineSpecific becomes pure runtime inspection
+		// metadata rather than persisted desired state. Migration never
+		// consults the current machine to infer desired absence -- it only
+		// rewrites the exclusion mechanism itself, not what is
+		// desired-present.
+		migrateLegacyPackageExclusions(&d)
+	}
 	return d, nil
 }
 
