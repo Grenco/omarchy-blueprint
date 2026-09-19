@@ -37,6 +37,17 @@ type TargetCapabilities struct {
 	// field is meaningless when SupportsDesiredAbsence is true, since a
 	// provider that can record explicit absence records it instead.
 	PreservesMissingDesired bool
+	// DropsDesiredWhenIneligible distinguishes two different reasons a
+	// target can be CaptureEligible: false. The default (false) means a
+	// safety freeze: Capture leaves whatever is already desired completely
+	// untouched, so the CaptureOutcomeBlocked preview is accurate -- nothing
+	// changes. true means an intentional ownership-management transition
+	// instead (Config: Delegated to a stronger owner, or explicitly
+	// Excluded): Capture actively drops the target's desired state
+	// regardless of policy, so reporting it as "blocked" (implying nothing
+	// happens) would be misleading; captureOutcome reports
+	// CaptureOutcomeStopManaging for it instead when it was desired-present.
+	DropsDesiredWhenIneligible bool
 }
 
 // TargetInspection is one provider-defined policy target's read-only,

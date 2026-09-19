@@ -1011,11 +1011,22 @@ func TestConfigOverlayAcceptance(t *testing.T) {
 			t.Fatalf("recapture code=%d out=%s", code, out)
 		}
 		d, err := profile.Load(profileDir)
-		if err != nil || d.Manifest.Schema != profile.Schema || len(d.Config.Files) != 0 {
+		if err != nil || d.Manifest.Schema != profile.Schema {
 			t.Fatalf("recaptured profile=%#v err=%v", d.Config, err)
 		}
-		if _, err := os.Stat(filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); !os.IsNotExist(err) {
-			t.Fatal("ambiguous baseline customization was recaptured")
+		// hypr/bindings.lua's baseline provenance is ambiguous with no
+		// BaselineHistory configured in this fixture (its live content
+		// still differs from the baseline, matching the state restore just
+		// reinstated). Safety blocks capturing fresh from that ambiguous
+		// state, but it must not erase the already-safe remembered desired
+		// state from the legacy capture: the entry, and its artifact
+		// (found at its pre-schema-8 path, since Load never relocates an
+		// on-disk snapshot itself), are preserved exactly as before.
+		if len(d.Config.Files) != 1 || d.Config.Files[0].Path != ".config/hypr/bindings.lua" || d.Config.Files[0].Hash != appHash(t, "captured") {
+			t.Fatalf("recaptured profile=%#v, want the ambiguous legacy entry preserved unchanged", d.Config)
+		}
+		if got := readAppFile(t, filepath.Join(profileDir, "config", "files", ".config", "hypr", "bindings.lua")); got != "captured" {
+			t.Fatalf("preserved artifact = %q, want the original captured bytes", got)
 		}
 	})
 
@@ -3064,7 +3075,7 @@ func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
 	}
 	for _, classification := range blocked {
-		eligible, reason := configEligibility(classification)
+		eligible, reason, _ := configEligibility(classification)
 		if eligible || reason == "" {
 			t.Fatalf("%s: eligible=%v reason=%q, want ineligible with a safety reason", classification, eligible, reason)
 		}
@@ -3076,8 +3087,33 @@ func TestConfigEligibilityAllowsCaptureActionableClassifications(t *testing.T) {
 		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
 		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline,
 	} {
-		if eligible, _ := configEligibility(classification); !eligible {
+		if eligible, _, _ := configEligibility(classification); !eligible {
 			t.Fatalf("%s: want eligible", classification)
+		}
+	}
+}
+
+// TestConfigEligibilityMarksOnlyOwnershipTransitionsAsDroppingDesiredState
+// is a regression for a review finding on PR 3: Delegated and Excluded
+// actually drop previously desired state when Capture runs (an intentional
+// ownership-management transition), unlike every other safety-blocked
+// classification, which freezes it untouched. Only Delegated/Excluded may
+// report ownershipTransition, so the Capture preview can tell them apart
+// from a generic safety freeze instead of both masquerading as the same
+// "Blocked" outcome.
+func TestConfigEligibilityMarksOnlyOwnershipTransitionsAsDroppingDesiredState(t *testing.T) {
+	ownershipTransitions := map[configprovider.Classification]bool{
+		configprovider.ConfigExcluded:  true,
+		configprovider.ConfigDelegated: true,
+	}
+	for _, classification := range []configprovider.Classification{
+		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
+		configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized,
+		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
+	} {
+		_, _, got := configEligibility(classification)
+		if want := ownershipTransitions[classification]; got != want {
+			t.Fatalf("%s: ownershipTransition=%v, want %v", classification, got, want)
 		}
 	}
 }

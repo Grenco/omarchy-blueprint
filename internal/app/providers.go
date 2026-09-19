@@ -1372,9 +1372,12 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 // its canonical managed path, with a meaningful parent chain. Classification
 // drives both the descriptive Desired/Current state and whether the path is
 // currently safe for Blueprint to manage automatically; safety-blocked
-// classifications (delegated, volatile, sensitive, unmanaged symlink,
-// unsupported, oversized, ambiguous) stay CaptureEligible: false, since
-// provider safety checks remain authoritative over policy.
+// classifications (volatile, sensitive, unmanaged symlink, unsupported,
+// oversized, ambiguous) stay CaptureEligible: false since provider safety
+// checks remain authoritative over policy, but Capabilities marks them
+// distinctly from delegated/excluded (see configEligibility): the former
+// freeze already-safe remembered desired state untouched, the latter
+// actively drop it as an ownership-management transition.
 func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
 	provider, err := p.provider(d)
 	if err != nil {
@@ -1404,7 +1407,7 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			// target at all, not an implicit "will be updated" one.
 			continue
 		}
-		eligible, reason := configEligibility(candidate.Classification)
+		eligible, reason, ownershipTransition := configEligibility(candidate.Classification)
 		desired := workflow.TargetUnknown
 		switch {
 		case desiredDeletes[candidate.Path]:
@@ -1417,11 +1420,12 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			current = workflow.TargetAbsent
 		}
 		targets = append(targets, configTarget(candidate.Path, desired, current, eligible, reason, workflow.TargetCapabilities{
-			SupportsCapture:        true,
-			SupportsRestore:        true,
-			SupportsDesiredAbsence: true,
-			SupportsExactRemoval:   eligible,
-			Hierarchical:           true,
+			SupportsCapture:            true,
+			SupportsRestore:            true,
+			SupportsDesiredAbsence:     true,
+			SupportsExactRemoval:       eligible,
+			Hierarchical:               true,
+			DropsDesiredWhenIneligible: ownershipTransition,
 		}))
 	}
 
@@ -1495,33 +1499,44 @@ func configCaptureInert(classification configprovider.Classification) bool {
 }
 
 // configEligibility maps a Config scan Classification onto Capture/Restore
-// eligibility. Excluded is the provider-owned "leave this path alone" state
-// -- explicit, permanent, unmanaged metadata, never a deletion tombstone --
-// so it stays ineligible exactly like the other safety-blocked
-// classifications, not merely "desired absent."
-func configEligibility(classification configprovider.Classification) (eligible bool, reason string) {
+// eligibility. ownershipTransition distinguishes why an ineligible
+// classification is ineligible, matching what real Capture (capture.go)
+// actually does with previously desired state for it: Delegated (handed off
+// to a stronger owner) and Excluded (the user explicitly said to leave this
+// path alone) are ownership-management transitions -- Capture actively
+// drops the target's desired state for them, regardless of policy. Every
+// other ineligible classification (Sensitive, Volatile, Oversized,
+// Unsupported, ambiguous, an unmanaged symlink) is a safety freeze instead:
+// the current live bytes are unsafe or unreadable right now, so Capture
+// cannot update from them, but it leaves already-safe remembered desired
+// state completely untouched. Reporting both the same way as generic
+// "Blocked" would misrepresent the ownership-transition cases, where
+// something does happen to desired state; captureOutcome consults
+// ownershipTransition (via TargetCapabilities.DropsDesiredWhenIneligible) to
+// tell them apart.
+func configEligibility(classification configprovider.Classification) (eligible bool, reason string, ownershipTransition bool) {
 	switch classification {
 	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
 		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline:
-		return true, ""
+		return true, "", false
 	case configprovider.ConfigExcluded:
-		return false, "excluded: you asked Config to leave this path alone"
+		return false, "excluded: you asked Config to leave this path alone", true
 	case configprovider.ConfigDelegated:
-		return false, "delegated to another provider"
+		return false, "delegated to another provider", true
 	case configprovider.ConfigVolatile:
-		return false, "excluded as state-heavy/volatile by default"
+		return false, "excluded as state-heavy/volatile by default", false
 	case configprovider.ConfigSensitive:
-		return false, "excluded as a likely secret/credential path"
+		return false, "excluded as a likely secret/credential path", false
 	case configprovider.ConfigUnmanagedSymlink:
-		return false, "existing symlink is not owned by Blueprint"
+		return false, "existing symlink is not owned by Blueprint", false
 	case configprovider.ConfigUnsupported:
-		return false, "unsupported file type"
+		return false, "unsupported file type", false
 	case configprovider.ConfigOversized:
-		return false, "exceeds the capture size limit"
+		return false, "exceeds the capture size limit", false
 	case configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion:
-		return false, "baseline provenance is ambiguous"
+		return false, "baseline provenance is ambiguous", false
 	default:
-		return false, "unrecognized classification"
+		return false, "unrecognized classification", false
 	}
 }
 
