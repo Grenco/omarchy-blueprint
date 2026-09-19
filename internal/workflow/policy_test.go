@@ -273,6 +273,58 @@ func TestSetProvidersRejectsHandEditedMachinePolicyTarget(t *testing.T) {
 	}
 }
 
+// TestSetProvidersRejectsNonCanonicalHandEditedProfileTarget is a
+// regression for a round-3 review finding on PR 3: validateAxisRuleTargets
+// called validateTarget but discarded the canonical value it returned,
+// accepting any syntactically-valid target even when it was not the
+// canonical form the provider itself would ever emit (e.g. Config's
+// ergonomic "~/.config/nvim" instead of the stored ".config/nvim" key). A
+// non-canonical hand-edited target would never match what real
+// inspection/resolution produces for the same path, silently orphaning the
+// rule, so it must fail loudly at load time instead.
+func TestSetProvidersRejectsNonCanonicalHandEditedProfileTarget(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Policy = policy.Rules{Capture: []policy.Rule{{Category: "config", Target: "~/.config/nvim", Setting: policy.SettingDisabled}}}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Now:       func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]Provider{captureTestProvider{id: "config", order: &[]string{}}}); err == nil {
+		t.Fatal("non-canonical hand-edited policy target accepted")
+	}
+}
+
+// TestSetProvidersRejectsNonCanonicalHandEditedMachineTarget mirrors the
+// profile-scope case for a machine's own policy overrides.
+func TestSetProvidersRejectsNonCanonicalHandEditedMachineTarget(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{{
+		Name:   "desktop",
+		Policy: policy.Rules{Restore: []policy.Rule{{Category: "config", Target: "~/.config/nvim", Setting: policy.SettingEnabled}}},
+	}}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Now:       func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]Provider{captureTestProvider{id: "config", order: &[]string{}}}); err == nil {
+		t.Fatal("non-canonical hand-edited machine policy target accepted")
+	}
+}
+
 // TestSetProvidersAcceptsValidHandEditedPolicyTargets is the paired
 // happy-path: a well-formed target, and a category the registered provider
 // set does not even cover, must both be accepted rather than over-rejected.

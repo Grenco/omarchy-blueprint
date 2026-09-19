@@ -1560,6 +1560,38 @@ func TestOpenWorkflowRejectsHandEditedPolicyTargetOnceProvidersAreRegistered(t *
 	}
 }
 
+// TestOpenWorkflowRejectsNonCanonicalHandEditedConfigTarget is a regression
+// for a round-3 review finding on PR 3: loaded policy validation checked
+// only target syntax, discarding the canonical value ValidateTarget
+// returned. Config explicitly canonicalizes an ergonomic input such as
+// "~/.config/nvim" to the HOME-relative stored key ".config/nvim", so a
+// hand-edited policy containing the ergonomic form passed validation but
+// would never match the canonical target real inspection/resolution emits
+// for the same path. It must fail loudly at load time instead.
+func TestOpenWorkflowRejectsNonCanonicalHandEditedConfigTarget(t *testing.T) {
+	dir := t.TempDir()
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: &machineRunner{}, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyToml := "capture = [{category = \"config\", target = \"~/.config/nvim\", setting = \"disabled\"}]\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy", "policy.toml"), []byte(policyToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run("--profile", dir, "capture", "config"); code == 0 {
+		t.Fatalf("non-canonical hand-edited policy target accepted: out=%s", out.String())
+	}
+}
+
 func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}
