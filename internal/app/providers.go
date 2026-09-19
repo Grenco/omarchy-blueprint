@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -221,6 +223,62 @@ func (p resourcesStateProvider) provider(d profile.Data) (resourcesprovider.Prov
 	}
 	return resourcesprovider.Provider{Runner: p.deps.Runner, HomeDir: home, ProfileDir: profileDir, LinkRoots: p.deps.ResourceLinkRoots(home), Ownership: claims, ResourcePaths: resourcesprovider.ResourcePaths{Home: home, Overrides: overrides}}, nil
 }
+
+// InspectTargets reports resource:<id> for every explicitly tracked
+// resource. Resources have no explicit desired-absence concept and no Exact
+// removal (see design non-goals: Resources are never deleted by Exact): a
+// resource whose local path is currently missing reports Current: absent,
+// which callers must read only as "needs restore," never as deletion intent
+// (there is no untracked-by-detection case, since resources only exist here
+// once a user explicitly tracks them).
+func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return nil, err
+	}
+	current, _, err := provider.Detect(ctx, d.Resources)
+	if err != nil {
+		return nil, err
+	}
+	currentByID := map[string]profile.Resource{}
+	for _, item := range current.Items {
+		currentByID[item.ID] = item
+	}
+	targets := make([]workflow.TargetInspection, 0, len(d.Resources.Items))
+	for _, item := range d.Resources.Items {
+		present := false
+		if live, ok := currentByID[item.ID]; ok {
+			present = !resourceMissing(live)
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "resource:" + item.ID,
+			Label:           item.ID,
+			Desired:         workflow.TargetPresent,
+			Current:         currentPresence(present),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				// A missing local resource is preserved, never dropped:
+				// there is no way to tell "gone" apart from "not yet
+				// restored," so Capture must not silently forget it.
+				PreservesMissingDesired: true,
+			},
+		})
+	}
+	return targets, nil
+}
+
+// resourceMissing mirrors how Detect itself recognizes a resource whose
+// local state could not be read: an empty content hash for a copy strategy,
+// or an empty revision for a Git strategy.
+func resourceMissing(item profile.Resource) bool {
+	if item.Strategy == "copy" {
+		return item.Hash == ""
+	}
+	return item.Revision == ""
+}
+
 func (p *resourcesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	if len(d.Resources.Items) == 0 && !d.Manifest.Capture.Resources {
 		return nil, nil, nil
@@ -412,8 +470,162 @@ func (packagesStateProvider) CategoryEnabled() bool { return true }
 func (packagesStateProvider) Captured(profile.Data) bool { return true }
 
 func (p packagesStateProvider) provider() (packagesprovider.Provider, error) {
-	path, err := p.deps.MiseGlobalConfig()
-	return packagesprovider.Provider{Runner: p.deps.Runner, MiseGlobalConfig: path}, err
+	miseConfig, err := p.deps.MiseGlobalConfig()
+	return packagesprovider.Provider{Runner: p.deps.Runner, MiseGlobalConfig: miseConfig}, err
+}
+
+// InspectTargets reports every portable package (official:<name>, aur:<name>,
+// mise:<id>) currently desired, currently installed, or explicitly excluded.
+// Hardware/machine-specific packages are reported separately and marked
+// CaptureEligible: false, since they are protected inspection metadata, not
+// normal portable targets (see Task 17's classification rules).
+func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desired := d.Packages
+
+	desiredPortable, currentPortable := map[string]bool{}, map[string]bool{}
+	for _, name := range desired.Official {
+		desiredPortable["official:"+name] = true
+	}
+	for _, name := range desired.AUR {
+		desiredPortable["aur:"+name] = true
+	}
+	for id := range desired.Mise {
+		desiredPortable["mise:"+id] = true
+	}
+	for _, name := range current.Official {
+		currentPortable["official:"+name] = true
+	}
+	for _, name := range current.AUR {
+		currentPortable["aur:"+name] = true
+	}
+	for id := range current.Mise {
+		currentPortable["mise:"+id] = true
+	}
+	excluded := map[string]bool{}
+	for _, ref := range desired.Excluded {
+		excluded[ref] = true
+	}
+
+	keys := map[string]bool{}
+	for key := range desiredPortable {
+		keys[key] = true
+	}
+	for key := range currentPortable {
+		keys[key] = true
+	}
+	for key := range excluded {
+		keys[key] = true
+	}
+	sortedKeys := make([]string, 0, len(keys))
+	for key := range keys {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Strings(sortedKeys)
+
+	targets := make([]workflow.TargetInspection, 0, len(sortedKeys)+len(current.MachineSpecific))
+	for _, key := range sortedKeys {
+		currentState := currentPresence(currentPortable[key])
+		if excluded[key] {
+			// Legacy Excluded is Capture Disabled + Restore Disabled with no
+			// desired state, not a deletion tombstone: unmanaged inspection
+			// metadata, never eligible for automatic Capture or Restore.
+			targets = append(targets, workflow.TargetInspection{
+				Key:             key,
+				Label:           packageLabel(key),
+				Desired:         workflow.TargetUnknown,
+				Current:         currentState,
+				CaptureEligible: false,
+				RestoreEligible: false,
+				SafetyReason:    "excluded: legacy Capture Disabled / Restore Disabled",
+			})
+			continue
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             key,
+			Label:           packageLabel(key),
+			Desired:         desiredPresence(desiredPortable[key]),
+			Current:         currentState,
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture:        true,
+				SupportsRestore:        true,
+				SupportsDesiredAbsence: true,
+				SupportsExactRemoval:   true,
+			},
+		})
+	}
+
+	machineSpecific := map[string]bool{}
+	for _, ref := range desired.MachineSpecific {
+		machineSpecific[ref] = true
+	}
+	for _, ref := range current.MachineSpecific {
+		machineSpecific[ref] = true
+	}
+	machineKeys := make([]string, 0, len(machineSpecific))
+	for ref := range machineSpecific {
+		machineKeys = append(machineKeys, ref)
+	}
+	sort.Strings(machineKeys)
+	for _, ref := range machineKeys {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             ref,
+			Label:           packageLabel(ref),
+			Desired:         workflow.TargetUnknown,
+			Current:         workflow.TargetPresent,
+			CaptureEligible: false,
+			RestoreEligible: false,
+			SafetyReason:    "hardware/machine-specific package is not portable across machines",
+		})
+	}
+	return targets, nil
+}
+
+func packageLabel(ref string) string {
+	_, name, ok := strings.Cut(ref, ":")
+	if !ok {
+		return ref
+	}
+	return name
+}
+
+// sortedKeys returns a deterministically ordered slice of a string set, so
+// InspectTargets output does not depend on map iteration order.
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// desiredPresence reports the Desired TargetState for a target that has no
+// explicit desired-absence tombstone: present if tracked, otherwise unknown
+// (never captured) rather than absent (explicitly not wanted).
+func desiredPresence(tracked bool) workflow.TargetState {
+	if tracked {
+		return workflow.TargetPresent
+	}
+	return workflow.TargetUnknown
+}
+
+// currentPresence reports the Current TargetState from a live detection
+// membership check: present if detected, otherwise genuinely absent.
+func currentPresence(detected bool) workflow.TargetState {
+	if detected {
+		return workflow.TargetPresent
+	}
+	return workflow.TargetAbsent
 }
 
 func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -500,6 +712,64 @@ func (themesStateProvider) Captured(d profile.Data) bool { return d.Manifest.Cap
 
 func (p themesStateProvider) provider() (themesprovider.Provider, error) {
 	return themeProvider(p.deps, p.opt)
+}
+
+// InspectTargets reports "active" (which theme is currently selected) plus
+// one theme:<id> target per non-built-in theme available in either the
+// desired state or the live detection. Built-in themes are Omarchy's own and
+// carry nothing for Blueprint to track a source for, so they are omitted.
+func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	targets := []workflow.TargetInspection{{
+		Key:             "active",
+		Label:           "active",
+		Desired:         desiredPresence(d.Themes.Current != ""),
+		Current:         currentPresence(current.Current != ""),
+		CaptureEligible: true,
+		RestoreEligible: true,
+		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+	}}
+
+	desiredThemes, currentThemes := map[string]bool{}, map[string]bool{}
+	for _, theme := range d.Themes.Items {
+		if theme.Type != "builtin" {
+			desiredThemes[theme.ID] = true
+		}
+	}
+	for _, theme := range current.Items {
+		if theme.Type != "builtin" {
+			currentThemes[theme.ID] = true
+		}
+	}
+	ids := map[string]bool{}
+	for id := range desiredThemes {
+		ids[id] = true
+	}
+	for id := range currentThemes {
+		ids[id] = true
+	}
+	for _, id := range sortedKeys(ids) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "theme:" + id,
+			Label:           id,
+			Desired:         desiredPresence(desiredThemes[id]),
+			Current:         currentPresence(currentThemes[id]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				SupportsDesiredAbsence: true, SupportsExactRemoval: true,
+			},
+		})
+	}
+	return targets, nil
 }
 
 func (p *themesStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -608,6 +878,55 @@ func (pluginsStateProvider) Captured(d profile.Data) bool { return d.Manifest.Ca
 
 func (p pluginsStateProvider) provider() (pluginsprovider.Provider, error) {
 	return pluginProvider(p.deps, p.opt)
+}
+
+// InspectTargets reports plugin:<id> for third-party source availability
+// only; first-party ("builtin") plugins ship with Omarchy and have no source
+// for Blueprint to capture. Plugin enablement itself is Shell's target, not
+// Plugins' (see pluginSemantics).
+func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desiredThirdParty, currentThirdParty := map[string]bool{}, map[string]bool{}
+	for _, plugin := range d.Plugins.Items {
+		if plugin.Source != "builtin" {
+			desiredThirdParty[plugin.ID] = true
+		}
+	}
+	for _, plugin := range current.Items {
+		if plugin.Source != "builtin" {
+			currentThirdParty[plugin.ID] = true
+		}
+	}
+	ids := map[string]bool{}
+	for id := range desiredThirdParty {
+		ids[id] = true
+	}
+	for id := range currentThirdParty {
+		ids[id] = true
+	}
+	targets := make([]workflow.TargetInspection, 0, len(ids))
+	for _, id := range sortedKeys(ids) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "plugin:" + id,
+			Label:           id,
+			Desired:         desiredPresence(desiredThirdParty[id]),
+			Current:         currentPresence(currentThirdParty[id]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				SupportsDesiredAbsence: true, SupportsExactRemoval: true,
+			},
+		})
+	}
+	return targets, nil
 }
 
 func (p *pluginsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -769,6 +1088,181 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 	return configprovider.Provider{HomeDir: home, UserRoot: user, BaselineRoot: baseline, ProfileDir: p.opt.profileDir, Ownership: claims, History: history}, nil
 }
 
+// InspectTargets reports every scanned Config candidate as a target keyed by
+// its canonical managed path, with a meaningful parent chain. Classification
+// drives both the descriptive Desired/Current state and whether the path is
+// currently safe for Blueprint to manage automatically; safety-blocked
+// classifications (delegated, volatile, sensitive, unmanaged symlink,
+// unsupported, oversized, ambiguous) stay CaptureEligible: false, since
+// provider safety checks remain authoritative over policy.
+func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider(d)
+	if err != nil {
+		return nil, err
+	}
+	scan, err := provider.Scan(d.Config)
+	if err != nil {
+		return nil, err
+	}
+	desiredFiles := map[string]bool{}
+	for _, file := range d.Config.Files {
+		desiredFiles[file.Path] = true
+	}
+	desiredDeletes := map[string]bool{}
+	for _, del := range d.Config.Deletes {
+		desiredDeletes[del.Path] = true
+	}
+	seen := map[string]bool{}
+	targets := make([]workflow.TargetInspection, 0, len(scan.Candidates))
+	for _, candidate := range scan.Candidates {
+		seen[candidate.Path] = true
+		tracked := desiredFiles[candidate.Path] || desiredDeletes[candidate.Path]
+		if !tracked && configCaptureInert(candidate.Classification) {
+			// Matches Omarchy's default exactly and was never captured:
+			// real Capture persists nothing for Added/ModifiedBaseline/
+			// DeletedBaseline only, so this path is not yet a managed
+			// target at all, not an implicit "will be updated" one.
+			continue
+		}
+		eligible, reason := configEligibility(candidate.Classification)
+		desired := workflow.TargetUnknown
+		switch {
+		case desiredDeletes[candidate.Path]:
+			desired = workflow.TargetAbsent
+		case desiredFiles[candidate.Path]:
+			desired = workflow.TargetPresent
+		}
+		current := workflow.TargetPresent
+		if candidate.Classification == configprovider.ConfigDeletedBaseline {
+			current = workflow.TargetAbsent
+		}
+		targets = append(targets, configTarget(candidate.Path, desired, current, eligible, reason, workflow.TargetCapabilities{
+			SupportsCapture:        true,
+			SupportsRestore:        true,
+			SupportsDesiredAbsence: true,
+			SupportsExactRemoval:   eligible,
+			Hierarchical:           true,
+		}))
+	}
+
+	// Scan omits a saved path entirely once it has no baseline counterpart
+	// and is no longer present locally (ScanForCapture never synthesizes it
+	// either, since a profile upgrade must not keep legacy discoveries alive
+	// merely by recapture -- see ScanForCapture's doc comment). Without this,
+	// a previously captured, now locally missing user-added file would
+	// vanish from policy inspection even though Blueprint still has saved
+	// desired state for it, breaking Capture Preserve (nothing to preserve)
+	// and Restore (nothing to recreate from).
+	for _, file := range d.Config.Files {
+		if seen[file.Path] {
+			continue
+		}
+		// No candidate and no baseline counterpart: the same real Capture
+		// this target would go through on next Update silently drops it
+		// from Files (see capture.go), so it stop-manages rather than
+		// tombstones, exactly like Defaults/Shell.
+		targets = append(targets, configTarget(file.Path, workflow.TargetPresent, workflow.TargetAbsent, true, "", workflow.TargetCapabilities{
+			SupportsCapture: true,
+			SupportsRestore: true,
+			Hierarchical:    true,
+		}))
+	}
+	for _, del := range d.Config.Deletes {
+		if seen[del.Path] {
+			continue
+		}
+		targets = append(targets, configTarget(del.Path, workflow.TargetAbsent, workflow.TargetAbsent, true, "", workflow.TargetCapabilities{
+			SupportsCapture:        true,
+			SupportsRestore:        true,
+			SupportsDesiredAbsence: true,
+			Hierarchical:           true,
+		}))
+	}
+	return targets, nil
+}
+
+func configTarget(logicalPath string, desired, current workflow.TargetState, eligible bool, reason string, capabilities workflow.TargetCapabilities) workflow.TargetInspection {
+	ancestors := configAncestors(logicalPath)
+	parent := ""
+	if len(ancestors) > 0 {
+		parent = ancestors[0]
+	}
+	return workflow.TargetInspection{
+		Key:             logicalPath,
+		Parent:          parent,
+		Ancestors:       ancestors,
+		Label:           logicalPath,
+		Desired:         desired,
+		Current:         current,
+		CaptureEligible: eligible,
+		RestoreEligible: eligible,
+		Capabilities:    capabilities,
+		SafetyReason:    reason,
+	}
+}
+
+// configCaptureInert reports classifications real Capture never persists
+// (see capture.go: only Added, ModifiedBaseline, and DeletedBaseline ever
+// produce a Files or Deletes entry). An inert, untracked path matches
+// Omarchy's default exactly and carries nothing for Blueprint to manage yet.
+func configCaptureInert(classification configprovider.Classification) bool {
+	switch classification {
+	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigHistoricalBaseline:
+		return true
+	default:
+		return false
+	}
+}
+
+// configEligibility maps a Config scan Classification onto Capture/Restore
+// eligibility. Excluded is the provider-owned "leave this path alone" state
+// -- explicit, permanent, unmanaged metadata, never a deletion tombstone --
+// so it stays ineligible exactly like the other safety-blocked
+// classifications, not merely "desired absent."
+func configEligibility(classification configprovider.Classification) (eligible bool, reason string) {
+	switch classification {
+	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline:
+		return true, ""
+	case configprovider.ConfigExcluded:
+		return false, "excluded: you asked Config to leave this path alone"
+	case configprovider.ConfigDelegated:
+		return false, "delegated to another provider"
+	case configprovider.ConfigVolatile:
+		return false, "excluded as state-heavy/volatile by default"
+	case configprovider.ConfigSensitive:
+		return false, "excluded as a likely secret/credential path"
+	case configprovider.ConfigUnmanagedSymlink:
+		return false, "existing symlink is not owned by Blueprint"
+	case configprovider.ConfigUnsupported:
+		return false, "unsupported file type"
+	case configprovider.ConfigOversized:
+		return false, "exceeds the capture size limit"
+	case configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion:
+		return false, "baseline provenance is ambiguous"
+	default:
+		return false, "unrecognized classification"
+	}
+}
+
+// configAncestors returns logical's full ancestor chain, nearest parent
+// first, down to (and including) the Config root. Policy resolution needs
+// the whole chain -- not just the immediate parent -- to find the nearest
+// matching ancestor rule when closer directories have none.
+func configAncestors(logical string) []string {
+	var ancestors []string
+	dir := path.Dir(logical)
+	for dir != "." && dir != "/" && dir != "" {
+		ancestors = append(ancestors, dir)
+		parent := path.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ancestors
+}
+
 func appendConfigOwnershipClaim(index ownership.Index, provider, path, configRoot string, recursive bool) ownership.Index {
 	relative, err := filepath.Rel(configRoot, path)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -869,6 +1363,47 @@ func (p defaultsStateProvider) provider() defaultsprovider.Provider {
 	return defaultsprovider.Provider{Runner: p.deps.Runner, ProfileDir: p.opt.profileDir}
 }
 
+// InspectTargets reports the four fixed Defaults targets. There is no
+// explicit desired-absence concept for a default application choice: an
+// empty stored value means "never captured," not "explicitly cleared."
+func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	current, err := p.provider().Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fields := []struct{ key, desired, current string }{
+		{"terminal", d.Defaults.Terminal, current.Terminal},
+		{"browser", d.Defaults.Browser, current.Browser},
+		{"editor", d.Defaults.Editor, current.Editor},
+		{"agent", d.Defaults.Agent, current.Agent},
+	}
+	targets := make([]workflow.TargetInspection, 0, len(fields))
+	for _, field := range fields {
+		// Mirrors Plan/Verify's restore exclusions exactly: agent is never
+		// automatically restored (Omarchy's setter launches it), and a
+		// desired value Omarchy cannot replay (a raw .desktop fallback) is
+		// visible drift but not restorable.
+		restoreEligible, reason := true, ""
+		switch {
+		case field.key == "agent":
+			restoreEligible, reason = false, "Omarchy's agent setter launches the selected agent; automatic set-only restore is not currently safe"
+		case field.desired != "" && !defaultsprovider.Portable(field.desired):
+			restoreEligible, reason = false, fmt.Sprintf("%q is not an Omarchy-managed default and may not be portable", field.desired)
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             field.key,
+			Label:           field.key,
+			Desired:         desiredPresence(field.desired != ""),
+			Current:         currentPresence(field.current != ""),
+			CaptureEligible: true,
+			RestoreEligible: restoreEligible,
+			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: restoreEligible},
+			SafetyReason:    reason,
+		})
+	}
+	return targets, nil
+}
+
 func (p defaultsStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
 	current, err := p.provider().Capture(ctx)
 	if err != nil {
@@ -942,6 +1477,35 @@ func (shellStateProvider) Empty(state any) bool {
 func (p shellStateProvider) provider() (shellprovider.Provider, error) {
 	baseline, user, err := p.deps.ShellPaths()
 	return shellprovider.Provider{BaselinePath: baseline, UserPath: user, ProfileDir: p.opt.profileDir}, err
+}
+
+// InspectTargets reports exactly one target, "state", for the whole opaque
+// Shell customization blob. Shell has no explicit desired-absence concept
+// and no Exact cleanup (see design non-goals): an empty captured Hash means
+// "no Blueprint-managed Shell customization," never "explicitly removed."
+func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	eligible, reason := true, ""
+	if current.Status == shellprovider.StatusUnsupported {
+		eligible, reason = false, "Shell version is unsupported"
+	}
+	return []workflow.TargetInspection{{
+		Key:             "state",
+		Label:           "state",
+		Desired:         desiredPresence(d.Shell.Hash != ""),
+		Current:         currentPresence(current.Status == shellprovider.StatusCustomized),
+		CaptureEligible: eligible,
+		RestoreEligible: eligible,
+		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
+		SafetyReason:    reason,
+	}}, nil
 }
 
 func (p shellStateProvider) Capture(ctx context.Context, d *profile.Data) (any, []model.Change, error) {
@@ -1041,6 +1605,66 @@ func (p hooksStateProvider) provider(resources profile.Resources) (hooksprovider
 		return hooksprovider.Provider{}, err
 	}
 	return hooksprovider.Provider{UserDir: dir, ProfileDir: p.opt.profileDir, HomeDir: home, Resources: resources}, nil
+}
+
+// InspectTargets reports one target per managed hook path (tracked in the
+// desired state, live-detected, or both). A live unmanaged symlink stays
+// CaptureEligible: false safety state: Blueprint records no source from it
+// and never follows, replaces, or verifies it as portable state.
+func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
+	provider, err := p.provider(d.Resources)
+	if err != nil {
+		return nil, err
+	}
+	current, err := provider.Detect()
+	if err != nil {
+		return nil, err
+	}
+	desired, currentManaged := map[string]bool{}, map[string]bool{}
+	for _, hook := range d.Hooks.Items {
+		desired[hook.Path] = true
+	}
+	for _, hook := range current.Items {
+		currentManaged[hook.Path] = true
+	}
+	paths := map[string]bool{}
+	for path := range desired {
+		paths[path] = true
+	}
+	for path := range currentManaged {
+		paths[path] = true
+	}
+	targets := make([]workflow.TargetInspection, 0, len(paths)+len(current.Unmanaged))
+	for _, path := range sortedKeys(paths) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             path,
+			Label:           path,
+			Desired:         desiredPresence(desired[path]),
+			Current:         currentPresence(currentManaged[path]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture: true, SupportsRestore: true,
+				SupportsDesiredAbsence: true, SupportsExactRemoval: true,
+			},
+		})
+	}
+	for _, unmanaged := range current.Unmanaged {
+		reason := "unmanaged symlink is not owned by Blueprint"
+		if unmanaged.Broken {
+			reason = "unmanaged symlink is broken"
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             unmanaged.Path,
+			Label:           unmanaged.Path,
+			Desired:         workflow.TargetUnknown,
+			Current:         workflow.TargetPresent,
+			CaptureEligible: false,
+			RestoreEligible: false,
+			SafetyReason:    reason,
+		})
+	}
+	return targets, nil
 }
 
 func (p hooksStateProvider) Capture(_ context.Context, d *profile.Data) (any, []model.Change, error) {

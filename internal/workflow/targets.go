@@ -25,14 +25,32 @@ type TargetCapabilities struct {
 	SupportsDesiredAbsence bool
 	SupportsExactRemoval   bool
 	Hierarchical           bool
+	// PreservesMissingDesired reports what Capture does when it finds a
+	// target currently missing but previously desired, and
+	// SupportsDesiredAbsence is false (so no explicit tombstone is
+	// possible): true means Capture leaves the existing desired state
+	// untouched (Resources: no way to tell "gone" from "not yet detected"
+	// apart, so never overwrite); false (the default) means Capture
+	// silently stops managing it, clearing the desired value on the next
+	// Capture Update (Defaults, Shell: Capture always writes a fresh full
+	// replacement, so a vanished value is dropped, not remembered). This
+	// field is meaningless when SupportsDesiredAbsence is true, since a
+	// provider that can record explicit absence records it instead.
+	PreservesMissingDesired bool
 }
 
 // TargetInspection is one provider-defined policy target's read-only,
 // descriptive state. Actual Capture and Restore must re-inspect before
 // mutation rather than trusting a stale TargetInspection.
 type TargetInspection struct {
-	Key             string
-	Parent          string
+	Key    string
+	Parent string
+	// Ancestors is the full ancestor chain for a Hierarchical target,
+	// nearest parent first (matching policy.ResolveRequest.Ancestors).
+	// Policy resolution needs the whole chain, not just Parent, to find the
+	// nearest matching ancestor rule when the immediate parent has none.
+	// Non-hierarchical providers leave this nil.
+	Ancestors       []string
 	Label           string
 	Desired         TargetState
 	Current         TargetState

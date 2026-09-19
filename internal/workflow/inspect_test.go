@@ -13,7 +13,10 @@ type inspectTestProvider struct{ id string }
 
 func (p inspectTestProvider) ID() string               { return p.id }
 func (inspectTestProvider) Captured(profile.Data) bool { return true }
-func (inspectTestProvider) Capture(context.Context, *profile.Data) (any, []model.Change, error) {
+func (inspectTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return nil, nil
+}
+func (inspectTestProvider) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
 	return nil, nil, nil
 }
 func (inspectTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {

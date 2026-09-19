@@ -17,6 +17,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
@@ -2808,4 +2809,482 @@ func TestRenderResourceProgressUsesResourceLabels(t *testing.T) {
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
+}
+
+func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *testing.T) {
+	_, deps := configSandbox(t)
+	miseConfig := filepath.Join(t.TempDir(), "mise", "config.toml")
+	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	if err := os.MkdirAll(filepath.Dir(miseConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(miseConfig, []byte("[tools]\nnode = \"24\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{"htop": true, "firefox": true, "nvidia-utils": true}
+	runner.aur = map[string]bool{}
+
+	d := profile.Data{Packages: profile.Packages{
+		Official: []string{"htop"},
+		Excluded: []string{"official:vim"},
+	}}
+
+	targets, err := (packagesStateProvider{deps: deps}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+
+	if got := byKey["official:firefox"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
+		t.Fatalf("firefox (add) = %#v", got)
+	}
+	if got := byKey["official:htop"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("htop (update) = %#v", got)
+	}
+	if got, ok := byKey["official:vim"]; !ok || got.Desired != workflow.TargetUnknown || got.CaptureEligible || got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("vim (excluded: legacy Capture/Restore Disabled, no desired state) = %#v, ok=%v", got, ok)
+	}
+	if got := byKey["mise:node"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
+		t.Fatalf("mise:node (add) = %#v", got)
+	}
+	if got, ok := byKey["official:nvidia-utils"]; !ok || got.CaptureEligible || got.SafetyReason == "" {
+		t.Fatalf("nvidia-utils (machine-specific) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestConfigInspectTargetsReportsTrackedPathWithFullAncestorChain(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(userRoot, "hypr", "lua"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "lua", "plugins.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/hypr/lua/plugins.lua"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/lua/plugins.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want .config/hypr/lua/plugins.lua present", targets)
+	}
+	wantAncestors := []string{".config/hypr/lua", ".config/hypr", ".config"}
+	if got.Parent != ".config/hypr/lua" || !reflect.DeepEqual(got.Ancestors, wantAncestors) {
+		t.Fatalf("target = %#v, want Parent=%q Ancestors=%v", got, ".config/hypr/lua", wantAncestors)
+	}
+	if !got.CaptureEligible || got.Desired != workflow.TargetPresent {
+		t.Fatalf("target = %#v, want the tracked file eligible with Desired=present", got)
+	}
+}
+
+func TestConfigInspectTargetsSkipsUntrackedInertBaselineMatch(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("default"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets {
+		if target.Key == ".config/hypr/bindings.lua" {
+			t.Fatalf("targets = %#v, want the untracked baseline-matching path omitted: real Capture never persists an unchanged-baseline file", targets)
+		}
+	}
+}
+
+func TestConfigInspectTargetsKeepsExcludedPermanentlyUnmanaged(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "hypr", "bindings.lua"), []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Excluded: []string{".config/hypr/bindings.lua"}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/hypr/bindings.lua" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want the excluded path still surfaced for visibility", targets)
+	}
+	if got.CaptureEligible || got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("excluded target = %#v, want permanently unmanaged/ineligible", got)
+	}
+	if got.Desired == workflow.TargetAbsent {
+		t.Fatalf("excluded target = %#v, Desired must never read as a deletion tombstone", got)
+	}
+}
+
+// A user-authored file with no Omarchy baseline counterpart, previously
+// captured (tracked in d.Config.Files) and later deleted locally: Scan omits
+// it entirely (no baseline, no live file to discover; ScanForCapture never
+// synthesizes it either), so InspectTargets must union it in from saved
+// state instead of losing it -- otherwise there is no target left to
+// resolve policy for, even though Blueprint still has saved desired state.
+func TestConfigInspectTargetsKeepsSavedFileTargetWhenLocallyMissing(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return filepath.Dir(userRoot), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+
+	d := profile.Data{Config: profile.Configs{Files: []profile.ConfigFile{{Path: ".config/widget/settings.conf"}}}}
+	targets, err := (configStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *workflow.TargetInspection
+	for i := range targets {
+		if targets[i].Key == ".config/widget/settings.conf" {
+			got = &targets[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("targets = %#v, want .config/widget/settings.conf still present despite local absence", targets)
+	}
+	if got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("target = %#v, want Desired=present Current=absent", got)
+	}
+	if !got.CaptureEligible || !got.RestoreEligible {
+		t.Fatalf("target = %#v, want Capture/Restore eligible so Restore can recreate it", got)
+	}
+	if got.Capabilities.SupportsDesiredAbsence || got.Capabilities.PreservesMissingDesired {
+		t.Fatalf("capabilities = %#v, want stop-managing semantics: no baseline means no tombstone, and real Capture Update silently drops this from Files on next capture", got.Capabilities)
+	}
+}
+
+func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
+	blocked := []configprovider.Classification{
+		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
+		configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported, configprovider.ConfigOversized,
+		configprovider.ConfigAmbiguousBaseline, configprovider.ConfigAmbiguousDeletion,
+	}
+	for _, classification := range blocked {
+		eligible, reason := configEligibility(classification)
+		if eligible || reason == "" {
+			t.Fatalf("%s: eligible=%v reason=%q, want ineligible with a safety reason", classification, eligible, reason)
+		}
+	}
+}
+
+func TestConfigEligibilityAllowsCaptureActionableClassifications(t *testing.T) {
+	for _, classification := range []configprovider.Classification{
+		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigHistoricalBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDeletedBaseline,
+	} {
+		if eligible, _ := configEligibility(classification); !eligible {
+			t.Fatalf("%s: want eligible", classification)
+		}
+	}
+}
+
+func TestConfigCaptureInertOnlyMatchesClassificationsCaptureNeverPersists(t *testing.T) {
+	inert := map[configprovider.Classification]bool{
+		configprovider.ConfigUnchangedBaseline:  true,
+		configprovider.ConfigHistoricalBaseline: true,
+	}
+	all := []configprovider.Classification{
+		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigDeletedBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDelegated, configprovider.ConfigExcluded, configprovider.ConfigVolatile,
+		configprovider.ConfigSensitive, configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported,
+		configprovider.ConfigOversized, configprovider.ConfigHistoricalBaseline, configprovider.ConfigAmbiguousBaseline,
+		configprovider.ConfigAmbiguousDeletion,
+	}
+	for _, classification := range all {
+		if got, want := configCaptureInert(classification), inert[classification]; got != want {
+			t.Fatalf("configCaptureInert(%s) = %v, want %v", classification, got, want)
+		}
+	}
+}
+
+func TestConfigAncestorsReturnsNearestParentFirstDownToRoot(t *testing.T) {
+	got := configAncestors(".config/hypr/lua/plugins.lua")
+	want := []string{".config/hypr/lua", ".config/hypr", ".config"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configAncestors(...) = %v, want %v", got, want)
+	}
+	if got, want := configAncestors(".config/hypr.conf"), []string{".config"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("configAncestors(top-level file) = %v, want %v", got, want)
+	}
+}
+
+func TestDefaultsInspectTargetsReportsFourFixedTargets(t *testing.T) {
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, defaults: map[string]string{"terminal": "ghostty"}}
+	deps := Dependencies{Runner: runner}
+	d := profile.Data{Defaults: profile.Defaults{Terminal: "foot", Browser: "chromium"}}
+
+	targets, err := (defaultsStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if len(byKey) != 4 {
+		t.Fatalf("targets = %#v, want exactly 4", targets)
+	}
+	if got := byKey["terminal"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("terminal (update) = %#v", got)
+	}
+	if got := byKey["browser"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("browser (absent) = %#v", got)
+	}
+	if got := byKey["browser"]; got.Capabilities.SupportsDesiredAbsence || got.Capabilities.PreservesMissingDesired {
+		t.Fatalf("browser = %#v, want no desired-absence tombstone and no preserve-when-missing: Capture always writes a fresh replacement, so a vanished default is stop-managed, not remembered", got.Capabilities)
+	}
+	if got := byKey["agent"]; got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetAbsent {
+		t.Fatalf("agent (noop) = %#v", got)
+	}
+	if got := byKey["agent"]; got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("agent must never be RestoreEligible: automatic set-only restore is not safe; got %#v", got)
+	}
+	if got := byKey["terminal"]; !got.RestoreEligible {
+		t.Fatalf("terminal (portable, non-agent) = %#v, want RestoreEligible", got)
+	}
+}
+
+func TestDefaultsInspectTargetsMarksNonPortableDesiredValueRestoreIneligible(t *testing.T) {
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}
+	deps := Dependencies{Runner: runner}
+	d := profile.Data{Defaults: profile.Defaults{Browser: "some-app.desktop"}}
+
+	targets, err := (defaultsStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	got, ok := byKey["browser"]
+	if !ok || got.RestoreEligible || got.SafetyReason == "" {
+		t.Fatalf("browser (non-portable desired value) = %#v, ok=%v, want RestoreEligible=false with a reason", got, ok)
+	}
+	if !got.CaptureEligible {
+		t.Fatalf("browser = %#v, want CaptureEligible unaffected by restore portability", got)
+	}
+}
+
+func TestThemesInspectTargetsReportsActiveAndNonBuiltinThemes(t *testing.T) {
+	_, deps := configSandbox(t)
+	_, user, err := deps.ThemeDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(user, "dracula"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "dracula", "theme.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Themes: profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "unknown", Enabled: true}}}}
+	targets, err := (themesStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if got := byKey["active"]; got.Desired != workflow.TargetPresent || got.Current != workflow.TargetPresent {
+		t.Fatalf("active = %#v", got)
+	}
+	if got, ok := byKey["theme:dracula"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
+		t.Fatalf("theme:dracula (add) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
+	_, deps := configSandbox(t)
+	pluginDir := t.TempDir()
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.pluginDir = pluginDir
+	if err := os.MkdirAll(filepath.Join(pluginDir, "cool-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "cool-plugin", "plugin.lua"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Plugins: profile.Plugins{Items: []profile.Plugin{
+		{ID: "old-plugin", Source: "local"},
+		{ID: "builtin-toggle", Source: "builtin"},
+	}}}
+	targets, err := (pluginsStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if _, ok := byKey["plugin:builtin-toggle"]; ok {
+		t.Fatalf("targets = %#v, want the builtin plugin omitted", targets)
+	}
+	if got, ok := byKey["plugin:cool-plugin"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
+		t.Fatalf("plugin:cool-plugin (add) = %#v, ok=%v", got, ok)
+	}
+	if got, ok := byKey["plugin:old-plugin"]; !ok || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("plugin:old-plugin (absent) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestHooksInspectTargetsReportsManagedPathsAndUnmanagedSymlinks(t *testing.T) {
+	_, deps := configSandbox(t)
+	hooksDir, err := deps.HooksDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	deps.HomeDir = func() (string, error) { return home, nil }
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-restore.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "does-not-exist"), filepath.Join(hooksDir, "legacy-hook")); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Hooks: profile.Hooks{Items: []profile.Hook{{Path: "removed.sh"}}}}
+	targets, err := (hooksStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]workflow.TargetInspection{}
+	for _, target := range targets {
+		byKey[target.Key] = target
+	}
+	if got, ok := byKey["pre-restore.sh"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
+		t.Fatalf("pre-restore.sh (add) = %#v, ok=%v", got, ok)
+	}
+	if got, ok := byKey["removed.sh"]; !ok || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("removed.sh (absent) = %#v, ok=%v", got, ok)
+	}
+	if got, ok := byKey["legacy-hook"]; !ok || got.CaptureEligible || got.SafetyReason == "" {
+		t.Fatalf("legacy-hook (unmanaged) = %#v, ok=%v", got, ok)
+	}
+}
+
+func TestShellInspectTargetsReportsSingleStateTarget(t *testing.T) {
+	_, deps := configSandbox(t)
+	baseline, user := shellPathsFixture(t)
+	setShellPaths(&deps, baseline, user)
+	if err := os.WriteFile(user, []byte(strings.Replace(defaultShellJSON, `"position": "top"`, `"position": "bottom"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err := (shellStateProvider{deps: deps, opt: &options{}}).InspectTargets(context.Background(), profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Key != "state" {
+		t.Fatalf("targets = %#v, want exactly one %q target", targets, "state")
+	}
+	got := targets[0]
+	if got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
+		t.Fatalf("state (uncaptured, live customization present) = %#v", got)
+	}
+}
+
+func TestResourcesInspectTargetsReportsMissingLocalStateAsAbsentNotDeletionIntent(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return home, nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
+	source := filepath.Join(home, "dotfiles", "deploy")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("echo deploy\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", source); code != 0 {
+		t.Fatalf("track code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+
+	targets, err := (resourcesStateProvider{deps: deps, opt: &options{profileDir: profileDir}}).InspectTargets(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %#v, want exactly one tracked resource", targets)
+	}
+	got := targets[0]
+	if got.Key != "resource:deploy" || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent {
+		t.Fatalf("target = %#v, want resource:deploy desired=present current=absent", got)
+	}
+	if got.Capabilities.SupportsDesiredAbsence || got.Capabilities.SupportsExactRemoval {
+		t.Fatalf("capabilities = %#v, want no desired-absence or Exact-removal support: missing local state must never imply deletion intent", got.Capabilities)
+	}
+	if !got.Capabilities.PreservesMissingDesired {
+		t.Fatalf("capabilities = %#v, want PreservesMissingDesired: a missing local resource must be preserved, not silently stop-managed", got.Capabilities)
+	}
+}
+
+func TestRestorePlanOptionsFromPolicyDerivesForceFromConflictsOnly(t *testing.T) {
+	cases := []struct {
+		options policy.RestoreOptions
+		force   bool
+	}{
+		{policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive}, false},
+		{policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact}, false},
+		{policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceAdditive}, true},
+		{policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact}, true},
+	}
+	for _, tc := range cases {
+		if got := restorePlanOptionsFromPolicy(tc.options); got.Force != tc.force {
+			t.Fatalf("restorePlanOptionsFromPolicy(%+v) = %+v, want Force=%v: Convergence must stay irrelevant to Shell/plugin dependency conflict resolution", tc.options, got, tc.force)
+		}
+	}
 }
