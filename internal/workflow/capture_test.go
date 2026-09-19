@@ -177,9 +177,9 @@ func newCaptureSession(t *testing.T, data profile.Data) *Session {
 	return session
 }
 
-func TestCaptureManyUsesConfiguredOrderAndPreservesExclusions(t *testing.T) {
+func TestCaptureManyUsesConfiguredOrderAndPreservesUnrelatedState(t *testing.T) {
 	data := profile.New("test", time.Now())
-	data.Packages.Excluded = []string{"official:excluded"}
+	data.Packages.AUR = []string{"sentinel"}
 	session := newCaptureSession(t, data)
 	var order []string
 	commits, rollbacks := 0, 0
@@ -205,14 +205,14 @@ func TestCaptureManyUsesConfiguredOrderAndPreservesExclusions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameStrings(loaded.Packages.Official, []string{"packages", "themes"}) || !sameStrings(loaded.Packages.Excluded, []string{"official:excluded"}) {
+	if !sameStrings(loaded.Packages.Official, []string{"packages", "themes"}) || !sameStrings(loaded.Packages.AUR, []string{"sentinel"}) {
 		t.Fatalf("saved packages=%#v", loaded.Packages)
 	}
 }
 
 func TestCaptureManyDoesNotPersistPartialStateOnProviderFailure(t *testing.T) {
 	data := profile.New("test", time.Now())
-	data.Packages.Excluded = []string{"official:excluded"}
+	data.Packages.AUR = []string{"sentinel"}
 	session := newCaptureSession(t, data)
 	var order []string
 	commits, rollbacks := 0, 0
@@ -231,7 +231,7 @@ func TestCaptureManyDoesNotPersistPartialStateOnProviderFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Packages.Official) != 0 || !sameStrings(loaded.Packages.Excluded, []string{"official:excluded"}) {
+	if len(loaded.Packages.Official) != 0 || !sameStrings(loaded.Packages.AUR, []string{"sentinel"}) {
 		t.Fatalf("partial profile persisted: %#v", loaded.Packages)
 	}
 }

@@ -140,60 +140,6 @@ func TestClassifyKeepsHardwareOutOfPortableDiff(t *testing.T) {
 	}
 }
 
-func TestExcludeAndIncludeGenericPackageReference(t *testing.T) {
-	original := profile.Packages{Official: []string{"git"}, AUR: []string{"dislocker-git"}}
-	excluded, changed, err := Exclude(original, []string{"package:dislocker-git"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(changed, []string{"aur:dislocker-git"}) || len(excluded.AUR) != 0 || !reflect.DeepEqual(excluded.Excluded, changed) {
-		t.Fatalf("excluded=%#v changed=%#v", excluded, changed)
-	}
-	if changes := Diff(excluded, original); len(changes) != 0 {
-		t.Fatalf("excluded package caused drift: %#v", changes)
-	}
-	plan := Plan(excluded, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
-	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Reason != "excluded by profile" {
-		t.Fatalf("plan = %#v", plan)
-	}
-	included, changed, err := Include(excluded, []string{"package:dislocker-git"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(changed, []string{"aur:dislocker-git"}) || !reflect.DeepEqual(included.AUR, []string{"dislocker-git"}) || len(included.Excluded) != 0 {
-		t.Fatalf("included=%#v changed=%#v", included, changed)
-	}
-}
-
-func TestExcludeRejectsUnknownAndAmbiguousReferencesAtomically(t *testing.T) {
-	original := profile.Packages{Official: []string{"same"}, AUR: []string{"same"}}
-	for _, ref := range []string{"package:missing", "package:same", "bad:same", "aur:has space"} {
-		got, _, err := Exclude(original, []string{"official:same", ref})
-		if err == nil {
-			t.Fatalf("expected %q to fail", ref)
-		}
-		if !reflect.DeepEqual(got, original) {
-			t.Fatalf("%q partially mutated profile: %#v", ref, got)
-		}
-	}
-}
-
-func TestValidateExclusionsRejectsInvalidAndOverlappingEntries(t *testing.T) {
-	tests := []profile.Packages{
-		{Excluded: []string{"package:git"}},
-		{Excluded: []string{"aur:has space"}},
-		{Official: []string{"git"}, Excluded: []string{"official:git"}},
-	}
-	for _, packages := range tests {
-		if err := ValidateExclusions(packages); err == nil {
-			t.Fatalf("expected %#v to fail", packages)
-		}
-	}
-	if err := ValidateExclusions(profile.Packages{Excluded: []string{"official:git", "aur:dislocker-git"}}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestLinesNormalizesCommandOutput(t *testing.T) {
 	got := lines(" zoxide\ngit\ngit\n\n")
 	if !reflect.DeepEqual(got, []string{"git", "zoxide"}) {
@@ -270,23 +216,6 @@ func TestDetectDiffAndVerifyMisePackages(t *testing.T) {
 	}
 }
 
-func TestMiseExclusionRetainsDeclarationAndGenericReferenceIsAmbiguous(t *testing.T) {
-	packages := profile.Packages{Official: []string{"node"}, Mise: profile.MiseTools{"node": {"version": "24"}, "npm:@scope/tool": {"version": "latest"}}}
-	if _, _, err := Exclude(packages, []string{"package:node"}); err == nil {
-		t.Fatal("cross-source generic reference must be ambiguous")
-	}
-	excluded, changed, err := Exclude(packages, []string{"mise:npm:@scope/tool"})
-	if err != nil || !reflect.DeepEqual(changed, []string{"mise:npm:@scope/tool"}) || excluded.Mise["npm:@scope/tool"] == nil {
-		t.Fatalf("excluded=%#v changed=%#v err=%v", excluded, changed, err)
-	}
-	if _, ok := ApplyExclusions(excluded, excluded.Excluded).Mise["npm:@scope/tool"]; ok {
-		t.Fatal("excluded Mise declaration remained in managed view")
-	}
-	if _, changed, err := Include(excluded, []string{"mise:npm:@scope/tool"}); err != nil || len(changed) != 1 {
-		t.Fatalf("include changed=%#v err=%v", changed, err)
-	}
-}
-
 func TestPlanAppendsMissingMiseToolsAndPreservesConflicts(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "mise", "config.toml")
 	existing := []byte("# target comment\n[tools]\nnode = \"22\"\n\n[env]\nKEEP = \"yes\"\n")
@@ -314,23 +243,13 @@ func TestPlanAppendsMissingMiseToolsAndPreservesConflicts(t *testing.T) {
 	}
 }
 
-func TestExcludedMiseToolIsNotDriftedVerifiedOrRestored(t *testing.T) {
-	saved := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "latest"}}, Excluded: []string{"mise:foo"}}
-	for _, current := range []profile.Packages{{}, {Mise: profile.MiseTools{"foo": {"version": "different"}}}} {
-		if changes := Diff(saved, current); len(changes) != 0 {
-			t.Fatalf("current=%#v changes=%#v", current, changes)
-		}
-		if verification := Verify(saved, current); !verification.OK {
-			t.Fatalf("current=%#v verification=%#v", current, verification)
-		}
-		plan, err := (Provider{MiseGlobalConfig: filepath.Join(t.TempDir(), "config.toml")}).Plan(saved, current, 6, "4.0", "4.1")
-		if err != nil || len(plan.Operations) != 0 {
-			t.Fatalf("current=%#v plan=%#v err=%v", current, plan, err)
-		}
-	}
-}
-
-func TestPlanPreservesExcludedPhysicalMiseToolWhenAddingManagedTool(t *testing.T) {
+// TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool is a
+// regression for a review finding on PR 3: excluding a mise tool now strips
+// it from saved.Mise entirely (Session.SetPackageExcluded), rather than
+// keeping it declared alongside a separate Excluded marker, so this
+// exercises that an unmanaged tool still physically present in the mise
+// config is left untouched while a genuinely new tool is appended.
+func TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "mise", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
 		t.Fatal(err)
@@ -339,7 +258,7 @@ func TestPlanPreservesExcludedPhysicalMiseToolWhenAddingManagedTool(t *testing.T
 	if err := os.WriteFile(config, existing, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	saved := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "latest"}, "bar": {"version": "1"}}, Excluded: []string{"mise:foo"}}
+	saved := profile.Packages{Mise: profile.MiseTools{"bar": {"version": "1"}}}
 	current := profile.Packages{Mise: profile.MiseTools{"foo": {"version": "local"}}}
 	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 6, "4.0", "4.1")
 	if err != nil || len(plan.Operations) != 2 || !bytes.HasPrefix(plan.Operations[0].File.Content, existing) || !strings.Contains(string(plan.Operations[0].File.Content), "[tools.bar]") {

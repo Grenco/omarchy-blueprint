@@ -71,8 +71,7 @@ func providerEmptyState(id string, status workflow.ProviderStatus, tab string) (
 		if len(value.Official) == 0 &&
 			len(value.AUR) == 0 &&
 			len(value.Mise) == 0 &&
-			len(value.MachineSpecific) == 0 &&
-			len(value.Excluded) == 0 {
+			len(value.MachineSpecific) == 0 {
 			return emptyStateCopy{
 				Heading:     "No packages or tools to carry",
 				Explanation: "Packages is where Blueprint remembers portable system packages, AUR packages, and global Mise tools so they can be installed again on another machine.",

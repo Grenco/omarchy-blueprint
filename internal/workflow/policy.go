@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -273,4 +274,95 @@ func axisRuleList(rules *policy.Rules, axis policy.Axis) *[]policy.Rule {
 		return &rules.Restore
 	}
 	return &rules.Capture
+}
+
+// packageExcluded reports whether ref has an explicit profile-defaults
+// Capture Disabled rule, the signal SetPackageExcluded records at the
+// moment of exclusion. This is a read of the current policy-based state,
+// not the retired Packages.Excluded list.
+func (s *Session) packageExcluded(ref string) bool {
+	for _, rule := range s.profile.Policy.Capture {
+		if rule.Category == "packages" && rule.Target == ref && rule.Setting == policy.SettingDisabled {
+			return true
+		}
+	}
+	return false
+}
+
+// SetPackageExcluded records or clears a package/tool's exclusion. This is
+// the sole mechanism the exclude/include CLI verbs and the TUI's package
+// toggle use; there is no longer a separate Packages.Excluded list.
+//
+// Excluding strips ref from desired-present state (Official/AUR/Mise)
+// immediately -- the exclusion has no desired state at all, matching the
+// design's "Capture: Preserve/disabled, Restore: Skip/disabled, Desired
+// state: unmanaged" -- and records Capture Disabled + Restore Disabled
+// policy for it, so a later enabled Capture does not silently re-adopt it
+// (Merge's disabled row preserves whatever was desired; stripping first is
+// what makes that "nothing"). Including clears those policy rules; it does
+// not attempt to restore any prior desired state, since excluding left
+// none to restore -- a later Capture will naturally rediscover the ref if
+// it is still installed.
+func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
+	provider, ok := ProviderByID(s.providers, "packages")
+	if !ok {
+		return fmt.Errorf("workflow: packages provider is unavailable")
+	}
+	canonical, err := validateTarget(provider, ref)
+	if err != nil {
+		return err
+	}
+	if !excluded {
+		if err := s.ClearPolicy(PolicyScope{}, policy.AxisCapture, "packages", canonical); err != nil {
+			return err
+		}
+		return s.ClearPolicy(PolicyScope{}, policy.AxisRestore, "packages", canonical)
+	}
+	kind, name, _ := axisTargetParts(canonical)
+	data := s.profile
+	switch kind {
+	case "official":
+		data.Packages.Official = withoutString(data.Packages.Official, name)
+	case "aur":
+		data.Packages.AUR = withoutString(data.Packages.AUR, name)
+	case "mise":
+		data.Packages.Mise = withoutMiseTool(data.Packages.Mise, name)
+	}
+	if err := profile.Save(s.opts.ProfileDir, data); err != nil {
+		return fmt.Errorf("save profile: %w", err)
+	}
+	s.profile = data
+	if err := s.SetPolicy(PolicyScope{}, policy.AxisCapture, "packages", canonical, policy.SettingDisabled); err != nil {
+		return err
+	}
+	return s.SetPolicy(PolicyScope{}, policy.AxisRestore, "packages", canonical, policy.SettingDisabled)
+}
+
+func axisTargetParts(canonical string) (kind, name string, ok bool) {
+	kind, name, ok = strings.Cut(canonical, ":")
+	return kind, name, ok
+}
+
+// withoutString returns a new slice with value removed, never mutating
+// values' own backing array (which may be shared with the session's stored
+// profile).
+func withoutString(values []string, value string) []string {
+	out := make([]string, 0, len(values))
+	for _, current := range values {
+		if current != value {
+			out = append(out, current)
+		}
+	}
+	return out
+}
+
+// withoutMiseTool returns a new map with id removed, never mutating tools.
+func withoutMiseTool(tools profile.MiseTools, id string) profile.MiseTools {
+	out := make(profile.MiseTools, len(tools))
+	for existing, tool := range tools {
+		if existing != id {
+			out[existing] = tool
+		}
+	}
+	return out
 }

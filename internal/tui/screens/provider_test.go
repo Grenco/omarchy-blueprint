@@ -186,14 +186,19 @@ func TestProviderGroupNavigationPreservesCollapsedGroups(t *testing.T) {
 	}
 }
 
-func TestProviderGroupsIncludedAndExcludedItemsWithStateMarkers(t *testing.T) {
-	screen := &Provider{id: "packages", status: workflow.ProviderStatus{Captured: true, Snapshot: profile.Packages{Official: []string{"git"}, Excluded: []string{"official:1password"}}}}
+// TestProviderShowsOnlyIncludedPackages is updated for the cutover away
+// from Packages.Excluded: an excluded package/tool has no desired state at
+// all now (Session.SetPackageExcluded strips it from Official/AUR/Mise
+// immediately), so it simply does not appear in the list -- there is no
+// longer a separate "not included" marker row to render.
+func TestProviderShowsOnlyIncludedPackages(t *testing.T) {
+	screen := &Provider{id: "packages", status: workflow.ProviderStatus{Captured: true, Snapshot: profile.Packages{Official: []string{"git"}}}}
 	view := screen.View()
-	if !strings.Contains(view, "+ git") || !strings.Contains(view, "- 1password") || strings.Contains(view, "[included]") || strings.Contains(view, "[not included]") {
-		t.Fatalf("state markers=%q", view)
+	if !strings.Contains(view, "+ git") {
+		t.Fatalf("view missing included package: %q", view)
 	}
-	if strings.Index(view, "+ git") > strings.Index(view, "- 1password") {
-		t.Fatalf("excluded item rendered before included item: %q", view)
+	if strings.Contains(view, "1password") {
+		t.Fatalf("view rendered an excluded package that has no desired state: %q", view)
 	}
 }
 

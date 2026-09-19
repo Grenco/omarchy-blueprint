@@ -1500,27 +1500,59 @@ func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("capture: %s", errout.String())
 	}
-	if code := run("--profile", dir, "exclude", "package:dislocker-git"); code != 0 {
+	if code := run("--profile", dir, "exclude", "aur:dislocker-git"); code != 0 {
 		t.Fatalf("exclude: %s", errout.String())
+	}
+	// Excluding has no desired state at all -- it is stripped from the
+	// profile immediately, via Session.SetPackageExcluded, not deferred to
+	// the next capture.
+	b, err := os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "" {
+		t.Fatalf("aur file = %q, want dislocker-git already stripped", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "excluded.txt")); !os.IsNotExist(err) {
+		t.Fatal("obsolete packages/excluded.txt was written")
 	}
 	if code := run("--profile", dir, "capture", "packages"); code != 0 {
 		t.Fatalf("recapture: %s", errout.String())
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	// A recapture must not silently re-adopt an excluded package that is
+	// still physically installed: Capture Disabled on it preserves "no
+	// desired state," it does not adopt.
+	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != "aur:dislocker-git\n" {
-		t.Fatalf("excluded file = %q", b)
+	if string(b) != "" {
+		t.Fatalf("aur file = %q, want dislocker-git still not re-adopted after recapture", b)
 	}
-	if code := run("--profile", dir, "status"); code != 0 {
+	// An excluded package still physically installed is honest drift now
+	// that Diff no longer hides it: Capture Disabled means Capture leaves
+	// it alone, not that it is invisible to status reporting.
+	if code := run("--profile", dir, "status"); code != 2 || !strings.Contains(out.String(), "+ aur package dislocker-git") {
 		t.Fatalf("status code=%d out=%s err=%s", code, out.String(), errout.String())
 	}
-	if code := run("--profile", dir, "restore", "--dry-run"); code != 0 || !strings.Contains(out.String(), "skip aur:dislocker-git (excluded by profile)") {
+	if code := run("--profile", dir, "restore", "--dry-run"); code != 0 || !strings.Contains(out.String(), "skip aur:dislocker-git (additional package left installed; removal disabled)") {
 		t.Fatalf("dry run code=%d out=%s err=%s", code, out.String(), errout.String())
 	}
 	if code := run("--profile", dir, "include", "aur:dislocker-git"); code != 0 {
 		t.Fatalf("include: %s", errout.String())
+	}
+	// Including only clears the exclusion policy; it does not itself
+	// restore any prior desired state, since excluding left none to
+	// restore. The package is rediscovered by the next capture.
+	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "" {
+		t.Fatalf("aur file = %q, want still unmanaged until the next capture", b)
+	}
+	if code := run("--profile", dir, "capture", "packages"); code != 0 {
+		t.Fatalf("post-include recapture: %s", errout.String())
 	}
 	b, err = os.ReadFile(filepath.Join(dir, "packages", "aur.txt"))
 	if err != nil {

@@ -771,10 +771,7 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 		if len(context.Dormant) > 0 {
 			human += fmt.Sprintf("ℹ dormant machine mappings: %s\n", strings.Join(context.Dormant, ", "))
 		}
-		if len(d.Packages.Excluded) > 0 {
-			human += fmt.Sprintf("ℹ %d excluded package(s): %s\n", len(d.Packages.Excluded), strings.Join(d.Packages.Excluded, ", "))
-		}
-		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "excluded": d.Packages.Excluded, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
+		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
 	}}
 }
 
@@ -785,11 +782,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 		verb, short = "exclude", "Exclude packages from capture, drift, and restore"
 	}
 	return &cobra.Command{Use: verb + " <package-reference>...", Args: cobra.MinimumNArgs(1), Short: short, RunE: func(_ *cobra.Command, refs []string) error {
-		d, err := profile.Load(opt.profileDir)
-		if err != nil {
-			return profileError(opt.profileDir, err)
-		}
 		if strings.HasPrefix(refs[0], "config:") {
+			d, err := profile.Load(opt.profileDir)
+			if err != nil {
+				return profileError(opt.profileDir, err)
+			}
 			if len(refs) != 1 {
 				return fmt.Errorf("config policy accepts exactly one config:<path> reference")
 			}
@@ -819,21 +816,20 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			}
 			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude, "included": !exclude}, fmt.Sprintf("%s config %s.\n", action, path))
 		}
-		if err := packagesprovider.ValidateExclusions(d.Packages); err != nil {
-			return err
+		session, err := openWorkflow(deps, opt)
+		if err != nil {
+			return profileError(opt.profileDir, err)
 		}
 		var changed []string
-		if exclude {
-			d.Packages, changed, err = packagesprovider.Exclude(d.Packages, refs)
-		} else {
-			d.Packages, changed, err = packagesprovider.Include(d.Packages, refs)
-		}
-		if err != nil {
-			return err
-		}
-		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			return fmt.Errorf("save profile: %w", err)
+		for _, ref := range refs {
+			canonical, err := (packagesStateProvider{}).ValidateTarget(ref)
+			if err != nil {
+				return err
+			}
+			if err := session.SetPackageExcluded(canonical, exclude); err != nil {
+				return err
+			}
+			changed = append(changed, canonical)
 		}
 		action := "Included"
 		if exclude {
@@ -841,11 +837,11 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 		}
 		human := fmt.Sprintf("%s %d package(s).\n", action, len(changed))
 		if exclude {
-			for _, association := range configprovider.RelatedConfig(changed, d.Config) {
+			for _, association := range configprovider.RelatedConfig(changed, session.Profile().Config) {
 				human += fmt.Sprintf("Related Config state remains included:\n  ~/.config/%s\nRun:\n  omarchy-blueprint exclude config:%s\n", association.ConfigPath, association.ConfigPath)
 			}
 		}
-		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed, "excluded": d.Packages.Excluded}, human)
+		return emit(deps.Out, opt.json, verb, true, map[string]any{"changed": changed}, human)
 	}}
 }
 

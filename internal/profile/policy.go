@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -145,13 +146,35 @@ func (m Machine) EffectiveRestoreDefaults() policy.RestoreOptions {
 //
 // This never consults the current machine to infer desired absence: a
 // legacy desired-present item stays desired-present.
-func migrateLegacyPackageExclusions(d *Data) {
+//
+// A malformed ref fails the load entirely rather than silently becoming a
+// garbage policy target: this package cannot import the packages provider's
+// own reference parsing (packages already imports profile), so it applies
+// the same "kind:name" shape check locally.
+func migrateLegacyPackageExclusions(d *Data) error {
 	for _, ref := range d.Packages.Excluded {
+		if err := validateLegacyPackageExclusionRef(ref); err != nil {
+			return err
+		}
 		d.Policy = upsertRuleIfMissing(d.Policy, policy.AxisCapture, policy.Rule{Category: "packages", Target: ref, Setting: policy.SettingDisabled})
 		d.Policy = upsertRuleIfMissing(d.Policy, policy.AxisRestore, policy.Rule{Category: "packages", Target: ref, Setting: policy.SettingDisabled})
 	}
 	d.Packages.Excluded = nil
 	d.Packages.MachineSpecific = nil
+	return nil
+}
+
+func validateLegacyPackageExclusionRef(ref string) error {
+	kind, name, ok := strings.Cut(ref, ":")
+	if !ok || name == "" {
+		return fmt.Errorf("invalid legacy excluded package reference %q", ref)
+	}
+	switch kind {
+	case "official", "aur", "mise":
+		return nil
+	default:
+		return fmt.Errorf("invalid legacy excluded package reference %q", ref)
+	}
 }
 
 func upsertRuleIfMissing(rules policy.Rules, axis policy.Axis, rule policy.Rule) policy.Rules {

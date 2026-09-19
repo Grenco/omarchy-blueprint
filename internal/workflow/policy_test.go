@@ -247,6 +247,64 @@ func TestClearPolicyOfMissingRuleIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestSetPackageExcludedStripsDesiredStateAndRecordsPolicy is a regression
+// for a review finding on PR 3: excluding a package must strip it from
+// desired-present state immediately (no desired state at all, matching the
+// design) and record Capture Disabled + Restore Disabled policy for it
+// instead of a separate Packages.Excluded list; including must clear that
+// policy without itself re-adding any desired state.
+func TestSetPackageExcludedStripsDesiredStateAndRecordsPolicy(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox", "git"}
+	session := newPolicySession(t, data)
+
+	if err := session.SetPackageExcluded("official:firefox", true); err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(session.Profile().Packages.Official, []string{"git"}) {
+		t.Fatalf("official = %#v, want firefox stripped", session.Profile().Packages.Official)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}},
+	}
+	if !rulesEqual(session.Profile().Policy, want) {
+		t.Fatalf("policy = %+v, want %+v", session.Profile().Policy, want)
+	}
+	reloaded, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(reloaded.Packages.Official, []string{"git"}) || !rulesEqual(reloaded.Policy, want) {
+		t.Fatalf("reloaded official=%#v policy=%+v", reloaded.Packages.Official, reloaded.Policy)
+	}
+
+	if err := session.SetPackageExcluded("official:firefox", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(session.Profile().Policy.Capture) != 0 || len(session.Profile().Policy.Restore) != 0 {
+		t.Fatalf("policy = %+v, want cleared", session.Profile().Policy)
+	}
+	if !sameStrings(session.Profile().Packages.Official, []string{"git"}) {
+		t.Fatalf("official = %#v, want firefox still not re-added by include alone", session.Profile().Packages.Official)
+	}
+}
+
+// TestSetPackageExcludedStripsMiseDeclaration confirms the mise branch of
+// the same strip, distinct from Official/AUR since Mise is a map.
+func TestSetPackageExcludedStripsMiseDeclaration(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Mise = profile.MiseTools{"node": profile.MiseTool{"version": "24"}}
+	session := newPolicySession(t, data)
+
+	if err := session.SetPackageExcluded("mise:node", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := session.Profile().Packages.Mise["node"]; ok {
+		t.Fatalf("mise = %#v, want node stripped", session.Profile().Packages.Mise)
+	}
+}
+
 func TestSetMachineRestoreDefaultsPersistsAndValidates(t *testing.T) {
 	data := profile.New("test", time.Now())
 	data.Machines.Items = []profile.Machine{{Name: "desktop"}}

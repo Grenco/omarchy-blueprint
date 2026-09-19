@@ -20,7 +20,7 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 		t.Fatalf("new profile schema = %d, want %d", d.Manifest.Schema, Schema)
 	}
 	d.Manifest.Capture.Packages = true
-	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}, MachineSpecific: []string{"official:nvidia-open"}, Excluded: []string{"aur:dislocker-git"}}
+	d.Packages = Packages{Official: []string{"zoxide", "git", "git", ""}, AUR: []string{"visual-studio-code-bin"}}
 	d.Themes = Themes{Current: "custom", Items: []Theme{{ID: "custom", Type: "local", Hash: "abc", Enabled: true}, {ID: "remote", Type: "git", URL: "https://example.test/theme.git", Revision: "def"}}}
 	d.Plugins = Plugins{Items: []Plugin{{ID: "omarchy.clock", Enabled: true}, {ID: "omarchy.media", Enabled: false}}}
 	if err := Save(dir, d); err != nil {
@@ -39,12 +39,6 @@ func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
 	}
 	if string(b) != "git\nzoxide\n" {
 		t.Fatalf("unexpected file: %q", b)
-	}
-	if !reflect.DeepEqual(got.Packages.MachineSpecific, []string{"official:nvidia-open"}) {
-		t.Fatalf("machine-specific = %#v", got.Packages.MachineSpecific)
-	}
-	if !reflect.DeepEqual(got.Packages.Excluded, []string{"aur:dislocker-git"}) {
-		t.Fatalf("excluded = %#v", got.Packages.Excluded)
 	}
 	if !reflect.DeepEqual(got.Themes, d.Themes) {
 		t.Fatalf("themes = %#v", got.Themes)
@@ -1235,5 +1229,72 @@ func TestLoadSchema11MigrationDoesNotDuplicateAnAlreadyPresentPolicyRule(t *test
 	}
 	if len(got.Policy.Restore) != 1 || got.Policy.Restore[0].Target != "official:htop" {
 		t.Fatalf("restore rules = %#v, want the migrated restore-disabled rule", got.Policy.Restore)
+	}
+}
+
+// TestLoadMigratesStalePackagesFilesEvenAtTheCurrentSchema is a regression
+// for a review finding on PR 3: migration must not be gated to a legacy
+// schema, since a stray packages/excluded.txt or machine-specific.txt left
+// over from before this cutover (or written by code that had not yet been
+// fixed) would otherwise never be cleaned up on an already-current-schema
+// profile.
+func TestLoadMigratesStalePackagesFilesEvenAtTheCurrentSchema(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Now())
+	d.Packages.Official = []string{"htop"}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a stray leftover from before the cutover on an otherwise
+	// current-schema profile.
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("aur:dislocker-git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "machine-specific.txt"), []byte("official:nvidia-open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Packages.Excluded) != 0 || len(got.Packages.MachineSpecific) != 0 {
+		t.Fatalf("packages = %#v, want both cleared even at the current schema", got.Packages)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+	}
+	if !reflect.DeepEqual(got.Policy, want) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, want)
+	}
+}
+
+// TestSavePrunesObsoletePackagesFiles is a regression for a review finding
+// on PR 3: Save must never write packages/excluded.txt or
+// packages/machine-specific.txt, and must actively remove either file if it
+// already exists, so a schema-12 save can never leave two authorities for
+// the same state.
+func TestSavePrunesObsoletePackagesFiles(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Now())
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("aur:dislocker-git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "machine-specific.txt"), []byte("official:nvidia-open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "excluded.txt")); !os.IsNotExist(err) {
+		t.Fatal("packages/excluded.txt was not pruned")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "packages", "machine-specific.txt")); !os.IsNotExist(err) {
+		t.Fatal("packages/machine-specific.txt was not pruned")
 	}
 }
