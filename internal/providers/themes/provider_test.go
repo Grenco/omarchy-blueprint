@@ -129,6 +129,29 @@ func TestCaptureTombstonesThemeRemovedLocally(t *testing.T) {
 	}
 }
 
+// TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance is a
+// regression for a review finding on PR 3: re-capturing while a theme stays
+// desired-absent must carry the EXISTING tombstone's provenance forward
+// (Type/Hash/URL/Revision), not rebuild an ID-only Theme -- later Exact
+// removal needs that provenance to prove ownership before deleting anything.
+func TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance(t *testing.T) {
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileDir := t.TempDir()
+	saved := profile.Themes{Current: "nord", Absent: []profile.Theme{{ID: "custom", Type: "local", Hash: "abc"}}}
+	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "nord\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}
+
+	got, err := p.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "custom" || got.Absent[0].Type != "local" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want the existing tombstone's provenance preserved, not rebuilt ID-only", got.Absent)
+	}
+}
+
 func TestCaptureNeverTombstonesABuiltinTheme(t *testing.T) {
 	builtin, user := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {

@@ -89,10 +89,7 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Plugins, enabled f
 	existing := filepath.Join(parent, "local")
 
 	savedByID, currentByID := pluginMap(saved.Items), pluginMap(current.Items)
-	savedAbsent := map[string]bool{}
-	for _, absent := range saved.Absent {
-		savedAbsent[absent.ID] = true
-	}
+	savedAbsentByID := pluginMap(saved.Absent)
 	ids := map[string]bool{}
 	for id, item := range savedByID {
 		if item.Source != "builtin" {
@@ -104,7 +101,7 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Plugins, enabled f
 			ids[id] = true
 		}
 	}
-	for id := range savedAbsent {
+	for id := range savedAbsentByID {
 		ids[id] = true
 	}
 
@@ -112,8 +109,9 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Plugins, enabled f
 	for id := range ids {
 		savedItem, wasPresent := savedByID[id]
 		currentItem, isPresent := currentByID[id]
+		_, wasAbsent := savedAbsentByID[id]
 		isEnabled := enabled("plugin:" + id)
-		switch transition(wasPresent, savedAbsent[id], isPresent, isEnabled) {
+		switch transition(wasPresent, wasAbsent, isPresent, isEnabled) {
 		case transitionPresent:
 			if isEnabled && isPresent {
 				if currentItem.Source == "local" {
@@ -135,11 +133,11 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Plugins, enabled f
 				result.Items = append(result.Items, savedItem)
 			}
 		case transitionAbsent:
-			tombstone := savedItem
-			if !wasPresent {
-				tombstone = profile.Plugin{ID: id}
+			if wasAbsent {
+				result.Absent = append(result.Absent, savedAbsentByID[id])
+			} else {
+				result.Absent = append(result.Absent, savedItem)
 			}
-			result.Absent = append(result.Absent, tombstone)
 		}
 	}
 	for _, item := range currentByID {

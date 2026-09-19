@@ -142,6 +142,31 @@ func TestCaptureTombstonesPluginRemovedLocally(t *testing.T) {
 	}
 }
 
+// TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance is a
+// regression for a review finding on PR 3: re-capturing while a plugin stays
+// desired-absent must carry the EXISTING tombstone's provenance forward
+// (Source/URL/Revision/Hash), not rebuild an ID-only Plugin -- later Exact
+// removal needs that provenance to prove ownership before deleting anything.
+func TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance(t *testing.T) {
+	user, profileDir := t.TempDir(), t.TempDir()
+	runner := runnerFunc(func(_ context.Context, name string, args ...string) (string, error) {
+		if name+" "+strings.Join(args, " ") == "omarchy plugin list --json" {
+			return `[]`, nil
+		}
+		return "", fmt.Errorf("unexpected command")
+	})
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "gone.local", Source: "local", Hash: "abc"}}}
+	provider := Provider{Runner: runner, UserDir: user, ProfileDir: profileDir}
+
+	got, err := provider.Capture(context.Background(), saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Absent) != 1 || got.Absent[0].ID != "gone.local" || got.Absent[0].Source != "local" || got.Absent[0].Hash != "abc" {
+		t.Fatalf("absent = %#v, want the existing tombstone's provenance preserved, not rebuilt ID-only", got.Absent)
+	}
+}
+
 func TestCaptureNeverTombstonesAFirstPartyPlugin(t *testing.T) {
 	user, profileDir := t.TempDir(), t.TempDir()
 	// "omarchy.clock" was previously known present; the catalog no longer
