@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/ownership"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -198,5 +199,117 @@ func TestCaptureDisabledPreservesWhileExcludedPrunes(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(profileDir, "config", "files", "frozen.conf")); err != nil {
 		t.Fatalf("preserved artifact missing: %v", err)
+	}
+}
+
+// TestCaptureDisabledPreservesMissingUserAddedFile is a regression for a
+// review finding on PR 3: ScanForCapture never synthesizes a candidate for a
+// saved path that no longer exists anywhere (no baseline, live file
+// deleted), so it fell through Capture's classification switch entirely and
+// was silently dropped even with Capture Disabled. A previously desired path
+// with no scan candidate at all must still be preserved when disabled.
+func TestCaptureDisabledPreservesMissingUserAddedFile(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(profileDir, "config", "files", "added.conf"), "captured before deletion")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{Path: "added.conf", Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "added.conf")), Mode: "0644"}},
+	}
+	enabled := func(string) bool { return false }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 1 || result.State.Files[0].Path != "added.conf" || result.State.Files[0].Hash != saved.Files[0].Hash {
+		t.Fatalf("state.Files = %#v, want the missing user-added file preserved", result.State.Files)
+	}
+	if _, err := os.Lstat(filepath.Join(profileDir, "config", "files", "added.conf")); err != nil {
+		t.Fatalf("preserved artifact missing: %v", err)
+	}
+}
+
+// TestCaptureDisabledPreservesFileRevertedToUnchangedBaseline is a
+// regression for a review finding on PR 3: a file that reverts to exactly
+// match its baseline scans as ConfigUnchangedBaseline, which fell through
+// Capture's classification switch without ever consulting its Capture
+// decision. A previously desired path must still be preserved (not silently
+// dropped) when disabled, even though there is nothing new to capture.
+func TestCaptureDisabledPreservesFileRevertedToUnchangedBaseline(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(base, "theme.conf"), "default")
+	writeFile(t, filepath.Join(user, "theme.conf"), "default")
+	writeFile(t, filepath.Join(profileDir, "config", "files", "theme.conf"), "custom")
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", "theme.conf"), "default")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{
+			Path:         "theme.conf",
+			Hash:         hashOf(t, filepath.Join(profileDir, "config", "files", "theme.conf")),
+			Mode:         "0644",
+			BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", "theme.conf")),
+			BaselineMode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return false }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir, History: fakeBaselineHistory(false)}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 1 || result.State.Files[0].Hash != saved.Files[0].Hash {
+		t.Fatalf("state.Files = %#v, want the previously-custom file preserved despite reverting to the unchanged baseline", result.State.Files)
+	}
+}
+
+// TestCaptureDisabledPreservesDeletionTombstoneWhenBaselineDisappears is a
+// regression for a review finding on PR 3: an existing ConfigDelete
+// tombstone whose baseline has since disappeared entirely (no longer a scan
+// candidate at all) fell through Capture's classification switch and was
+// silently dropped even with Capture Disabled.
+func TestCaptureDisabledPreservesDeletionTombstoneWhenBaselineDisappears(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(profileDir, "config", "baseline", "gone.conf"), "was-here")
+	saved := profile.Configs{
+		Deletes: []profile.ConfigDelete{{
+			Path:         "gone.conf",
+			BaselineHash: hashOf(t, filepath.Join(profileDir, "config", "baseline", "gone.conf")),
+			BaselineMode: "0644",
+		}},
+	}
+	enabled := func(string) bool { return false }
+
+	result, err := (Provider{UserRoot: user, BaselineRoot: base, ProfileDir: profileDir}).Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Deletes) != 1 || result.State.Deletes[0].BaselineHash != saved.Deletes[0].BaselineHash {
+		t.Fatalf("state.Deletes = %#v, want the tombstone preserved despite its baseline disappearing", result.State.Deletes)
+	}
+}
+
+// TestCaptureDisabledDropsPathHandedOffToAStrongerOwner is a companion to
+// the three preserve regressions above: a previously desired path that
+// disappears from the scan because it (or an ancestor) has since been
+// tracked by a stronger owner (e.g. a Resource) must still be dropped, not
+// preserved, even with Capture Disabled -- ownership handoff, not mere
+// absence, is why it has no scan candidate, and freezing stale Config
+// ownership over it would leave two providers claiming the same path.
+func TestCaptureDisabledDropsPathHandedOffToAStrongerOwner(t *testing.T) {
+	base, user, _, profileDir := sandbox(t)
+	writeFile(t, filepath.Join(profileDir, "config", "files", "nvim", "init.lua"), "captured before handoff")
+	saved := profile.Configs{
+		Files: []profile.ConfigFile{{Path: "nvim/init.lua", Hash: hashOf(t, filepath.Join(profileDir, "config", "files", "nvim", "init.lua")), Mode: "0644"}},
+	}
+	enabled := func(string) bool { return false }
+	p := Provider{
+		UserRoot: user, BaselineRoot: base, ProfileDir: profileDir,
+		Ownership: ownership.Index{Claims: []ownership.Claim{{Provider: "resources", Path: filepath.Join(user, "nvim"), Recursive: true}}},
+	}
+
+	result, err := p.Capture(saved, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.State.Files) != 0 {
+		t.Fatalf("state.Files = %#v, want the handed-off path dropped, not preserved", result.State.Files)
 	}
 }
