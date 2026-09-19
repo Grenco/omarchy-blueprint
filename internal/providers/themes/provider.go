@@ -193,6 +193,31 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled fu
 	return result, nil
 }
 
+// PrepareStopManagingArtifact stages the removal of one theme's local/overlay
+// artifact directory without deleting it yet: the directory is renamed out
+// of the way, reusing the same pending-swap bookkeeping Capture uses, so the
+// caller can defer the actual deletion until it knows the profile save that
+// forgets the theme's metadata has also succeeded (FinalizeCapture), or undo
+// the rename if it has not (RollbackCapture). A theme with no local artifact
+// (git, or already removed) is a no-op.
+func (p *Provider) PrepareStopManagingArtifact(id string) error {
+	source := filepath.Join(p.ProfileDir, "themes", "local", id)
+	if _, err := os.Lstat(source); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	backup := filepath.Join(p.ProfileDir, "themes", ".stop-managing-"+id)
+	if err := os.RemoveAll(backup); err != nil {
+		return err
+	}
+	if err := os.Rename(source, backup); err != nil {
+		return err
+	}
+	p.captureDestination, p.captureOld, p.capturePending = source, backup, true
+	return nil
+}
+
 func (p *Provider) CommitCapture() error { return nil }
 func (p *Provider) FinalizeCapture() error {
 	if !p.capturePending {

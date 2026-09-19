@@ -176,3 +176,35 @@ func TestShellStopManagingIsRejected(t *testing.T) {
 		t.Fatal("shell Stop Managing accepted")
 	}
 }
+
+// TestStopManagingReachesRealProviderThroughWorkflowSession is a regression
+// for a review finding on PR 3: restoreProviderAdapter embeds the
+// stateProvider INTERFACE, which does not declare StopManaging, so a real
+// workflow.Session built by openWorkflow could not reach a wrapped
+// provider's StopManaging even though direct provider unit tests passed.
+// This exercises the real adapter chain end to end, not a fake.
+func TestStopManagingReachesRealProviderThroughWorkflowSession(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Packages.Official = []string{"firefox"}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	session, err := openWorkflow(deps, &options{profileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.StopManaging(context.Background(), "packages", "official:firefox"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Packages.Official) != 0 {
+		t.Fatalf("official = %#v, want firefox removed through the real wrapped provider", reloaded.Packages.Official)
+	}
+}

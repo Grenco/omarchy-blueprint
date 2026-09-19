@@ -291,6 +291,48 @@ func TestCapturePreservesExistingTombstoneWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestPrepareStopManagingArtifactStagesRenameCommitOrRollback is a
+// regression for a review finding on PR 3: Stop Managing must not delete a
+// hook's captured snapshot file immediately, since a caller that then fails
+// to save the profile would leave it referencing a destroyed artifact.
+// PrepareStopManagingArtifact stages the removal by rename; RollbackCapture
+// must restore the original file and its content byte-for-byte, and
+// FinalizeCapture (only called once the caller knows the save succeeded)
+// must permanently delete it.
+func TestPrepareStopManagingArtifactStagesRenameCommitOrRollback(t *testing.T) {
+	p, _, profileDir := hookProvider(t)
+	artifact := filepath.Join(profileDir, "hooks", "files", "post-update.d", "update-rust")
+	writeHook(t, artifact, "original", 0o644)
+
+	if err := p.PrepareStopManagingArtifact("post-update.d/update-rust"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("artifact must be staged out of its original location, not left in place")
+	}
+
+	if err := p.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(artifact)
+	if err != nil || string(body) != "original" {
+		t.Fatalf("rollback did not restore original content: body=%q err=%v", body, err)
+	}
+
+	if err := p.PrepareStopManagingArtifact("post-update.d/update-rust"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.FinalizeCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("finalize must permanently delete the staged artifact")
+	}
+	if _, err := os.Stat(artifact + ".stop-managing-backup"); !os.IsNotExist(err) {
+		t.Fatal("finalize left a staging backup behind")
+	}
+}
+
 func TestCheckRejectsTamperedAndSymlinkSnapshots(t *testing.T) {
 	p, _, profileDir := hookProvider(t)
 	body := "hook\n"

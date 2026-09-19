@@ -124,6 +124,14 @@ type stopManagingActions interface {
 // inherited resolution, Stop Managing removes the target from Blueprint's
 // tracking entirely. Support and exact semantics are category-specific; see
 // each stateProvider's StopManaging for what "remove" means for it.
+//
+// A provider that also implements captureTransaction (the same optional
+// commit/finalize/rollback hooks CaptureMany uses) is treated as staging its
+// artifact removal rather than performing it immediately: the artifact is
+// only permanently deleted (FinalizeCapture) after this profile save
+// succeeds, and the staged removal is undone (RollbackCapture) if it does
+// not, so a failed save can never leave the profile referencing an artifact
+// that has already been destroyed.
 func (s *Session) StopManaging(ctx context.Context, category, target string) error {
 	provider, ok := ProviderByID(s.providers, category)
 	if !ok {
@@ -142,8 +150,21 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 		m := &next.Machines.Items[i]
 		m.Policy = removePolicyRule(removePolicyRule(m.Policy, policy.AxisCapture, category, target), policy.AxisRestore, category, target)
 	}
+	transaction, hasTransaction := provider.(captureTransaction)
 	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
+		if hasTransaction {
+			_ = transaction.RollbackCapture()
+		}
 		return fmt.Errorf("save profile: %w", err)
+	}
+	if hasTransaction {
+		if err := transaction.CommitCapture(); err != nil {
+			return fmt.Errorf("commit stop managing: %w", err)
+		}
+		if err := transaction.FinalizeCapture(); err != nil {
+			s.profile = next
+			return fmt.Errorf("finalize stop managing: %w", err)
+		}
 	}
 	s.profile = next
 	return nil
