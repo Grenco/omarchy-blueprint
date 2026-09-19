@@ -305,6 +305,76 @@ func TestSetPackageExcludedStripsMiseDeclaration(t *testing.T) {
 	}
 }
 
+// TestSetPackageExcludedClearsExistingTombstoneAndIncludeDoesNotRevive is a
+// regression for a review finding on PR 3: excluding a package that is
+// currently tombstoned (Packages.Absent) must clear that tombstone too --
+// otherwise later including it would leave the stale desired-absence intent
+// in place, ready to silently reassert itself as "still absent" on the next
+// Capture instead of the ref genuinely becoming unmanaged.
+func TestSetPackageExcludedClearsExistingTombstoneAndIncludeDoesNotRevive(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Absent = []profile.PackageAbsence{{Ref: "official:firefox"}}
+	session := newPolicySession(t, data)
+
+	if err := session.SetPackageExcluded("official:firefox", true); err != nil {
+		t.Fatal(err)
+	}
+	if len(session.Profile().Packages.Absent) != 0 {
+		t.Fatalf("absent = %#v, want the tombstone cleared by exclusion", session.Profile().Packages.Absent)
+	}
+
+	if err := session.SetPackageExcluded("official:firefox", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(session.Profile().Packages.Absent) != 0 {
+		t.Fatalf("absent = %#v, want still cleared: include must not revive a stale tombstone", session.Profile().Packages.Absent)
+	}
+	reloaded, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Packages.Absent) != 0 {
+		t.Fatalf("reloaded absent = %#v, want cleared", reloaded.Packages.Absent)
+	}
+}
+
+// TestSetPackageExcludedIsAtomicOnSaveFailure is a regression for a review
+// finding on PR 3: SetPackageExcluded(true) used to strip desired state,
+// save, then set two policy rules as three separate saves -- a failure
+// between them could leave "desired state removed, but only zero/one policy
+// axes persisted." It now builds the complete next state (desired-state
+// removal and both policy axes) in memory and saves once, so a failed save
+// must leave both the in-memory session and the on-disk profile completely
+// untouched, not partially applied.
+func TestSetPackageExcludedIsAtomicOnSaveFailure(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox"}
+	session := newPolicySession(t, data)
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realDir := session.opts.ProfileDir
+	session.opts.ProfileDir = filepath.Join(blocked, "profile")
+
+	if err := session.SetPackageExcluded("official:firefox", true); err == nil {
+		t.Fatal("save failure not propagated")
+	}
+	if !sameStrings(session.Profile().Packages.Official, []string{"firefox"}) {
+		t.Fatalf("official = %#v, want untouched in memory after a failed save", session.Profile().Packages.Official)
+	}
+	if len(session.Profile().Policy.Capture) != 0 || len(session.Profile().Policy.Restore) != 0 {
+		t.Fatalf("policy = %+v, want no rules recorded after a failed save", session.Profile().Policy)
+	}
+	reloaded, err := profile.Load(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(reloaded.Packages.Official, []string{"firefox"}) || len(reloaded.Policy.Capture) != 0 {
+		t.Fatalf("on-disk profile changed despite the failed save: official=%#v policy=%+v", reloaded.Packages.Official, reloaded.Policy)
+	}
+}
+
 func TestSetMachineRestoreDefaultsPersistsAndValidates(t *testing.T) {
 	data := profile.New("test", time.Now())
 	data.Machines.Items = []profile.Machine{{Name: "desktop"}}

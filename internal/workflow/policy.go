@@ -2,8 +2,8 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -244,28 +244,39 @@ func (s *Session) scopedMachineRules(scope PolicyScope) (policy.Rules, error) {
 	return m.Policy, nil
 }
 
+// upsertPolicyRule and removePolicyRule always build a fresh backing array
+// for the axis they touch, rather than mutating or truncate-reusing the
+// caller's existing slice in place: rules is a shallow copy of a stored
+// policy.Rules (the session's own, or a candidate "next" state a caller is
+// building before a save that might still fail), and its Capture/Restore
+// slices share a backing array with whatever it was copied from. Reusing
+// that array here would corrupt the original through the shared backing
+// array before the caller's save has even been attempted.
 func upsertPolicyRule(rules policy.Rules, axis policy.Axis, rule policy.Rule) policy.Rules {
 	list := axisRuleList(&rules, axis)
-	for i := range *list {
-		if (*list)[i].Category == rule.Category && (*list)[i].Target == rule.Target {
-			(*list)[i].Setting = rule.Setting
+	next := make([]policy.Rule, len(*list), len(*list)+1)
+	copy(next, *list)
+	for i := range next {
+		if next[i].Category == rule.Category && next[i].Target == rule.Target {
+			next[i].Setting = rule.Setting
+			*list = next
 			return rules
 		}
 	}
-	*list = append(*list, rule)
+	*list = append(next, rule)
 	return rules
 }
 
 func removePolicyRule(rules policy.Rules, axis policy.Axis, category, target string) policy.Rules {
 	list := axisRuleList(&rules, axis)
-	filtered := (*list)[:0]
+	next := make([]policy.Rule, 0, len(*list))
 	for _, rule := range *list {
 		if rule.Category == category && rule.Target == target {
 			continue
 		}
-		filtered = append(filtered, rule)
+		next = append(next, rule)
 	}
-	*list = filtered
+	*list = next
 	return rules
 }
 
@@ -293,8 +304,9 @@ func (s *Session) packageExcluded(ref string) bool {
 // the sole mechanism the exclude/include CLI verbs and the TUI's package
 // toggle use; there is no longer a separate Packages.Excluded list.
 //
-// Excluding strips ref from desired-present state (Official/AUR/Mise)
-// immediately -- the exclusion has no desired state at all, matching the
+// Excluding strips ref's desired state (Official/AUR/Mise presence, and any
+// existing Absent tombstone -- see profile.RemoveDesiredPackageState)
+// immediately: the exclusion has no desired state at all, matching the
 // design's "Capture: Preserve/disabled, Restore: Skip/disabled, Desired
 // state: unmanaged" -- and records Capture Disabled + Restore Disabled
 // policy for it, so a later enabled Capture does not silently re-adopt it
@@ -303,6 +315,12 @@ func (s *Session) packageExcluded(ref string) bool {
 // not attempt to restore any prior desired state, since excluding left
 // none to restore -- a later Capture will naturally rediscover the ref if
 // it is still installed.
+//
+// The desired-state removal and both policy axes are built into one
+// candidate profile.Data and saved once: a failure partway through building
+// that candidate never reaches disk, and s.profile is only updated after
+// the save succeeds, so a caller never observes "desired state removed but
+// only one policy axis persisted."
 func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
 	provider, ok := ProviderByID(s.providers, "packages")
 	if !ok {
@@ -312,57 +330,22 @@ func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
 	if err != nil {
 		return err
 	}
-	if !excluded {
-		if err := s.ClearPolicy(PolicyScope{}, policy.AxisCapture, "packages", canonical); err != nil {
-			return err
-		}
-		return s.ClearPolicy(PolicyScope{}, policy.AxisRestore, "packages", canonical)
+	if s.deps.Now == nil {
+		return errors.New("workflow clock is unavailable")
 	}
-	kind, name, _ := axisTargetParts(canonical)
-	data := s.profile
-	switch kind {
-	case "official":
-		data.Packages.Official = withoutString(data.Packages.Official, name)
-	case "aur":
-		data.Packages.AUR = withoutString(data.Packages.AUR, name)
-	case "mise":
-		data.Packages.Mise = withoutMiseTool(data.Packages.Mise, name)
+	next := s.profile
+	if excluded {
+		profile.RemoveDesiredPackageState(&next.Packages, canonical)
+		next.Policy = upsertPolicyRule(next.Policy, policy.AxisCapture, policy.Rule{Category: "packages", Target: canonical, Setting: policy.SettingDisabled})
+		next.Policy = upsertPolicyRule(next.Policy, policy.AxisRestore, policy.Rule{Category: "packages", Target: canonical, Setting: policy.SettingDisabled})
+	} else {
+		next.Policy = removePolicyRule(next.Policy, policy.AxisCapture, "packages", canonical)
+		next.Policy = removePolicyRule(next.Policy, policy.AxisRestore, "packages", canonical)
 	}
-	if err := profile.Save(s.opts.ProfileDir, data); err != nil {
+	next.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
+	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
-	s.profile = data
-	if err := s.SetPolicy(PolicyScope{}, policy.AxisCapture, "packages", canonical, policy.SettingDisabled); err != nil {
-		return err
-	}
-	return s.SetPolicy(PolicyScope{}, policy.AxisRestore, "packages", canonical, policy.SettingDisabled)
-}
-
-func axisTargetParts(canonical string) (kind, name string, ok bool) {
-	kind, name, ok = strings.Cut(canonical, ":")
-	return kind, name, ok
-}
-
-// withoutString returns a new slice with value removed, never mutating
-// values' own backing array (which may be shared with the session's stored
-// profile).
-func withoutString(values []string, value string) []string {
-	out := make([]string, 0, len(values))
-	for _, current := range values {
-		if current != value {
-			out = append(out, current)
-		}
-	}
-	return out
-}
-
-// withoutMiseTool returns a new map with id removed, never mutating tools.
-func withoutMiseTool(tools profile.MiseTools, id string) profile.MiseTools {
-	out := make(profile.MiseTools, len(tools))
-	for existing, tool := range tools {
-		if existing != id {
-			out[existing] = tool
-		}
-	}
-	return out
+	s.profile = next
+	return nil
 }

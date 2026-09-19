@@ -816,16 +816,22 @@ func packagePolicyCommand(deps Dependencies, opt *options, exclude bool) *cobra.
 			}
 			return emit(deps.Out, opt.json, verb, true, map[string]any{"kind": "config", "path": path, "excluded": exclude, "included": !exclude}, fmt.Sprintf("%s config %s.\n", action, path))
 		}
+		// Validate/canonicalize the whole batch before mutating anything, so
+		// a later invalid ref can never leave earlier refs applied.
+		canonicalRefs := make([]string, len(refs))
+		for i, ref := range refs {
+			canonical, err := (packagesStateProvider{}).ValidateTarget(ref)
+			if err != nil {
+				return err
+			}
+			canonicalRefs[i] = canonical
+		}
 		session, err := openWorkflow(deps, opt)
 		if err != nil {
 			return profileError(opt.profileDir, err)
 		}
 		var changed []string
-		for _, ref := range refs {
-			canonical, err := (packagesStateProvider{}).ValidateTarget(ref)
-			if err != nil {
-				return err
-			}
+		for _, canonical := range canonicalRefs {
 			if err := session.SetPackageExcluded(canonical, exclude); err != nil {
 				return err
 			}
