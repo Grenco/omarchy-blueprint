@@ -170,6 +170,61 @@ func TestSetMachineRestoreDefaultsPersistsAndValidates(t *testing.T) {
 	}
 }
 
+func TestStopManagingUnknownProviderIsAnError(t *testing.T) {
+	session := newPolicySession(t, profile.New("test", time.Now()))
+	if err := session.StopManaging(context.Background(), "bogus", "official:firefox"); err == nil {
+		t.Fatal("unknown provider accepted")
+	}
+}
+
+func TestStopManagingPropagatesProviderRejection(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox"}
+	session := newPolicySession(t, data)
+	session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}, stopManagingFail: true}})
+	if err := session.StopManaging(context.Background(), "packages", "official:firefox"); err == nil {
+		t.Fatal("provider rejection not propagated")
+	}
+	if got := session.Profile().Packages.Official; len(got) != 1 || got[0] != "firefox" {
+		t.Fatalf("official = %#v, want untouched after rejection", got)
+	}
+}
+
+func TestStopManagingDelegatesToProviderAndClearsPolicyOverrides(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox"}
+	data.Policy = policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}},
+	}
+	data.Machines.Items = []profile.Machine{{
+		Name:   "desktop",
+		Policy: policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingEnabled}}},
+	}}
+	session := newPolicySession(t, data)
+	session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}}})
+
+	if err := session.StopManaging(context.Background(), "packages", "official:firefox"); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.Profile().Packages.Official; len(got) != 0 {
+		t.Fatalf("official = %#v, want the provider's removal applied", got)
+	}
+	if got := session.Profile().Policy; len(got.Capture) != 0 || len(got.Restore) != 0 {
+		t.Fatalf("profile policy = %+v, want the target's rules cleared", got)
+	}
+	if got := session.Profile().Machines.Items[0].Policy; len(got.Capture) != 0 {
+		t.Fatalf("machine policy = %+v, want the target's rules cleared", got)
+	}
+	reloaded, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Packages.Official) != 0 || len(reloaded.Policy.Capture) != 0 {
+		t.Fatalf("reloaded = %#v, want the removal and policy clearing persisted", reloaded)
+	}
+}
+
 func rulesEqual(a, b policy.Rules) bool {
 	if len(a.Capture) != len(b.Capture) || len(a.Restore) != len(b.Restore) {
 		return false

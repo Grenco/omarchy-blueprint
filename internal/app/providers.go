@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -372,6 +373,14 @@ func (p resourcesStateProvider) Check(ctx context.Context, d profile.Data) error
 	return provider.Check(ctx, d.Resources)
 }
 
+// StopManaging rejects the generic action: a tracked Resource has no
+// "capture disabled, keep the metadata" state distinct from being tracked at
+// all, and it needs its own dedicated cleanup (files/git-state, links, other
+// resources' overlap checks), which Untrack already performs correctly.
+func (resourcesStateProvider) StopManaging(context.Context, profile.Data, string) (profile.Data, error) {
+	return profile.Data{}, fmt.Errorf("resources does not support Stop Managing; use Untrack instead")
+}
+
 func captureRequiredError(id string) error {
 	verb := "captured"
 	switch id {
@@ -725,6 +734,72 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 	return provider.Check(ctx, d.Packages)
 }
 
+// StopManaging permanently forgets one package/tool: its desired present or
+// desired-absent state. Packages persist no artifact beyond the profile
+// metadata itself (unlike Themes/Plugins/Hooks), so there is nothing else on
+// disk to remove.
+func (packagesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	kind, ref, ok := strings.Cut(target, ":")
+	if !ok || ref == "" {
+		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)
+	}
+	found := false
+	switch kind {
+	case "official":
+		if next, removed := removeStringItem(d.Packages.Official, ref); removed {
+			d.Packages.Official, found = next, true
+		}
+	case "aur":
+		if next, removed := removeStringItem(d.Packages.AUR, ref); removed {
+			d.Packages.AUR, found = next, true
+		}
+	case "mise":
+		if _, ok := d.Packages.Mise[ref]; ok {
+			next := make(profile.MiseTools, len(d.Packages.Mise))
+			for id, tool := range d.Packages.Mise {
+				if id != ref {
+					next[id] = tool
+				}
+			}
+			d.Packages.Mise, found = next, true
+		}
+	default:
+		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)
+	}
+	var absent []profile.PackageAbsence
+	for _, a := range d.Packages.Absent {
+		if a.Ref == target {
+			found = true
+			continue
+		}
+		absent = append(absent, a)
+	}
+	d.Packages.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("packages: %q is not managed", target)
+	}
+	return d, nil
+}
+
+// removeStringItem returns a new slice with target removed, and whether it
+// was present. It never mutates items' own backing array, since callers may
+// share it with the session's own profile.Data.
+func removeStringItem(items []string, target string) ([]string, bool) {
+	removed := false
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == target {
+			removed = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !removed {
+		return items, false
+	}
+	return out, true
+}
+
 type themesStateProvider struct {
 	deps            Dependencies
 	opt             *options
@@ -901,6 +976,47 @@ func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	return err
 }
 
+// StopManaging permanently forgets one theme: its desired present or
+// desired-absent state, and its local/overlay artifact directory if it has
+// one. Built-in themes carry no Blueprint-owned state to forget, and
+// "active" is a separate target (which theme is selected, not a theme's own
+// availability), so neither is accepted here.
+func (p themesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	id, ok := strings.CutPrefix(target, "theme:")
+	if !ok || id == "" {
+		return profile.Data{}, fmt.Errorf("themes: invalid target %q", target)
+	}
+	found := false
+	var items []profile.Theme
+	for _, item := range d.Themes.Items {
+		if item.ID == id {
+			if item.Type == "builtin" {
+				return profile.Data{}, fmt.Errorf("themes: built-in theme %q cannot be Stop Managed", id)
+			}
+			found = true
+			continue
+		}
+		items = append(items, item)
+	}
+	d.Themes.Items = items
+	var absent []profile.Theme
+	for _, item := range d.Themes.Absent {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		absent = append(absent, item)
+	}
+	d.Themes.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("themes: %q is not managed", id)
+	}
+	if err := os.RemoveAll(filepath.Join(p.opt.profileDir, "themes", "local", id)); err != nil {
+		return profile.Data{}, err
+	}
+	return d, nil
+}
+
 type pluginsStateProvider struct {
 	deps            Dependencies
 	opt             *options
@@ -1073,6 +1189,45 @@ func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	}
 	_, err = provider.Detect(ctx)
 	return err
+}
+
+// StopManaging permanently forgets one third-party plugin: its desired
+// present or desired-absent state, and its local clone artifact directory.
+// First-party (built-in) plugins carry no Blueprint-owned state to forget.
+func (p pluginsStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	id, ok := strings.CutPrefix(target, "plugin:")
+	if !ok || id == "" {
+		return profile.Data{}, fmt.Errorf("plugins: invalid target %q", target)
+	}
+	found := false
+	var items []profile.Plugin
+	for _, item := range d.Plugins.Items {
+		if item.ID == id {
+			if item.Source == "builtin" {
+				return profile.Data{}, fmt.Errorf("plugins: built-in plugin %q cannot be Stop Managed", id)
+			}
+			found = true
+			continue
+		}
+		items = append(items, item)
+	}
+	d.Plugins.Items = items
+	var absent []profile.Plugin
+	for _, item := range d.Plugins.Absent {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		absent = append(absent, item)
+	}
+	d.Plugins.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("plugins: %q is not managed", id)
+	}
+	if err := os.RemoveAll(filepath.Join(p.opt.profileDir, "plugins", "local", id)); err != nil {
+		return profile.Data{}, err
+	}
+	return d, nil
 }
 
 // configStateProvider captures customized Hyprland configuration files.
@@ -1404,6 +1559,13 @@ func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
 	return provider.Check(d.Config)
 }
 
+// StopManaging rejects the generic action: Config already has its own
+// per-path policy controls (see SetConfigPolicy and the Excluded mechanism),
+// which are more precise than a single flat target key here.
+func (configStateProvider) StopManaging(context.Context, profile.Data, string) (profile.Data, error) {
+	return profile.Data{}, fmt.Errorf("config does not support Stop Managing; use its own path-level policy controls instead")
+}
+
 // defaultsStateProvider captures Omarchy's semantic default applications.
 type defaultsStateProvider struct {
 	deps Dependencies
@@ -1510,6 +1672,30 @@ func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data) (mode
 func (p defaultsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	_, err := p.provider().Detect(ctx)
 	return err
+}
+
+// StopManaging clears one default slot back to unmanaged. There is no
+// desired-absence concept or on-disk artifact for a default application
+// choice, so clearing the saved value is the entire mechanism.
+func (defaultsStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	var current *string
+	switch target {
+	case "terminal":
+		current = &d.Defaults.Terminal
+	case "browser":
+		current = &d.Defaults.Browser
+	case "editor":
+		current = &d.Defaults.Editor
+	case "agent":
+		current = &d.Defaults.Agent
+	default:
+		return profile.Data{}, fmt.Errorf("defaults: invalid target %q", target)
+	}
+	if *current == "" {
+		return profile.Data{}, fmt.Errorf("defaults: %q is not managed", target)
+	}
+	*current = ""
+	return d, nil
 }
 
 // shellStateProvider captures Omarchy Shell state; after capture it owns
@@ -1641,6 +1827,15 @@ func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Shell, d.Plugins)
+}
+
+// StopManaging rejects the generic action: Shell is one merge unit spanning
+// the whole customization document, and there is currently no existing safe
+// operation that clears just its management state without discarding
+// captured intent Restore would need. Recapturing with the Omarchy default
+// active is the supported way to reset it.
+func (shellStateProvider) StopManaging(context.Context, profile.Data, string) (profile.Data, error) {
+	return profile.Data{}, fmt.Errorf("shell does not support Stop Managing; capture again with the Omarchy default active instead")
 }
 
 type hooksStateProvider struct {
@@ -1809,4 +2004,35 @@ func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
 		return err
 	}
 	return provider.Check(d.Hooks)
+}
+
+// StopManaging permanently forgets one hook: its desired present or
+// desired-absent state, and its captured snapshot file.
+func (p hooksStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	found := false
+	var items []profile.Hook
+	for _, item := range d.Hooks.Items {
+		if item.Path == target {
+			found = true
+			continue
+		}
+		items = append(items, item)
+	}
+	d.Hooks.Items = items
+	var absent []profile.Hook
+	for _, item := range d.Hooks.Absent {
+		if item.Path == target {
+			found = true
+			continue
+		}
+		absent = append(absent, item)
+	}
+	d.Hooks.Absent = absent
+	if !found {
+		return profile.Data{}, fmt.Errorf("hooks: %q is not managed", target)
+	}
+	if err := os.RemoveAll(filepath.Join(p.opt.profileDir, "hooks", "files", filepath.FromSlash(target))); err != nil {
+		return profile.Data{}, err
+	}
+	return d, nil
 }
