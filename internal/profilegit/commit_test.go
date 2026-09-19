@@ -31,6 +31,31 @@ func TestCommitManagedPathsOnly(t *testing.T) {
 	}
 }
 
+// TestCommitStagesPolicyPath is a regression for a review finding on PR 3:
+// policy/policy.toml was missing from profile.ManagedTopLevelPaths, so
+// Blueprint's normal commit/sync flow silently skipped policy edits as
+// unmanaged instead of staging and committing them like every other
+// profile-owned path.
+func TestCommitStagesPolicyPath(t *testing.T) {
+	root := commitRepository(t)
+	mustWrite(t, filepath.Join(root, "policy", "policy.toml"), "changed\n")
+	mustWrite(t, filepath.Join(root, "README.md"), "unmanaged change\n")
+	service, err := New(command.SystemRunner{}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Commit(context.Background(), "managed update")
+	if err != nil || !result.Changed {
+		t.Fatalf("commit=%#v err=%v", result, err)
+	}
+	if got := gitOutput(t, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"); got != "policy/policy.toml" {
+		t.Fatalf("committed paths = %q", got)
+	}
+	if got := gitOutput(t, root, "status", "--porcelain", "README.md"); got != " M README.md" {
+		t.Fatalf("unmanaged status = %q", got)
+	}
+}
+
 func TestCommitRefusesPreexistingStaging(t *testing.T) {
 	for _, path := range []string{"config/settings.conf", "README.md"} {
 		t.Run(path, func(t *testing.T) {

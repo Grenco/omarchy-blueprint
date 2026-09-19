@@ -7,6 +7,7 @@ func TestIsManagedRepositoryPath(t *testing.T) {
 		"profile.toml":              true,
 		"resources/resources.toml":  true,
 		"machines/desktop.toml":     true,
+		"policy/policy.toml":        true,
 		"config/hypr/bindings.lua":  true,
 		"README.md":                 false,
 		".git/config":               false,
