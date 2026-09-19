@@ -2699,7 +2699,8 @@ func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, hooksprovider.PlanOptions{Exact: exact})
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -2719,7 +2720,8 @@ func (p hooksStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return hooksprovider.Verify(saved, current), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return hooksprovider.Verify(saved, current, hooksprovider.VerifyOptions{Exact: exact}), nil
 }
 
 // filterHooksForRestoreSkip returns a copy of saved with every

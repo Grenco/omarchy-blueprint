@@ -59,13 +59,28 @@ func compare(saved map[string]profile.Hook, current map[string]DetectedHook) []m
 	return changes
 }
 
-func Verify(saved profile.Hooks, current State) model.VerificationResult {
+// VerifyOptions controls Exact-only verification; the zero value (Additive)
+// never checks Absent, matching every existing caller that predates it.
+type VerifyOptions struct{ Exact bool }
+
+func Verify(saved profile.Hooks, current State, options ...VerifyOptions) model.VerificationResult {
+	var opts VerifyOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	actual := currentMap(current.Items)
 	missing := make([]string, 0)
 	for _, item := range saved.Items {
 		current, ok := actual[item.Path]
 		if !ok || current.Hash != item.Hash || current.Mode != item.Mode {
 			missing = append(missing, "hook:"+item.Path)
+		}
+	}
+	if opts.Exact {
+		for _, absent := range saved.Absent {
+			if current, ok := actual[absent.Path]; ok && current.Hash == absent.Hash && current.Mode == absent.Mode {
+				missing = append(missing, "hook:"+absent.Path)
+			}
 		}
 	}
 	sort.Strings(missing)

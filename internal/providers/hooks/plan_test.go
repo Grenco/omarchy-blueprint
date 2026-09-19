@@ -117,6 +117,152 @@ func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
 	}
 }
 
+// --- PR 5 Task 31: provenance-matched Exact deletion for Hooks ---
+
+func hookDeleteOp(plan model.RestorePlan, path string) *model.Operation {
+	for i := range plan.Operations {
+		if plan.Operations[i].Action == "delete" && plan.Operations[i].Resource == "hook:"+path {
+			return &plan.Operations[i]
+		}
+	}
+	return nil
+}
+
+func TestPlanAdditiveNeverDeletesTombstonedHook(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
+	// No PlanOptions at all: Additive is the zero value, matching every
+	// existing caller that predates Exact deletion.
+	plan, err := p.Plan(saved, current, 5, "1", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op := hookDeleteOp(plan, "post-update.d/removed"); op != nil {
+		t.Fatalf("Operations = %#v, want no deletion under Additive convergence", plan.Operations)
+	}
+	if len(plan.Skipped) != 0 {
+		t.Fatalf("Skipped = %#v, want none under Additive: Absent is not \"extra\"", plan.Skipped)
+	}
+}
+
+func TestPlanExactSkipsWhenTombstonedHookAlreadyMissing(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
+	plan, err := p.Plan(saved, State{}, 5, "1", "2", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operation or skip: the tombstoned hook is already gone", plan)
+	}
+}
+
+func TestPlanExactSkipsChangedHookContent(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "stale-hash", Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: "different-hash", Mode: "0755"}}}
+	plan, err := p.Plan(saved, current, 5, "1", "2", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op := hookDeleteOp(plan, "post-update.d/removed"); op != nil {
+		t.Fatalf("Operations = %#v, want no deletion for an independently changed hook", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "differs") {
+		t.Fatalf("Skipped = %#v, want a visible skip explaining the content mismatch", plan.Skipped)
+	}
+}
+
+func TestPlanExactSkipsUnmanagedSymlinkForTombstonedHook(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-boot", Hash: "hash", Mode: "0755"}}}
+	current := State{Unmanaged: []UnmanagedHook{{Path: "post-boot", Target: "/external/hook"}}}
+	plan, err := p.Plan(saved, current, 5, "1", "2", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op := hookDeleteOp(plan, "post-boot"); op != nil {
+		t.Fatalf("Operations = %#v, want no deletion of an unmanaged symlink", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "unmanaged symlink") {
+		t.Fatalf("Skipped = %#v, want a visible skip explaining the unmanaged symlink", plan.Skipped)
+	}
+}
+
+func TestPlanExactDeletesProvenanceMatchedTombstonedHook(t *testing.T) {
+	p, _, _ := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	plan, err := p.Plan(saved, current, 5, "1", "2", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := hookDeleteOp(plan, "post-update.d/removed")
+	if op == nil {
+		t.Fatalf("Operations = %#v, want a deletion for the tombstoned, provenance-matched hook", plan.Operations)
+	}
+	if op.Delete == nil || op.Delete.Destination != filepath.Join(p.UserDir, "post-update.d", "removed") {
+		t.Fatalf("operation = %#v", op)
+	}
+	if !op.Delete.Backup || !op.Delete.RejectSymlinkParents {
+		t.Fatalf("operation = %#v, want Backup and RejectSymlinkParents set", op)
+	}
+	if op.Delete.ExpectedExisting == nil || op.Delete.ExpectedExisting.Hash != strings.Repeat("a", 64) || op.Delete.ExpectedExisting.Mode != 0o755 {
+		t.Fatalf("precondition = %#v", op.Delete.ExpectedExisting)
+	}
+	if op.Risk != model.RiskHigh || !op.Reversible {
+		t.Fatalf("operation = %#v, want RiskHigh and Reversible (backup taken)", op)
+	}
+	if len(plan.Skipped) != 0 {
+		t.Fatalf("Skipped = %#v, want none", plan.Skipped)
+	}
+}
+
+func TestPlanExactSkipsReservedInboundLinkForTombstonedHook(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	p := Provider{
+		UserDir:    filepath.Join(home, ".config", "omarchy", "hooks"),
+		ProfileDir: filepath.Join(root, "profile"),
+		HomeDir:    home,
+		Resources: profile.Resources{
+			Items: []profile.Resource{{ID: "dotfiles", Path: "~/dotfiles", Kind: "directory", Strategy: "copy"}},
+			Links: []profile.ResourceLink{{Source: "~/.config/omarchy/hooks/post-boot", TargetResource: "dotfiles", Target: "hooks/post-boot", Origin: "inbound"}},
+		},
+	}
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0755"}}}
+	plan, err := p.Plan(saved, current, 5, "1", "2", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op := hookDeleteOp(plan, "post-boot"); op != nil {
+		t.Fatalf("Operations = %#v, want no deletion of a Resources-reserved path", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || !strings.Contains(plan.Skipped[0].Reason, "reserved") {
+		t.Fatalf("Skipped = %#v, want a visible skip explaining the reservation", plan.Skipped)
+	}
+}
+
+func TestVerifyExactFailsWhenTombstonedHookStillPresent(t *testing.T) {
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
+	current := State{Items: []DetectedHook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
+	if Verify(saved, current, VerifyOptions{Exact: true}).OK {
+		t.Fatal("verification unexpectedly passed with the tombstoned hook still present under Exact")
+	}
+	if !Verify(saved, current).OK {
+		t.Fatal("Additive verification unexpectedly failed because of a tombstoned hook still present")
+	}
+}
+
+func TestVerifyExactPassesWhenTombstonedHookAlreadyDeleted(t *testing.T) {
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-update.d/removed", Hash: "hash", Mode: "0755"}}}
+	if !Verify(saved, State{}, VerifyOptions{Exact: true}).OK {
+		t.Fatal("verification unexpectedly failed once the tombstoned hook is gone")
+	}
+}
+
 func TestPlanDefersReservedInboundResourceLink(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
