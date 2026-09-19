@@ -183,6 +183,23 @@ func newCaptureSession(t *testing.T, data profile.Data) *Session {
 	return session
 }
 
+// newExplicitMachineCaptureSession mirrors newCaptureSession but opens with
+// an explicit machine selected, so s.machine.Machine resolves to a real
+// *profile.Machine (restore-defaults resolution has no machine to consult
+// otherwise).
+func newExplicitMachineCaptureSession(t *testing.T, data profile.Data, machineName string) *Session {
+	t.Helper()
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{Runner: captureRunner{}, Now: func() time.Time { return time.Unix(1, 0) }, StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir, ExplicitMachine: machineName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
 func TestCaptureManyUsesConfiguredOrderAndPreservesUnrelatedState(t *testing.T) {
 	data := profile.New("test", time.Now())
 	data.Packages.AUR = []string{"sentinel"}

@@ -1614,7 +1614,8 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if planOptions.Force {
 		mode = workflow.RestoreForced
 	}
-	plan, err := session.PlanRestore(ctx, onlyProvider, mode)
+	restoreOptions := workflow.RestoreOptionsForMode(mode)
+	plan, err := session.PlanRestore(ctx, onlyProvider, &restoreOptions)
 	if err != nil {
 		return err
 	}
