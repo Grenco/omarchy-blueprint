@@ -1528,6 +1528,38 @@ func TestExcludeRejectsWholeBatchWhenALaterRefIsInvalid(t *testing.T) {
 	}
 }
 
+// TestOpenWorkflowRejectsHandEditedPolicyTargetOnceProvidersAreRegistered is
+// a regression for a review finding on PR 3: profile.Load only validates a
+// policy rule's category/setting/duplicates structurally, since it has no
+// reachable provider registry. A hand-edited policy/policy.toml with a
+// provider-invalid target (e.g. a packages target missing its "kind:"
+// prefix) previously loaded silently and only failed much later, at the
+// first unrelated SetPolicy call touching the same target. It must instead
+// fail every command that opens a workflow session.
+func TestOpenWorkflowRejectsHandEditedPolicyTargetOnceProvidersAreRegistered(t *testing.T) {
+	dir := t.TempDir()
+	var out, errout bytes.Buffer
+	deps := Dependencies{Runner: &machineRunner{}, In: strings.NewReader(""), Out: &out, Err: &errout, Now: time.Now}
+	run := func(args ...string) int {
+		out.Reset()
+		errout.Reset()
+		return Execute(context.Background(), args, deps)
+	}
+	if code := run("init", dir); code != 0 {
+		t.Fatalf("init: %s", errout.String())
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyToml := "capture = [{category = \"packages\", target = \"has space\", setting = \"disabled\"}]\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy", "policy.toml"), []byte(policyToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run("--profile", dir, "capture", "packages"); code == 0 {
+		t.Fatalf("hand-edited invalid policy target accepted: out=%s", out.String())
+	}
+}
+
 func TestExcludePersistsAcrossCaptureAndCanBeIncluded(t *testing.T) {
 	dir := t.TempDir()
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"dislocker-git": true}}

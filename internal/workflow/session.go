@@ -153,8 +153,24 @@ func (s *Session) ProfileGitPush(ctx context.Context) (profilegit.Result, error)
 	return s.profileGit.Push(ctx)
 }
 
-// SetProviders installs the application-specific adapters for this session.
-func (s *Session) SetProviders(providers []Provider) { s.providers = providers }
+// SetProviders installs the application-specific adapters for this session,
+// then validates every already-loaded policy rule's target against its
+// category's provider now that validators are actually available.
+// profile.Load can only check structural shape (known category, valid
+// setting, no duplicates -- see profile.validatePolicyRules): it has no
+// reachable provider registry, so a hand-edited policy.toml or machine
+// policy override with a provider-invalid target (e.g. "official:has
+// space") would otherwise load silently and only fail much later, at the
+// first explicit SetPolicy/ClearPolicy/StopManaging call that happens to
+// touch the same target. Providers are left unset if validation fails, so a
+// session that fails to open never ends up in a half-usable state.
+func (s *Session) SetProviders(providers []Provider) error {
+	if err := validateLoadedPolicyTargets(providers, s.profile); err != nil {
+		return err
+	}
+	s.providers = providers
+	return nil
+}
 
 // SetRestoreFinalizer installs application-specific aggregate restore rules.
 // The finalizer receives the same policy.RestoreOptions that planned every

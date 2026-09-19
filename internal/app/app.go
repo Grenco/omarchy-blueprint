@@ -984,7 +984,9 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 			adapters[i] = adapter
 		}
 	}
-	session.SetProviders(adapters)
+	if err := session.SetProviders(adapters); err != nil {
+		return nil, err
+	}
 	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, options policy.RestoreOptions) error {
 		state := make([]stateProvider, 0, len(selected))
 		for _, provider := range selected {
