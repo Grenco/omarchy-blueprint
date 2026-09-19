@@ -13,6 +13,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	defaultsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/defaults"
@@ -32,8 +33,8 @@ type stateProvider interface {
 	Captured(profile.Data) bool
 	Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
-	Plan(context.Context, profile.Data, omarchy.Info, restorePlanOptions) (model.RestorePlan, error)
-	Verify(context.Context, profile.Data) (model.VerificationResult, error)
+	Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (model.RestorePlan, error)
+	Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error)
 	Check(context.Context, profile.Data) error
 }
 
@@ -342,7 +343,18 @@ func (p resourcesStateProvider) DiffWithGitWorkingState(ctx context.Context, d p
 	}
 	return resourcesprovider.Diff(d.Resources, detection.Resources), detection.Git, nil
 }
-func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
+
+// Plan excludes every Restore-Skip "resource:<id>" target's Item from the
+// desired state fed to the low-level planner, and any Link referencing a
+// Restore-Skip resource on either end (a link that points into a resource
+// this run is not restoring should not be planned either, even though
+// links have no target Key of their own to report Skip against).
+// recordRestoreSkips then guarantees visibility; Resource tags here already
+// match InspectTargets' "resource:<id>" Key format exactly, so no
+// re-prefixing is needed. filterResourcesForRestoreSkip fails closed
+// (returns an error) if any desired target's Restore decision is missing
+// or unresolved, rather than letting it through as an implicit Apply.
+func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider(d)
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -351,9 +363,18 @@ func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info o
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(ctx, d.Resources, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, resourcesprovider.PlanOptions{Force: options.Force})
+	saved, matched, err := filterResourcesForRestoreSkip(d.Resources, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	force := restoreCtx.Options.Conflicts == policy.ConflictForce
+	plan, err := provider.Plan(ctx, saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, resourcesprovider.PlanOptions{Force: force})
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return recordRestoreSkips(plan, "resources", matched), nil
 }
-func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider(d)
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -362,8 +383,53 @@ func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data) (mod
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return resourcesprovider.Verify(d.Resources, current), nil
+	saved, _, err := filterResourcesForRestoreSkip(d.Resources, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return resourcesprovider.Verify(saved, current), nil
 }
+
+// filterResourcesForRestoreSkip returns a copy of saved with every Item
+// whose "resource:<id>" target resolved to Restore Skip removed, and any
+// Link referencing a Restore-Skip resource on either end removed alongside
+// it (Resources has no desired-absence representation, per the design, so
+// there is no tombstone collection to also cover here). The second return
+// is the subset that actually matched an Item -- only that subset should
+// be recorded as a visible Plan skip. Every Item's target key is resolved
+// via resolveRestoreSkip (RestoreContext.Require), so a missing or
+// unresolved decision fails the whole call closed.
+func filterResourcesForRestoreSkip(saved profile.Resources, restoreCtx workflow.RestoreContext) (profile.Resources, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+	skippedIDs := map[string]bool{}
+	items := make([]profile.Resource, 0, len(saved.Items))
+	for _, item := range saved.Items {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "resources", "resource:"+item.ID)
+		if err != nil {
+			return profile.Resources{}, nil, err
+		}
+		if skip {
+			skippedIDs[item.ID] = true
+			matched = append(matched, entry)
+			continue
+		}
+		items = append(items, item)
+	}
+	filtered.Items = items
+	if len(skippedIDs) > 0 && len(saved.Links) > 0 {
+		links := make([]profile.ResourceLink, 0, len(saved.Links))
+		for _, link := range saved.Links {
+			if skippedIDs[link.SourceResource] || skippedIDs[link.TargetResource] {
+				continue
+			}
+			links = append(links, link)
+		}
+		filtered.Links = links
+	}
+	return filtered, matched, nil
+}
+
 func (p resourcesStateProvider) Check(ctx context.Context, d profile.Data) error {
 	provider, err := p.provider(d)
 	if err != nil {
@@ -704,7 +770,17 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 	return packagesprovider.Diff(d.Packages, current), nil
 }
 
-func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+// Plan excludes every Restore-Skip package/tool from the desired state fed
+// to the low-level planner, so a Restore-Skip target can never be batched
+// into a bulk official/AUR install or Mise-install operation alongside an
+// Apply one (see filterPackagesForRestoreSkip); recordRestoreSkips then
+// guarantees each excluded target still appears visibly in Skipped with its
+// resolved policy reason, even for a desired-but-not-yet-installed target
+// the low-level planner's own skip logic would otherwise never mention.
+// filterPackagesForRestoreSkip fails closed (returns an error) if any
+// desired target's Restore decision is missing or unresolved, rather than
+// letting it through as an implicit Apply.
+func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -713,10 +789,23 @@ func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info om
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Packages, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return recordRestoreSkips(plan, "packages", matched), nil
 }
 
-func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+// Verify excludes every Restore-Skip package/tool from the desired state it
+// checks presence against, so a Restore-Skip target's absence (or a
+// differing local Mise declaration) never fails verification -- matching
+// the design's "desired-present + Restore Skip: verification ignores the
+// target" invariant.
+func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -725,7 +814,99 @@ func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data) (mode
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return packagesprovider.Verify(d.Packages, current), nil
+	saved, _, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return packagesprovider.Verify(saved, current), nil
+}
+
+// filterPackagesForRestoreSkip returns a copy of saved with every
+// Official/AUR/Mise/Absent entry whose target key resolved to Restore Skip
+// removed (present desired state and desired-absent tombstones alike --
+// see the design's Restore Skip invariant, which does not distinguish the
+// two), and the subset of skip that actually matched something in saved --
+// only that subset should be recorded as a visible Plan skip; a key with
+// no matching desired state was never going to produce anything regardless
+// of policy, so reporting it would misleadingly imply something was
+// skipped. Filtering the input, rather than filtering Plan's output
+// Operations, is the only way to reliably exclude a Restore-Skip target
+// from a bulk operation the low-level planner could otherwise batch it
+// into alongside an Apply target. Every desired target key this provider
+// owns is resolved via resolveRestoreSkip (RestoreContext.Require), so a
+// missing or unresolved decision fails the whole call closed rather than
+// silently letting that target's desired state through as an implicit
+// Apply. MachineSpecific is untouched: the low-level planner already skips
+// it unconditionally regardless of policy, so it is never restore-actionable
+// desired state in the first place.
+func filterPackagesForRestoreSkip(saved profile.Packages, restoreCtx workflow.RestoreContext) (profile.Packages, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+
+	official, m, err := filterPackageNames(saved.Official, "official:", restoreCtx)
+	if err != nil {
+		return profile.Packages{}, nil, err
+	}
+	filtered.Official = official
+	matched = append(matched, m...)
+
+	aur, m, err := filterPackageNames(saved.AUR, "aur:", restoreCtx)
+	if err != nil {
+		return profile.Packages{}, nil, err
+	}
+	filtered.AUR = aur
+	matched = append(matched, m...)
+
+	if len(saved.Mise) > 0 {
+		mise := make(profile.MiseTools, len(saved.Mise))
+		for id, tool := range saved.Mise {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "mise:"+id)
+			if err != nil {
+				return profile.Packages{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				continue
+			}
+			mise[id] = tool
+		}
+		filtered.Mise = mise
+	}
+
+	if len(saved.Absent) > 0 {
+		absent := make([]profile.PackageAbsence, 0, len(saved.Absent))
+		for _, item := range saved.Absent {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", item.Ref)
+			if err != nil {
+				return profile.Packages{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				continue
+			}
+			absent = append(absent, item)
+		}
+		filtered.Absent = absent
+	}
+
+	return filtered, matched, nil
+}
+
+func filterPackageNames(names []string, prefix string, restoreCtx workflow.RestoreContext) ([]string, []restoreSkip, error) {
+	var matched []restoreSkip
+	kept := make([]string, 0, len(names))
+	for _, name := range names {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", prefix+name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			continue
+		}
+		kept = append(kept, name)
+	}
+	return kept, matched, nil
 }
 
 func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error {
@@ -965,7 +1146,28 @@ func (p themesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.
 	return themesprovider.Diff(d.Themes, current), nil
 }
 
-func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+// Plan excludes a Restore-Skip "active" target by clearing the desired
+// active theme (the low-level planner only ever attempts activation when
+// Current is non-empty, so this alone suppresses it without touching any
+// other theme's own install/copy operations) and excludes each Restore-Skip
+// "theme:<id>" target from the desired items list, so neither can be
+// batched or otherwise entangled with an Apply target (see
+// filterThemesForRestoreSkip, which fails closed on any missing/unresolved
+// decision).
+//
+// "active" and "theme:<id>" are independent policy targets (selected active
+// theme versus installed-theme availability) even though the low-level
+// planner's activation Operation is tagged with the theme's own
+// "theme:<id>" Resource (see operation() in internal/providers/themes), so
+// the generic Resource-matching recordRestoreSkips does for availability
+// skips must never see that operation -- otherwise an availability Skip for
+// the active theme would wrongly remove a legitimately Apply-decided
+// activation. splitThemeActivationOperation pulls it out first and it is
+// reattached afterward, unless themeActivationBlockedReason finds the
+// active theme's own availability is Skip AND it is not currently
+// installed, in which case activation cannot actually be honored either
+// way and becomes its own visible "active" skip instead.
+func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -974,10 +1176,28 @@ func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omar
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Themes, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+	saved, matched, err := filterThemesForRestoreSkip(d.Themes, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	blockedReason, blocked := themeActivationBlockedReason(saved.Current, current, restoreCtx)
+	if blocked {
+		saved.Current = ""
+	}
+	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	activation, rest := splitThemeActivationOperation(plan.Operations)
+	plan.Operations = rest
+	plan = recordRestoreSkips(plan, "themes", matched)
+	if activation != nil {
+		plan.Operations = append(plan.Operations, *activation)
+	}
+	if blocked {
+		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "themes", Resource: "active", Reason: blockedReason})
+	}
+	return plan, nil
 }
 
-func (p themesStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p themesStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -986,7 +1206,131 @@ func (p themesStateProvider) Verify(ctx context.Context, d profile.Data) (model.
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return themesprovider.Verify(d.Themes, current), nil
+	saved, _, err := filterThemesForRestoreSkip(d.Themes, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	if _, blocked := themeActivationBlockedReason(saved.Current, current, restoreCtx); blocked {
+		saved.Current = ""
+	}
+	return themesprovider.Verify(saved, current), nil
+}
+
+// filterThemesForRestoreSkip returns a copy of saved with the desired
+// active theme cleared when "active" resolved to Restore Skip, and every
+// Item/Absent entry whose "theme:<id>" target resolved to Restore Skip
+// removed (present desired state and desired-absent tombstones alike --
+// see the design's Restore Skip invariant, which does not distinguish the
+// two). A builtin Item is left untouched regardless: InspectTargets never
+// creates a "theme:<id>" target for one ("Built-in themes are Omarchy's
+// own and carry nothing for Blueprint to track a source for"), so there is
+// no decision to require -- unlike Absent, which InspectTargets always
+// scopes a target for regardless of Type. The second return is the subset
+// that actually matched a desired active theme or Item/Absent entry --
+// only that subset should be recorded as a visible Plan skip; a key with
+// no matching desired state was never going to produce anything regardless
+// of policy. Every other desired target key is resolved via
+// resolveRestoreSkip (RestoreContext.Require), so a missing or unresolved
+// decision fails the whole call closed rather than silently letting that
+// target's desired state through as an implicit Apply.
+func filterThemesForRestoreSkip(saved profile.Themes, restoreCtx workflow.RestoreContext) (profile.Themes, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+
+	if saved.Current != "" {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "themes", "active")
+		if err != nil {
+			return profile.Themes{}, nil, err
+		}
+		if skip {
+			filtered.Current = ""
+			matched = append(matched, entry)
+		}
+	}
+
+	items := make([]profile.Theme, 0, len(saved.Items))
+	for _, item := range saved.Items {
+		if item.Type == "builtin" {
+			items = append(items, item)
+			continue
+		}
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "themes", "theme:"+item.ID)
+		if err != nil {
+			return profile.Themes{}, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			continue
+		}
+		items = append(items, item)
+	}
+	filtered.Items = items
+
+	if len(saved.Absent) > 0 {
+		absent := make([]profile.Theme, 0, len(saved.Absent))
+		for _, item := range saved.Absent {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "themes", "theme:"+item.ID)
+			if err != nil {
+				return profile.Themes{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				continue
+			}
+			absent = append(absent, item)
+		}
+		filtered.Absent = absent
+	}
+
+	return filtered, matched, nil
+}
+
+// themeActivationBlockedReason reports whether desiredCurrent's own
+// "theme:<id>" availability target is Restore Skip AND it is not currently
+// available locally, in which case activating it cannot actually be
+// honored regardless of "active" itself resolving to Apply. current.Items
+// is live detection, not desired state: an already-installed theme is safe
+// to activate even while its own availability target is Skip (there is
+// nothing left to install for it), so this only blocks when both
+// conditions hold together. It uses Lookup rather than Require: a builtin
+// active theme has no "theme:<id>" target at all (see
+// filterThemesForRestoreSkip), which is not itself an error here -- there
+// is simply nothing to block on.
+func themeActivationBlockedReason(desiredCurrent string, current profile.Themes, restoreCtx workflow.RestoreContext) (string, bool) {
+	if desiredCurrent == "" {
+		return "", false
+	}
+	decision, ok := restoreCtx.Lookup("theme:" + desiredCurrent)
+	if !ok || decision.Restore {
+		return "", false
+	}
+	for _, item := range current.Items {
+		if item.ID == desiredCurrent {
+			return "", false
+		}
+	}
+	return fmt.Sprintf("cannot activate %q: its availability is Restore Skip (%s), and it is not currently installed", desiredCurrent, decision.Reason), true
+}
+
+// splitThemeActivationOperation removes the low-level planner's activation
+// Operation (Action == "activate", Resource == "theme:<id>" for whichever
+// theme is being activated) from operations, if present, returning it
+// separately from the rest so it can be recombined after Resource-matching
+// availability-skip logic runs on the rest without risking removing it.
+// There is at most one: the low-level planner only ever appends a single
+// activation Operation, unconditionally last.
+func splitThemeActivationOperation(operations []model.Operation) (*model.Operation, []model.Operation) {
+	rest := make([]model.Operation, 0, len(operations))
+	var activation *model.Operation
+	for i := range operations {
+		if operations[i].Provider == "themes" && operations[i].Action == "activate" {
+			op := operations[i]
+			activation = &op
+			continue
+		}
+		rest = append(rest, operations[i])
+	}
+	return activation, rest
 }
 
 func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
@@ -1203,7 +1547,9 @@ func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model
 	return pluginsprovider.Diff(d.Plugins, current, pluginSemantics(d)), nil
 }
 
-func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+// filterPluginsForRestoreSkip fails closed (returns an error) if any
+// desired target's Restore decision is missing or unresolved.
+func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -1212,10 +1558,15 @@ func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info oma
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Plugins, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d)), nil
+	saved, matched, err := filterPluginsForRestoreSkip(d.Plugins, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d))
+	return recordRestoreSkips(plan, "plugins", matched), nil
 }
 
-func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -1224,7 +1575,65 @@ func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data) (model
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return pluginsprovider.Verify(d.Plugins, current, pluginSemantics(d)), nil
+	saved, _, err := filterPluginsForRestoreSkip(d.Plugins, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return pluginsprovider.Verify(saved, current, pluginSemantics(d)), nil
+}
+
+// filterPluginsForRestoreSkip returns a copy of saved with every
+// Item/Absent entry whose "plugin:<id>" target resolved to Restore Skip
+// removed (present desired state and desired-absent tombstones alike --
+// see the design's Restore Skip invariant, which does not distinguish the
+// two), and the subset that actually matched an Item/Absent entry -- only
+// that subset should be recorded as a visible Plan skip; a key with no
+// matching desired state was never going to produce anything regardless of
+// policy. A builtin Item is left untouched regardless: InspectTargets
+// never creates a "plugin:<id>" target for one, unlike Absent, which
+// InspectTargets always scopes a target for regardless of Source. Every
+// other desired target key is resolved via resolveRestoreSkip
+// (RestoreContext.Require), so a missing or unresolved decision fails the
+// whole call closed.
+func filterPluginsForRestoreSkip(saved profile.Plugins, restoreCtx workflow.RestoreContext) (profile.Plugins, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+
+	items := make([]profile.Plugin, 0, len(saved.Items))
+	for _, item := range saved.Items {
+		if item.Source == "builtin" {
+			items = append(items, item)
+			continue
+		}
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "plugins", "plugin:"+item.ID)
+		if err != nil {
+			return profile.Plugins{}, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			continue
+		}
+		items = append(items, item)
+	}
+	filtered.Items = items
+
+	if len(saved.Absent) > 0 {
+		absent := make([]profile.Plugin, 0, len(saved.Absent))
+		for _, item := range saved.Absent {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "plugins", "plugin:"+item.ID)
+			if err != nil {
+				return profile.Plugins{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				continue
+			}
+			absent = append(absent, item)
+		}
+		filtered.Absent = absent
+	}
+
+	return filtered, matched, nil
 }
 
 func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
@@ -1610,7 +2019,16 @@ func (p configStateProvider) DiffWithScan(_ context.Context, d profile.Data) ([]
 	return changes, current, err
 }
 
-func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
+// Plan excludes every Restore-Skip ".config/..." path from the desired
+// Files/Deletes fed to PlanOverlay, since every operation/skip PlanOverlay
+// itself produces is already one-per-path (never batched); recordRestoreSkips
+// then guarantees visibility for a path PlanOverlay's own logic would
+// otherwise never mention (e.g. a desired-but-not-yet-written file). Its
+// own Resource tags are "config:" + path, not the bare path InspectTargets
+// uses as the target Key, so skips are re-prefixed before recording.
+// filterConfigForRestoreSkip fails closed (returns an error) if any
+// desired target's Restore decision is missing or unresolved.
+func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider(d)
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -1619,14 +2037,19 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.PlanOverlay(d.Config, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, configprovider.PlanOptions{Force: options.Force})
+	saved, matched, err := filterConfigForRestoreSkip(d.Config, restoreCtx)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return plan, nil
+	force := restoreCtx.Options.Conflicts == policy.ConflictForce
+	plan, err := provider.PlanOverlay(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, configprovider.PlanOptions{Force: force})
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return recordRestoreSkips(plan, "config", prefixConfigSkips(matched)), nil
 }
 
-func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p configStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider(d)
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -1635,7 +2058,63 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data) (model.Ve
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return provider.Verify(d.Config, current)
+	saved, _, err := filterConfigForRestoreSkip(d.Config, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return provider.Verify(saved, current)
+}
+
+// filterConfigForRestoreSkip returns a copy of saved with every
+// Files/Deletes entry whose path resolved to Restore Skip removed, and the
+// subset of skip that actually matched a Files/Deletes entry -- only that
+// subset should be recorded as a visible Plan skip; a key with no matching
+// desired state was never going to produce anything regardless of policy.
+// Every entry's target key is resolved via resolveRestoreSkip
+// (RestoreContext.Require), so a missing or unresolved decision fails the
+// whole call closed rather than silently letting that path's desired state
+// through as an implicit Apply.
+func filterConfigForRestoreSkip(saved profile.Configs, restoreCtx workflow.RestoreContext) (profile.Configs, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+	files := make([]profile.ConfigFile, 0, len(saved.Files))
+	for _, file := range saved.Files {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "config", file.Path)
+		if err != nil {
+			return profile.Configs{}, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			continue
+		}
+		files = append(files, file)
+	}
+	filtered.Files = files
+	deletes := make([]profile.ConfigDelete, 0, len(saved.Deletes))
+	for _, del := range saved.Deletes {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "config", del.Path)
+		if err != nil {
+			return profile.Configs{}, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			continue
+		}
+		deletes = append(deletes, del)
+	}
+	filtered.Deletes = deletes
+	return filtered, matched, nil
+}
+
+// prefixConfigSkips re-keys skips with Config's own "config:" Resource
+// prefix, so recordRestoreSkips's Resource matching lines up with what
+// PlanOverlay actually tags its Operations/Skipped entries with.
+func prefixConfigSkips(skips []restoreSkip) []restoreSkip {
+	prefixed := make([]restoreSkip, len(skips))
+	for i, skip := range skips {
+		prefixed[i] = restoreSkip{Key: "config:" + skip.Key, Reason: skip.Reason}
+	}
+	return prefixed
 }
 
 func (p configStateProvider) Check(_ context.Context, d profile.Data) error {
@@ -1748,25 +2227,90 @@ func (p defaultsStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 	return defaultsprovider.Diff(d.Defaults, current), nil
 }
 
-func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+// Plan clears the desired value of every Restore-Skip slot before handing
+// it to the low-level planner, which already treats an empty desired value
+// as "no desired state, no operation" -- exactly Restore Skip's meaning.
+// recordRestoreSkips then guarantees visibility for a skip the low-level
+// planner's own logic would not otherwise mention (its Resource tags are
+// "default:" + kind, not the bare kind InspectTargets uses as the Key).
+// filterDefaultsForRestoreSkip fails closed (returns an error) if any
+// slot with an actual desired value has a missing or unresolved Restore
+// decision.
+func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	current, err := p.provider().Detect(ctx)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return p.provider().Plan(d.Defaults, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version), nil
+	saved, matched, err := filterDefaultsForRestoreSkip(d.Defaults, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	plan := p.provider().Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	return recordRestoreSkips(plan, "defaults", prefixDefaultsSkips(matched)), nil
 }
 
-func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	current, err := p.provider().Detect(ctx)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return defaultsprovider.Verify(d.Defaults, current), nil
+	saved, _, err := filterDefaultsForRestoreSkip(d.Defaults, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return defaultsprovider.Verify(saved, current), nil
 }
 
 func (p defaultsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 	_, err := p.provider().Detect(ctx)
 	return err
+}
+
+// filterDefaultsForRestoreSkip returns a copy of saved with the value of
+// every Restore-Skip named slot that actually has a desired value cleared
+// to "" -- the low-level planner already treats an empty desired value as
+// "no desired state," so this alone prevents a slot's operation from being
+// generated. The second return is the subset that actually matched a
+// desired value -- only that subset should be recorded as a visible Plan
+// skip; an empty slot has no desired state at all, so its Restore decision
+// is never even resolved (there is nothing for it to own or protect).
+func filterDefaultsForRestoreSkip(saved profile.Defaults, restoreCtx workflow.RestoreContext) (profile.Defaults, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+	slots := []struct {
+		key   string
+		value *string
+	}{
+		{"terminal", &filtered.Terminal},
+		{"browser", &filtered.Browser},
+		{"editor", &filtered.Editor},
+		{"agent", &filtered.Agent},
+	}
+	for _, slot := range slots {
+		if *slot.value == "" {
+			continue
+		}
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "defaults", slot.key)
+		if err != nil {
+			return profile.Defaults{}, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			*slot.value = ""
+		}
+	}
+	return filtered, matched, nil
+}
+
+// prefixDefaultsSkips re-keys skips with Defaults' own "default:" Resource
+// prefix, so recordRestoreSkips's Resource matching lines up with what the
+// low-level planner tags its Operations/Skipped entries with.
+func prefixDefaultsSkips(skips []restoreSkip) []restoreSkip {
+	prefixed := make([]restoreSkip, len(skips))
+	for i, skip := range skips {
+		prefixed[i] = restoreSkip{Key: "default:" + skip.Key, Reason: skip.Reason}
+	}
+	return prefixed
 }
 
 // ValidateTarget accepts only one of the four fixed slot names.
@@ -1902,7 +2446,14 @@ func (p shellStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 	return provider.Diff(d.Shell, current)
 }
 
-func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, options restorePlanOptions) (model.RestorePlan, error) {
+// Plan clears the desired Hash when Shell's single "state" target is
+// Restore Skip, before handing it to the low-level planner, which already
+// treats an empty Hash as "no desired state" and returns immediately with
+// an empty plan (see plan.go); recordRestoreSkips then adds the one visible
+// "state" skip entry to that otherwise-empty plan. filterShellForRestoreSkip
+// fails closed (returns an error) if Shell has a desired Hash but its
+// Restore decision is missing or unresolved.
+func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -1911,10 +2462,19 @@ func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Shell, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, shellprovider.MergeOptions{Force: options.Force})
+	saved, matched, err := filterShellForRestoreSkip(d.Shell, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	force := restoreCtx.Options.Conflicts == policy.ConflictForce
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, shellprovider.MergeOptions{Force: force})
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return recordRestoreSkips(plan, "shell", matched), nil
 }
 
-func (p shellStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p shellStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider()
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -1923,7 +2483,32 @@ func (p shellStateProvider) Verify(_ context.Context, d profile.Data) (model.Ver
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return provider.Verify(d.Shell, current)
+	saved, _, err := filterShellForRestoreSkip(d.Shell, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return provider.Verify(saved, current)
+}
+
+// filterShellForRestoreSkip returns a copy of saved with Hash cleared when
+// Shell's single "state" target resolved to Restore Skip -- the low-level
+// planner/verifier already treats an empty Hash as "no desired state." The
+// second return carries the skip forward only when there actually was a
+// desired Hash to clear; a saved Hash of "" has no desired state at all, so
+// its Restore decision is never even resolved.
+func filterShellForRestoreSkip(saved profile.Shell, restoreCtx workflow.RestoreContext) (profile.Shell, []restoreSkip, error) {
+	if saved.Hash == "" {
+		return saved, nil, nil
+	}
+	skip, entry, err := resolveRestoreSkip(restoreCtx, "shell", "state")
+	if err != nil {
+		return profile.Shell{}, nil, err
+	}
+	if !skip {
+		return saved, nil, nil
+	}
+	saved.Hash = ""
+	return saved, []restoreSkip{entry}, nil
 }
 
 func (p shellStateProvider) Check(_ context.Context, d profile.Data) error {
@@ -2088,7 +2673,16 @@ func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 	return hooksprovider.Diff(d.Hooks, current), nil
 }
 
-func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, _ restorePlanOptions) (model.RestorePlan, error) {
+// Plan excludes every Restore-Skip hook path's Item from the desired state
+// fed to the low-level planner, since every operation/skip it produces is
+// already one-per-path (never batched); recordRestoreSkips then guarantees
+// visibility for a path the low-level planner's own logic would not
+// otherwise mention (e.g. a desired-but-not-yet-written hook). Its own
+// Resource tags are "hook:" + path, not the bare path InspectTargets uses
+// as the target Key, so skips are re-prefixed before recording.
+// filterHooksForRestoreSkip fails closed (returns an error) if any desired
+// target's Restore decision is missing or unresolved.
+func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
 	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -2097,10 +2691,18 @@ func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	return provider.Plan(d.Hooks, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	saved, matched, err := filterHooksForRestoreSkip(d.Hooks, restoreCtx)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	if err != nil {
+		return model.RestorePlan{}, err
+	}
+	return recordRestoreSkips(plan, "hooks", prefixHooksSkips(matched)), nil
 }
 
-func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.VerificationResult, error) {
+func (p hooksStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider(d.Resources)
 	if err != nil {
 		return model.VerificationResult{}, err
@@ -2109,7 +2711,69 @@ func (p hooksStateProvider) Verify(_ context.Context, d profile.Data) (model.Ver
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return hooksprovider.Verify(d.Hooks, current), nil
+	saved, _, err := filterHooksForRestoreSkip(d.Hooks, restoreCtx)
+	if err != nil {
+		return model.VerificationResult{}, err
+	}
+	return hooksprovider.Verify(saved, current), nil
+}
+
+// filterHooksForRestoreSkip returns a copy of saved with every
+// Item/Absent entry whose path resolved to Restore Skip removed (present
+// desired state and desired-absent tombstones alike -- see the design's
+// Restore Skip invariant, which does not distinguish the two), and the
+// subset that actually matched an Item/Absent entry -- only that subset
+// should be recorded as a visible Plan skip; a path with no matching
+// desired state was never going to produce anything regardless of policy.
+// Every entry's target key is resolved via resolveRestoreSkip
+// (RestoreContext.Require), so a missing or unresolved decision fails the
+// whole call closed.
+func filterHooksForRestoreSkip(saved profile.Hooks, restoreCtx workflow.RestoreContext) (profile.Hooks, []restoreSkip, error) {
+	var matched []restoreSkip
+	filtered := saved
+
+	items := make([]profile.Hook, 0, len(saved.Items))
+	for _, item := range saved.Items {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "hooks", item.Path)
+		if err != nil {
+			return profile.Hooks{}, nil, err
+		}
+		if skip {
+			matched = append(matched, entry)
+			continue
+		}
+		items = append(items, item)
+	}
+	filtered.Items = items
+
+	if len(saved.Absent) > 0 {
+		absent := make([]profile.Hook, 0, len(saved.Absent))
+		for _, item := range saved.Absent {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "hooks", item.Path)
+			if err != nil {
+				return profile.Hooks{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				continue
+			}
+			absent = append(absent, item)
+		}
+		filtered.Absent = absent
+	}
+
+	return filtered, matched, nil
+}
+
+// prefixHooksSkips re-keys skips with Hooks' own "hook:" Resource prefix,
+// so recordRestoreSkips's Resource matching lines up with what the
+// low-level planner tags its Operations/Skipped entries with.
+func prefixHooksSkips(skips []restoreSkip) []restoreSkip {
+	prefixed := make([]restoreSkip, len(skips))
+	for i, skip := range skips {
+		prefixed[i] = restoreSkip{Key: "hook:" + skip.Key, Reason: skip.Reason}
+	}
+	return prefixed
 }
 
 func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {

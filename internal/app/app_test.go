@@ -17,6 +17,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
@@ -2095,6 +2096,105 @@ func TestConfigForceDryRunReplacesUnknownTarget(t *testing.T) {
 	}
 }
 
+// TestParseRestoreOverrideFlags is Task 27 Step 1's parsing regression: the
+// restore command's --force/--exact shorthand and --conflicts/--convergence
+// explicit flags parse independently per axis, contradictory
+// shorthand/explicit pairs for the SAME axis are rejected, an invalid
+// explicit value is rejected, and unrelated axes (Force + Exact together)
+// are accepted since they are independent.
+func TestParseRestoreOverrideFlags(t *testing.T) {
+	conflictSafe, conflictForce := policy.ConflictSafe, policy.ConflictForce
+	convergenceAdditive, convergenceExact := policy.ConvergenceAdditive, policy.ConvergenceExact
+	tests := []struct {
+		name                           string
+		force, exact                   bool
+		conflictsFlag, convergenceFlag string
+		want                           restoreOverride
+		wantErr                        bool
+	}{
+		{name: "no flags", want: restoreOverride{}},
+		{name: "force shorthand", force: true, want: restoreOverride{Conflicts: &conflictForce}},
+		{name: "exact shorthand", exact: true, want: restoreOverride{Convergence: &convergenceExact}},
+		{name: "explicit conflicts safe", conflictsFlag: "safe", want: restoreOverride{Conflicts: &conflictSafe}},
+		{name: "explicit conflicts force", conflictsFlag: "force", want: restoreOverride{Conflicts: &conflictForce}},
+		{name: "explicit convergence additive", convergenceFlag: "additive", want: restoreOverride{Convergence: &convergenceAdditive}},
+		{name: "explicit convergence exact", convergenceFlag: "exact", want: restoreOverride{Convergence: &convergenceExact}},
+		{name: "force and exact together (independent axes)", force: true, exact: true, want: restoreOverride{Conflicts: &conflictForce, Convergence: &convergenceExact}},
+		{name: "force and conflicts contradict", force: true, conflictsFlag: "safe", wantErr: true},
+		{name: "exact and convergence contradict", exact: true, convergenceFlag: "additive", wantErr: true},
+		{name: "invalid conflicts value", conflictsFlag: "sometimes", wantErr: true},
+		{name: "invalid convergence value", convergenceFlag: "sometimes", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseRestoreOverride(test.force, test.exact, test.conflictsFlag, test.convergenceFlag)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("invalid/contradictory flags accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got.Conflicts == nil) != (test.want.Conflicts == nil) || (got.Conflicts != nil && *got.Conflicts != *test.want.Conflicts) {
+				t.Fatalf("Conflicts = %v, want %v", got.Conflicts, test.want.Conflicts)
+			}
+			if (got.Convergence == nil) != (test.want.Convergence == nil) || (got.Convergence != nil && *got.Convergence != *test.want.Convergence) {
+				t.Fatalf("Convergence = %v, want %v", got.Convergence, test.want.Convergence)
+			}
+		})
+	}
+}
+
+// TestRestoreOverrideResolve is Task 27's merge regression: an override
+// with neither axis set resolves to nil (no override at all, so
+// PlanRestoreWithContext resolves its own machine-default base); an
+// override with only one axis set replaces only that axis on top of base,
+// leaving the other axis exactly as base already had it -- "the Restore
+// workflow may temporarily override either [axis] for one run," not both
+// unconditionally.
+func TestRestoreOverrideResolve(t *testing.T) {
+	base := policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact}
+
+	if got := (restoreOverride{}).resolve(base); got != nil {
+		t.Fatalf("resolve() = %+v, want nil for an override with nothing set", got)
+	}
+
+	safe := policy.ConflictSafe
+	got := restoreOverride{Conflicts: &safe}.resolve(base)
+	if got == nil || got.Conflicts != policy.ConflictSafe || got.Convergence != policy.ConvergenceExact {
+		t.Fatalf("resolve() = %+v, want Conflicts overridden to safe with Convergence left as base's exact", got)
+	}
+
+	additive := policy.ConvergenceAdditive
+	got = restoreOverride{Convergence: &additive}.resolve(base)
+	if got == nil || got.Conflicts != policy.ConflictForce || got.Convergence != policy.ConvergenceAdditive {
+		t.Fatalf("resolve() = %+v, want Convergence overridden to additive with Conflicts left as base's force", got)
+	}
+
+	got = restoreOverride{Conflicts: &safe, Convergence: &additive}.resolve(base)
+	if got == nil || got.Conflicts != policy.ConflictSafe || got.Convergence != policy.ConvergenceAdditive {
+		t.Fatalf("resolve() = %+v, want both axes overridden", got)
+	}
+}
+
+// TestRestoreCommandRejectsContradictoryOverrideFlags is a CLI-wiring
+// regression confirming parseRestoreOverride's validation actually reaches
+// the restore command (not just the parsing function in isolation).
+func TestRestoreCommandRejectsContradictoryOverrideFlags(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	if code, out := configRun(t, deps, profileDir, "restore", "--force", "--conflicts", "safe", "--dry-run"); code == 0 || !strings.Contains(out, "contradictory") {
+		t.Fatalf("--force --conflicts safe: code=%d out=%q, want a contradictory-flags error", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "--exact", "--convergence", "additive", "--dry-run"); code == 0 || !strings.Contains(out, "contradictory") {
+		t.Fatalf("--exact --convergence additive: code=%d out=%q, want a contradictory-flags error", code, out)
+	}
+	if code, _ := configRun(t, deps, profileDir, "restore", "--force", "--exact", "--dry-run"); code != 0 {
+		t.Fatalf("--force --exact (independent axes) rejected")
+	}
+}
+
 func TestConfigIncludedInAggregateRestore(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	_, userRoot, _ := deps.ConfigDirs()
@@ -2997,6 +3097,137 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	}
 }
 
+// TestPackagesPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for packages: a Restore-Skip target must produce no operation
+// (not even batched together with an Apply target in the same bulk
+// official/AUR install -- packages' low-level Plan can batch several names
+// into one Operation, so pre-filtering the desired state fed to it is the
+// only reliable way to exclude one), must appear visibly in Skipped with
+// its resolved policy reason, and must not fail Verify.
+func TestPackagesPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{Official: []string{"htop", "vim"}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"official:htop": {Restore: true, Resolved: true},
+		"official:vim":  {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if strings.Contains(op.Resource, "vim") {
+			t.Fatalf("Operations = %#v, want no operation touching the Restore-Skip target", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "official:vim" {
+			found = true
+			if want := `restore disabled for machine "desktop"`; skipped.Reason != want {
+				t.Fatalf("skip reason = %q, want %q", skipped.Reason, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible entry for official:vim", plan.Skipped)
+	}
+	hasHtop := false
+	for _, op := range plan.Operations {
+		if strings.Contains(op.Resource, "htop") {
+			hasHtop = true
+		}
+	}
+	if !hasHtop {
+		t.Fatalf("Operations = %#v, want htop still planned for install", plan.Operations)
+	}
+
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "official:vim" {
+			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+		}
+	}
+}
+
+// TestPackagesPlanAndVerifyFailClosedOnMissingOrUnresolvedDecision is a
+// review regression: RestoreContext.Require's contract is that PR 4+ must
+// reject a missing or unresolved decision before Restore planning uses it,
+// rather than treating an inventory/orchestration omission as an implicit
+// Apply that silently broadens Restore's authority. A desired package
+// whose decision is entirely absent from the context, or present but never
+// marked Resolved, must make Plan/Verify fail outright -- and, critically,
+// must never let that package survive filtering and reach the low-level
+// planner as something to install.
+func TestPackagesPlanAndVerifyFailClosedOnMissingOrUnresolvedDecision(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	d := profile.Data{Packages: profile.Packages{Official: []string{"htop"}}}
+
+	t.Run("missing decision", func(t *testing.T) {
+		restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{}}
+		if _, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx); err == nil {
+			t.Fatal("Plan succeeded with no recorded decision for official:htop; want a fail-closed error")
+		}
+		if _, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx); err == nil {
+			t.Fatal("Verify succeeded with no recorded decision for official:htop; want a fail-closed error")
+		}
+	})
+
+	t.Run("unresolved decision", func(t *testing.T) {
+		restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+			"official:htop": {Restore: true, Resolved: false},
+		}}
+		if _, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx); err == nil {
+			t.Fatal("Plan succeeded with an unresolved decision for official:htop; want a fail-closed error")
+		}
+	})
+}
+
+// TestPackagesPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression: Packages.Absent tombstones are legitimate
+// desired state (the design says Restore policy decides whether saved
+// desired state applies, without distinguishing present from
+// desired-absent), and InspectTargets already surfaces them as their own
+// "official:<name>" targets with Desired=Absent -- but the filter only
+// covered Official/AUR/Mise before this fix, so a tombstoned target
+// resolving Restore Skip silently disappeared from the filtered state
+// instead of becoming a visible policy skip.
+func TestPackagesPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{
+		Absent: []profile.PackageAbsence{{Ref: "official:discord"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"official:discord": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "official:discord" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
 func TestConfigInspectTargetsReportsTrackedPathWithFullAncestorChain(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	_, userRoot, err := deps.ConfigDirs()
@@ -3223,6 +3454,92 @@ func TestConfigInspectTargetsMarksReappearedDeletionTombstoneNoActionableUpdate(
 	}
 }
 
+// TestConfigPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for config: a Restore-Skip path must produce no write
+// operation and remain visible in Skipped with its resolved policy reason
+// -- PlanOverlay's own Resource tags are "config:" + path, not the bare
+// path InspectTargets uses as the target Key, so this also locks down the
+// re-prefixing -- while a separately Apply-decided path still gets
+// recreated, and Verify excludes both.
+func TestConfigPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	_, userRoot, err := deps.ConfigDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated HomeDir (not userRoot's parent) keeps Config out of
+	// home-namespace mode, so target keys stay the bare relative paths this
+	// test asserts against, matching configSandbox's other non-home-namespace
+	// restore tests; deps.HomeDir must still be non-nil or provider() panics.
+	deps.HomeDir = func() (string, error) { return t.TempDir(), nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	if err := os.WriteFile(filepath.Join(userRoot, "keep.conf"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, "skip.conf"), []byte("skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "config"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(userRoot, "keep.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(userRoot, "skip.conf")); err != nil {
+		t.Fatal(err)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"keep.conf": {Restore: true, Resolved: true},
+		"skip.conf": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	opt := &options{profileDir: profileDir}
+	plan, err := (configStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "config:skip.conf" {
+			t.Fatalf("Operations = %#v, want no operation for the Restore-Skip path", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "config:skip.conf" {
+			found = true
+			if want := `restore disabled for machine "desktop"`; skipped.Reason != want {
+				t.Fatalf("skip reason = %q, want %q", skipped.Reason, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible entry for config:skip.conf", plan.Skipped)
+	}
+	hasKeep := false
+	for _, op := range plan.Operations {
+		if op.Resource == "config:keep.conf" {
+			hasKeep = true
+		}
+	}
+	if !hasKeep {
+		t.Fatalf("Operations = %#v, want keep.conf still planned for write", plan.Operations)
+	}
+
+	verification, err := (configStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "config:skip.conf" {
+			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+		}
+	}
+}
+
 func TestConfigEligibilityBlocksSafetyClassifications(t *testing.T) {
 	blocked := []configprovider.Classification{
 		configprovider.ConfigExcluded, configprovider.ConfigDelegated, configprovider.ConfigVolatile, configprovider.ConfigSensitive,
@@ -3361,6 +3678,65 @@ func TestDefaultsInspectTargetsMarksNonPortableDesiredValueRestoreIneligible(t *
 	}
 }
 
+// TestDefaultsPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for defaults: a Restore-Skip named slot must produce no set
+// operation and remain visible in Skipped with its resolved policy reason
+// -- the low-level planner's own Resource tags are "default:" + kind, not
+// the bare kind InspectTargets uses as the target Key, so this also locks
+// down the re-prefixing -- while a separately Apply-decided slot still gets
+// set, and Verify excludes both.
+func TestDefaultsPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	runner := &machineRunner{official: map[string]bool{}, aur: map[string]bool{}, defaults: map[string]string{}}
+	deps := Dependencies{Runner: runner}
+	d := profile.Data{Defaults: profile.Defaults{Terminal: "foot", Browser: "chromium"}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"terminal": {Restore: true, Resolved: true},
+		"browser":  {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	opt := &options{}
+	plan, err := (defaultsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "default:browser" {
+			t.Fatalf("Operations = %#v, want no operation for the Restore-Skip slot", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "default:browser" {
+			found = true
+			if want := `restore disabled for machine "desktop"`; skipped.Reason != want {
+				t.Fatalf("skip reason = %q, want %q", skipped.Reason, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible entry for default:browser", plan.Skipped)
+	}
+	hasTerminal := false
+	for _, op := range plan.Operations {
+		if op.Resource == "default:terminal" {
+			hasTerminal = true
+		}
+	}
+	if !hasTerminal {
+		t.Fatalf("Operations = %#v, want terminal still planned for set", plan.Operations)
+	}
+
+	verification, err := (defaultsStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "default:browser" {
+			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+		}
+	}
+}
+
 func TestThemesInspectTargetsReportsActiveAndNonBuiltinThemes(t *testing.T) {
 	_, deps := configSandbox(t)
 	_, user, err := deps.ThemeDirs()
@@ -3388,6 +3764,239 @@ func TestThemesInspectTargetsReportsActiveAndNonBuiltinThemes(t *testing.T) {
 	}
 	if got, ok := byKey["theme:dracula"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
 		t.Fatalf("theme:dracula (add) = %#v, ok=%v", got, ok)
+	}
+}
+
+// TestThemesPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for themes: a Restore-Skip "active" target must not trigger
+// activation (even though the low-level planner's own activation Operation
+// is tagged Resource="theme:<id>", not "active" -- clearing the desired
+// active theme before Plan is the only way this stays correct regardless of
+// that tag mismatch) while a separately Apply-decided "theme:<id>" target
+// still gets its own install/copy operation; both remain visible with
+// correct reasons, and Verify excludes both.
+func TestThemesPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	_, deps := configSandbox(t)
+	d := profile.Data{Themes: profile.Themes{
+		Current: "nord",
+		Items: []profile.Theme{
+			{ID: "nord", Type: "unknown", Enabled: true},
+			{ID: "dracula", Type: "unknown", Enabled: true},
+		},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"active":        {Restore: false, Resolved: true, Reason: "restore disabled"},
+		"theme:nord":    {Restore: true, Resolved: true},
+		"theme:dracula": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (themesStateProvider{deps: deps, opt: &options{}}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "activate" {
+			t.Fatalf("Operations = %#v, want no activation for a Restore-Skip active target", plan.Operations)
+		}
+		if op.Resource == "theme:dracula" {
+			t.Fatalf("Operations = %#v, want no operation for the Restore-Skip theme", plan.Operations)
+		}
+	}
+	reasons := map[string]string{}
+	for _, skipped := range plan.Skipped {
+		reasons[skipped.Resource] = skipped.Reason
+	}
+	if got, want := reasons["active"], "restore disabled"; got != want {
+		t.Fatalf("active skip reason = %q, want %q (Skipped=%#v)", got, want, plan.Skipped)
+	}
+	if got, want := reasons["theme:dracula"], `restore disabled for machine "desktop"`; got != want {
+		t.Fatalf("theme:dracula skip reason = %q, want %q (Skipped=%#v)", got, want, plan.Skipped)
+	}
+
+	verification, err := (themesStateProvider{deps: deps, opt: &options{}}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "active-theme:nord" || missing == "theme:dracula" {
+			t.Fatalf("Missing = %#v, want both Restore-Skip targets excluded from verification", verification.Missing)
+		}
+	}
+}
+
+// TestThemesActivationSurvivesAvailabilitySkipWhenAlreadyInstalled is the
+// blocker-3 review regression: "active" and "theme:<id>" are independent
+// policy targets (selected active theme versus installed-theme
+// availability), even though the low-level planner tags its activation
+// Operation with the theme's own "theme:<id>" Resource. When active=Apply
+// wants to activate a theme whose OWN availability target is Skip, but the
+// theme is already safely available locally (nothing left to install for
+// it), activation must still proceed -- the availability Skip must not be
+// misattributed to the activation operation and silently removed.
+func TestThemesActivationSurvivesAvailabilitySkipWhenAlreadyInstalled(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "other" // currently active theme differs from desired, so activating "nord" is needed
+	_, user, err := deps.ThemeDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(user, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "nord", "theme.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Themes: profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "unknown", Enabled: true}}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"active":     {Restore: true, Resolved: true},
+		"theme:nord": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (themesStateProvider{deps: deps, opt: &options{}}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activated bool
+	for _, op := range plan.Operations {
+		if op.Action == "activate" {
+			activated = true
+		}
+	}
+	if !activated {
+		t.Fatalf("Operations = %#v, want the activation to proceed since nord is already installed locally", plan.Operations)
+	}
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "active" {
+			t.Fatalf("Skipped = %#v, want no \"active\" skip: activation is safe and should not be blocked", plan.Skipped)
+		}
+	}
+}
+
+// TestThemesActivationBlockedWhenAvailabilitySkippedThemeIsMissing is the
+// converse blocker-3 scenario: when the theme active=Apply wants to
+// activate has its OWN availability Skip AND it is not currently
+// installed, activation cannot actually be honored either way. It must
+// become its own visible "active" skip (not the availability skip's
+// reason, and not a silent no-op) rather than proceeding as if nothing
+// were wrong.
+func TestThemesActivationBlockedWhenAvailabilitySkippedThemeIsMissing(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "other" // currently active theme differs from desired, and nord is not installed at all
+
+	d := profile.Data{Themes: profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "unknown", Enabled: true}}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"active":     {Restore: true, Resolved: true},
+		"theme:nord": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (themesStateProvider{deps: deps, opt: &options{}}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "activate" {
+			t.Fatalf("Operations = %#v, want no activation: nord's own availability is Skip and it is not installed", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "active" {
+			found = true
+			if !strings.Contains(skipped.Reason, "nord") || !strings.Contains(skipped.Reason, "not currently installed") {
+				t.Fatalf("active skip reason = %q, want it to explain nord is unavailable", skipped.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible \"active\" skip explaining activation is blocked", plan.Skipped)
+	}
+
+	verification, err := (themesStateProvider{deps: deps, opt: &options{}}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "active-theme:nord" {
+			t.Fatalf("Missing = %#v, want verification to not expect an activation Plan itself refused to attempt", verification.Missing)
+		}
+	}
+}
+
+// TestResolveRestoreSkip is a direct unit regression for the shared
+// primitive every provider filter function now uses to resolve a desired
+// target key's Restore decision: a missing key, and a present-but-never-
+// Resolved decision, both fail closed (an error), matching
+// RestoreContext.Require's own contract, rather than falling through as an
+// implicit Apply.
+func TestResolveRestoreSkip(t *testing.T) {
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"official:apply":      {Restore: true, Resolved: true},
+		"official:skip":       {Restore: false, Resolved: true, Reason: "restore disabled"},
+		"official:unresolved": {Restore: true, Resolved: false},
+	}}
+
+	if _, _, err := resolveRestoreSkip(restoreCtx, "packages", "official:missing"); err == nil {
+		t.Fatal("resolveRestoreSkip succeeded for a key with no recorded decision; want a fail-closed error")
+	}
+	if _, _, err := resolveRestoreSkip(restoreCtx, "packages", "official:unresolved"); err == nil {
+		t.Fatal("resolveRestoreSkip succeeded for an unresolved decision; want a fail-closed error")
+	}
+	skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "official:apply")
+	if err != nil || skip || entry != (restoreSkip{}) {
+		t.Fatalf("official:apply: skip=%v entry=%+v err=%v, want skip=false entry=zero err=nil", skip, entry, err)
+	}
+	skip, entry, err = resolveRestoreSkip(restoreCtx, "packages", "official:skip")
+	if err != nil || !skip || entry.Key != "official:skip" || entry.Reason != "restore disabled" {
+		t.Fatalf("official:skip: skip=%v entry=%+v err=%v, want skip=true entry={official:skip restore disabled} err=nil", skip, entry, err)
+	}
+}
+
+// TestThemesPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression for Themes: Absent tombstones are legitimate
+// desired state, and InspectTargets already surfaces them as their own
+// "theme:<id>" targets with Desired=Absent, but the filter only covered
+// Items before this fix.
+func TestThemesPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	d := profile.Data{Themes: profile.Themes{
+		Absent: []profile.Theme{{ID: "gruvbox", Type: "git"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"theme:gruvbox": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterThemesForRestoreSkip(d.Themes, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "theme:gruvbox" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
+// TestThemesFilterSkipsRequireForBuiltinItems confirms a builtin Item never
+// needs a Restore decision at all -- InspectTargets never creates a
+// "theme:<id>" target for one ("Built-in themes ... carry nothing for
+// Blueprint to track a source for"), so requiring one here would
+// incorrectly fail closed on a target that was never actually in scope.
+func TestThemesFilterSkipsRequireForBuiltinItems(t *testing.T) {
+	d := profile.Data{Themes: profile.Themes{
+		Items: []profile.Theme{{ID: "matte-black", Type: "builtin", Enabled: true}},
+	}}
+	saved, matched, err := filterThemesForRestoreSkip(d.Themes, workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{}})
+	if err != nil {
+		t.Fatalf("builtin item required a Restore decision that was never recorded: %v", err)
+	}
+	if len(saved.Items) != 1 || saved.Items[0].ID != "matte-black" {
+		t.Fatalf("filtered Items = %#v, want the builtin item left untouched", saved.Items)
+	}
+	if len(matched) != 0 {
+		t.Fatalf("matched = %#v, want none: a builtin item is never restore-actionable desired state", matched)
 	}
 }
 
@@ -3427,6 +4036,103 @@ func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
 	}
 }
 
+// TestPluginsPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for plugins: a Restore-Skip "plugin:<id>" target is excluded
+// before Plan ever runs, so it needs no local source file to exist at all
+// (proving it was never considered, not merely rejected as unsafe), while a
+// separately Apply-decided plugin with a real local source still gets its
+// own copy operation.
+func TestPluginsPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	pluginDir := t.TempDir()
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.pluginDir = pluginDir
+	source := filepath.Join(profileDir, "plugins", "local", "keep-me")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "plugin.lua"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Plugins: profile.Plugins{Items: []profile.Plugin{
+		{ID: "keep-me", Source: "local"},
+		{ID: "skip-me", Source: "local"},
+	}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"plugin:keep-me": {Restore: true, Resolved: true},
+		"plugin:skip-me": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	opt := &options{profileDir: profileDir}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "plugin:skip-me" {
+			t.Fatalf("Operations = %#v, want no operation for the Restore-Skip plugin", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:skip-me" {
+			found = true
+			if want := `restore disabled for machine "desktop"`; skipped.Reason != want {
+				t.Fatalf("skip reason = %q, want %q", skipped.Reason, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible entry for plugin:skip-me", plan.Skipped)
+	}
+	hasKeepMe := false
+	for _, op := range plan.Operations {
+		if op.Resource == "plugin:keep-me" {
+			hasKeepMe = true
+		}
+	}
+	if !hasKeepMe {
+		t.Fatalf("Operations = %#v, want keep-me still planned for copy", plan.Operations)
+	}
+
+	verification, err := (pluginsStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "plugin:skip-me" {
+			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+		}
+	}
+}
+
+// TestPluginsPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression for Plugins: Absent tombstones are
+// legitimate desired state, and InspectTargets already surfaces them as
+// their own "plugin:<id>" targets with Desired=Absent, but the filter only
+// covered Items before this fix.
+func TestPluginsPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	d := profile.Data{Plugins: profile.Plugins{
+		Absent: []profile.Plugin{{ID: "acme.weather", Source: "local"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"plugin:acme.weather": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterPluginsForRestoreSkip(d.Plugins, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "plugin:acme.weather" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
 func TestHooksInspectTargetsReportsManagedPathsAndUnmanagedSymlinks(t *testing.T) {
 	_, deps := configSandbox(t)
 	hooksDir, err := deps.HooksDir()
@@ -3462,6 +4168,104 @@ func TestHooksInspectTargetsReportsManagedPathsAndUnmanagedSymlinks(t *testing.T
 	}
 }
 
+// TestHooksPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for hooks: a Restore-Skip hook path must produce no write
+// operation and remain visible in Skipped with its resolved policy reason
+// -- the low-level planner's own Resource tags are "hook:" + path, not the
+// bare path InspectTargets uses as the target Key, so this also locks down
+// the re-prefixing -- while a separately Apply-decided path still gets
+// written, and Verify excludes both.
+func TestHooksPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	deps.HomeDir = func() (string, error) { return t.TempDir(), nil }
+	filesDir := filepath.Join(profileDir, "hooks", "files")
+	if err := os.MkdirAll(filesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "keep.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "skip.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Hooks: profile.Hooks{Items: []profile.Hook{
+		{Path: "keep.sh", Hash: appHash(t, "#!/bin/sh\n"), Mode: "0755"},
+		{Path: "skip.sh", Hash: appHash(t, "#!/bin/sh\n"), Mode: "0755"},
+	}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"keep.sh": {Restore: true, Resolved: true},
+		"skip.sh": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	opt := &options{profileDir: profileDir}
+	plan, err := (hooksStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "hook:skip.sh" {
+			t.Fatalf("Operations = %#v, want no operation for the Restore-Skip hook", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "hook:skip.sh" {
+			found = true
+			if want := `restore disabled for machine "desktop"`; skipped.Reason != want {
+				t.Fatalf("skip reason = %q, want %q", skipped.Reason, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible entry for hook:skip.sh", plan.Skipped)
+	}
+	hasKeep := false
+	for _, op := range plan.Operations {
+		if op.Resource == "hook:keep.sh" {
+			hasKeep = true
+		}
+	}
+	if !hasKeep {
+		t.Fatalf("Operations = %#v, want keep.sh still planned for write", plan.Operations)
+	}
+
+	verification, err := (hooksStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "hook:skip.sh" {
+			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+		}
+	}
+}
+
+// TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression for Hooks: Absent tombstones are legitimate
+// desired state, and InspectTargets already surfaces them as their own
+// bare-path targets with Desired=Absent, but the filter only covered
+// Items before this fix.
+func TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	d := profile.Data{Hooks: profile.Hooks{
+		Absent: []profile.Hook{{Path: "removed.sh", Hash: appHash(t, "x"), Mode: "0755"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"removed.sh": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterHooksForRestoreSkip(d.Hooks, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "removed.sh" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
 func TestShellInspectTargetsReportsSingleStateTarget(t *testing.T) {
 	_, deps := configSandbox(t)
 	baseline, user := shellPathsFixture(t)
@@ -3480,6 +4284,197 @@ func TestShellInspectTargetsReportsSingleStateTarget(t *testing.T) {
 	got := targets[0]
 	if got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent || !got.CaptureEligible {
 		t.Fatalf("state (uncaptured, live customization present) = %#v", got)
+	}
+}
+
+// TestShellPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for shell: a Restore-Skip "state" target clears the desired
+// Hash before Plan runs, which the low-level planner already treats as "no
+// desired state" and returns an otherwise-empty plan for (see plan.go);
+// recordRestoreSkips then adds the one visible "state" skip entry. Applying
+// (not skipping) the same captured state must still produce the real
+// write+restart operations, confirming the filter does not interfere with
+// the normal path.
+func TestShellPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	deps, opt, data, _, _ := shellLinkFixture(t)
+	skipCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"state": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (shellStateProvider{deps: deps, opt: opt}).Plan(context.Background(), data, omarchy.Info{Version: "4.0.0"}, skipCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 {
+		t.Fatalf("Operations = %#v, want none for a Restore-Skip state target", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "state" {
+		t.Fatalf("Skipped = %#v, want exactly one visible entry for state", plan.Skipped)
+	}
+	if want := `restore disabled for machine "desktop"`; plan.Skipped[0].Reason != want {
+		t.Fatalf("skip reason = %q, want %q", plan.Skipped[0].Reason, want)
+	}
+
+	verification, err := (shellStateProvider{deps: deps, opt: opt}).Verify(context.Background(), data, skipCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verification.Missing) != 0 {
+		t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+	}
+
+	applyCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{"state": {Restore: true, Resolved: true}}}
+	applied, err := (shellStateProvider{deps: deps, opt: opt}).Plan(context.Background(), data, omarchy.Info{Version: "4.0.0"}, applyCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Operations) != 2 || applied.Operations[0].ID != "shell.write" || applied.Operations[1].ID != "shell.restart" {
+		t.Fatalf("Apply-decided plan = %#v, want write+restart unaffected by the filter", applied.Operations)
+	}
+}
+
+// TestShellPlanOnlyRespondsToConflictsAxisNotConvergence is a Task 28 PR 4
+// restore invariants gate scenario: Shell's low-level Plan never consults
+// Convergence at all (see restorePlanOptionsFromPolicy's doc comment --
+// "whether a required plugin is missing or provenance-mismatched is a
+// Safe/Force question, never an Additive/Exact one"). Additive and Exact
+// must produce byte-identical plans for the same Conflicts value.
+func TestShellPlanOnlyRespondsToConflictsAxisNotConvergence(t *testing.T) {
+	deps, opt, data, _, _ := shellLinkFixture(t)
+	additiveCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive},
+		Targets: map[string]workflow.RestoreDecision{"state": {Restore: true, Resolved: true}},
+	}
+	exactCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"state": {Restore: true, Resolved: true}},
+	}
+
+	additive, err := (shellStateProvider{deps: deps, opt: opt}).Plan(context.Background(), data, omarchy.Info{Version: "4.0.0"}, additiveCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, err := (shellStateProvider{deps: deps, opt: opt}).Plan(context.Background(), data, omarchy.Info{Version: "4.0.0"}, exactCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(additive, exact) {
+		t.Fatalf("plans differ by Convergence alone: additive=%#v exact=%#v, want identical plans", additive, exact)
+	}
+}
+
+// TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo strengthens PR
+// 3 Task 23's packages gate (still enforced at the low level by
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones) at the app/RestoreContext
+// layer added in PR 4: a generic desired-absent package tombstone still
+// produces no operation, no skip, and no verification failure even when
+// this run's Convergence is Exact, not just Additive -- Task 26 wired
+// RestoreContext through packagesStateProvider.Plan/Verify, but neither
+// ever reads Packages.Absent, so real Exact-only removal genuinely remains
+// PR 5's job, not something that silently started working already.
+func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	// discord is neither currently installed nor otherwise desired, so the
+	// only thing in play is the Absent tombstone -- isolating whether it
+	// alone can produce an operation, skip, or verification failure.
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{
+		Absent: []profile.PackageAbsence{{Ref: "official:discord"}},
+	}}
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"official:discord": {Restore: true, Resolved: true}},
+	}
+
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for a tombstoned ref even under Exact", plan)
+	}
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verification.OK || len(verification.Missing) != 0 {
+		t.Fatalf("verify = %#v, want OK with the tombstoned ref never reported missing, even under Exact", verification)
+	}
+}
+
+// TestRestoreCommandOneRunOverrideDoesNotPersistToMachineDefaults is a Task
+// 28 PR 4 restore invariants gate scenario, exercised through the real CLI
+// (Session-level coverage already exists in
+// TestRestorePlanExplicitOptionsOverrideMachineDefaultsWithoutPersisting):
+// `restore --force` must never rewrite the selected machine's persisted
+// RestoreConflicts/RestoreConvergence, even though it changes this run's
+// effective Conflicts.
+func TestRestoreCommandOneRunOverrideDoesNotPersistToMachineDefaults(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	if code, out := configRun(t, deps, profileDir, "machine", "add", "desktop"); code != 0 {
+		t.Fatalf("machine add code=%d out=%s", code, out)
+	}
+	before, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Machines.Items[0].RestoreConflicts != "" || before.Machines.Items[0].RestoreConvergence != "" {
+		t.Fatalf("machine defaults before = %+v, want empty (Safe+Additive)", before.Machines.Items[0])
+	}
+	if code, out := configRun(t, deps, profileDir, "--machine", "desktop", "restore", "--force", "--exact", "--dry-run"); code != 0 {
+		t.Fatalf("restore --force --exact --dry-run code=%d out=%s", code, out)
+	}
+	after, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Machines.Items[0].RestoreConflicts != "" || after.Machines.Items[0].RestoreConvergence != "" {
+		t.Fatalf("machine defaults after = %+v, want left untouched by the one-run override", after.Machines.Items[0])
+	}
+}
+
+// TestRestoreCommandVerifiesAgainstTheSameRestoreContextItPlannedWith is a
+// Task 28 PR 4 restore invariants gate scenario for the CLI's own restore
+// path specifically (Session.ApplyRestore's equivalent invariant is already
+// covered by TestRestorePlanAndVerifyReceiveIdenticalRestoreContext): a
+// policy-disabled target's Restore Skip must not fail verification when the
+// CLI itself executes and verifies (restoreProviders, not ApplyRestore),
+// proving PlanRestoreWithContext's returned contexts are the ones actually
+// reused for verification, not independently re-resolved.
+func TestRestoreCommandVerifiesAgainstTheSameRestoreContextItPlannedWith(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	// configSandbox's runner already reports zoxide installed; capture it
+	// as desired, then simulate it having been uninstalled since.
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	runner.official = map[string]bool{}
+
+	session, err := openWorkflow(deps, &options{profileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPolicy(workflow.PolicyScope{}, policy.AxisRestore, "packages", "official:zoxide", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restore Skip means no install operation for zoxide, which leaves
+	// plan.Operations empty and routes restoreProviders through its
+	// empty-Operations branch -- the one that actually calls
+	// verifyRestoreProviders. This must NOT be --dry-run: restoreProviders
+	// returns before ever reaching verification on that branch, which would
+	// give this test a false green without exercising the CLI's own
+	// execute/verify path at all. A real (non-dry) run with zero executable
+	// operations reaches verification without needing to mutate the
+	// machine, and without needing --yes (the confirmation prompt is only
+	// reached when there is something to apply).
+	code, out := configRun(t, deps, profileDir, "restore", "packages")
+	if code != 0 {
+		t.Fatalf("restore code=%d out=%q, want success: a Restore-Skip target must never fail verification through the CLI's own verify path", code, out)
 	}
 }
 
@@ -3526,6 +4521,97 @@ func TestResourcesInspectTargetsReportsMissingLocalStateAsAbsentNotDeletionInten
 	}
 	if !got.Capabilities.PreservesMissingDesired {
 		t.Fatalf("capabilities = %#v, want PreservesMissingDesired: a missing local resource must be preserved, not silently stop-managed", got.Capabilities)
+	}
+}
+
+// TestResourcesPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
+// regression for resources: a Restore-Skip "resource:<id>" target must
+// produce no operation and remain visible in Skipped with its resolved
+// policy reason -- Resource tags here already match InspectTargets' Key
+// format exactly (no re-prefixing needed, unlike most other providers) --
+// while a separately Apply-decided resource still gets reconstructed, and
+// Verify excludes both.
+func TestResourcesPlanAndVerifyHonorRestoreSkip(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deps.HomeDir = func() (string, error) { return home, nil }
+	deps.PluginDir = func() (string, error) { return "", fmt.Errorf("not configured") }
+	deps.ResourceLinkRoots = resourcesprovider.DefaultLinkSearchRoots
+	keepSource := filepath.Join(home, "dotfiles", "keep")
+	skipSource := filepath.Join(home, "dotfiles", "skip")
+	if err := os.MkdirAll(filepath.Dir(keepSource), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keepSource, []byte("echo keep\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skipSource, []byte("echo skip\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", keepSource); code != 0 {
+		t.Fatalf("track keep code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "track", skipSource); code != 0 {
+		t.Fatalf("track skip code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keepSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(skipSource); err != nil {
+		t.Fatal(err)
+	}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"resource:keep": {Restore: true, Resolved: true},
+		"resource:skip": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	opt := &options{profileDir: profileDir}
+	plan, err := (resourcesStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "resource:skip" {
+			t.Fatalf("Operations = %#v, want no operation for the Restore-Skip resource", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "resource:skip" {
+			found = true
+			if want := `restore disabled for machine "desktop"`; skipped.Reason != want {
+				t.Fatalf("skip reason = %q, want %q", skipped.Reason, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible entry for resource:skip", plan.Skipped)
+	}
+	hasKeep := false
+	for _, op := range plan.Operations {
+		if op.Resource == "resource:keep" {
+			hasKeep = true
+		}
+	}
+	if !hasKeep {
+		t.Fatalf("Operations = %#v, want resource:keep still planned for reconstruction", plan.Operations)
+	}
+
+	verification, err := (resourcesStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "resource:skip" {
+			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
+		}
 	}
 }
 
