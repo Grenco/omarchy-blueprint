@@ -161,7 +161,7 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 	contexts := make(map[string]RestoreContext, len(providers))
 	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
 	for _, provider := range providers {
-		restoreCtx, err := defaultRestoreContext(ctx, provider, s.profile, s.machine.Name, resolved)
+		restoreCtx, err := s.resolveRestoreContext(ctx, provider, s.profile, s.machine.Name, resolved)
 		if err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
 		}
@@ -215,20 +215,41 @@ func RestoreOptionsForMode(mode RestoreMode) policy.RestoreOptions {
 	return policy.RestoreOptions{Conflicts: conflicts, Convergence: policy.ConvergenceAdditive}
 }
 
-// defaultRestoreContext inspects a provider's targets and records the PR 2
-// compatibility decision (DefaultRestoreDecision) for each one. Real policy
-// resolution replaces this in PR 4; until then every inspected target
-// resolves to enabled/unresolved so current behavior is preserved.
-func defaultRestoreContext(ctx context.Context, provider Provider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
+// resolveRestoreContext inspects a provider's targets and resolves each
+// one's real effective Restore policy (see resolveRestoreTarget) against
+// the session's currently selected machine. Restore Skip -- whether from
+// provider safety or policy -- is independent of options: Neither Force nor
+// Exact can override it, so this never consults options for the decision
+// itself, only records it on the returned context for providers to plan
+// with.
+func (s *Session) resolveRestoreContext(ctx context.Context, provider Provider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
 	targets, err := provider.InspectTargets(ctx, data)
 	if err != nil {
 		return RestoreContext{}, err
 	}
 	decisions := make(map[string]RestoreDecision, len(targets))
 	for _, target := range targets {
-		decisions[target.Key] = DefaultRestoreDecision()
+		_, decision, err := s.resolveRestoreTarget(ctx, provider.ID(), target)
+		if err != nil {
+			return RestoreContext{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+		}
+		decisions[target.Key] = decision
 	}
 	return RestoreContext{Machine: machine, Options: options, Targets: decisions}, nil
+}
+
+// RestoreSkipReason formats a standardized, human-readable explanation for
+// a policy-resolved Restore Skip decision, for a provider to attach
+// verbatim to the model.Skipped entry it records for the target. It names
+// the machine when the resolved policy came from a machine-scoped rule
+// (target, category, or nearest ancestor override all set Source.Machine);
+// a portable profile-scoped rule applies to every machine, so it is
+// reported without a machine qualifier.
+func RestoreSkipReason(setting policy.EffectiveSetting) string {
+	if setting.Source.Machine != "" {
+		return fmt.Sprintf("restore disabled for machine %q", setting.Source.Machine)
+	}
+	return "restore disabled"
 }
 
 // verifyRestoreProviders reuses the exact RestoreContext restorePlan built
