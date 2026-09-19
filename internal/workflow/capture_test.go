@@ -74,12 +74,18 @@ func (p captureTestProvider) Verify(_ context.Context, _ profile.Data, restoreCt
 // ValidateTarget mimics packages' real "kind:name" shape check when this
 // fake stands in for the packages category specifically, closely enough to
 // exercise the workflow-level wiring without depending on the real
-// packagesStateProvider. Other ids accept any non-empty target, since tests
-// using them (e.g. a "config" fake with a raw path target) are not
-// exercising target-shape validation.
+// packagesStateProvider. It similarly mimics Config's real ergonomic-prefix
+// canonicalization (real configStateProvider.ValidateTarget rewrites
+// "~/.config/x" to the canonical ".config/x") for id "config", so tests can
+// exercise canonical-identity enforcement without depending on the real
+// configStateProvider. Other ids accept any non-empty target unchanged,
+// since tests using them are not exercising target-shape validation.
 func (p captureTestProvider) ValidateTarget(target string) (string, error) {
 	if p.id == "packages" && !strings.Contains(target, ":") {
 		return "", errors.New("invalid target shape")
+	}
+	if p.id == "config" && strings.HasPrefix(target, "~/") {
+		return ".config/" + strings.TrimPrefix(target, "~/"), nil
 	}
 	return target, nil
 }

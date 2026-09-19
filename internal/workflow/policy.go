@@ -125,14 +125,30 @@ func validateAxisRuleTargets(providers []Provider, rules []policy.Rule, machine 
 		if !ok {
 			continue
 		}
-		if _, err := validateTarget(provider, rule.Target); err != nil {
-			if machine == "" {
-				return fmt.Errorf("workflow: profile policy: category %q target %q: %w", rule.Category, rule.Target, err)
-			}
-			return fmt.Errorf("workflow: machine %q policy: category %q target %q: %w", machine, rule.Category, rule.Target, err)
+		canonical, err := validateTarget(provider, rule.Target)
+		if err != nil {
+			return policyTargetLoadError(machine, rule.Category, rule.Target, err)
+		}
+		// A syntactically valid but non-canonical target (e.g. Config's
+		// "~/.config/nvim" instead of the stored ".config/nvim" key) must
+		// fail loudly rather than load as-is: it would never match the
+		// canonical target real inspection/resolution emits for the same
+		// path, silently orphaning the rule. Per the approved human-edit
+		// semantics, a hand-edited profile must contain exactly the
+		// canonical form, not merely an equivalent one.
+		if canonical != rule.Target {
+			return policyTargetLoadError(machine, rule.Category, rule.Target,
+				fmt.Errorf("not canonical: provider canonicalizes it to %q", canonical))
 		}
 	}
 	return nil
+}
+
+func policyTargetLoadError(machine, category, target string, err error) error {
+	if machine == "" {
+		return fmt.Errorf("workflow: profile policy: category %q target %q: %w", category, target, err)
+	}
+	return fmt.Errorf("workflow: machine %q policy: category %q target %q: %w", machine, category, target, err)
 }
 
 // SetPolicy records an explicit Capture or Restore override for one category
