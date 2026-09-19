@@ -176,6 +176,50 @@ func TestSetPolicyUpsertsRatherThanDuplicating(t *testing.T) {
 	}
 }
 
+// TestSetPolicyRejectsMalformedTarget is a regression for a review finding
+// on PR 3: Task 13 requires provider target validation before target-
+// specific persistence, so a malformed target must never be silently
+// persisted as an explicit rule.
+func TestSetPolicyRejectsMalformedTarget(t *testing.T) {
+	session := newPolicySession(t, profile.New("test", time.Now()))
+	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "packages", "not-a-valid-target", policy.SettingDisabled); err == nil {
+		t.Fatal("malformed target accepted")
+	}
+	if got := session.Profile().Policy; len(got.Capture) != 0 {
+		t.Fatalf("policy = %+v, want nothing persisted for the rejected target", got)
+	}
+}
+
+// TestSetPolicyAcceptsCategoryLevelRuleWithEmptyTarget confirms an empty
+// target (a category-level rule) is never run through target validation,
+// since it has no target shape to validate.
+func TestSetPolicyAcceptsCategoryLevelRuleWithEmptyTarget(t *testing.T) {
+	session := newPolicySession(t, profile.New("test", time.Now()))
+	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "packages", "", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestClearPolicyRejectsMalformedTarget mirrors SetPolicy's rejection: a
+// target that could never have been persisted by SetPolicy should not
+// silently no-op as if the caller's typo were a legitimate clear.
+func TestClearPolicyRejectsMalformedTarget(t *testing.T) {
+	session := newPolicySession(t, profile.New("test", time.Now()))
+	if err := session.ClearPolicy(PolicyScope{}, policy.AxisCapture, "packages", "not-a-valid-target"); err == nil {
+		t.Fatal("malformed target accepted")
+	}
+}
+
+// TestStopManagingRejectsMalformedTarget is a regression for a review
+// finding on PR 3: Stop Managing is a filesystem-affecting API and should
+// reuse the same target validator SetPolicy does.
+func TestStopManagingRejectsMalformedTarget(t *testing.T) {
+	session := newPolicySession(t, profile.New("test", time.Now()))
+	if err := session.StopManaging(context.Background(), "packages", "not-a-valid-target"); err == nil {
+		t.Fatal("malformed target accepted")
+	}
+}
+
 func TestSetPolicyRejectsUnknownCategory(t *testing.T) {
 	session := newPolicySession(t, profile.New("test", time.Now()))
 	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "bogus", "", policy.SettingDisabled); err == nil {

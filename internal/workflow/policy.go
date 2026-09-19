@@ -65,6 +65,30 @@ func (s *Session) resolveCaptureTarget(ctx context.Context, category string, tar
 	return effective.Capture, CaptureDecision{Capture: effective.Capture.Enabled, Resolved: true}, nil
 }
 
+// targetValidator is implemented by a category's stateProvider when it has a
+// structured target key shape (e.g. "official:<name>" for packages, a raw
+// path for hooks/config). It validates and canonicalizes a target string
+// without requiring the target to currently be installed/present -- a
+// desired-absent tombstone or a not-yet-existing target must validate too.
+// A category without a validator accepts any non-empty target string as-is.
+type targetValidator interface {
+	ValidateTarget(target string) (string, error)
+}
+
+// validateTarget canonicalizes target against category's validator, if the
+// category has one and target is non-empty (an empty target means a
+// category-level rule, which has no target shape to validate).
+func validateTarget(provider Provider, target string) (string, error) {
+	if target == "" {
+		return target, nil
+	}
+	validator, ok := provider.(targetValidator)
+	if !ok {
+		return target, nil
+	}
+	return validator.ValidateTarget(target)
+}
+
 // SetPolicy records an explicit Capture or Restore override for one category
 // or target at scope. An empty target records a category-level rule.
 func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, target string, setting policy.Setting) error {
@@ -74,8 +98,13 @@ func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, targe
 	if err := policy.ValidateSetting(setting); err != nil {
 		return err
 	}
-	if _, ok := ProviderByID(s.providers, category); !ok {
+	provider, ok := ProviderByID(s.providers, category)
+	if !ok {
 		return fmt.Errorf("workflow: unknown policy category %q", category)
+	}
+	target, err := validateTarget(provider, target)
+	if err != nil {
+		return err
 	}
 	rule := policy.Rule{Category: category, Target: target, Setting: setting}
 	if scope.Machine == "" {
@@ -92,10 +121,19 @@ func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, targe
 
 // ClearPolicy removes an explicit override for one category or target at
 // scope, reverting it to inherited/default resolution. Clearing a rule that
-// does not exist is not an error.
+// does not exist is not an error. An unknown category is treated the same
+// way: there is nothing to canonicalize target against, and removing a rule
+// from a category that could never have recorded one is already a no-op.
 func (s *Session) ClearPolicy(scope PolicyScope, axis policy.Axis, category, target string) error {
 	if err := policy.ValidateAxis(axis); err != nil {
 		return err
+	}
+	if provider, ok := ProviderByID(s.providers, category); ok {
+		canonical, err := validateTarget(provider, target)
+		if err != nil {
+			return err
+		}
+		target = canonical
 	}
 	if scope.Machine == "" {
 		s.profile.Policy = removePolicyRule(s.profile.Policy, axis, category, target)
@@ -136,6 +174,10 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 	provider, ok := ProviderByID(s.providers, category)
 	if !ok {
 		return fmt.Errorf("workflow: unknown provider %q", category)
+	}
+	target, err := validateTarget(provider, target)
+	if err != nil {
+		return err
 	}
 	actions, ok := provider.(stopManagingActions)
 	if !ok {
