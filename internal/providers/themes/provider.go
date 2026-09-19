@@ -119,10 +119,7 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled fu
 	}
 
 	savedByID, currentByID := themeMap(saved.Items), themeMap(current.Items)
-	savedAbsent := map[string]bool{}
-	for _, absent := range saved.Absent {
-		savedAbsent[absent.ID] = true
-	}
+	savedAbsentByID := themeMap(saved.Absent)
 	ids := map[string]bool{}
 	for id, item := range savedByID {
 		if item.Type != "builtin" {
@@ -134,15 +131,16 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled fu
 			ids[id] = true
 		}
 	}
-	for id := range savedAbsent {
+	for id := range savedAbsentByID {
 		ids[id] = true
 	}
 
 	for id := range ids {
 		savedItem, wasPresent := savedByID[id]
 		currentItem, isPresent := currentByID[id]
+		_, wasAbsent := savedAbsentByID[id]
 		isEnabled := enabled("theme:" + id)
-		switch transition(wasPresent, savedAbsent[id], isPresent, isEnabled) {
+		switch transition(wasPresent, wasAbsent, isPresent, isEnabled) {
 		case transitionPresent:
 			if isEnabled && isPresent {
 				if currentItem.Type == "local" || currentItem.Type == "overlay" {
@@ -164,11 +162,11 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled fu
 				result.Items = append(result.Items, savedItem)
 			}
 		case transitionAbsent:
-			tombstone := savedItem
-			if !wasPresent {
-				tombstone = profile.Theme{ID: id}
+			if wasAbsent {
+				result.Absent = append(result.Absent, savedAbsentByID[id])
+			} else {
+				result.Absent = append(result.Absent, savedItem)
 			}
-			result.Absent = append(result.Absent, tombstone)
 		}
 	}
 	for _, item := range currentByID {
