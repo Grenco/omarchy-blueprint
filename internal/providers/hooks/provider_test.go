@@ -153,7 +153,7 @@ func TestCaptureStoresInertSnapshotsAndCheckValidatesTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := p.Capture(state)
+	saved, err := p.Capture(state, profile.Hooks{}, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,21 +174,120 @@ func TestCaptureStoresInertSnapshotsAndCheckValidatesTree(t *testing.T) {
 	}
 }
 
-func TestCaptureRemovesStaleSnapshots(t *testing.T) {
+// TestCaptureTombstonesHookRemovedLocallyWhenEnabled is Task 20's
+// present-then-absent-while-enabled case: a hook removed locally while
+// Capture is enabled becomes a desired-absence tombstone carrying its prior
+// provenance, rather than silently vanishing, and its stale snapshot is
+// removed from disk.
+func TestCaptureTombstonesHookRemovedLocallyWhenEnabled(t *testing.T) {
 	p, user, profileDir := hookProvider(t)
 	writeHook(t, filepath.Join(user, "post-boot"), "x", 0o644)
 	state, err := p.Detect()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Capture(state); err != nil {
+	saved, err := p.Capture(state, profile.Hooks{}, func(string) bool { return true })
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Capture(State{}); err != nil {
+	if err := os.Remove(filepath.Join(user, "post-boot")); err != nil {
 		t.Fatal(err)
+	}
+	state, err = p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Capture(state, saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 0 || len(result.Absent) != 1 || result.Absent[0].Path != "post-boot" || result.Absent[0].Hash != saved.Items[0].Hash {
+		t.Fatalf("result = %#v", result)
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, "hooks/files/post-boot")); !os.IsNotExist(err) {
 		t.Fatal("stale snapshot retained")
+	}
+}
+
+// TestCapturePreservesExistingSnapshotWhenDisabled is Task 20's disabled
+// case: Capture Disabled freezes the existing captured metadata and artifact
+// exactly as saved, ignoring any local change, rather than adopting it.
+func TestCapturePreservesExistingSnapshotWhenDisabled(t *testing.T) {
+	p, user, profileDir := hookProvider(t)
+	writeHook(t, filepath.Join(user, "post-boot"), "x", 0o644)
+	state, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := p.Capture(state, profile.Hooks{}, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHook(t, filepath.Join(user, "post-boot"), "changed locally", 0o644)
+	state, err = p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Capture(state, saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Hash != saved.Items[0].Hash {
+		t.Fatalf("result = %#v, want unchanged saved metadata", result)
+	}
+	data, err := os.ReadFile(filepath.Join(profileDir, "hooks/files/post-boot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != saved.Items[0].Hash {
+		t.Fatal("preserved snapshot content changed despite Capture Disabled")
+	}
+}
+
+// TestCaptureUnTombstonesHookReappearing is Task 20's absent-then-present
+// case: a hook that reappears live while Capture is enabled replaces its
+// prior tombstone with a freshly captured snapshot.
+func TestCaptureUnTombstonesHookReappearing(t *testing.T) {
+	p, user, profileDir := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0644"}}}
+	writeHook(t, filepath.Join(user, "post-boot"), "back", 0o644)
+	state, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Capture(state, saved, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Absent) != 0 || len(result.Items) != 1 || result.Items[0].Path != "post-boot" {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(profileDir, "hooks/files/post-boot")); err != nil {
+		t.Fatalf("snapshot missing: %v", err)
+	}
+}
+
+// TestCapturePreservesExistingTombstoneWhenDisabled is Task 20's disabled
+// preserve case for an already-tombstoned target: Capture Disabled keeps the
+// existing desired-absence entry exactly as saved, even though the path has
+// reappeared live -- were Capture enabled for this path, that live
+// reappearance would un-tombstone it, so this only exercises the preserve
+// path if the live hook is genuinely present and still ignored.
+func TestCapturePreservesExistingTombstoneWhenDisabled(t *testing.T) {
+	p, user, _ := hookProvider(t)
+	saved := profile.Hooks{Absent: []profile.Hook{{Path: "post-boot", Hash: strings.Repeat("a", 64), Mode: "0644"}}}
+	writeHook(t, filepath.Join(user, "post-boot"), "back", 0o644)
+	state, err := p.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := p.Capture(state, saved, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 0 || len(result.Absent) != 1 || result.Absent[0].Hash != saved.Absent[0].Hash {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

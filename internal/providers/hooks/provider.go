@@ -178,18 +178,71 @@ func detectFile(rel, path string) (DetectedHook, error) {
 	return DetectedHook{Path: rel, Hash: hex.EncodeToString(sum[:]), Mode: mode, Raw: raw}, nil
 }
 
-// Capture writes inert snapshots, keeping executable permission only in metadata.
-func (p Provider) Capture(state State) (profile.Hooks, error) {
+// Capture writes inert snapshots, keeping executable permission only in
+// metadata. It merges live detection into saved's desired state per the
+// Capture merge transition table, driven by enabled's resolved per-path
+// decision: a freshly captured (enabled+present) path is staged from the
+// live raw bytes just read by Detect; a preserved (disabled, or
+// enabled-but-no-longer-present) path keeps its existing snapshot exactly as
+// already captured, copied from the prior generation rather than re-read
+// live, so metadata and the on-disk snapshot never drift; a path enabled but
+// no longer present, with prior desired state, becomes a desired-absence
+// tombstone rather than silently vanishing.
+func (p Provider) Capture(state State, saved profile.Hooks, enabled func(path string) bool) (profile.Hooks, error) {
 	if p.ProfileDir == "" {
 		return profile.Hooks{}, errors.New("profile directory is required to capture hooks")
 	}
-	captured := profile.Hooks{Items: make([]profile.Hook, 0, len(state.Items))}
-	for _, item := range state.Items {
-		captured.Items = append(captured.Items, profile.Hook{Path: item.Path, Hash: item.Hash, Mode: item.Mode})
+	savedByPath := savedMap(saved.Items)
+	currentByPath := currentMap(state.Items)
+	savedAbsentByPath := savedMap(saved.Absent)
+
+	paths := map[string]bool{}
+	for path := range savedByPath {
+		paths[path] = true
+	}
+	for path := range currentByPath {
+		paths[path] = true
+	}
+	for path := range savedAbsentByPath {
+		paths[path] = true
+	}
+
+	type stagedItem struct {
+		path   string
+		fresh  *DetectedHook
+		source string
+	}
+	captured := profile.Hooks{}
+	var toStage []stagedItem
+	for path := range paths {
+		savedItem, wasPresent := savedByPath[path]
+		currentItem, isPresent := currentByPath[path]
+		_, wasAbsent := savedAbsentByPath[path]
+		isEnabled := enabled(path)
+		switch transition(wasPresent, wasAbsent, isPresent, isEnabled) {
+		case transitionPresent:
+			if isEnabled && isPresent {
+				captured.Items = append(captured.Items, profile.Hook{Path: currentItem.Path, Hash: currentItem.Hash, Mode: currentItem.Mode})
+				item := currentItem
+				toStage = append(toStage, stagedItem{path: path, fresh: &item})
+			} else {
+				captured.Items = append(captured.Items, savedItem)
+				toStage = append(toStage, stagedItem{path: path, source: filepath.Join(p.ProfileDir, "hooks", "files", filepath.FromSlash(path))})
+			}
+		case transitionAbsent:
+			if wasAbsent {
+				captured.Absent = append(captured.Absent, savedAbsentByPath[path])
+			} else {
+				captured.Absent = append(captured.Absent, savedItem)
+			}
+		}
 	}
 	if err := ValidateMetadata(captured.Items); err != nil {
 		return profile.Hooks{}, err
 	}
+	sort.Slice(captured.Items, func(i, j int) bool { return captured.Items[i].Path < captured.Items[j].Path })
+	sort.Slice(captured.Absent, func(i, j int) bool { return captured.Absent[i].Path < captured.Absent[j].Path })
+
 	parent := filepath.Join(p.ProfileDir, "hooks")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return profile.Hooks{}, err
@@ -199,36 +252,68 @@ func (p Provider) Capture(state State) (profile.Hooks, error) {
 		return profile.Hooks{}, err
 	}
 	defer os.RemoveAll(staging)
-	for _, item := range state.Items {
-		target := filepath.Join(staging, "files", filepath.FromSlash(item.Path))
+	for _, s := range toStage {
+		target := filepath.Join(staging, "files", filepath.FromSlash(s.path))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return profile.Hooks{}, err
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if s.fresh != nil {
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+			if err != nil {
+				return profile.Hooks{}, err
+			}
+			if err := out.Chmod(0o644); err != nil {
+				out.Close()
+				return profile.Hooks{}, err
+			}
+			if _, err := out.Write(s.fresh.Raw); err != nil {
+				out.Close()
+				return profile.Hooks{}, err
+			}
+			if err := out.Close(); err != nil {
+				return profile.Hooks{}, err
+			}
+			sum := sha256.Sum256(s.fresh.Raw)
+			if hex.EncodeToString(sum[:]) != s.fresh.Hash {
+				return profile.Hooks{}, fmt.Errorf("hook content hash mismatch for %q", s.path)
+			}
+			continue
+		}
+		hash, err := copyHookSnapshot(s.source, target)
 		if err != nil {
-			return profile.Hooks{}, err
+			return profile.Hooks{}, fmt.Errorf("preserve hook %q: %w", s.path, err)
 		}
-		if err := out.Chmod(0o644); err != nil {
-			out.Close()
-			return profile.Hooks{}, err
-		}
-		if _, err := out.Write(item.Raw); err != nil {
-			out.Close()
-			return profile.Hooks{}, err
-		}
-		if err := out.Close(); err != nil {
-			return profile.Hooks{}, err
-		}
-		sum := sha256.Sum256(item.Raw)
-		if hex.EncodeToString(sum[:]) != item.Hash {
-			return profile.Hooks{}, fmt.Errorf("hook content hash mismatch for %q", item.Path)
+		if hash != savedByPath[s.path].Hash {
+			return profile.Hooks{}, fmt.Errorf("preserve hook %q: snapshot hash mismatch", s.path)
 		}
 	}
-	sort.Slice(captured.Items, func(i, j int) bool { return captured.Items[i].Path < captured.Items[j].Path })
 	if err := swapFiles(staging, filepath.Join(parent, "files")); err != nil {
 		return profile.Hooks{}, err
 	}
 	return captured, nil
+}
+
+func copyHookSnapshot(source, target string) (string, error) {
+	f, _, err := content.OpenRegularFile(source)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, f); err != nil {
+		out.Close()
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		return "", err
+	}
+	return content.HashRegularFile(target)
 }
 
 func swapFiles(staging, destination string) error {
@@ -303,4 +388,42 @@ func (p Provider) Check(saved profile.Hooks) error {
 		}
 		return nil
 	})
+}
+
+// transitionResult is the Capture merge outcome for one target: whether it
+// belongs in the new desired-present set, the new desired-absent (tombstone)
+// set, or neither (still unmanaged). See internal/providers/packages and
+// internal/providers/themes' identical helper: each provider owns its own
+// merge/preserve behavior, so this small, stable, pure table is duplicated
+// rather than shared.
+type transitionResult int
+
+const (
+	transitionNone transitionResult = iota
+	transitionPresent
+	transitionAbsent
+)
+
+// transition implements the Capture merge invariant table generically.
+// wasPresent/wasAbsent describe the previous desired state (both false means
+// "unknown": never captured); isPresent is the current live state; enabled
+// is the resolved Capture decision for this target.
+func transition(wasPresent, wasAbsent, isPresent, enabled bool) transitionResult {
+	if !enabled {
+		switch {
+		case wasPresent:
+			return transitionPresent
+		case wasAbsent:
+			return transitionAbsent
+		default:
+			return transitionNone
+		}
+	}
+	if isPresent {
+		return transitionPresent
+	}
+	if wasPresent || wasAbsent {
+		return transitionAbsent
+	}
+	return transitionNone
 }
