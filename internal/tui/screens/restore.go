@@ -239,9 +239,9 @@ func (s *Restore) compare() tea.Cmd {
 	}
 }
 func (s *Restore) apply() tea.Cmd {
-	mode := s.mode
+	options := workflow.RestoreOptionsForMode(s.mode)
 	return func() tea.Msg {
-		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, mode)
+		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, &options)
 		return restoreAppliedMsg{result, err}
 	}
 }
