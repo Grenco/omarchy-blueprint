@@ -427,3 +427,54 @@ func transition(wasPresent, wasAbsent, isPresent, enabled bool) transitionResult
 	}
 	return transitionNone
 }
+
+// PrepareStopManagingArtifact stages the removal of one hook's captured
+// snapshot file without deleting it yet: the file is renamed to a sibling
+// backup, and the caller defers the actual deletion until it knows the
+// profile save that forgets the hook's metadata has also succeeded
+// (FinalizeCapture), or undoes the rename if it has not (RollbackCapture).
+// A hook with no snapshot file (already removed) is a no-op.
+func (p *Provider) PrepareStopManagingArtifact(path string) error {
+	source := filepath.Join(p.ProfileDir, "hooks", "files", filepath.FromSlash(path))
+	if _, err := os.Lstat(source); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	backup := source + ".stop-managing-backup"
+	if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(source, backup); err != nil {
+		return err
+	}
+	p.stopManagingDestination, p.stopManagingBackup, p.stopManagingPending = source, backup, true
+	return nil
+}
+
+func (p *Provider) CommitCapture() error { return nil }
+func (p *Provider) FinalizeCapture() error {
+	if !p.stopManagingPending {
+		return nil
+	}
+	err := os.Remove(p.stopManagingBackup)
+	p.stopManagingDestination, p.stopManagingBackup, p.stopManagingPending = "", "", false
+	return err
+}
+func (p *Provider) RollbackCapture() error {
+	if !p.stopManagingPending {
+		return nil
+	}
+	if err := os.Remove(p.stopManagingDestination); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := os.Stat(p.stopManagingBackup); err == nil {
+		if err := os.Rename(p.stopManagingBackup, p.stopManagingDestination); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	p.stopManagingDestination, p.stopManagingBackup, p.stopManagingPending = "", "", false
+	return nil
+}

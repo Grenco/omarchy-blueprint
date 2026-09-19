@@ -28,4 +28,7 @@ type Provider struct {
 	ProfileDir string
 	HomeDir    string
 	Resources  profile.Resources
+
+	stopManagingDestination, stopManagingBackup string
+	stopManagingPending                         bool
 }

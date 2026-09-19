@@ -1064,6 +1064,20 @@ func (p restoreProviderAdapter) RollbackCapture() error {
 	return nil
 }
 
+// StopManaging defers to the wrapped state provider's own implementation.
+// Every stateProvider implements this (categories that reject Stop Managing
+// return a category-specific error rather than omitting the method), so the
+// !ok branch here is defensive rather than expected in practice.
+func (p restoreProviderAdapter) StopManaging(ctx context.Context, data profile.Data, target string) (profile.Data, error) {
+	provider, ok := p.stateProvider.(interface {
+		StopManaging(context.Context, profile.Data, string) (profile.Data, error)
+	})
+	if !ok {
+		return profile.Data{}, fmt.Errorf("%s does not support Stop Managing", p.stateProvider.ID())
+	}
+	return provider.StopManaging(ctx, data, target)
+}
+
 type configWorkflowProvider struct{ restoreProviderAdapter }
 
 func (p configWorkflowProvider) DiffWithScan(ctx context.Context, data profile.Data) ([]model.Change, configprovider.ScanSummary, error) {

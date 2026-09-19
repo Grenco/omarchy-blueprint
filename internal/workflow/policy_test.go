@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -269,6 +271,66 @@ func TestStopManagingDelegatesToProviderAndClearsPolicyOverrides(t *testing.T) {
 	}
 	if len(reloaded.Packages.Official) != 0 || len(reloaded.Policy.Capture) != 0 {
 		t.Fatalf("reloaded = %#v, want the removal and policy clearing persisted", reloaded)
+	}
+}
+
+// TestStopManagingRollsBackArtifactTransactionOnSaveFailure is a regression
+// for a review finding on PR 3: a provider that stages its artifact removal
+// (implementing the same commit/finalize/rollback hooks CaptureMany already
+// uses) must have that removal rolled back, not finalized, when the profile
+// save that forgets the target's metadata fails -- otherwise a failed save
+// could leave the profile still referencing an artifact already destroyed.
+func TestStopManagingRollsBackArtifactTransactionOnSaveFailure(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox"}
+	session := newCaptureSession(t, data)
+	commits, rollbacks, finalizes := 0, 0, 0
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		commits: &commits, rollbacks: &rollbacks, finalizes: &finalizes,
+	}})
+	// Point the save path at something profile.Save cannot create a
+	// directory under, forcing a deterministic save failure after the
+	// provider's own StopManaging has already "succeeded" (in this fake,
+	// with no real filesystem side effect to stage).
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session.opts.ProfileDir = filepath.Join(blocked, "profile")
+
+	if err := session.StopManaging(context.Background(), "packages", "official:firefox"); err == nil {
+		t.Fatal("save failure not propagated")
+	}
+	if commits != 0 || finalizes != 0 {
+		t.Fatalf("commits=%d finalizes=%d, want neither called when save fails", commits, finalizes)
+	}
+	if rollbacks != 1 {
+		t.Fatalf("rollbacks=%d, want exactly one rollback when save fails", rollbacks)
+	}
+	if len(session.Profile().Packages.Official) != 1 {
+		t.Fatalf("official = %#v, want the session's in-memory profile untouched by the failed save", session.Profile().Packages.Official)
+	}
+}
+
+// TestStopManagingCommitsAndFinalizesArtifactTransactionOnSaveSuccess proves
+// the mirror image: a successful save commits and finalizes the staged
+// artifact removal rather than leaving it pending.
+func TestStopManagingCommitsAndFinalizesArtifactTransactionOnSaveSuccess(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox"}
+	session := newCaptureSession(t, data)
+	commits, rollbacks, finalizes := 0, 0, 0
+	session.SetProviders([]Provider{captureTestProvider{
+		id: "packages", order: &[]string{},
+		commits: &commits, rollbacks: &rollbacks, finalizes: &finalizes,
+	}})
+
+	if err := session.StopManaging(context.Background(), "packages", "official:firefox"); err != nil {
+		t.Fatal(err)
+	}
+	if commits != 1 || finalizes != 1 || rollbacks != 0 {
+		t.Fatalf("commits=%d finalizes=%d rollbacks=%d, want exactly one commit and finalize, no rollback", commits, finalizes, rollbacks)
 	}
 }
 

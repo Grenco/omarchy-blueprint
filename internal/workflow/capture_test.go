@@ -83,7 +83,9 @@ func (p captureTestProvider) StopManaging(_ context.Context, data profile.Data, 
 	return data, nil
 }
 func (p captureTestProvider) CommitCapture() error {
-	*p.commits++
+	if p.commits != nil {
+		*p.commits++
+	}
 	if p.commitFail {
 		return errors.New("commit failed")
 	}
@@ -123,7 +125,9 @@ func (p captureTestProvider) FinalizeCapture() error {
 	return nil
 }
 func (p captureTestProvider) RollbackCapture() error {
-	*p.rollbacks++
+	if p.rollbacks != nil {
+		*p.rollbacks++
+	}
 	return nil
 }
 

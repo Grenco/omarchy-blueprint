@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -69,7 +68,7 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		configStateProvider{deps: deps, opt: opt},
 		defaultsStateProvider{deps: deps, opt: opt},
 		shellStateProvider{deps: deps, opt: opt},
-		hooksStateProvider{deps: deps, opt: opt},
+		&hooksStateProvider{deps: deps, opt: opt},
 	}
 }
 
@@ -981,7 +980,13 @@ func (p themesStateProvider) Check(ctx context.Context, _ profile.Data) error {
 // one. Built-in themes carry no Blueprint-owned state to forget, and
 // "active" is a separate target (which theme is selected, not a theme's own
 // availability), so neither is accepted here.
-func (p themesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+// StopManaging stages its artifact removal rather than deleting immediately:
+// PrepareStopManagingArtifact renames the theme's local/overlay directory out
+// of the way, and workflow.Session.StopManaging only finalizes (permanently
+// deletes it) after the profile save that forgets the theme's metadata has
+// also succeeded, or rolls the rename back if it has not -- so a failed save
+// can never leave the profile referencing an artifact that is already gone.
+func (p *themesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
 	id, ok := strings.CutPrefix(target, "theme:")
 	if !ok || id == "" {
 		return profile.Data{}, fmt.Errorf("themes: invalid target %q", target)
@@ -1011,9 +1016,11 @@ func (p themesStateProvider) StopManaging(_ context.Context, d profile.Data, tar
 	if !found {
 		return profile.Data{}, fmt.Errorf("themes: %q is not managed", id)
 	}
-	if err := os.RemoveAll(filepath.Join(p.opt.profileDir, "themes", "local", id)); err != nil {
+	provider := themesprovider.Provider{ProfileDir: p.opt.profileDir}
+	if err := provider.PrepareStopManagingArtifact(id); err != nil {
 		return profile.Data{}, err
 	}
+	p.captureProvider = &provider
 	return d, nil
 }
 
@@ -1194,7 +1201,13 @@ func (p pluginsStateProvider) Check(ctx context.Context, _ profile.Data) error {
 // StopManaging permanently forgets one third-party plugin: its desired
 // present or desired-absent state, and its local clone artifact directory.
 // First-party (built-in) plugins carry no Blueprint-owned state to forget.
-func (p pluginsStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+// StopManaging stages its artifact removal rather than deleting immediately:
+// PrepareStopManagingArtifact renames the plugin's local clone directory out
+// of the way, and workflow.Session.StopManaging only finalizes (permanently
+// deletes it) after the profile save that forgets the plugin's metadata has
+// also succeeded, or rolls the rename back if it has not -- so a failed save
+// can never leave the profile referencing an artifact that is already gone.
+func (p *pluginsStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
 	id, ok := strings.CutPrefix(target, "plugin:")
 	if !ok || id == "" {
 		return profile.Data{}, fmt.Errorf("plugins: invalid target %q", target)
@@ -1224,9 +1237,11 @@ func (p pluginsStateProvider) StopManaging(_ context.Context, d profile.Data, ta
 	if !found {
 		return profile.Data{}, fmt.Errorf("plugins: %q is not managed", id)
 	}
-	if err := os.RemoveAll(filepath.Join(p.opt.profileDir, "plugins", "local", id)); err != nil {
+	provider := pluginsprovider.Provider{ProfileDir: p.opt.profileDir}
+	if err := provider.PrepareStopManagingArtifact(id); err != nil {
 		return profile.Data{}, err
 	}
+	p.captureProvider = &provider
 	return d, nil
 }
 
@@ -1839,8 +1854,9 @@ func (shellStateProvider) StopManaging(context.Context, profile.Data, string) (p
 }
 
 type hooksStateProvider struct {
-	deps Dependencies
-	opt  *options
+	deps            Dependencies
+	opt             *options
+	captureProvider *hooksprovider.Provider
 }
 
 func (hooksStateProvider) ID() string { return "hooks" }
@@ -2008,7 +2024,13 @@ func (p hooksStateProvider) Check(_ context.Context, d profile.Data) error {
 
 // StopManaging permanently forgets one hook: its desired present or
 // desired-absent state, and its captured snapshot file.
-func (p hooksStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+// StopManaging stages its artifact removal rather than deleting immediately:
+// PrepareStopManagingArtifact renames the hook's captured snapshot file out
+// of the way, and workflow.Session.StopManaging only finalizes (permanently
+// deletes it) after the profile save that forgets the hook's metadata has
+// also succeeded, or rolls the rename back if it has not -- so a failed save
+// can never leave the profile referencing an artifact that is already gone.
+func (p *hooksStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
 	found := false
 	var items []profile.Hook
 	for _, item := range d.Hooks.Items {
@@ -2031,8 +2053,33 @@ func (p hooksStateProvider) StopManaging(_ context.Context, d profile.Data, targ
 	if !found {
 		return profile.Data{}, fmt.Errorf("hooks: %q is not managed", target)
 	}
-	if err := os.RemoveAll(filepath.Join(p.opt.profileDir, "hooks", "files", filepath.FromSlash(target))); err != nil {
+	provider := hooksprovider.Provider{ProfileDir: p.opt.profileDir}
+	if err := provider.PrepareStopManagingArtifact(target); err != nil {
 		return profile.Data{}, err
 	}
+	p.captureProvider = &provider
 	return d, nil
+}
+
+func (p *hooksStateProvider) CommitCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	return p.captureProvider.CommitCapture()
+}
+func (p *hooksStateProvider) FinalizeCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.FinalizeCapture()
+	p.captureProvider = nil
+	return err
+}
+func (p *hooksStateProvider) RollbackCapture() error {
+	if p.captureProvider == nil {
+		return nil
+	}
+	err := p.captureProvider.RollbackCapture()
+	p.captureProvider = nil
+	return err
 }

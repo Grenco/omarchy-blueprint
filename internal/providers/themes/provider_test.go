@@ -134,6 +134,60 @@ func TestCaptureTombstonesThemeRemovedLocally(t *testing.T) {
 // desired-absent must carry the EXISTING tombstone's provenance forward
 // (Type/Hash/URL/Revision), not rebuild an ID-only Theme -- later Exact
 // removal needs that provenance to prove ownership before deleting anything.
+// TestPrepareStopManagingArtifactStagesRenameCommitOrRollback is a
+// regression for a review finding on PR 3: Stop Managing must not delete a
+// theme's local/overlay artifact immediately, since a caller that then fails
+// to save the profile would leave it referencing a destroyed artifact.
+// PrepareStopManagingArtifact stages the removal by rename; RollbackCapture
+// must restore the original directory and its content byte-for-byte, and
+// FinalizeCapture (only called once the caller knows the save succeeded)
+// must permanently delete it.
+func TestPrepareStopManagingArtifactStagesRenameCommitOrRollback(t *testing.T) {
+	profileDir := t.TempDir()
+	artifact := filepath.Join(profileDir, "themes", "local", "custom")
+	if err := os.MkdirAll(artifact, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifact, "colors.toml"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{ProfileDir: profileDir}
+	if err := p.PrepareStopManagingArtifact("custom"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("artifact must be staged out of its original location, not left in place")
+	}
+
+	if err := p.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(artifact, "colors.toml"))
+	if err != nil || string(body) != "original" {
+		t.Fatalf("rollback did not restore original content: body=%q err=%v", body, err)
+	}
+
+	if err := p.PrepareStopManagingArtifact("custom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.FinalizeCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatal("finalize must permanently delete the staged artifact")
+	}
+	entries, err := os.ReadDir(filepath.Join(profileDir, "themes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".stop-managing-") {
+			t.Fatalf("finalize left a staging backup behind: %s", entry.Name())
+		}
+	}
+}
+
 func TestCaptureTwiceWhileStillAbsentPreservesTombstoneProvenance(t *testing.T) {
 	builtin, user := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
