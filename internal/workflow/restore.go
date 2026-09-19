@@ -90,16 +90,18 @@ func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, options 
 }
 
 // PlanRestoreWithContext is PlanRestore, but also returns each planned
-// provider alongside the exact resolved RestoreContext used to plan it. A
-// caller that must verify separately from ApplyRestore -- e.g. the CLI,
-// which reports live per-operation progress ApplyRestore does not support,
-// so it executes and verifies itself rather than calling ApplyRestore --
-// needs these to verify against the same effective Restore intent that
-// planned the run, per the design's "Plan intent and verification intent
-// must remain aligned" invariant.
-func (s *Session) PlanRestoreWithContext(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, error) {
-	plan, providers, contexts, _, err := s.restorePlan(ctx, onlyProvider, options)
-	return plan, providers, contexts, err
+// provider alongside the exact resolved RestoreContext used to plan it, and
+// the resolved RestoreOptions itself. A caller that must verify separately
+// from ApplyRestore -- e.g. the CLI, which reports live per-operation
+// progress ApplyRestore does not support, so it executes and verifies
+// itself rather than calling ApplyRestore -- needs the providers/contexts
+// to verify against the same effective Restore intent that planned the
+// run, per the design's "Plan intent and verification intent must remain
+// aligned" invariant; it needs the resolved options to know what a nil
+// options argument actually resolved to (e.g. to decide how to render the
+// plan).
+func (s *Session) PlanRestoreWithContext(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
+	return s.restorePlan(ctx, onlyProvider, options)
 }
 
 // ApplyRestore always replans after approval, so the executor validates current
