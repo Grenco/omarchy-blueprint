@@ -34,6 +34,7 @@ type machineRunner struct {
 	dependencies map[string]bool
 	failInstall  string
 	theme        string
+	themeDir     string
 	plugins      map[string]bool
 	pluginDir    string
 	failReload   bool
@@ -144,6 +145,30 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "set" {
 		r.theme = args[2]
+		return "", nil
+	}
+	// omarchy theme remove <id>: mirrors the real omarchy-theme-remove
+	// script's unconditional rm -rf of the theme directory (no --yes/
+	// confirmation flag exists for it -- see PR 5 research).
+	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "remove" {
+		if r.themeDir != "" {
+			if err := os.RemoveAll(filepath.Join(r.themeDir, args[2])); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+	// omarchy plugin remove <id> --yes: mirrors the real
+	// omarchy-plugin-remove script's removal of the plugin directory.
+	if len(args) == 4 && name == "omarchy" && args[0] == "plugin" && args[1] == "remove" && args[3] == "--yes" {
+		if r.pluginDir != "" {
+			if err := os.RemoveAll(filepath.Join(r.pluginDir, args[2])); err != nil {
+				return "", err
+			}
+		}
+		if r.plugins != nil {
+			delete(r.plugins, args[2])
+		}
 		return "", nil
 	}
 	if len(args) >= 3 && name == "omarchy" && args[0] == "pkg" && args[1] == "add" {
@@ -5038,4 +5063,153 @@ func sliceContains(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// TestExactRestoreDestructiveSafetyGate is PR 5 Task 33's aggregate
+// destructive-safety gate: a real, full CLI restore run (real command
+// dispatch through machineRunner, real filesystem deletion) with
+// Convergence: Exact, exercising a tombstoned user theme, a tombstoned
+// third-party plugin, and a tombstoned hook together, plus untracked local
+// data no Resource references at all. Only the three provenance-matched
+// tombstones are removed; the untracked data is never touched, because
+// Resources genuinely has no delete path (Task 32) and never sweeps
+// anything it was never told to track.
+func TestExactRestoreDestructiveSafetyGate(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := t.TempDir()
+	deps.HomeDir = func() (string, error) { return home, nil }
+	pluginDir := t.TempDir()
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	themeBuiltin, themeUser, err := deps.ThemeDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(themeBuiltin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooksDir, err := deps.HooksDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "nord"
+	runner.themeDir = themeUser
+	runner.pluginDir = pluginDir
+	runner.plugins = map[string]bool{}
+
+	// Real, live theme/plugin/hook this run will tombstone.
+	oldTheme := filepath.Join(themeUser, "old-theme")
+	if err := os.MkdirAll(oldTheme, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldTheme, "colors.toml"), []byte("accent = '#abcdef'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldPlugin := filepath.Join(pluginDir, "old-plugin")
+	if err := os.MkdirAll(oldPlugin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldPlugin, "Plugin.qml"), []byte("old code"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := filepath.Join(hooksDir, "old-hook.sh")
+	if err := os.WriteFile(oldHook, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Untracked local data no Resource, theme, plugin, or hook references
+	// at all -- the thing Exact must never sweep just because it is absent
+	// from the profile.
+	extra := filepath.Join(home, "Documents", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out := configRun(t, deps, profileDir, "capture", "themes"); code != 0 {
+		t.Fatalf("capture themes code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "plugins"); code != 0 {
+		t.Fatalf("capture plugins code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "hooks"); code != 0 {
+		t.Fatalf("capture hooks code=%d out=%s", code, out)
+	}
+
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var themeItems []profile.Theme
+	var tombstonedTheme profile.Theme
+	for _, item := range d.Themes.Items {
+		if item.ID == "old-theme" {
+			tombstonedTheme = item
+		} else {
+			themeItems = append(themeItems, item)
+		}
+	}
+	if tombstonedTheme.ID == "" {
+		t.Fatalf("captured theme items = %#v, want old-theme captured", d.Themes.Items)
+	}
+	d.Themes.Items = themeItems
+	d.Themes.Absent = append(d.Themes.Absent, tombstonedTheme)
+
+	var pluginItems []profile.Plugin
+	var tombstonedPlugin profile.Plugin
+	for _, item := range d.Plugins.Items {
+		if item.ID == "old-plugin" {
+			tombstonedPlugin = item
+		} else {
+			pluginItems = append(pluginItems, item)
+		}
+	}
+	if tombstonedPlugin.ID == "" {
+		t.Fatalf("captured plugin items = %#v, want old-plugin captured", d.Plugins.Items)
+	}
+	d.Plugins.Items = pluginItems
+	d.Plugins.Absent = append(d.Plugins.Absent, tombstonedPlugin)
+
+	var hookItems []profile.Hook
+	var tombstonedHook profile.Hook
+	for _, item := range d.Hooks.Items {
+		if item.Path == "old-hook.sh" {
+			tombstonedHook = item
+		} else {
+			hookItems = append(hookItems, item)
+		}
+	}
+	if tombstonedHook.Path == "" {
+		t.Fatalf("captured hook items = %#v, want old-hook.sh captured", d.Hooks.Items)
+	}
+	d.Hooks.Items = hookItems
+	d.Hooks.Absent = append(d.Hooks.Absent, tombstonedHook)
+
+	// Resources is captured but tracks nothing: proves Exact leaves the
+	// category alone rather than inventing a sweep for it.
+	d.Manifest.Capture.Resources = true
+
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := configRun(t, deps, profileDir, "restore", "--exact", "--yes")
+	if code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+
+	if _, err := os.Stat(oldTheme); !os.IsNotExist(err) {
+		t.Fatalf("old-theme was not removed: err=%v", err)
+	}
+	if _, err := os.Stat(oldPlugin); !os.IsNotExist(err) {
+		t.Fatalf("old-plugin was not removed: err=%v", err)
+	}
+	if _, err := os.Stat(oldHook); !os.IsNotExist(err) {
+		t.Fatalf("old-hook.sh was not removed: err=%v", err)
+	}
+	if _, err := os.Stat(extra); err != nil {
+		t.Fatalf("untracked local data was touched: err=%v", err)
+	}
 }

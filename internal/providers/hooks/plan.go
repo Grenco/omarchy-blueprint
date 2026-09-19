@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -128,11 +129,23 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 		if err != nil {
 			return model.RestorePlan{}, fmt.Errorf("tombstoned hook %q: %w", absent.Path, err)
 		}
+		destination := filepath.Join(p.UserDir, filepath.FromSlash(absent.Path))
+		// The executor's own precondition check re-hashes the live file with
+		// content.HashFilesystemObject, not the hooks-package DetectedHook
+		// hash compared above (that comparison is the provenance-match gate
+		// against the tombstone's recorded provenance; this is a fresh,
+		// independent live snapshot for the executor to detect a last-instant
+		// change between Plan and execution) -- reusing absent.Hash here
+		// would always fail at execution since the two hash schemes differ.
+		liveHash, err := content.HashFilesystemObject(destination)
+		if err != nil {
+			return model.RestorePlan{}, fmt.Errorf("hash tombstoned hook %q: %w", absent.Path, err)
+		}
 		plan.Operations = append(plan.Operations, model.Operation{
 			ID: deleteOperationID(absent.Path), Provider: "hooks", Action: "delete", Resource: resource, Items: []string{absent.Path},
 			Delete: &model.FileDelete{
-				Destination:          filepath.Join(p.UserDir, filepath.FromSlash(absent.Path)),
-				ExpectedExisting:     &model.FilesystemPrecondition{Type: "file", Hash: absent.Hash, Mode: mode},
+				Destination:          destination,
+				ExpectedExisting:     &model.FilesystemPrecondition{Type: "file", Hash: liveHash, Mode: mode},
 				Backup:               true,
 				RejectSymlinkParents: true,
 			},
