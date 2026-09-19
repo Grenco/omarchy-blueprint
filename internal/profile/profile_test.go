@@ -1147,3 +1147,93 @@ func TestSaveThemesPluginsHooksAbsenceRoundTrip(t *testing.T) {
 		t.Fatalf("hooks = %#v, want %#v", got.Hooks, d.Hooks)
 	}
 }
+
+func TestLoadSchema11MigratesLegacyPackageExclusionsToPolicy(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n\n[capture]\npackages = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "official.txt"), []byte("htop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("aur:dislocker-git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "machine-specific.txt"), []byte("official:nvidia-open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeExcluded, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Packages.Excluded) != 0 {
+		t.Fatalf("Excluded = %#v, want migrated away", got.Packages.Excluded)
+	}
+	if len(got.Packages.MachineSpecific) != 0 {
+		t.Fatalf("MachineSpecific = %#v, want cleared: it is runtime inspection metadata now, not persisted state", got.Packages.MachineSpecific)
+	}
+	if !reflect.DeepEqual(got.Packages.Official, []string{"htop"}) {
+		t.Fatalf("Official = %#v, want unchanged: migration never consults the current machine to infer desired absence", got.Packages.Official)
+	}
+	want := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "aur:dislocker-git", Setting: policy.SettingDisabled}},
+	}
+	if !reflect.DeepEqual(got.Policy, want) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, want)
+	}
+
+	// Loading a legacy profile must never mutate it on disk.
+	afterExcluded, err := os.ReadFile(filepath.Join(dir, "packages", "excluded.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeExcluded, afterExcluded) {
+		t.Fatalf("Load mutated packages/excluded.txt: before=%q after=%q", beforeExcluded, afterExcluded)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy", "policy.toml")); !os.IsNotExist(err) {
+		t.Fatalf("Load must not write policy/policy.toml, stat err=%v", err)
+	}
+}
+
+func TestLoadSchema11MigrationDoesNotDuplicateAnAlreadyPresentPolicyRule(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packages", "excluded.txt"), []byte("official:htop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A hand-authored policy.toml already carries an equivalent rule.
+	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyTOML := "[[capture]]\ncategory = 'packages'\ntarget = 'official:htop'\nsetting = 'disabled'\n"
+	if err := os.WriteFile(filepath.Join(dir, "policy", "policy.toml"), []byte(policyTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Policy.Capture) != 1 {
+		t.Fatalf("capture rules = %#v, want exactly one (no duplicate)", got.Policy.Capture)
+	}
+	if len(got.Policy.Restore) != 1 || got.Policy.Restore[0].Target != "official:htop" {
+		t.Fatalf("restore rules = %#v, want the migrated restore-disabled rule", got.Policy.Restore)
+	}
+}

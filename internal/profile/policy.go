@@ -133,6 +133,45 @@ func (m Machine) EffectiveRestoreDefaults() policy.RestoreOptions {
 // savePolicyFile writes policy/policy.toml, or removes it when rules is
 // empty: only overrides need to be written, and a lingering empty file would
 // be pure Git noise for a profile with no policy overrides at all.
+// migrateLegacyPackageExclusions converts a legacy (pre-schema-12) Packages
+// profile into the current policy-based model, in memory only:
+//
+//   - each Packages.Excluded ref becomes a portable Capture Disabled +
+//     Restore Disabled policy rule pair, so the target is unmanaged with no
+//     desired state -- not a desired-absence tombstone;
+//   - Packages.MachineSpecific is cleared, since it becomes pure runtime
+//     inspection/safety metadata (rediscovered locally by the packages
+//     provider) rather than portable desired state.
+//
+// This never consults the current machine to infer desired absence: a
+// legacy desired-present item stays desired-present.
+func migrateLegacyPackageExclusions(d *Data) {
+	for _, ref := range d.Packages.Excluded {
+		d.Policy = upsertRuleIfMissing(d.Policy, policy.AxisCapture, policy.Rule{Category: "packages", Target: ref, Setting: policy.SettingDisabled})
+		d.Policy = upsertRuleIfMissing(d.Policy, policy.AxisRestore, policy.Rule{Category: "packages", Target: ref, Setting: policy.SettingDisabled})
+	}
+	d.Packages.Excluded = nil
+	d.Packages.MachineSpecific = nil
+}
+
+func upsertRuleIfMissing(rules policy.Rules, axis policy.Axis, rule policy.Rule) policy.Rules {
+	list := rules.Capture
+	if axis == policy.AxisRestore {
+		list = rules.Restore
+	}
+	for _, existing := range list {
+		if existing.Category == rule.Category && existing.Target == rule.Target {
+			return rules
+		}
+	}
+	if axis == policy.AxisRestore {
+		rules.Restore = append(rules.Restore, rule)
+	} else {
+		rules.Capture = append(rules.Capture, rule)
+	}
+	return rules
+}
+
 func savePolicyFile(dir string, rules policy.Rules) error {
 	path := filepath.Join(dir, "policy", "policy.toml")
 	if len(rules.Capture) == 0 && len(rules.Restore) == 0 {
