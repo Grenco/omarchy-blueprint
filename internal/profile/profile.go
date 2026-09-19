@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 11
+const Schema = 12
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -30,6 +32,7 @@ const (
 	configOverlaySchema  = 8
 	gitStateSchema       = 10
 	machineOverlaySchema = 11
+	policySchema         = 12
 )
 
 type Manifest struct {
@@ -154,8 +157,18 @@ type Machines struct {
 }
 
 type Machine struct {
-	Name          string                `json:"name" toml:"name"`
-	ResourcePaths []MachineResourcePath `json:"resource_paths,omitempty" toml:"resource_path,omitempty"`
+	Name string `json:"name" toml:"name"`
+	// RestoreConflicts and RestoreConvergence are sparse: an empty value
+	// means this machine has no override and inherits the built-in
+	// Safe/Additive default. Use EffectiveRestoreDefaults rather than
+	// reading these fields directly.
+	RestoreConflicts   policy.ConflictMode    `json:"restore_conflicts,omitempty" toml:"restore_conflicts,omitempty"`
+	RestoreConvergence policy.ConvergenceMode `json:"restore_convergence,omitempty" toml:"restore_convergence,omitempty"`
+	ResourcePaths      []MachineResourcePath  `json:"resource_paths,omitempty" toml:"resource_path,omitempty"`
+	// Policy is this machine's sparse Capture/Restore overrides. Missing
+	// records mean inherit from the portable profile policy or the
+	// provider default.
+	Policy policy.Rules `json:"policy,omitempty" toml:"policy,omitempty"`
 }
 
 type MachineResourcePath struct {
@@ -221,6 +234,9 @@ type Data struct {
 	Defaults  Defaults  `json:"defaults"`
 	Shell     Shell     `json:"shell"`
 	Hooks     Hooks     `json:"hooks"`
+	// Policy is the portable profile's sparse Capture/Restore overrides.
+	// Missing records mean inherit from the provider default.
+	Policy policy.Rules `json:"policy"`
 }
 
 func New(name string, now time.Time) Data {
@@ -365,6 +381,10 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	d.Policy, err = loadPolicy(filepath.Join(dir, "policy", "policy.toml"))
+	if err != nil {
+		return d, err
+	}
 	return d, nil
 }
 
@@ -384,6 +404,9 @@ func Save(dir string, d Data) error {
 	sortResources(&d.Resources)
 	if err := normalizeMachines(&d.Machines); err != nil {
 		return err
+	}
+	if err := normalizePolicyRules(&d.Policy); err != nil {
+		return fmt.Errorf("policy: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
 		return err
@@ -479,6 +502,9 @@ func Save(dir string, d Data) error {
 		if err := atomicWrite(filepath.Join(dir, "machines", machine.Name+".toml"), contents); err != nil {
 			return err
 		}
+	}
+	if err := savePolicyFile(dir, d.Policy); err != nil {
+		return err
 	}
 	return pruneMachineFiles(filepath.Join(dir, "machines"), d.Machines.Items)
 }
@@ -603,6 +629,9 @@ func Validate(d Data) error {
 			}
 		}
 	}
+	if err := validatePolicyRules(d.Policy); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
 	return nil
 }
 
@@ -630,6 +659,12 @@ func validateMachines(machines []Machine) error {
 			if err := validateMachineMappingPath(mapping.Path); err != nil {
 				return fmt.Errorf("machine %q mapping for resource %q: %w", item.Name, mapping.Resource, err)
 			}
+		}
+		if err := validateMachineRestoreDefaults(item.RestoreConflicts, item.RestoreConvergence); err != nil {
+			return fmt.Errorf("machine %q: %w", item.Name, err)
+		}
+		if err := validatePolicyRules(item.Policy); err != nil {
+			return fmt.Errorf("machine %q policy: %w", item.Name, err)
 		}
 	}
 	return nil
@@ -844,6 +879,12 @@ func normalizeMachines(machines *Machines) error {
 				return fmt.Errorf("machine %q has duplicate resource path %q", machine.Name, resourcePath.Resource)
 			}
 			resources[resourcePath.Resource] = true
+		}
+		if err := validateMachineRestoreDefaults(machine.RestoreConflicts, machine.RestoreConvergence); err != nil {
+			return fmt.Errorf("machine %q: %w", machine.Name, err)
+		}
+		if err := normalizePolicyRules(&machine.Policy); err != nil {
+			return fmt.Errorf("machine %q policy: %w", machine.Name, err)
 		}
 	}
 	sortMachines(machines)

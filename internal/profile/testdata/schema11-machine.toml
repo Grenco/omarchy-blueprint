@@ -1,0 +1,5 @@
+name = 'desktop'
+
+[[resource_path]]
+resource = 'projects'
+path = '~/Code'
