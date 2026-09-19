@@ -4166,14 +4166,19 @@ func TestRestoreCommandVerifiesAgainstTheSameRestoreContextItPlannedWith(t *test
 		t.Fatal(err)
 	}
 
-	// Restore Skip means no install operation for zoxide, which would
-	// otherwise make the empty-Operations branch verify presence and fail
-	// -- unless the CLI's own verify pass is judging against the exact same
-	// RestoreContext that planned it, not independently re-resolving a
-	// context that never heard about the Skip.
-	code, out := configRun(t, deps, profileDir, "restore", "packages", "--dry-run")
+	// Restore Skip means no install operation for zoxide, which leaves
+	// plan.Operations empty and routes restoreProviders through its
+	// empty-Operations branch -- the one that actually calls
+	// verifyRestoreProviders. This must NOT be --dry-run: restoreProviders
+	// returns before ever reaching verification on that branch, which would
+	// give this test a false green without exercising the CLI's own
+	// execute/verify path at all. A real (non-dry) run with zero executable
+	// operations reaches verification without needing to mutate the
+	// machine, and without needing --yes (the confirmation prompt is only
+	// reached when there is something to apply).
+	code, out := configRun(t, deps, profileDir, "restore", "packages")
 	if code != 0 {
-		t.Fatalf("restore --dry-run code=%d out=%q, want success: a Restore-Skip target must never fail verification through the CLI's own verify path", code, out)
+		t.Fatalf("restore code=%d out=%q, want success: a Restore-Skip target must never fail verification through the CLI's own verify path", code, out)
 	}
 }
 
