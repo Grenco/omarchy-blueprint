@@ -116,15 +116,82 @@ func (p Provider) Capture(saved profile.Configs, enabled func(path string) bool)
 		}
 		return nil
 	}
+	// actionable holds only the candidates whose classification can produce a
+	// fresh captured value this run.
+	actionable := make(map[string]Candidate, len(scan.Candidates))
+	// byPath holds every scan candidate, actionable or not, so a previously
+	// desired path's classification can still be inspected below.
+	byPath := make(map[string]Candidate, len(scan.Candidates))
 	for _, c := range scan.Candidates {
+		byPath[c.Path] = c
 		switch c.Classification {
-		case ConfigAdded, ConfigModifiedBaseline:
-			if !enabled(c.Path) {
-				if err := preserve(c.Path); err != nil {
+		case ConfigAdded, ConfigModifiedBaseline, ConfigDeletedBaseline:
+			actionable[c.Path] = c
+		}
+	}
+	previouslyDesired := make(map[string]bool, len(savedFiles)+len(savedDeletes))
+	for path := range savedFiles {
+		previouslyDesired[path] = true
+	}
+	for path := range savedDeletes {
+		previouslyDesired[path] = true
+	}
+	paths := make(map[string]bool, len(actionable)+len(previouslyDesired))
+	for path := range actionable {
+		paths[path] = true
+	}
+	for path := range previouslyDesired {
+		paths[path] = true
+	}
+	orderedPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		orderedPaths = append(orderedPaths, path)
+	}
+	sort.Strings(orderedPaths)
+	for _, path := range orderedPaths {
+		c, hasCandidate := actionable[path]
+		if !hasCandidate {
+			// No fresh value is available this run. A previously desired
+			// path is frozen exactly as saved only when there genuinely is
+			// nothing to weigh it against -- it scans to nothing at all
+			// (gone missing entirely) or to ConfigUnchangedBaseline (nothing
+			// currently diverges from the baseline to capture). Any other
+			// classification (Excluded, Sensitive, Volatile, Oversized,
+			// Unsupported, ambiguous, an unmanaged symlink, ...) reflects
+			// the path itself becoming ineligible, not merely undecided, so
+			// it is dropped exactly as before: freezing an ineligible
+			// path's stale desired state would be wrong the same way
+			// Capture Preserve must never mean "adopt the excluded
+			// meaning." A path missing from the scan because it (or an
+			// ancestor) has been handed off to a stronger owner, such as a
+			// newly tracked Resource, is not "gone missing" either -- the
+			// walk itself prunes a delegated directory before its children
+			// are ever classified, so the same ownership check the walk
+			// uses is consulted directly here.
+			existing, scanned := byPath[path]
+			eligibleToPreserve := existing.Classification == ConfigUnchangedBaseline
+			if !scanned {
+				abs, err := p.absoluteUserPath(path)
+				if err != nil {
 					return CaptureResult{}, err
 				}
-				continue
+				eligibleToPreserve = !p.delegated(abs)
 			}
+			if eligibleToPreserve && previouslyDesired[path] && !enabled(path) {
+				if err := preserve(path); err != nil {
+					return CaptureResult{}, err
+				}
+			}
+			continue
+		}
+		if !enabled(path) {
+			if err := preserve(path); err != nil {
+				return CaptureResult{}, err
+			}
+			continue
+		}
+		switch c.Classification {
+		case ConfigAdded, ConfigModifiedBaseline:
 			user, err := p.absoluteUserPath(c.Path)
 			if err != nil {
 				return CaptureResult{}, err
@@ -153,12 +220,6 @@ func (p Provider) Capture(saved profile.Configs, enabled func(path string) bool)
 			}
 			state.Files = append(state.Files, file)
 		case ConfigDeletedBaseline:
-			if !enabled(c.Path) {
-				if err := preserve(c.Path); err != nil {
-					return CaptureResult{}, err
-				}
-				continue
-			}
 			base, err := p.absoluteBaselinePath(c.Path)
 			if err != nil {
 				return CaptureResult{}, err
