@@ -3158,6 +3158,76 @@ func TestPackagesPlanAndVerifyHonorRestoreSkip(t *testing.T) {
 	}
 }
 
+// TestPackagesPlanAndVerifyFailClosedOnMissingOrUnresolvedDecision is a
+// review regression: RestoreContext.Require's contract is that PR 4+ must
+// reject a missing or unresolved decision before Restore planning uses it,
+// rather than treating an inventory/orchestration omission as an implicit
+// Apply that silently broadens Restore's authority. A desired package
+// whose decision is entirely absent from the context, or present but never
+// marked Resolved, must make Plan/Verify fail outright -- and, critically,
+// must never let that package survive filtering and reach the low-level
+// planner as something to install.
+func TestPackagesPlanAndVerifyFailClosedOnMissingOrUnresolvedDecision(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	d := profile.Data{Packages: profile.Packages{Official: []string{"htop"}}}
+
+	t.Run("missing decision", func(t *testing.T) {
+		restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{}}
+		if _, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx); err == nil {
+			t.Fatal("Plan succeeded with no recorded decision for official:htop; want a fail-closed error")
+		}
+		if _, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx); err == nil {
+			t.Fatal("Verify succeeded with no recorded decision for official:htop; want a fail-closed error")
+		}
+	})
+
+	t.Run("unresolved decision", func(t *testing.T) {
+		restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+			"official:htop": {Restore: true, Resolved: false},
+		}}
+		if _, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx); err == nil {
+			t.Fatal("Plan succeeded with an unresolved decision for official:htop; want a fail-closed error")
+		}
+	})
+}
+
+// TestPackagesPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression: Packages.Absent tombstones are legitimate
+// desired state (the design says Restore policy decides whether saved
+// desired state applies, without distinguishing present from
+// desired-absent), and InspectTargets already surfaces them as their own
+// "official:<name>" targets with Desired=Absent -- but the filter only
+// covered Official/AUR/Mise before this fix, so a tombstoned target
+// resolving Restore Skip silently disappeared from the filtered state
+// instead of becoming a visible policy skip.
+func TestPackagesPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{
+		Absent: []profile.PackageAbsence{{Ref: "official:discord"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"official:discord": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "official:discord" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
 func TestConfigInspectTargetsReportsTrackedPathWithFullAncestorChain(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	_, userRoot, err := deps.ConfigDirs()
@@ -3754,6 +3824,182 @@ func TestThemesPlanAndVerifyHonorRestoreSkip(t *testing.T) {
 	}
 }
 
+// TestThemesActivationSurvivesAvailabilitySkipWhenAlreadyInstalled is the
+// blocker-3 review regression: "active" and "theme:<id>" are independent
+// policy targets (selected active theme versus installed-theme
+// availability), even though the low-level planner tags its activation
+// Operation with the theme's own "theme:<id>" Resource. When active=Apply
+// wants to activate a theme whose OWN availability target is Skip, but the
+// theme is already safely available locally (nothing left to install for
+// it), activation must still proceed -- the availability Skip must not be
+// misattributed to the activation operation and silently removed.
+func TestThemesActivationSurvivesAvailabilitySkipWhenAlreadyInstalled(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "other" // currently active theme differs from desired, so activating "nord" is needed
+	_, user, err := deps.ThemeDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(user, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "nord", "theme.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := profile.Data{Themes: profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "unknown", Enabled: true}}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"active":     {Restore: true, Resolved: true},
+		"theme:nord": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (themesStateProvider{deps: deps, opt: &options{}}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activated bool
+	for _, op := range plan.Operations {
+		if op.Action == "activate" {
+			activated = true
+		}
+	}
+	if !activated {
+		t.Fatalf("Operations = %#v, want the activation to proceed since nord is already installed locally", plan.Operations)
+	}
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "active" {
+			t.Fatalf("Skipped = %#v, want no \"active\" skip: activation is safe and should not be blocked", plan.Skipped)
+		}
+	}
+}
+
+// TestThemesActivationBlockedWhenAvailabilitySkippedThemeIsMissing is the
+// converse blocker-3 scenario: when the theme active=Apply wants to
+// activate has its OWN availability Skip AND it is not currently
+// installed, activation cannot actually be honored either way. It must
+// become its own visible "active" skip (not the availability skip's
+// reason, and not a silent no-op) rather than proceeding as if nothing
+// were wrong.
+func TestThemesActivationBlockedWhenAvailabilitySkippedThemeIsMissing(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "other" // currently active theme differs from desired, and nord is not installed at all
+
+	d := profile.Data{Themes: profile.Themes{Current: "nord", Items: []profile.Theme{{ID: "nord", Type: "unknown", Enabled: true}}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"active":     {Restore: true, Resolved: true},
+		"theme:nord": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	plan, err := (themesStateProvider{deps: deps, opt: &options{}}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "activate" {
+			t.Fatalf("Operations = %#v, want no activation: nord's own availability is Skip and it is not installed", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "active" {
+			found = true
+			if !strings.Contains(skipped.Reason, "nord") || !strings.Contains(skipped.Reason, "not currently installed") {
+				t.Fatalf("active skip reason = %q, want it to explain nord is unavailable", skipped.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible \"active\" skip explaining activation is blocked", plan.Skipped)
+	}
+
+	verification, err := (themesStateProvider{deps: deps, opt: &options{}}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "active-theme:nord" {
+			t.Fatalf("Missing = %#v, want verification to not expect an activation Plan itself refused to attempt", verification.Missing)
+		}
+	}
+}
+
+// TestResolveRestoreSkip is a direct unit regression for the shared
+// primitive every provider filter function now uses to resolve a desired
+// target key's Restore decision: a missing key, and a present-but-never-
+// Resolved decision, both fail closed (an error), matching
+// RestoreContext.Require's own contract, rather than falling through as an
+// implicit Apply.
+func TestResolveRestoreSkip(t *testing.T) {
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"official:apply":      {Restore: true, Resolved: true},
+		"official:skip":       {Restore: false, Resolved: true, Reason: "restore disabled"},
+		"official:unresolved": {Restore: true, Resolved: false},
+	}}
+
+	if _, _, err := resolveRestoreSkip(restoreCtx, "packages", "official:missing"); err == nil {
+		t.Fatal("resolveRestoreSkip succeeded for a key with no recorded decision; want a fail-closed error")
+	}
+	if _, _, err := resolveRestoreSkip(restoreCtx, "packages", "official:unresolved"); err == nil {
+		t.Fatal("resolveRestoreSkip succeeded for an unresolved decision; want a fail-closed error")
+	}
+	skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "official:apply")
+	if err != nil || skip || entry != (restoreSkip{}) {
+		t.Fatalf("official:apply: skip=%v entry=%+v err=%v, want skip=false entry=zero err=nil", skip, entry, err)
+	}
+	skip, entry, err = resolveRestoreSkip(restoreCtx, "packages", "official:skip")
+	if err != nil || !skip || entry.Key != "official:skip" || entry.Reason != "restore disabled" {
+		t.Fatalf("official:skip: skip=%v entry=%+v err=%v, want skip=true entry={official:skip restore disabled} err=nil", skip, entry, err)
+	}
+}
+
+// TestThemesPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression for Themes: Absent tombstones are legitimate
+// desired state, and InspectTargets already surfaces them as their own
+// "theme:<id>" targets with Desired=Absent, but the filter only covered
+// Items before this fix.
+func TestThemesPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	d := profile.Data{Themes: profile.Themes{
+		Absent: []profile.Theme{{ID: "gruvbox", Type: "git"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"theme:gruvbox": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterThemesForRestoreSkip(d.Themes, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "theme:gruvbox" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
+// TestThemesFilterSkipsRequireForBuiltinItems confirms a builtin Item never
+// needs a Restore decision at all -- InspectTargets never creates a
+// "theme:<id>" target for one ("Built-in themes ... carry nothing for
+// Blueprint to track a source for"), so requiring one here would
+// incorrectly fail closed on a target that was never actually in scope.
+func TestThemesFilterSkipsRequireForBuiltinItems(t *testing.T) {
+	d := profile.Data{Themes: profile.Themes{
+		Items: []profile.Theme{{ID: "matte-black", Type: "builtin", Enabled: true}},
+	}}
+	saved, matched, err := filterThemesForRestoreSkip(d.Themes, workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{}})
+	if err != nil {
+		t.Fatalf("builtin item required a Restore decision that was never recorded: %v", err)
+	}
+	if len(saved.Items) != 1 || saved.Items[0].ID != "matte-black" {
+		t.Fatalf("filtered Items = %#v, want the builtin item left untouched", saved.Items)
+	}
+	if len(matched) != 0 {
+		t.Fatalf("matched = %#v, want none: a builtin item is never restore-actionable desired state", matched)
+	}
+}
+
 func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
 	_, deps := configSandbox(t)
 	pluginDir := t.TempDir()
@@ -3862,6 +4108,31 @@ func TestPluginsPlanAndVerifyHonorRestoreSkip(t *testing.T) {
 	}
 }
 
+// TestPluginsPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression for Plugins: Absent tombstones are
+// legitimate desired state, and InspectTargets already surfaces them as
+// their own "plugin:<id>" targets with Desired=Absent, but the filter only
+// covered Items before this fix.
+func TestPluginsPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	d := profile.Data{Plugins: profile.Plugins{
+		Absent: []profile.Plugin{{ID: "acme.weather", Source: "local"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"plugin:acme.weather": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterPluginsForRestoreSkip(d.Plugins, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "plugin:acme.weather" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
 func TestHooksInspectTargetsReportsManagedPathsAndUnmanagedSymlinks(t *testing.T) {
 	_, deps := configSandbox(t)
 	hooksDir, err := deps.HooksDir()
@@ -3967,6 +4238,31 @@ func TestHooksPlanAndVerifyHonorRestoreSkip(t *testing.T) {
 		if missing == "hook:skip.sh" {
 			t.Fatalf("Missing = %#v, want the Restore-Skip target excluded from verification", verification.Missing)
 		}
+	}
+}
+
+// TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone is the
+// blocker-2 review regression for Hooks: Absent tombstones are legitimate
+// desired state, and InspectTargets already surfaces them as their own
+// bare-path targets with Desired=Absent, but the filter only covered
+// Items before this fix.
+func TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
+	d := profile.Data{Hooks: profile.Hooks{
+		Absent: []profile.Hook{{Path: "removed.sh", Hash: appHash(t, "x"), Mode: "0755"}},
+	}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"removed.sh": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+	}}
+
+	saved, matched, err := filterHooksForRestoreSkip(d.Hooks, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Absent) != 0 {
+		t.Fatalf("filtered Absent = %#v, want the Restore-Skip tombstone removed from the desired state in scope", saved.Absent)
+	}
+	if len(matched) != 1 || matched[0].Key != "removed.sh" {
+		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
 	}
 }
 
