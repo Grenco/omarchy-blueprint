@@ -58,6 +58,48 @@ func TestInspectCaptureReportsUpdateForAlreadyTrackedPresentTarget(t *testing.T)
 	}
 }
 
+// TestInspectCaptureReportsStopManagingForPresentTargetWithNoActionableUpdate
+// is a regression for a round-3 review finding on PR 3: a present and
+// desired-present target normally means real Capture would write a
+// genuinely fresh value (Update), but a provider can mark a classification
+// as never actually producing one (Config's UnchangedBaseline/
+// HistoricalBaseline: baseline-derived, not real user customization). The
+// preview must then agree with what Capture actually does -- drop the
+// stale value, not "update" it to anything -- rather than reporting the
+// generic Update.
+func TestInspectCaptureReportsStopManagingForPresentTargetWithNoActionableUpdate(t *testing.T) {
+	session := newInspectionSession(t)
+	session.SetProviders([]Provider{captureInspectionTestProvider{id: "config", targets: []TargetInspection{
+		{
+			Key: ".config/hypr/bindings.lua", CaptureEligible: true, Current: TargetPresent, Desired: TargetPresent,
+			Capabilities: TargetCapabilities{NoActionableUpdate: true},
+		},
+	}}})
+
+	inspection, err := session.InspectCapture(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := singleCaptureTarget(t, inspection, "config")
+	if got.Outcome != CaptureOutcomeStopManaging {
+		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeStopManaging)
+	}
+}
+
+// TestInspectCapturePreservesNoActionableUpdateTargetWhenCaptureDisabled
+// confirms the paired disabled transition still Preserves, exactly like any
+// other target: NoActionableUpdate only changes what the *enabled*
+// transition reports.
+func TestInspectCapturePreservesNoActionableUpdateTargetWhenCaptureDisabled(t *testing.T) {
+	got := captureOutcome(TargetInspection{
+		CaptureEligible: true, Current: TargetPresent, Desired: TargetPresent,
+		Capabilities: TargetCapabilities{NoActionableUpdate: true},
+	}, CaptureDecision{Capture: false, Resolved: true})
+	if got != CaptureOutcomePreserve {
+		t.Fatalf("Outcome = %s, want %s", got, CaptureOutcomePreserve)
+	}
+}
+
 func TestInspectCaptureReportsAbsentForTrackedTargetNoLongerPresent(t *testing.T) {
 	session := newInspectionSession(t)
 	session.SetProviders([]Provider{captureInspectionTestProvider{id: "packages", targets: []TargetInspection{
@@ -181,6 +223,26 @@ func TestInspectCaptureReportsStopManagingForOwnershipTransitionInsteadOfBlocked
 	got := singleCaptureTarget(t, inspection, "config")
 	if got.Outcome != CaptureOutcomeStopManaging {
 		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeStopManaging)
+	}
+}
+
+// TestInspectCaptureReportsStopManagingForOwnershipTransitionOfADesiredAbsentTombstone
+// is a regression for a round-3 review finding on PR 3: captureOutcome
+// only checked target.Desired == TargetPresent, so an ownership-transition
+// target holding a desired-absent tombstone (e.g. a saved Config deletion
+// whose path later becomes Excluded/Delegated) still previewed as generic
+// Blocked, even though real Capture drops the tombstone exactly the same
+// way it drops desired-present state for these classifications (see
+// capture.go's ConfigDelegated/ConfigExcluded branch, which does not
+// distinguish a saved file from a saved deletion). Any recorded desired
+// state, not just desired-present, must report StopManaging here.
+func TestInspectCaptureReportsStopManagingForOwnershipTransitionOfADesiredAbsentTombstone(t *testing.T) {
+	got := captureOutcome(TargetInspection{
+		CaptureEligible: false, Current: TargetAbsent, Desired: TargetAbsent,
+		Capabilities: TargetCapabilities{DropsDesiredWhenIneligible: true},
+	}, CaptureDecision{Capture: false, Resolved: true})
+	if got != CaptureOutcomeStopManaging {
+		t.Fatalf("Outcome = %s, want %s", got, CaptureOutcomeStopManaging)
 	}
 }
 

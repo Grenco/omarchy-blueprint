@@ -94,23 +94,31 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 // per-provider (see Task 17): a target ineligible for Capture is Blocked
 // regardless of policy -- unless the provider says ineligibility here is an
 // ownership-management transition, not a safety freeze (see
-// TargetCapabilities.DropsDesiredWhenIneligible), in which case a
-// previously desired-present target actively loses its desired state
-// (StopManaging), same as it really will under Capture. Capture Disabled
-// always Preserves whatever is already tracked; otherwise the outcome
-// follows from whether the target is currently present on the machine and
-// whether it was already tracked. A missing-but-desired target has three
-// genuinely different transitions, not two: a provider that can record an
-// explicit tombstone does so (Absent -- Blueprint keeps managing the target
-// and remembers its removal); one that cannot, but leaves prior desired
-// state untouched, Preserves it (Resources: no way to tell "gone" from "not
-// yet restored" apart); one that cannot and does not preserve it silently
-// drops it from desired state entirely (StopManaging -- Defaults/Shell:
-// Capture always writes a fresh full replacement, so an empty/vanished
-// value carries no desired state afterward, not a remembered absence).
+// TargetCapabilities.DropsDesiredWhenIneligible), in which case any
+// previously recorded desired state -- present or an explicit desired-absent
+// tombstone alike -- actively loses it (StopManaging), same as it really
+// will under Capture; a target with no recorded desired state at all has
+// nothing to drop, so it stays Blocked. Capture Disabled always Preserves
+// whatever is already tracked; otherwise the outcome follows from whether
+// the target is currently present on the machine and whether it was already
+// tracked. A present-and-desired-present target normally means a genuinely
+// fresh value would be captured (Update) -- unless the provider says its
+// classification can never actually produce one (see
+// TargetCapabilities.NoActionableUpdate: Config's UnchangedBaseline/
+// HistoricalBaseline are baseline-derived, not real user customization, so
+// enabling Capture converges by dropping the stale value instead). A
+// missing-but-desired target has three genuinely different transitions, not
+// two: a provider that can record an explicit tombstone does so (Absent --
+// Blueprint keeps managing the target and remembers its removal); one that
+// cannot, but leaves prior desired state untouched, Preserves it
+// (Resources: no way to tell "gone" from "not yet restored" apart); one
+// that cannot and does not preserve it silently drops it from desired state
+// entirely (StopManaging -- Defaults/Shell: Capture always writes a fresh
+// full replacement, so an empty/vanished value carries no desired state
+// afterward, not a remembered absence).
 func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOutcome {
 	if !target.CaptureEligible {
-		if target.Capabilities.DropsDesiredWhenIneligible && target.Desired == TargetPresent {
+		if target.Capabilities.DropsDesiredWhenIneligible && target.Desired != TargetUnknown {
 			return CaptureOutcomeStopManaging
 		}
 		return CaptureOutcomeBlocked
@@ -120,6 +128,9 @@ func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOu
 	}
 	switch {
 	case target.Current == TargetPresent && target.Desired == TargetPresent:
+		if target.Capabilities.NoActionableUpdate {
+			return CaptureOutcomeStopManaging
+		}
 		return CaptureOutcomeUpdate
 	case target.Current == TargetPresent && target.Desired != TargetPresent:
 		return CaptureOutcomeAdd
