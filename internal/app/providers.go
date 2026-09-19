@@ -1184,7 +1184,8 @@ func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omar
 	if blocked {
 		saved.Current = ""
 	}
-	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, themesprovider.PlanOptions{Exact: exact})
 	activation, rest := splitThemeActivationOperation(plan.Operations)
 	plan.Operations = rest
 	plan = recordRestoreSkips(plan, "themes", matched)
@@ -1213,7 +1214,8 @@ func (p themesStateProvider) Verify(ctx context.Context, d profile.Data, restore
 	if _, blocked := themeActivationBlockedReason(saved.Current, current, restoreCtx); blocked {
 		saved.Current = ""
 	}
-	return themesprovider.Verify(saved, current), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return themesprovider.Verify(saved, current, themesprovider.VerifyOptions{Exact: exact}), nil
 }
 
 // filterThemesForRestoreSkip returns a copy of saved with the desired
