@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 // PolicyScope identifies which policy scope a caller is viewing or editing.
@@ -106,6 +107,46 @@ func (s *Session) ClearPolicy(scope PolicyScope, axis policy.Axis, category, tar
 	}
 	m.Policy = removePolicyRule(m.Policy, axis, category, target)
 	return s.saveMachines()
+}
+
+// stopManagingActions is implemented by every provider's stateProvider,
+// including the ones that reject Stop Managing outright: rejection is
+// expressed as an error from StopManaging itself (with a category-specific
+// explanation), not by a provider omitting the method, so every category
+// gets a clear, specific message rather than a generic "unsupported."
+type stopManagingActions interface {
+	StopManaging(ctx context.Context, data profile.Data, target string) (profile.Data, error)
+}
+
+// StopManaging permanently forgets one target: its desired present/absent
+// state, any sole captured artifact, and its target-specific profile and
+// machine policy overrides. Unlike ClearPolicy, which reverts a target to
+// inherited resolution, Stop Managing removes the target from Blueprint's
+// tracking entirely. Support and exact semantics are category-specific; see
+// each stateProvider's StopManaging for what "remove" means for it.
+func (s *Session) StopManaging(ctx context.Context, category, target string) error {
+	provider, ok := ProviderByID(s.providers, category)
+	if !ok {
+		return fmt.Errorf("workflow: unknown provider %q", category)
+	}
+	actions, ok := provider.(stopManagingActions)
+	if !ok {
+		return fmt.Errorf("%s does not support Stop Managing", category)
+	}
+	next, err := actions.StopManaging(ctx, s.profile, target)
+	if err != nil {
+		return err
+	}
+	next.Policy = removePolicyRule(removePolicyRule(next.Policy, policy.AxisCapture, category, target), policy.AxisRestore, category, target)
+	for i := range next.Machines.Items {
+		m := &next.Machines.Items[i]
+		m.Policy = removePolicyRule(removePolicyRule(m.Policy, policy.AxisCapture, category, target), policy.AxisRestore, category, target)
+	}
+	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
+		return fmt.Errorf("save profile: %w", err)
+	}
+	s.profile = next
+	return nil
 }
 
 // SetMachineRestoreDefaults sets machine's persisted Restore conflict and

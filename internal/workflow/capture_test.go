@@ -35,6 +35,7 @@ type captureTestProvider struct {
 	lastCapture                   *CaptureContext
 	lastPlan                      *RestoreContext
 	lastVerify                    *RestoreContext
+	stopManagingFail              bool
 }
 
 func (p captureTestProvider) ID() string               { return p.id }
@@ -67,6 +68,19 @@ func (p captureTestProvider) Verify(_ context.Context, _ profile.Data, restoreCt
 		*p.lastVerify = restoreCtx
 	}
 	return model.VerificationResult{OK: true}, nil
+}
+func (p captureTestProvider) StopManaging(_ context.Context, data profile.Data, target string) (profile.Data, error) {
+	if p.stopManagingFail {
+		return profile.Data{}, errors.New("stop managing rejected")
+	}
+	var kept []string
+	for _, ref := range data.Packages.Official {
+		if "official:"+ref != target {
+			kept = append(kept, ref)
+		}
+	}
+	data.Packages.Official = kept
+	return data, nil
 }
 func (p captureTestProvider) CommitCapture() error {
 	*p.commits++
