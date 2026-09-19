@@ -154,12 +154,17 @@ func TestMergeMiseUnTombstonesWithCurrentDeclaration(t *testing.T) {
 }
 
 // TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
-// gate: a Capture-produced desired-absence tombstone is write-only today --
-// Capture writes it, but Restore's Plan/Verify never read the Absent list --
-// so it cannot cause an unexpected removal, skip, or verification failure
-// until PR 4 activates Restore-side policy. This locks the invariant in so a
-// future PR4 change cannot silently wire Absent into a destructive default
-// without this test failing first.
+// gate, still holding after PR 4 Task 26 activated Restore-side policy: a
+// Capture-produced desired-absence tombstone remains write-only at this
+// low level -- Plan/Verify never read the Absent list -- matching the
+// design's "generic package absence is Exact-only for removal" and PR 4's
+// explicit scope ("do not yet add new theme/plugin/hook/package
+// removals"). Task 26's per-target Restore Skip filtering (see
+// internal/app's filterPackagesForRestoreSkip) only ever removes entries
+// from saved.Official/AUR/Mise before calling Plan/Verify; it never
+// touches or reads Absent either. Real Exact-only removal is PR 5's job.
+// This locks the invariant in so a future change cannot silently wire
+// Absent into a destructive default without this test failing first.
 func TestPlanAndVerifyIgnoreDesiredAbsenceTombstones(t *testing.T) {
 	saved := profile.Packages{
 		Official: []string{"firefox"},

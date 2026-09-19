@@ -100,6 +100,15 @@ type CaptureDecision struct {
 type RestoreDecision struct {
 	Restore  bool
 	Resolved bool
+	// Reason is a human-readable explanation for a Restore=false decision,
+	// for a provider to attach verbatim to the model.Skipped entry it
+	// records for this target (see the design's "a target with Restore
+	// Skip must remain a visible skip/reason in the plan" invariant).
+	// Empty when Restore is true. When the target itself was ineligible
+	// (RestoreEligible false), this carries the provider's own
+	// TargetInspection.SafetyReason; when policy resolved the skip, this
+	// carries a standardized reason (see RestoreSkipReason).
+	Reason string
 }
 
 // DefaultCaptureDecision is the explicit compatibility decision
@@ -110,9 +119,12 @@ type RestoreDecision struct {
 // as fail-closed rather than as an implicit allow.
 func DefaultCaptureDecision() CaptureDecision { return CaptureDecision{Capture: true, Resolved: false} }
 
-// DefaultRestoreDecision is the explicit compatibility decision
-// orchestration must record for every target it plans before real policy
-// resolution is wired up (PR 4). See DefaultCaptureDecision.
+// DefaultRestoreDecision was the explicit compatibility decision
+// orchestration recorded for every target it planned before real policy
+// resolution was wired up (PR 4 Task 25 replaced it with
+// Session.resolveRestoreTarget). It remains as the canonical
+// enabled/unresolved sentinel value for tests exercising Require's
+// rejection of an unresolved decision.
 func DefaultRestoreDecision() RestoreDecision { return RestoreDecision{Restore: true, Resolved: false} }
 
 // CaptureContext carries the resolved Capture decision for every target a
@@ -153,10 +165,9 @@ func (c CaptureContext) Require(key string) (CaptureDecision, error) {
 
 // RestoreContext carries the resolved Restore decision for every target a
 // provider is planning, plus the restore run's two independent intent
-// axes, for one machine. Orchestration must populate an entry for every
-// planned target (DefaultRestoreDecision while policy resolution is not
-// yet active, or a resolved decision once it is); a target absent from
-// Targets means no orchestration ever considered it.
+// axes, for one machine. Orchestration must populate a real resolved
+// decision (see Session.resolveRestoreTarget) for every planned target; a
+// target absent from Targets means no orchestration ever considered it.
 type RestoreContext struct {
 	Machine string
 	Options policy.RestoreOptions
