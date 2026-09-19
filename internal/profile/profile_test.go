@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 )
 
 func TestSaveLoadRoundTripNormalizesPackages(t *testing.T) {
@@ -114,8 +116,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 11\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 11", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 12\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 12", savedManifest)
 	}
 }
 
@@ -670,7 +672,7 @@ func TestSchema10ResourceGitDiffRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 11 || !reflect.DeepEqual(got.Resources, d.Resources) {
+	if got.Manifest.Schema != Schema || !reflect.DeepEqual(got.Resources, d.Resources) {
 		t.Fatalf("round trip=%#v", got.Resources)
 	}
 }
@@ -693,7 +695,7 @@ func TestSchema9GitResourceLoadsWithoutInventedGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := got.Resources.Items[0]
-	if got.Manifest.Schema != 11 || r.Strategy != "git" || r.IndexPatchHash != "" || r.WorktreePatchHash != "" || len(r.Untracked) != 0 {
+	if got.Manifest.Schema != Schema || r.Strategy != "git" || r.IndexPatchHash != "" || r.WorktreePatchHash != "" || len(r.Untracked) != 0 {
 		t.Fatalf("migrated resource=%#v", r)
 	}
 }
@@ -708,7 +710,7 @@ func TestLoadSchema10MigratesWithNoMachines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.Schema != 11 || len(got.Machines.Items) != 0 {
+	if got.Manifest.Schema != Schema || len(got.Machines.Items) != 0 {
 		t.Fatalf("migration = %#v", got)
 	}
 }
@@ -778,8 +780,8 @@ func TestSaveLoadMachinesRoundTripInCanonicalOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), "schema = 11\n") {
-		t.Fatalf("profile.toml = %q, want schema 11", manifest)
+	if !strings.Contains(string(manifest), "schema = 12\n") {
+		t.Fatalf("profile.toml = %q, want schema 12", manifest)
 	}
 	framework, err := os.ReadFile(filepath.Join(dir, "machines", "framework.toml"))
 	if err != nil {
@@ -812,5 +814,225 @@ func TestSaveRejectsDuplicateMachineState(t *testing.T) {
 		if err := Save(t.TempDir(), d); err == nil {
 			t.Fatalf("invalid machines accepted: %#v", machines)
 		}
+	}
+}
+
+func TestSavePolicyRoundTripsInSortedCanonicalOrder(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{
+		Capture: []policy.Rule{
+			{Category: "themes", Setting: policy.SettingDisabled},
+			{Category: "packages", Target: "official:vim", Setting: policy.SettingDisabled},
+			{Category: "packages", Target: "official:firefox", Setting: policy.SettingEnabled},
+		},
+		Restore: []policy.Rule{
+			{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled},
+		},
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "policy", "policy.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[[capture]]\ncategory = 'packages'\ntarget = 'official:firefox'\nsetting = 'enabled'\n\n[[capture]]\ncategory = 'packages'\ntarget = 'official:vim'\nsetting = 'disabled'\n\n[[capture]]\ncategory = 'themes'\nsetting = 'disabled'\n\n[[restore]]\ncategory = 'config'\ntarget = '.config/nvim'\nsetting = 'disabled'\n"
+	if string(raw) != want {
+		t.Fatalf("policy.toml = %q, want %q", raw, want)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRules := policy.Rules{
+		Capture: []policy.Rule{
+			{Category: "packages", Target: "official:firefox", Setting: policy.SettingEnabled},
+			{Category: "packages", Target: "official:vim", Setting: policy.SettingDisabled},
+			{Category: "themes", Setting: policy.SettingDisabled},
+		},
+		Restore: []policy.Rule{
+			{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled},
+		},
+	}
+	if !reflect.DeepEqual(got.Policy, wantRules) {
+		t.Fatalf("policy = %#v, want %#v", got.Policy, wantRules)
+	}
+}
+
+func TestSavePolicyRemovesFileWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{Capture: []policy.Rule{{Category: "packages", Setting: policy.SettingDisabled}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy", "policy.toml")); err != nil {
+		t.Fatalf("expected policy.toml to exist: %v", err)
+	}
+	d.Policy = policy.Rules{}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy", "policy.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected policy.toml to be removed once empty, stat err=%v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Policy, policy.Rules{}) {
+		t.Fatalf("policy = %#v, want empty", got.Policy)
+	}
+}
+
+func TestLoadPolicyMissingFileMeansNoOverrides(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Policy, policy.Rules{}) {
+		t.Fatalf("policy = %#v, want empty", got.Policy)
+	}
+}
+
+func TestSaveRejectsInvalidPolicySetting(t *testing.T) {
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{Capture: []policy.Rule{{Category: "packages", Setting: "maybe"}}}
+	if err := Save(t.TempDir(), d); err == nil {
+		t.Fatal("invalid policy setting accepted")
+	}
+}
+
+func TestSaveRejectsUnknownPolicyCategory(t *testing.T) {
+	d := New("main", time.Unix(0, 0))
+	d.Policy = policy.Rules{Capture: []policy.Rule{{Category: "bogus", Setting: policy.SettingDisabled}}}
+	if err := Save(t.TempDir(), d); err == nil {
+		t.Fatal("unknown policy category accepted")
+	}
+}
+
+func TestSaveRejectsDuplicatePolicyRule(t *testing.T) {
+	for _, rules := range []policy.Rules{
+		{Capture: []policy.Rule{{Category: "packages", Target: "official:vim", Setting: policy.SettingDisabled}, {Category: "packages", Target: "official:vim", Setting: policy.SettingEnabled}}},
+		{Restore: []policy.Rule{{Category: "shell", Setting: policy.SettingDisabled}, {Category: "shell", Setting: policy.SettingEnabled}}},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Policy = rules
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("duplicate policy rule accepted: %#v", rules)
+		}
+	}
+}
+
+func TestSaveMachineRestoreDefaultsAndPolicyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Machines = Machines{Items: []Machine{{
+		Name:               "desktop",
+		RestoreConflicts:   policy.ConflictForce,
+		RestoreConvergence: policy.ConvergenceExact,
+		Policy:             policy.Rules{Capture: []policy.Rule{{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled}}},
+	}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Machines.Items) != 1 {
+		t.Fatalf("machines = %#v", got.Machines.Items)
+	}
+	machine := got.Machines.Items[0]
+	if machine.RestoreConflicts != policy.ConflictForce || machine.RestoreConvergence != policy.ConvergenceExact {
+		t.Fatalf("restore defaults = %+v, want Force/Exact", machine)
+	}
+	wantPolicy := policy.Rules{Capture: []policy.Rule{{Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled}}}
+	if !reflect.DeepEqual(machine.Policy, wantPolicy) {
+		t.Fatalf("machine policy = %#v, want %#v", machine.Policy, wantPolicy)
+	}
+}
+
+func TestMachineEffectiveRestoreDefaultsNormalizesEmptyToSafeAdditive(t *testing.T) {
+	var m Machine
+	got := m.EffectiveRestoreDefaults()
+	want := policy.DefaultRestoreOptions()
+	if got != want {
+		t.Fatalf("EffectiveRestoreDefaults() = %+v, want %+v", got, want)
+	}
+	m.RestoreConflicts = policy.ConflictForce
+	if got := m.EffectiveRestoreDefaults(); got.Conflicts != policy.ConflictForce || got.Convergence != policy.ConvergenceAdditive {
+		t.Fatalf("partial override = %+v, want Force/Additive", got)
+	}
+}
+
+func TestSaveRejectsInvalidMachineRestoreDefaults(t *testing.T) {
+	for _, machine := range []Machine{
+		{Name: "desktop", RestoreConflicts: "sometimes"},
+		{Name: "desktop", RestoreConvergence: "mostly"},
+	} {
+		d := New("main", time.Unix(0, 0))
+		d.Machines = Machines{Items: []Machine{machine}}
+		if err := Save(t.TempDir(), d); err == nil {
+			t.Fatalf("invalid restore defaults accepted: %#v", machine)
+		}
+	}
+}
+
+func TestLoadSchema11MachineFileHasDefaultRestoreOptionsAndEmptyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	manifest := "schema = 11\n\n[profile]\nname = 'legacy'\ncreated_at = 2026-09-18T00:00:00Z\nupdated_at = 2026-09-18T00:00:00Z\n"
+	if err := os.WriteFile(filepath.Join(dir, "profile.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, "profile.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "machines"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schema11-machine.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "machines", "desktop.toml"), fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest.Schema != Schema {
+		t.Fatalf("schema = %d, want %d", got.Manifest.Schema, Schema)
+	}
+	if !reflect.DeepEqual(got.Policy, policy.Rules{}) {
+		t.Fatalf("policy = %#v, want empty", got.Policy)
+	}
+	if len(got.Machines.Items) != 1 {
+		t.Fatalf("machines = %#v", got.Machines.Items)
+	}
+	machine := got.Machines.Items[0]
+	if machine.RestoreConflicts != "" || machine.RestoreConvergence != "" || !reflect.DeepEqual(machine.Policy, policy.Rules{}) {
+		t.Fatalf("machine = %#v, want empty restore/policy overrides", machine)
+	}
+	if got := machine.EffectiveRestoreDefaults(); got != policy.DefaultRestoreOptions() {
+		t.Fatalf("EffectiveRestoreDefaults() = %+v, want Safe/Additive default", got)
+	}
+
+	// Load must never mutate the profile on disk.
+	after, err := os.ReadFile(filepath.Join(dir, "profile.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("Load mutated profile.toml on disk: before=%q after=%q", before, after)
 	}
 }
