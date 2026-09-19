@@ -176,6 +176,53 @@ func TestPlanSuppressesLinkForConflictingTargetAndRejectsMode(t *testing.T) {
 	}
 }
 
+// TestPlanNeverEmitsDeleteRegardlessOfForceOrExtraLocalData is the PR 5 Task
+// 32 Resources no-delete lock-in gate: Resources has no desired-absence
+// representation, and Convergence never even reaches this package's
+// PlanOptions (resourcesStateProvider.Plan in internal/app only ever
+// derives Force from the Conflicts axis -- see restorePlanOptionsFromPolicy
+// and its own Plan wiring), so the guarantee holds structurally. This locks
+// it in directly against the low-level Plan: no "delete" action, with or
+// without Force, even with a conflicting existing link target and extra
+// untracked local data outside any captured Resource.
+func TestPlanNeverEmitsDeleteRegardlessOfForceOrExtraLocalData(t *testing.T) {
+	home, profileDir := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(profileDir, "resources", "files", "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(home, "Untracked", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{HomeDir: home, ProfileDir: profileDir}
+	scripts := profile.Resource{ID: "scripts", Path: "~/Scripts", Kind: "directory", Strategy: "copy", Hash: "hash", Mode: "0755"}
+	linkTarget := filepath.Join(home, "bin", "current")
+	if err := os.MkdirAll(filepath.Dir(linkTarget), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linkTarget, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Resources{
+		Items: []profile.Resource{scripts},
+		Links: []profile.ResourceLink{{SourceResource: "scripts", Source: "current", TargetResource: "scripts", Target: "bin/current", Origin: "resource"}},
+	}
+	for _, force := range []bool{false, true} {
+		plan, err := p.Plan(context.Background(), saved, profile.Resources{}, 7, "", "", PlanOptions{Force: force})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, op := range plan.Operations {
+			if op.Action == "delete" || op.Delete != nil {
+				t.Fatalf("force=%v: Operations = %#v, want no delete operation ever", force, plan.Operations)
+			}
+		}
+	}
+}
+
 func TestPlanForceReplacesOnlyConflictingResourceLink(t *testing.T) {
 	home := t.TempDir()
 	p := Provider{HomeDir: home, ProfileDir: t.TempDir()}

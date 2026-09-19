@@ -542,6 +542,33 @@ func TestPlanOverlayTreatsModeDriftAsUnknownAndAbsentTombstoneAsSatisfied(t *tes
 	}
 }
 
+// TestPlanOverlayNeverSweepsUncapturedConfigRegardlessOfForce is the PR 5
+// Task 32 Config no-sweep lock-in gate: only an explicit profile.ConfigDelete
+// entry can ever produce a delete operation. A config file the scan reports
+// but the profile never captured at all (Classification: ConfigAdded,
+// absent from both saved.Files and saved.Deletes) must never be swept, with
+// or without Force -- Config's delete path only ever iterates saved.Deletes,
+// never scans for files present on disk but absent from the profile.
+func TestPlanOverlayNeverSweepsUncapturedConfigRegardlessOfForce(t *testing.T) {
+	root, profileDir := t.TempDir(), t.TempDir()
+	path := "app/extra.conf"
+	writeFile(t, filepath.Join(root, path), "never captured")
+	p := Provider{UserRoot: root, BaselineRoot: t.TempDir(), ProfileDir: profileDir}
+	saved := profile.Configs{}
+	scan := ScanSummary{Candidates: []Candidate{{Path: path, Classification: ConfigAdded, UserHash: hashOf(t, filepath.Join(root, path)), UserMode: "0644"}}}
+	for _, force := range []bool{false, true} {
+		plan, err := p.PlanOverlay(saved, scan, 8, "old", "new", PlanOptions{Force: force})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, op := range plan.Operations {
+			if op.Action == "delete" || op.Delete != nil {
+				t.Fatalf("force=%v: Operations = %#v, want no delete operation for an uncaptured config file", force, plan.Operations)
+			}
+		}
+	}
+}
+
 type noopRunner struct{}
 
 func (noopRunner) Run(context.Context, string, ...string) (string, error) { return "", nil }
