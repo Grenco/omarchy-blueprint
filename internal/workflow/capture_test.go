@@ -8,6 +8,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -203,7 +204,7 @@ func TestCaptureManyDoesNotPersistPartialStateOnProviderFailure(t *testing.T) {
 	}
 }
 
-func TestCaptureManyBuildsCompatibilityCaptureContextFromInspectedTargets(t *testing.T) {
+func TestCaptureManyResolvesRealPolicyForEveryInspectedTarget(t *testing.T) {
 	session := newCaptureSession(t, profile.New("test", time.Now()))
 	var order []string
 	var lastCapture CaptureContext
@@ -212,7 +213,10 @@ func TestCaptureManyBuildsCompatibilityCaptureContextFromInspectedTargets(t *tes
 		captureTestProvider{
 			id: "packages", order: &order, commits: &commits, rollbacks: &rollbacks,
 			lastCapture: &lastCapture,
-			targets:     []TargetInspection{{Key: "official:firefox"}, {Key: "official:neovim"}},
+			targets: []TargetInspection{
+				{Key: "official:firefox", CaptureEligible: true},
+				{Key: "official:neovim", CaptureEligible: true},
+			},
 		},
 	})
 	if _, err := session.Capture(context.Background(), "packages"); err != nil {
@@ -223,9 +227,31 @@ func TestCaptureManyBuildsCompatibilityCaptureContextFromInspectedTargets(t *tes
 	}
 	for _, key := range []string{"official:firefox", "official:neovim"} {
 		got, ok := lastCapture.Lookup(key)
-		if !ok || got != DefaultCaptureDecision() {
-			t.Fatalf("Lookup(%q) = %+v, %v, want the PR 2 compatibility default", key, got, ok)
+		want := CaptureDecision{Capture: true, Resolved: true}
+		if !ok || got != want {
+			t.Fatalf("Lookup(%q) = %+v, %v, want %+v: no policy rules exist, so an eligible target resolves to the built-in enabled default", key, got, ok, want)
 		}
+	}
+}
+
+func TestCaptureManyBlocksIneligibleTargetRegardlessOfPolicy(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	var order []string
+	var lastCapture CaptureContext
+	commits, rollbacks := 0, 0
+	session.SetProviders([]Provider{
+		captureTestProvider{
+			id: "packages", order: &order, commits: &commits, rollbacks: &rollbacks,
+			lastCapture: &lastCapture,
+			targets:     []TargetInspection{{Key: "official:nvidia-utils", CaptureEligible: false}},
+		},
+	})
+	if _, err := session.Capture(context.Background(), "packages"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := lastCapture.Lookup("official:nvidia-utils")
+	if !ok || got.Capture {
+		t.Fatalf("Lookup(...) = %+v, %v, want CaptureEligible: false to be blocked regardless of policy", got, ok)
 	}
 }
 
@@ -257,4 +283,72 @@ func sameStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// policyAwareTestProvider simulates a provider that actually consults its
+// CaptureDecision: it clears the saved target when Capture is resolved
+// enabled (simulating a merge that would otherwise remove a now-absent
+// item), and leaves saved state untouched when Capture is disabled or
+// unresolved (Preserve).
+type policyAwareTestProvider struct {
+	id      string
+	key     string
+	targets []TargetInspection
+}
+
+func (p policyAwareTestProvider) ID() string               { return p.id }
+func (policyAwareTestProvider) Captured(profile.Data) bool { return true }
+func (p policyAwareTestProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return p.targets, nil
+}
+func (p policyAwareTestProvider) Capture(_ context.Context, data *profile.Data, capCtx CaptureContext) (any, []model.Change, error) {
+	if decision, ok := capCtx.Lookup(p.key); ok && decision.Capture {
+		data.Packages.Official = nil
+	}
+	return struct{}{}, nil, nil
+}
+func (policyAwareTestProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return nil, nil
+}
+
+// This is Task 16's headline regression: a target saved as present, now
+// absent on this machine, with Capture Disabled for it on this machine, must
+// remain present in the saved profile after Capture -- Capture Disabled
+// means preserve, not delete, and provider safety/policy resolution must
+// actually reach the provider as a real disabled decision, not the PR 2
+// always-enabled compatibility stub.
+func TestCaptureManyPreservesSavedTargetWhenMachineHasCaptureDisabled(t *testing.T) {
+	data := profile.New("test", time.Now())
+	data.Packages.Official = []string{"firefox"}
+	data.Machines.Items = []profile.Machine{{
+		Name:   "desktop",
+		Policy: policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:firefox", Setting: policy.SettingDisabled}}},
+	}}
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{
+		Runner: captureRunner{}, Now: func() time.Time { return time.Unix(1, 0) },
+		StateHome: func() (string, error) { return stateHome, nil },
+	}, Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetProviders([]Provider{policyAwareTestProvider{
+		id: "packages", key: "official:firefox",
+		targets: []TargetInspection{{Key: "official:firefox", CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent}},
+	}})
+
+	if _, err := session.Capture(context.Background(), "packages"); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(reloaded.Packages.Official, []string{"firefox"}) {
+		t.Fatalf("official = %#v, want firefox preserved: Capture Disabled on this machine must not remove desired-present state", reloaded.Packages.Official)
+	}
 }

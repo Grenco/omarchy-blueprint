@@ -45,9 +45,9 @@ type CaptureInspection struct {
 }
 
 // InspectCapture previews what a Capture run would do without mutating the
-// profile or any provider state. In PR 2, every eligible target resolves to
-// the in-memory default-enabled decision (real policy resolution lands in
-// PR 3); provider safety still blocks ineligible targets outright.
+// profile or any provider state, resolving each target's real effective
+// Capture policy against the session's currently selected machine; provider
+// safety still blocks ineligible targets outright regardless of policy.
 func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (CaptureInspection, error) {
 	providers := s.providers
 	if onlyProvider != "" {
@@ -73,11 +73,14 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 		}
 		items := make([]CaptureTarget, 0, len(targets))
 		for _, target := range targets {
-			decision := DefaultCaptureDecision()
+			effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+			if err != nil {
+				return CaptureInspection{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+			}
 			items = append(items, CaptureTarget{
 				Category:   provider.ID(),
 				Inspection: target,
-				Policy:     defaultCapturePolicy(s.machine.Name, provider.ID(), target.Key, decision),
+				Policy:     effective,
 				Decision:   decision,
 				Outcome:    captureOutcome(target, decision),
 			})
@@ -85,22 +88,6 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 		categories[provider.ID()] = items
 	}
 	return CaptureInspection{Categories: categories}, nil
-}
-
-// defaultCapturePolicy represents the PR 2 compatibility policy view: no
-// rules exist yet, so every target resolves to the provider default with no
-// explicit source.
-func defaultCapturePolicy(machine, category, target string, decision CaptureDecision) policy.EffectiveSetting {
-	return policy.EffectiveSetting{
-		Enabled:  decision.Capture,
-		Explicit: false,
-		Source: policy.Source{
-			Kind:     policy.SourceDefault,
-			Machine:  machine,
-			Category: category,
-			Target:   target,
-		},
-	}
 }
 
 // captureOutcome mirrors the Capture merge transitions PR 3 implements

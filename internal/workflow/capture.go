@@ -73,7 +73,7 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 		return rollbackErr
 	}
 	for _, provider := range selected {
-		capCtx, err := defaultCaptureContext(ctx, provider, data, s.machine.Name)
+		capCtx, err := s.resolveCaptureContext(ctx, provider, data)
 		if err != nil {
 			return CaptureResult{}, errors.Join(fmt.Errorf("inspect %s targets: %w", provider.ID(), err), rollback())
 		}
@@ -122,18 +122,23 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 	return result, nil
 }
 
-// defaultCaptureContext inspects a provider's targets and records the PR 2
-// compatibility decision (DefaultCaptureDecision) for each one. Real policy
-// resolution replaces this in PR 3; until then every inspected target
-// resolves to enabled/unresolved so current behavior is preserved.
-func defaultCaptureContext(ctx context.Context, provider Provider, data profile.Data, machine string) (CaptureContext, error) {
+// resolveCaptureContext inspects a provider's targets and resolves each
+// one's effective Capture policy against the session's currently selected
+// machine. Provider safety always wins: a target the provider itself
+// reports ineligible resolves to disabled regardless of what policy says
+// (Capabilities are descriptive, not permission-granting).
+func (s *Session) resolveCaptureContext(ctx context.Context, provider Provider, data profile.Data) (CaptureContext, error) {
 	targets, err := provider.InspectTargets(ctx, data)
 	if err != nil {
 		return CaptureContext{}, err
 	}
 	decisions := make(map[string]CaptureDecision, len(targets))
 	for _, target := range targets {
-		decisions[target.Key] = DefaultCaptureDecision()
+		_, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+		if err != nil {
+			return CaptureContext{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+		}
+		decisions[target.Key] = decision
 	}
-	return CaptureContext{Machine: machine, Targets: decisions}, nil
+	return CaptureContext{Machine: s.machine.Name, Targets: decisions}, nil
 }
