@@ -35,7 +35,15 @@ func Open(deps Dependencies, opts Options) (*Session, error) {
 	return s, nil
 }
 
-// Reload resolves data again because external tools may have changed it.
+// Reload resolves data again because external tools may have changed it
+// (including ProfileGitPull, which reloads after fetching remote changes).
+// If providers were already registered (SetProviders already ran once, e.g.
+// this is a running session, not the initial Open), the freshly loaded
+// candidate data is revalidated against them before replacing s.profile:
+// otherwise a pull of a profile with a malformed hand-edited policy target
+// would silently replace an already-open, already-validated session's
+// profile, even though opening that same profile fresh would fail in
+// SetProviders. s.profile is left untouched on validation failure.
 func (s *Session) Reload() error {
 	dir, err := machine.CanonicalProfileRoot(s.opts.ProfileDir)
 	if err != nil {
@@ -45,6 +53,11 @@ func (s *Session) Reload() error {
 	data, err := profile.Load(dir)
 	if err != nil {
 		return err
+	}
+	if s.providers != nil {
+		if err := validateLoadedPolicyTargets(s.providers, data); err != nil {
+			return err
+		}
 	}
 	state, err := s.deps.StateHome()
 	if err != nil {
