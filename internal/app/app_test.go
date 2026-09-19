@@ -4037,6 +4037,146 @@ func TestShellPlanAndVerifyHonorRestoreSkip(t *testing.T) {
 	}
 }
 
+// TestShellPlanOnlyRespondsToConflictsAxisNotConvergence is a Task 28 PR 4
+// restore invariants gate scenario: Shell's low-level Plan never consults
+// Convergence at all (see restorePlanOptionsFromPolicy's doc comment --
+// "whether a required plugin is missing or provenance-mismatched is a
+// Safe/Force question, never an Additive/Exact one"). Additive and Exact
+// must produce byte-identical plans for the same Conflicts value.
+func TestShellPlanOnlyRespondsToConflictsAxisNotConvergence(t *testing.T) {
+	deps, opt, data, _, _ := shellLinkFixture(t)
+	additiveCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive},
+		Targets: map[string]workflow.RestoreDecision{"state": {Restore: true, Resolved: true}},
+	}
+	exactCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"state": {Restore: true, Resolved: true}},
+	}
+
+	additive, err := (shellStateProvider{deps: deps, opt: opt}).Plan(context.Background(), data, omarchy.Info{Version: "4.0.0"}, additiveCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, err := (shellStateProvider{deps: deps, opt: opt}).Plan(context.Background(), data, omarchy.Info{Version: "4.0.0"}, exactCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(additive, exact) {
+		t.Fatalf("plans differ by Convergence alone: additive=%#v exact=%#v, want identical plans", additive, exact)
+	}
+}
+
+// TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo strengthens PR
+// 3 Task 23's packages gate (still enforced at the low level by
+// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones) at the app/RestoreContext
+// layer added in PR 4: a generic desired-absent package tombstone still
+// produces no operation, no skip, and no verification failure even when
+// this run's Convergence is Exact, not just Additive -- Task 26 wired
+// RestoreContext through packagesStateProvider.Plan/Verify, but neither
+// ever reads Packages.Absent, so real Exact-only removal genuinely remains
+// PR 5's job, not something that silently started working already.
+func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
+	_, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	// discord is neither currently installed nor otherwise desired, so the
+	// only thing in play is the Absent tombstone -- isolating whether it
+	// alone can produce an operation, skip, or verification failure.
+	runner.official = map[string]bool{}
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+
+	d := profile.Data{Packages: profile.Packages{
+		Absent: []profile.PackageAbsence{{Ref: "official:discord"}},
+	}}
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"official:discord": {Restore: true, Resolved: true}},
+	}
+
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operations or skips for a tombstoned ref even under Exact", plan)
+	}
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verification.OK || len(verification.Missing) != 0 {
+		t.Fatalf("verify = %#v, want OK with the tombstoned ref never reported missing, even under Exact", verification)
+	}
+}
+
+// TestRestoreCommandOneRunOverrideDoesNotPersistToMachineDefaults is a Task
+// 28 PR 4 restore invariants gate scenario, exercised through the real CLI
+// (Session-level coverage already exists in
+// TestRestorePlanExplicitOptionsOverrideMachineDefaultsWithoutPersisting):
+// `restore --force` must never rewrite the selected machine's persisted
+// RestoreConflicts/RestoreConvergence, even though it changes this run's
+// effective Conflicts.
+func TestRestoreCommandOneRunOverrideDoesNotPersistToMachineDefaults(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	if code, out := configRun(t, deps, profileDir, "machine", "add", "desktop"); code != 0 {
+		t.Fatalf("machine add code=%d out=%s", code, out)
+	}
+	before, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Machines.Items[0].RestoreConflicts != "" || before.Machines.Items[0].RestoreConvergence != "" {
+		t.Fatalf("machine defaults before = %+v, want empty (Safe+Additive)", before.Machines.Items[0])
+	}
+	if code, out := configRun(t, deps, profileDir, "--machine", "desktop", "restore", "--force", "--exact", "--dry-run"); code != 0 {
+		t.Fatalf("restore --force --exact --dry-run code=%d out=%s", code, out)
+	}
+	after, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Machines.Items[0].RestoreConflicts != "" || after.Machines.Items[0].RestoreConvergence != "" {
+		t.Fatalf("machine defaults after = %+v, want left untouched by the one-run override", after.Machines.Items[0])
+	}
+}
+
+// TestRestoreCommandVerifiesAgainstTheSameRestoreContextItPlannedWith is a
+// Task 28 PR 4 restore invariants gate scenario for the CLI's own restore
+// path specifically (Session.ApplyRestore's equivalent invariant is already
+// covered by TestRestorePlanAndVerifyReceiveIdenticalRestoreContext): a
+// policy-disabled target's Restore Skip must not fail verification when the
+// CLI itself executes and verifies (restoreProviders, not ApplyRestore),
+// proving PlanRestoreWithContext's returned contexts are the ones actually
+// reused for verification, not independently re-resolved.
+func TestRestoreCommandVerifiesAgainstTheSameRestoreContextItPlannedWith(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	runner := deps.Runner.(*machineRunner)
+	// configSandbox's runner already reports zoxide installed; capture it
+	// as desired, then simulate it having been uninstalled since.
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	runner.official = map[string]bool{}
+
+	session, err := openWorkflow(deps, &options{profileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPolicy(workflow.PolicyScope{}, policy.AxisRestore, "packages", "official:zoxide", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restore Skip means no install operation for zoxide, which would
+	// otherwise make the empty-Operations branch verify presence and fail
+	// -- unless the CLI's own verify pass is judging against the exact same
+	// RestoreContext that planned it, not independently re-resolving a
+	// context that never heard about the Skip.
+	code, out := configRun(t, deps, profileDir, "restore", "packages", "--dry-run")
+	if code != 0 {
+		t.Fatalf("restore --dry-run code=%d out=%q, want success: a Restore-Skip target must never fail verification through the CLI's own verify path", code, out)
+	}
+}
+
 func TestResourcesInspectTargetsReportsMissingLocalStateAsAbsentNotDeletionIntent(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	home := filepath.Join(t.TempDir(), "home")
