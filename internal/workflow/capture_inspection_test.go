@@ -103,9 +103,10 @@ func TestInspectCapturePreservesMissingTargetWhenProviderPreservesIt(t *testing.
 // A provider that cannot express desired absence AND does not preserve a
 // missing target (e.g. Defaults/Shell: Capture always writes a fresh full
 // replacement, so a vanished value is silently dropped, not remembered)
-// reports Absent: the target does leave the desired state, just without an
-// explicit tombstone. SupportsDesiredAbsence alone must not decide this.
-func TestInspectCaptureReportsAbsentWhenProviderStopsManagingMissingTarget(t *testing.T) {
+// reports StopManaging, distinct from Absent: Blueprint carries no desired
+// state for the target afterward, rather than remembering its removal.
+// SupportsDesiredAbsence alone must not decide this.
+func TestInspectCaptureReportsStopManagingWhenProviderStopsManagingMissingTarget(t *testing.T) {
 	session := newInspectionSession(t)
 	session.SetProviders([]Provider{captureInspectionTestProvider{id: "defaults", targets: []TargetInspection{
 		{
@@ -119,8 +120,8 @@ func TestInspectCaptureReportsAbsentWhenProviderStopsManagingMissingTarget(t *te
 		t.Fatal(err)
 	}
 	got := singleCaptureTarget(t, inspection, "defaults")
-	if got.Outcome != CaptureOutcomeAbsent {
-		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeAbsent)
+	if got.Outcome != CaptureOutcomeStopManaging {
+		t.Fatalf("Outcome = %s, want %s", got.Outcome, CaptureOutcomeStopManaging)
 	}
 }
 

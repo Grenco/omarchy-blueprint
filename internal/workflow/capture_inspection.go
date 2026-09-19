@@ -19,6 +19,13 @@ const (
 	CaptureOutcomePreserve CaptureOutcome = "preserve"
 	CaptureOutcomeBlocked  CaptureOutcome = "blocked"
 	CaptureOutcomeNoop     CaptureOutcome = "noop"
+	// CaptureOutcomeStopManaging is distinct from CaptureOutcomeAbsent: Absent
+	// means Blueprint keeps managing the target and records an explicit
+	// tombstone remembering its removal; StopManaging means Blueprint carries
+	// no desired state for the target at all afterward (e.g. Defaults: an
+	// empty captured value is not a remembered absence, it is simply
+	// unmanaged).
+	CaptureOutcomeStopManaging CaptureOutcome = "stop-managing"
 )
 
 // CaptureTarget is one provider-defined target's read-only Capture preview:
@@ -100,13 +107,16 @@ func defaultCapturePolicy(machine, category, target string, decision CaptureDeci
 // per-provider (see Task 17): a target ineligible for Capture is Blocked
 // regardless of policy; Capture Disabled always Preserves whatever is
 // already tracked; otherwise the outcome follows from whether the target is
-// currently present on the machine and whether it was already tracked. For a
-// missing-but-desired target, SupportsDesiredAbsence alone is not enough to
-// decide the outcome: a provider that cannot record an explicit tombstone
-// either leaves the desired state untouched (Preserve, when
-// Capabilities.PreservesMissingDesired is true, e.g. Resources) or silently
-// stops managing it (shown as Absent, since it does leave the desired state
-// either way, e.g. Defaults/Shell "stop managing").
+// currently present on the machine and whether it was already tracked. A
+// missing-but-desired target has three genuinely different transitions, not
+// two: a provider that can record an explicit tombstone does so (Absent --
+// Blueprint keeps managing the target and remembers its removal); one that
+// cannot, but leaves prior desired state untouched, Preserves it (Resources:
+// no way to tell "gone" from "not yet restored" apart); one that cannot and
+// does not preserve it silently drops it from desired state entirely
+// (StopManaging -- Defaults/Shell: Capture always writes a fresh full
+// replacement, so an empty/vanished value carries no desired state
+// afterward, not a remembered absence).
 func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOutcome {
 	if !target.CaptureEligible {
 		return CaptureOutcomeBlocked
@@ -120,10 +130,13 @@ func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOu
 	case target.Current == TargetPresent && target.Desired != TargetPresent:
 		return CaptureOutcomeAdd
 	case target.Current != TargetPresent && target.Desired == TargetPresent:
-		if !target.Capabilities.SupportsDesiredAbsence && target.Capabilities.PreservesMissingDesired {
+		if target.Capabilities.SupportsDesiredAbsence {
+			return CaptureOutcomeAbsent
+		}
+		if target.Capabilities.PreservesMissingDesired {
 			return CaptureOutcomePreserve
 		}
-		return CaptureOutcomeAbsent
+		return CaptureOutcomeStopManaging
 	default:
 		return CaptureOutcomeNoop
 	}
