@@ -89,6 +89,19 @@ func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, options 
 	return plan, err
 }
 
+// PlanRestoreWithContext is PlanRestore, but also returns each planned
+// provider alongside the exact resolved RestoreContext used to plan it. A
+// caller that must verify separately from ApplyRestore -- e.g. the CLI,
+// which reports live per-operation progress ApplyRestore does not support,
+// so it executes and verifies itself rather than calling ApplyRestore --
+// needs these to verify against the same effective Restore intent that
+// planned the run, per the design's "Plan intent and verification intent
+// must remain aligned" invariant.
+func (s *Session) PlanRestoreWithContext(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, error) {
+	plan, providers, contexts, _, err := s.restorePlan(ctx, onlyProvider, options)
+	return plan, providers, contexts, err
+}
+
 // ApplyRestore always replans after approval, so the executor validates current
 // filesystem preconditions rather than relying on a preview-time plan. See
 // PlanRestore for how options resolves.
