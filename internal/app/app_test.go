@@ -3000,6 +3000,48 @@ func TestPackagesMiseThreeSourceRestore(t *testing.T) {
 	}
 }
 
+func TestPackagesRestoreRecalculatesBeforeExactMiseRemoval(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	miseConfig := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(miseConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(miseConfig, []byte("[tools]\nnode = '24'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official, runner.aur = map[string]bool{}, map[string]bool{}
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Packages.Mise = profile.MiseTools{}
+	d.Packages.Absent = []profile.PackageAbsence{{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	deps.MiseGlobalConfig = func() (string, error) {
+		lookups++
+		if lookups == 3 {
+			if err := os.WriteFile(miseConfig, []byte("[tools]\nnode = '22'\n"), 0o644); err != nil {
+				return "", err
+			}
+		}
+		return miseConfig, nil
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "packages", "--exact", "--yes"); code == 0 || !strings.Contains(out, "plan changed after approval") {
+		t.Fatalf("restore code=%d lookups=%d out=%s, want stale exact Mise plan rejected before execution", code, lookups, out)
+	}
+	if len(runner.miseCommands) != 0 {
+		t.Fatalf("mise commands=%#v, want no stale uninstall", runner.miseCommands)
+	}
+}
+
 func TestTrackTrackedAndUntrackResources(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	home := filepath.Join(t.TempDir(), "home")
