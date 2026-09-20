@@ -110,10 +110,10 @@ func TestProviderCapturedEmptyDefaultsKeepsConcreteRows(t *testing.T) {
 	}
 }
 
-func TestProviderDefaultsToSavedTypedDataAndSwitchesToChanges(t *testing.T) {
+func TestProviderDefaultsToStateTypedDataAndCyclesPolicyTabs(t *testing.T) {
 	screen := &Provider{id: "packages", status: workflow.ProviderStatus{ID: "packages", Captured: true, Changes: []model.Change{{Summary: "git differs"}}, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}, Excluded: []string{"linux"}}}}
 	view := screen.View()
-	for _, want := range []string{"Changes 1   [active] Saved", "Official packages", "git", "AUR packages", "yay", "Mise tools", "node"} {
+	for _, want := range []string{"[active] State   Capture   Restore", "Official packages", "git", "AUR packages", "yay", "Mise tools", "node"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -122,8 +122,22 @@ func TestProviderDefaultsToSavedTypedDataAndSwitchesToChanges(t *testing.T) {
 		t.Fatalf("saved tab exposed drift or JSON: %q", view)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if view = screen.View(); !strings.Contains(view, "git differs") || strings.Contains(view, "Official packages") {
-		t.Fatalf("changes tab=%q", view)
+	if view = screen.View(); !strings.Contains(view, "[active] Capture") || !strings.Contains(view, "Include") {
+		t.Fatalf("capture tab=%q", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if view = screen.View(); !strings.Contains(view, "[active] Restore") || !strings.Contains(view, "Apply") {
+		t.Fatalf("restore tab=%q", view)
+	}
+}
+
+func TestProviderPolicyTabsExposeCaptureAndRestoreIntent(t *testing.T) {
+	screen := &Provider{id: "packages", tab: "Capture", width: 80, status: workflow.ProviderStatus{ID: "packages", Captured: true}}
+	view := screen.View()
+	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Capture policy view missing %q:\n%s", want, view)
+		}
 	}
 }
 
