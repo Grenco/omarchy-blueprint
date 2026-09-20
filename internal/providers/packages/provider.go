@@ -100,7 +100,13 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 	return plan
 }
 
-func (p Provider) Plan(saved, current profile.Packages, schema int, from, to string) (model.RestorePlan, error) {
+type PlanOptions struct{ Exact bool }
+
+func (p Provider) Plan(saved, current profile.Packages, schema int, from, to string, options ...PlanOptions) (model.RestorePlan, error) {
+	var opts PlanOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	if err := ValidateMiseSecrets(saved.Mise); err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -140,17 +146,26 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: name, Reason: "machine-specific hardware package"})
 	}
 	savedNames := packageNames(saved)
+	absent := absenceRefSet(saved.Absent)
 	for _, name := range current.Official {
-		if !savedNames[name] {
+		if !savedNames[name] && !(opts.Exact && absent["official:"+name]) {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "official:" + name, Reason: "additional package left installed; removal disabled"})
 		}
 	}
 	for _, name := range current.AUR {
-		if !savedNames[name] {
+		if !savedNames[name] && !(opts.Exact && absent["aur:"+name]) {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "aur:" + name, Reason: "additional package left installed; removal disabled"})
 		}
 	}
+	if opts.Exact {
+		plan = planExactArchRemovals(plan, saved, physicalCurrent)
+	}
 	if p.MiseGlobalConfig == "" {
+		if opts.Exact {
+			removals, skipped := actionableMiseRemovals(saved.Absent, physicalCurrent.Mise)
+			plan.Skipped = append(plan.Skipped, skipped...)
+			plan = skipMiseIDs(plan, removals, "Mise global config is unavailable; removal skipped")
+		}
 		return plan, nil
 	}
 	additions, conflicts, extras := classifyMiseRestore(saved.Mise, current.Mise)
@@ -158,42 +173,69 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "mise:" + id, Reason: "existing Mise declaration differs; overwrite disabled"})
 	}
 	for _, id := range extras {
+		if opts.Exact && absent["mise:"+id] {
+			continue
+		}
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "mise:" + id, Reason: "additional package left installed; removal disabled"})
 	}
-	if len(additions) == 0 {
-		return plan, nil
+	var removals []string
+	if opts.Exact {
+		var skipped []model.Skipped
+		removals, skipped = actionableMiseRemovals(saved.Absent, physicalCurrent.Mise)
+		plan.Skipped = append(plan.Skipped, skipped...)
 	}
 	if err := ValidateMiseMutationPath(p.MiseGlobalConfig); err != nil {
-		return skipMiseAdditions(plan, additions, err.Error()), nil
+		plan = skipMiseAdditions(plan, additions, err.Error())
+		plan = skipMiseIDs(plan, removals, err.Error())
+		return plan, nil
 	}
 	snapshot, err := ReadMiseConfigSnapshot(p.MiseGlobalConfig)
 	if err != nil {
-		return skipMiseAdditions(plan, additions, err.Error()), nil
+		plan = skipMiseAdditions(plan, additions, err.Error())
+		plan = skipMiseIDs(plan, removals, err.Error())
+		return plan, nil
 	}
-	var candidate []byte
-	if snapshot.Exists {
-		candidate, err = BuildMiseAppendCandidate(snapshot.Bytes, physicalCurrent.Mise, additions)
-	} else {
-		candidate, err = EncodeMiseTools(additions)
+	if len(additions) == 0 && len(removals) == 0 {
+		return plan, nil
 	}
-	if err != nil {
-		return skipMiseAdditions(plan, additions, err.Error()), nil
+	candidate, candidateErr := buildMiseMutationCandidate(snapshot, physicalCurrent.Mise, additions, removals)
+	if candidateErr != nil {
+		plan = skipMiseAdditions(plan, additions, candidateErr.Error())
+		plan = skipMiseIDs(plan, removals, candidateErr.Error())
+		return plan, nil
 	}
-	ids := sortedMiseIDs(additions)
+	var dependencies []string
+	for _, id := range removals {
+		opID := "packages.mise.remove." + id
+		plan.Operations = append(plan.Operations, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, Risk: model.RiskHigh})
+		dependencies = append(dependencies, opID)
+	}
+	mutationIDs := append(append([]string(nil), removals...), sortedMiseIDs(additions)...)
 	write := model.FileWrite{Generated: true, Content: candidate, Destination: p.MiseGlobalConfig, SourceHash: hashBytes(candidate), Backup: snapshot.Exists, RejectSymlinkParents: true}
 	if snapshot.Exists {
 		write.ExpectedHash = snapshot.Hash
 	} else {
 		write.ExpectedMissing = true
 	}
-	plan.Operations = append(plan.Operations,
-		model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: ids, File: &write, Risk: model.RiskMedium, Reversible: snapshot.Exists},
-		model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions)},
-	)
+	risk := model.RiskMedium
+	if len(removals) > 0 {
+		risk = model.RiskHigh
+	}
+	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, DependsOn: dependencies, Risk: risk, Reversible: snapshot.Exists})
+	if len(additions) > 0 {
+		ids := sortedMiseIDs(additions)
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions)})
+	}
 	return plan, nil
 }
 
-func Verify(saved, current profile.Packages) model.VerificationResult {
+type VerifyOptions struct{ Exact bool }
+
+func Verify(saved, current profile.Packages, options ...VerifyOptions) model.VerificationResult {
+	var opts VerifyOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	saved, current = classify(saved), classify(current)
 	var missing []string
 	currentNames := packageNames(current)
@@ -219,6 +261,28 @@ func Verify(saved, current profile.Packages) model.VerificationResult {
 	for _, id := range sortedBoolKeys(saved.Preinstalls.Items) {
 		if current.Preinstalls.Items[id] != saved.Preinstalls.Items[id] {
 			missing = append(missing, "preinstall:"+id)
+		}
+	}
+	if opts.Exact {
+		for _, absence := range saved.Absent {
+			kind, id, ok := splitRef(absence.Ref)
+			if !ok || machineSpecific(id) {
+				continue
+			}
+			switch kind {
+			case "official":
+				if set(current.Official)[id] {
+					missing = append(missing, absence.Ref)
+				}
+			case "aur":
+				if set(current.AUR)[id] {
+					missing = append(missing, absence.Ref)
+				}
+			case "mise":
+				if actual, present := current.Mise[id]; present && EqualMiseTool(actual, absence.Mise) {
+					missing = append(missing, absence.Ref)
+				}
+			}
 		}
 	}
 	sort.Strings(missing)
@@ -284,7 +348,16 @@ func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []m
 		if saved.RemovedAll {
 			action, commandName, id = "remove", "omarchy-remove-preinstalls", "packages.preinstalls.remove"
 		}
-		operations = append(operations, model.Operation{ID: id, Provider: "packages", Action: action, Resource: "preinstalls", Command: []string{commandName}, Risk: model.RiskHigh})
+		operations = append(operations, model.Operation{
+			ID:          id,
+			Provider:    "packages",
+			Action:      action,
+			Resource:    "preinstalls",
+			Command:     []string{commandName},
+			Risk:        model.RiskHigh,
+			Interactive: true,
+			Notice:      "Omarchy's preinstall flow requests terminal confirmation before changing the managed application set.",
+		})
 		groupDependency = []string{id}
 		for item := range simulated {
 			simulated[item] = !saved.RemovedAll
@@ -350,6 +423,105 @@ func classifyMiseRestore(saved, current profile.MiseTools) (profile.MiseTools, [
 
 func skipMiseAdditions(plan model.RestorePlan, additions profile.MiseTools, reason string) model.RestorePlan {
 	for _, id := range sortedMiseIDs(additions) {
+		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "mise:" + id, Reason: reason})
+	}
+	return plan
+}
+
+func absenceRefSet(absences []profile.PackageAbsence) map[string]bool {
+	refs := make(map[string]bool, len(absences))
+	for _, absence := range absences {
+		refs[absence.Ref] = true
+	}
+	return refs
+}
+
+func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packages) model.RestorePlan {
+	official, aur := set(current.Official), set(current.AUR)
+	for _, absence := range saved.Absent {
+		kind, id, ok := splitRef(absence.Ref)
+		if !ok || id == "" {
+			continue
+		}
+		if machineSpecific(id) {
+			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: absence.Ref, Reason: "hardware/machine-specific package is protected from removal"})
+			continue
+		}
+		switch kind {
+		case "official", "aur":
+			present := official[id]
+			if kind == "aur" {
+				present = aur[id]
+			}
+			if !present {
+				continue
+			}
+			commandLine := []string{"omarchy", "pkg", "drop", id}
+			operationID := "packages.remove." + kind + "." + id
+			if kind == "official" {
+				if recipe, found := omarchy.SemanticRecipe(id); found {
+					commandLine = append([]string(nil), recipe.Remove...)
+					operationID = "packages.remove.semantic." + id
+				}
+			}
+			plan.Operations = append(plan.Operations, model.Operation{ID: operationID, Provider: "packages", Action: "remove", Resource: absence.Ref, Items: []string{id}, Command: commandLine, Risk: model.RiskHigh})
+		}
+	}
+	return plan
+}
+
+func actionableMiseRemovals(absences []profile.PackageAbsence, current profile.MiseTools) ([]string, []model.Skipped) {
+	var ids []string
+	var skipped []model.Skipped
+	for _, absence := range absences {
+		kind, id, ok := splitRef(absence.Ref)
+		if !ok || kind != "mise" {
+			continue
+		}
+		actual, present := current[id]
+		if !present {
+			continue
+		}
+		if absence.Mise == nil || !EqualMiseTool(actual, absence.Mise) {
+			skipped = append(skipped, model.Skipped{Provider: "packages", Resource: absence.Ref, Reason: "current Mise declaration no longer matches the removed profile entry; removal skipped"})
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, skipped
+}
+
+func buildMiseMutationCandidate(snapshot MiseConfigSnapshot, current, additions profile.MiseTools, removals []string) ([]byte, error) {
+	if !snapshot.Exists {
+		if len(removals) > 0 {
+			return nil, errors.New("Mise global config is unavailable; removal skipped")
+		}
+		return EncodeMiseTools(additions)
+	}
+	candidate := append([]byte(nil), snapshot.Bytes...)
+	remaining := make(profile.MiseTools, len(current))
+	for id, tool := range current {
+		remaining[id] = tool
+	}
+	if len(removals) > 0 {
+		var err error
+		candidate, err = BuildMiseRemovalCandidate(candidate, current, removals)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range removals {
+			delete(remaining, id)
+		}
+	}
+	if len(additions) > 0 {
+		return BuildMiseAppendCandidate(candidate, remaining, additions)
+	}
+	return candidate, nil
+}
+
+func skipMiseIDs(plan model.RestorePlan, ids []string, reason string) model.RestorePlan {
+	for _, id := range ids {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "mise:" + id, Reason: reason})
 	}
 	return plan

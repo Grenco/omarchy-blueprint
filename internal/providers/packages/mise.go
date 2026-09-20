@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -334,6 +335,121 @@ func BuildMiseAppendCandidate(existing []byte, current, additions profile.MiseTo
 		}
 	}
 	return candidate, nil
+}
+
+// BuildMiseRemovalCandidate removes only the requested tool declarations
+// from the existing TOML bytes. It fails closed unless both the supplied
+// current declarations and the resulting declarations match a full TOML
+// parse, so unsupported formatting can never turn into a broad rewrite.
+func BuildMiseRemovalCandidate(existing []byte, current profile.MiseTools, removals []string) ([]byte, error) {
+	parsed, err := ReadMiseToolsFromBytes(existing)
+	if err != nil {
+		return nil, err
+	}
+	if !reflect.DeepEqual(parsed, nonNilMiseTools(current)) {
+		return nil, errors.New("existing Mise config tools do not match the supplied current declarations")
+	}
+	remove := make(map[string]bool, len(removals))
+	for _, id := range removals {
+		if _, present := parsed[id]; !present {
+			return nil, fmt.Errorf("mise tool %q is not present in the target config", id)
+		}
+		remove[id] = true
+	}
+
+	lines := strings.SplitAfter(string(existing), "\n")
+	section := ""
+	removeSection := false
+	var candidate strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section = trimmed
+			id, isTool := miseToolTableID(trimmed)
+			removeSection = isTool && remove[id]
+			if removeSection {
+				continue
+			}
+		}
+		if removeSection {
+			continue
+		}
+		if section == "[tools]" {
+			if id, ok := miseAssignmentID(trimmed); ok && remove[id] {
+				continue
+			}
+		}
+		candidate.WriteString(line)
+	}
+	result := []byte(candidate.String())
+	want := make(profile.MiseTools, len(parsed)-len(remove))
+	for id, tool := range parsed {
+		if !remove[id] {
+			want[id] = tool
+		}
+	}
+	got, err := ReadMiseToolsFromBytes(result)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		if err != nil {
+			return nil, fmt.Errorf("existing Mise config cannot be safely reduced without rewriting it: %w", err)
+		}
+		return nil, errors.New("existing Mise config cannot be safely reduced without changing unrelated declarations")
+	}
+	return result, nil
+}
+
+func miseAssignmentID(line string) (string, bool) {
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	key, _, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", false
+	}
+	id, err := parseTOMLKey(strings.TrimSpace(key))
+	return id, err == nil
+}
+
+func miseToolTableID(header string) (string, bool) {
+	if len(header) < 3 || header[0] != '[' || header[len(header)-1] != ']' {
+		return "", false
+	}
+	inner := strings.TrimSpace(header[1 : len(header)-1])
+	if !strings.HasPrefix(inner, "tools.") {
+		return "", false
+	}
+	key := strings.TrimPrefix(inner, "tools.")
+	if key == "" {
+		return "", false
+	}
+	if key[0] == '\'' || key[0] == '"' {
+		quote := key[0]
+		for i := 1; i < len(key); i++ {
+			if key[i] == quote && (quote == '\'' || key[i-1] != '\\') {
+				id, err := parseTOMLKey(key[:i+1])
+				return id, err == nil
+			}
+		}
+		return "", false
+	}
+	if dot := strings.IndexByte(key, '.'); dot >= 0 {
+		key = key[:dot]
+	}
+	id, err := parseTOMLKey(key)
+	return id, err == nil
+}
+
+func parseTOMLKey(key string) (string, error) {
+	if len(key) >= 2 && key[0] == '\'' && key[len(key)-1] == '\'' {
+		return key[1 : len(key)-1], nil
+	}
+	if len(key) >= 2 && key[0] == '"' && key[len(key)-1] == '"' {
+		return strconv.Unquote(key)
+	}
+	if key == "" || strings.ContainsAny(key, " \t\r\n") {
+		return "", errors.New("invalid TOML key")
+	}
+	return key, nil
 }
 
 func encodeMiseAppendTool(id string, tool profile.MiseTool) ([]byte, error) {

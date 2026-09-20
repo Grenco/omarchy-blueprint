@@ -843,7 +843,8 @@ func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info om
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, packagesprovider.PlanOptions{Exact: exact})
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -868,7 +869,8 @@ func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data, resto
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return packagesprovider.Verify(saved, current), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return packagesprovider.Verify(saved, current, packagesprovider.VerifyOptions{Exact: exact}), nil
 }
 
 // filterPackagesForRestoreSkip returns a copy of saved with every

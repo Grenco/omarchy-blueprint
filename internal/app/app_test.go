@@ -3163,6 +3163,19 @@ func TestRenderPlanSurfacesInteractiveAuthenticationNotice(t *testing.T) {
 	}
 }
 
+func TestInteractiveRestoreRequiresTerminal(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "interactive", Resource: "official:tailscale", Interactive: true}}}
+	if err := requireInteractiveTerminal(plan, false); err == nil || !strings.Contains(err.Error(), "official:tailscale") {
+		t.Fatalf("err = %v, want non-terminal interactive restore rejection", err)
+	}
+	if err := requireInteractiveTerminal(plan, true); err != nil {
+		t.Fatalf("interactive terminal rejected: %v", err)
+	}
+	if err := requireInteractiveTerminal(model.RestorePlan{}, false); err != nil {
+		t.Fatalf("non-interactive plan rejected: %v", err)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
@@ -3274,6 +3287,37 @@ func TestPackagesPlanAndVerifyHonorRestoreSkipForPreinstallItem(t *testing.T) {
 	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
 	if err != nil || !verification.OK {
 		t.Fatalf("verification = %#v, err=%v", verification, err)
+	}
+}
+
+func TestPackagesExactRemovalHonorsConvergenceAndRestoreSkip(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{"htop": true}
+	runner.aur = map[string]bool{}
+
+	d := profile.Data{Packages: profile.Packages{Absent: []profile.PackageAbsence{{Ref: "official:htop"}}}}
+	apply := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"official:htop": {Restore: true, Resolved: true}},
+	}
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, apply)
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].Action != "remove" {
+		t.Fatalf("exact plan=%#v err=%v", plan, err)
+	}
+
+	apply.Options.Convergence = policy.ConvergenceAdditive
+	plan, err = (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, apply)
+	if err != nil || len(plan.Operations) != 0 {
+		t.Fatalf("additive plan=%#v err=%v", plan, err)
+	}
+
+	apply.Options.Convergence = policy.ConvergenceExact
+	apply.Targets["official:htop"] = workflow.RestoreDecision{Restore: false, Resolved: true, Reason: "machine override"}
+	plan, err = (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, apply)
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "official:htop" {
+		t.Fatalf("Restore Skip plan=%#v err=%v", plan, err)
 	}
 }
 
