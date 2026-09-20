@@ -20,6 +20,16 @@ type queryRunner struct {
 	err    error
 }
 
+type semanticVerifyRunner struct{ fail string }
+
+func (r semanticVerifyRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	key := name + " " + strings.Join(args, " ")
+	if key == r.fail {
+		return "", errors.New("semantic postcondition failed")
+	}
+	return "", nil
+}
+
 func (r queryRunner) Run(_ context.Context, name string, args ...string) (string, error) {
 	key := name + " " + strings.Join(args, " ")
 	switch key {
@@ -149,6 +159,18 @@ func TestPlanUsesSemanticTailscaleInstallerAndOrdinaryPackageFallback(t *testing
 	}
 }
 
+func TestSemanticVerificationRequiresTailscaleIntegrationPostconditions(t *testing.T) {
+	saved := profile.Packages{Official: []string{"tailscale"}}
+	current := profile.Packages{Official: []string{"tailscale"}, Installed: []string{"tailscale"}}
+	if got := (Provider{Runner: semanticVerifyRunner{}}).Verify(context.Background(), saved, current); !got.OK {
+		t.Fatalf("semantic verification = %#v, want success", got)
+	}
+	got := (Provider{Runner: semanticVerifyRunner{fail: "tailscale status"}}).Verify(context.Background(), saved, current)
+	if got.OK || !reflect.DeepEqual(got.Missing, []string{"official:tailscale"}) {
+		t.Fatalf("semantic verification = %#v, want failed Tailscale integration", got)
+	}
+}
+
 func TestMachineSpecificPackagesAreSkippedEvenFromLegacyProfileLists(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "nvidia-open", "amd-ucode", "fprintd"}, AUR: []string{"nvidia-580xx-dkms", "libfprint-goodix-521d"}}
 	plan := Plan(saved, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
@@ -178,6 +200,54 @@ func TestLinesNormalizesCommandOutput(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"git", "zoxide"}) {
 		t.Fatalf("got %#v", got)
 	}
+}
+
+func TestDetectGivesCataloguePackagesOnlyPreinstallIdentity(t *testing.T) {
+	got, err := (Provider{Runner: queryRunner{output: "aether\nfirefox\n"}}).Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slicesContain(got.Official, "aether") || slicesContain(got.AUR, "aether") {
+		t.Fatalf("detected generic aliases for preinstall aether: official=%#v aur=%#v", got.Official, got.AUR)
+	}
+	if !slicesContain(got.Official, "firefox") || !slicesContain(got.AUR, "firefox") {
+		t.Fatalf("ordinary packages were removed: official=%#v aur=%#v", got.Official, got.AUR)
+	}
+}
+
+func TestSchema13PreinstallAliasCannotBypassCanonicalIntent(t *testing.T) {
+	saved := profile.Packages{
+		Official: []string{"aether"},
+		Absent:   []profile.PackageAbsence{{Ref: "official:aether"}},
+		Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{
+			"aether": true,
+		}},
+	}
+	current := profile.Packages{
+		Official:  []string{"aether"},
+		Installed: []string{"aether"},
+		Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{
+			"aether": true,
+		}},
+	}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "official:aether" {
+			t.Fatalf("generic alias bypassed canonical preinstall intent: %#v", op)
+		}
+	}
+}
+
+func slicesContain(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPacmanOutputFixtures(t *testing.T) {
@@ -316,7 +386,7 @@ func TestPlanPreinstallRemoveAllThenRestoresIndividuallyDesiredItem(t *testing.T
 	if len(plan.Operations) != 2 {
 		t.Fatalf("Operations = %#v, want native remove-all then aether reinstall", plan.Operations)
 	}
-	if !reflect.DeepEqual(plan.Operations[0].Command, []string{"omarchy-remove-preinstalls"}) {
+	if !reflect.DeepEqual(plan.Operations[0].Command, []string{"sh", "-c", `omarchy-remove-preinstalls && test -f "$HOME/.local/state/omarchy/preinstalls-removed"`}) {
 		t.Fatalf("remove-all command = %#v", plan.Operations[0].Command)
 	}
 	if !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-add", "aether"}) || !reflect.DeepEqual(plan.Operations[1].DependsOn, []string{"packages.preinstalls.remove"}) {
@@ -347,7 +417,7 @@ func TestPlanPreinstallRestoreAllThenRemovesIndividuallyAbsentItem(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Operations) != 2 || !reflect.DeepEqual(plan.Operations[0].Command, []string{"omarchy-install-preinstalls"}) || !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-drop", "libreoffice-fresh"}) {
+	if len(plan.Operations) != 2 || !reflect.DeepEqual(plan.Operations[0].Command, []string{"sh", "-c", `omarchy-install-preinstalls && test ! -f "$HOME/.local/state/omarchy/preinstalls-removed"`}) || !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-drop", "libreoffice-fresh"}) {
 		t.Fatalf("Operations = %#v, want native restore-all then supported individual absence", plan.Operations)
 	}
 }
@@ -372,6 +442,9 @@ func TestExactPackageRemovalPlansOfficialAURAndSemanticCommands(t *testing.T) {
 		if command, ok := want[op.Resource]; ok {
 			if !reflect.DeepEqual(op.Command, command) || op.Risk != model.RiskHigh {
 				t.Fatalf("operation %s = %#v", op.Resource, op)
+			}
+			if op.Resource == "official:tailscale" && (!op.Interactive || op.Notice == "") {
+				t.Fatalf("semantic removal lost interactive metadata: %#v", op)
 			}
 			delete(want, op.Resource)
 		}
@@ -422,8 +495,8 @@ func TestExactMiseRemovalRequiresMatchingDeclarationAndPreconditionedRewrite(t *
 	if len(plan.Operations) != 2 {
 		t.Fatalf("Operations = %#v, want uninstall plus config rewrite", plan.Operations)
 	}
-	uninstall, configure := plan.Operations[0], plan.Operations[1]
-	if !reflect.DeepEqual(uninstall.Command, []string{"mise", "-C", "/", "uninstall", "--all", "node"}) || configure.File == nil || configure.File.ExpectedHash == "" || !configure.File.Backup || !reflect.DeepEqual(configure.DependsOn, []string{uninstall.ID}) {
+	configure, uninstall := plan.Operations[0], plan.Operations[1]
+	if configure.File == nil || configure.File.ExpectedHash == "" || !configure.File.Backup || len(configure.DependsOn) != 0 || !reflect.DeepEqual(uninstall.Command, []string{"mise", "-C", "/", "uninstall", "--all", "node"}) || !reflect.DeepEqual(uninstall.DependsOn, []string{configure.ID}) {
 		t.Fatalf("uninstall=%#v configure=%#v", uninstall, configure)
 	}
 	if strings.Contains(string(configure.File.Content), "node =") || !strings.Contains(string(configure.File.Content), "python = '3.13'") {
@@ -471,7 +544,7 @@ func TestExactMiseAdditionAndRemovalShareOnePreconditionedRewrite(t *testing.T) 
 	if !strings.Contains(string(writes[0].File.Content), "python") || strings.Contains(string(writes[0].File.Content), "node") {
 		t.Fatalf("shared candidate = %q", writes[0].File.Content)
 	}
-	if !reflect.DeepEqual(writes[0].DependsOn, []string{uninstalls[0].ID}) || !reflect.DeepEqual(installs[0].DependsOn, []string{writes[0].ID}) {
+	if len(writes[0].DependsOn) != 0 || !reflect.DeepEqual(uninstalls[0].DependsOn, []string{writes[0].ID}) || !reflect.DeepEqual(installs[0].DependsOn, []string{writes[0].ID, uninstalls[0].ID}) {
 		t.Fatalf("uninstall=%#v rewrite=%#v install=%#v", uninstalls[0], writes[0], installs[0])
 	}
 }
