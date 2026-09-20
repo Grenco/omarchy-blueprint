@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -42,6 +43,27 @@ func TestRestoreCapturedButCleanKeepsNormalZeroOperationState(t *testing.T) {
 	}
 	if !strings.Contains(view, "No restore operations required.") {
 		t.Fatalf("captured clean restore lost normal zero-state:\n%s", view)
+	}
+}
+
+func TestRestoreUsesOneCurrentPlanAndShowsExactSafetyAt80Columns(t *testing.T) {
+	session, _ := newSyncSession(t)
+	if err := session.SetProviderCaptured(context.Background(), "hooks", true); err != nil {
+		t.Fatal(err)
+	}
+	screen := NewRestore(session)
+	screen.width = 80
+	screen.current = model.RestorePlan{Operations: []model.Operation{{Provider: "hooks", Resource: "old hook", Delete: &model.FileDelete{}}}}
+	screen.options = policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact}
+	screen.override = true
+	view := screen.View()
+	for _, want := range []string{"Conflicts: safe", "Convergence: exact", "One-run override active", "WARNING: Exact", "delete"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("current restore plan missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "NORMAL   FORCED") {
+		t.Fatalf("legacy comparison matrix leaked into current plan:\n%s", view)
 	}
 }
 

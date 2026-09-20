@@ -5,7 +5,6 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/screens"
-	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 // screen is the root-facing contract every workspace screen must satisfy.
@@ -124,14 +123,10 @@ func (s *restoreScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *restoreScreen) Actions() []Action {
-	label := "Restore all (normal)"
-	if s.Mode() == workflow.RestoreForced {
-		label = "Restore all (forced)"
-	}
-	return []Action{{ID: "restore.force", Label: "Toggle forced restore", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.detail", Label: "View restore detail", Group: "Restore", Enabled: s.CanDetail(), Visible: true, DisabledReason: "selected consequence has no diff", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }}, {ID: "restore.apply", Label: label, Group: "Restore", Enabled: s.CanApply(), Visible: true, DisabledReason: "active restore plan has no operations", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
+	return []Action{{ID: "restore.conflicts", Label: "Toggle Safe/Force for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.convergence", Label: "Toggle Additive/Exact for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }}, {ID: "restore.detail", Label: "View restore detail", Group: "Restore", Enabled: s.CanDetail(), Visible: true, DisabledReason: "selected consequence has no diff", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }}, {ID: "restore.apply", Label: "Restore current plan", Group: "Restore", Enabled: s.CanApply(), Visible: true, DisabledReason: "current restore plan has no operations", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
 }
 func (s *restoreScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "restore.force", Key: "f"}, {ActionID: "restore.detail", Key: "d"}, {ActionID: "restore.apply", Key: "enter"}}
+	return []Binding{{ActionID: "restore.conflicts", Key: "f"}, {ActionID: "restore.convergence", Key: "e"}, {ActionID: "restore.detail", Key: "d"}, {ActionID: "restore.apply", Key: "enter"}}
 }
 
 func (s *syncScreen) ID() ScreenID { return ScreenSync }
