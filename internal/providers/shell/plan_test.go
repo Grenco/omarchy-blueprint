@@ -157,24 +157,32 @@ func TestPlanSkipsShellVersionMismatchAsMigrationRequired(t *testing.T) {
 	}
 }
 
+// TestPlanDefaultDesiredStateDoesNotDeleteExtraCustomization is also the PR
+// 5 Task 32 Shell no-delete lock-in gate: Shell has no desired-absence
+// representation and, per TestShellPlanOnlyRespondsToConflictsAxisNotConvergence
+// in internal/app, Convergence never even reaches this package's
+// MergeOptions (only Force does), so this proves the guarantee holds
+// structurally under both Conflicts settings, not just Safe.
 func TestPlanDefaultDesiredStateDoesNotDeleteExtraCustomization(t *testing.T) {
-	p, _, f := captureCustomized(t)
-	// Profile now wants the default; machine keeps a different customization.
-	saved := profile.Shell{Version: 1, BaselineHash: hashFixture(t, f.baseline)}
-	f.writeUser(customizedShellJSON)
-	current, err := p.Detect()
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Operations) != 0 {
-		t.Fatalf("operations = %#v; removal is disabled", plan.Operations)
-	}
-	if len(plan.Skipped) != 0 {
-		t.Fatalf("skipped = %#v", plan.Skipped)
+	for _, force := range []bool{false, true} {
+		p, _, f := captureCustomized(t)
+		// Profile now wants the default; machine keeps a different customization.
+		saved := profile.Shell{Version: 1, BaselineHash: hashFixture(t, f.baseline)}
+		f.writeUser(customizedShellJSON)
+		current, err := p.Detect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := p.Plan(saved, current, 4, "1.0", "1.0", MergeOptions{Force: force})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Operations) != 0 {
+			t.Fatalf("force=%v: operations = %#v; removal is disabled", force, plan.Operations)
+		}
+		if len(plan.Skipped) != 0 {
+			t.Fatalf("force=%v: skipped = %#v", force, plan.Skipped)
+		}
 	}
 }
 

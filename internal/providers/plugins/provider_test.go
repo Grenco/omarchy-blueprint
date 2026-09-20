@@ -369,3 +369,129 @@ func TestLegacySemanticsPreserveEnablementBehavior(t *testing.T) {
 		t.Fatalf("legacy verify must fail on enabled drift: %#v", got)
 	}
 }
+
+// --- PR 5 Task 30: safe Exact removal for third-party plugins ---
+
+func pluginRemovalOp(plan model.RestorePlan, id string) *model.Operation {
+	for i := range plan.Operations {
+		if plan.Operations[i].Action == "remove" && plan.Operations[i].Resource == "plugin:"+id {
+			return &plan.Operations[i]
+		}
+	}
+	return nil
+}
+
+func TestPlanAdditiveNeverRemovesTombstonedPlugin(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	// No PlanOptions at all: Additive is the zero value, matching every
+	// existing caller that predates Exact removal.
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{})
+	if op := pluginRemovalOp(plan, "acme.weather"); op != nil {
+		t.Fatalf("Operations = %#v, want no removal under Additive convergence", plan.Operations)
+	}
+}
+
+func TestPlanExactNeverRemovesFirstPartyTombstone(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "omarchy.clock", Source: "builtin", Enabled: true}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{}, PlanOptions{Exact: true})
+	if op := pluginRemovalOp(plan, "omarchy.clock"); op != nil {
+		t.Fatalf("Operations = %#v, want a first-party plugin never Exact-removed", plan.Operations)
+	}
+}
+
+// TestPlanExactSkipsUnsafePluginIdentifier is the round-1 review blocker-4
+// regression: the desired-present Items loop rejects !safeID(want.ID)
+// before issuing any Omarchy command, but the Exact removal loop
+// constructed omarchy plugin remove <id> --yes directly from a tombstoned
+// ID with no such check. Destructive tombstones need at least the same
+// safeID gate as every existing plugin operation.
+func TestPlanExactSkipsUnsafePluginIdentifier(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "../evil", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "../evil", Source: "local", Hash: "hash"}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{}, PlanOptions{Exact: true})
+	if len(plan.Operations) != 0 {
+		t.Fatalf("Operations = %#v, want no removal for an unsafe plugin identifier", plan.Operations)
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:../evil" {
+			found = true
+			if !strings.Contains(skipped.Reason, "unsafe") {
+				t.Fatalf("skip reason = %q, want it to explain the unsafe identifier", skipped.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the unsafe identifier", plan.Skipped)
+	}
+}
+
+func TestPlanExactSkipsChangedPluginProvenanceMismatch(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "stale-hash"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "different-hash"}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{}, PlanOptions{Exact: true})
+	if op := pluginRemovalOp(plan, "acme.weather"); op != nil {
+		t.Fatalf("Operations = %#v, want no removal for a changed/unowned local plugin", plan.Operations)
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+			if !strings.Contains(skipped.Reason, "no longer matches") {
+				t.Fatalf("skip reason = %q, want it to explain the provenance mismatch", skipped.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the mismatched plugin", plan.Skipped)
+	}
+}
+
+func TestPlanExactSkipsWhenTombstonedPluginAlreadyGone(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{}, PlanOptions{Exact: true})
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
+		t.Fatalf("plan = %#v, want no operation or skip: the tombstoned plugin is already gone", plan)
+	}
+}
+
+func TestPlanExactRemovesTombstonedThirdPartyPlugin(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	plan := (Provider{}).Plan(saved, current, 1, "4.0", "4.0", Semantics{}, PlanOptions{Exact: true})
+	op := pluginRemovalOp(plan, "acme.weather")
+	if op == nil {
+		t.Fatalf("Operations = %#v, want a removal operation for the tombstoned, provenance-matched plugin", plan.Operations)
+	}
+	if got, want := op.Command, []string{"omarchy", "plugin", "remove", "acme.weather", "--yes"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("command = %#v, want %#v", got, want)
+	}
+	if op.Reversible {
+		t.Fatalf("operation = %#v, want Reversible=false: removal is not guaranteed to be recoverable", op)
+	}
+	if op.Risk != model.RiskHigh {
+		t.Fatalf("risk = %q, want high", op.Risk)
+	}
+}
+
+func TestVerifyExactFailsWhenTombstonedPluginStillInstalled(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{Items: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	if Verify(saved, current, Semantics{}, VerifyOptions{Exact: true}).OK {
+		t.Fatal("verification unexpectedly passed with the tombstoned plugin still installed under Exact")
+	}
+	if !Verify(saved, current, Semantics{}).OK {
+		t.Fatal("Additive verification unexpectedly failed because of a tombstoned plugin still present")
+	}
+}
+
+func TestVerifyExactPassesWhenTombstonedPluginAlreadyRemoved(t *testing.T) {
+	saved := profile.Plugins{Absent: []profile.Plugin{{ID: "acme.weather", Source: "local", Hash: "hash"}}}
+	current := profile.Plugins{}
+	if !Verify(saved, current, Semantics{}, VerifyOptions{Exact: true}).OK {
+		t.Fatal("verification unexpectedly failed once the tombstoned plugin is gone")
+	}
+}

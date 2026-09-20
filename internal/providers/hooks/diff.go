@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"path/filepath"
 	"sort"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -59,7 +60,15 @@ func compare(saved map[string]profile.Hook, current map[string]DetectedHook) []m
 	return changes
 }
 
-func Verify(saved profile.Hooks, current State) model.VerificationResult {
+// VerifyOptions controls Exact-only verification; the zero value (Additive)
+// never checks Absent, matching every existing caller that predates it.
+type VerifyOptions struct{ Exact bool }
+
+func (p Provider) Verify(saved profile.Hooks, current State, options ...VerifyOptions) (model.VerificationResult, error) {
+	var opts VerifyOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	actual := currentMap(current.Items)
 	missing := make([]string, 0)
 	for _, item := range saved.Items {
@@ -68,8 +77,31 @@ func Verify(saved profile.Hooks, current State) model.VerificationResult {
 			missing = append(missing, "hook:"+item.Path)
 		}
 	}
+	if opts.Exact {
+		for _, absent := range saved.Absent {
+			current, ok := actual[absent.Path]
+			if !ok || current.Hash != absent.Hash || current.Mode != absent.Mode {
+				continue
+			}
+			// A provenance-matched tombstone whose path is reserved for a
+			// tracked Resources inbound link is precisely the case Plan
+			// itself refuses to delete (see the "reserved" skip in Plan),
+			// so Verify must not expect it gone either -- round-1 review
+			// blocker 2. Deliberately checked here, not the desired-present
+			// Items loop above: that established behavior is not part of
+			// this destructive-safety fix.
+			reserved, err := p.reservesInboundLink(filepath.Join(p.UserDir, filepath.FromSlash(absent.Path)))
+			if err != nil {
+				return model.VerificationResult{}, err
+			}
+			if reserved {
+				continue
+			}
+			missing = append(missing, "hook:"+absent.Path)
+		}
+	}
 	sort.Strings(missing)
-	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}, nil
 }
 
 func savedMap(items []profile.Hook) map[string]profile.Hook {
