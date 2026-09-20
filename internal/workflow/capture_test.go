@@ -37,6 +37,7 @@ type captureTestProvider struct {
 	lastPlan                      *RestoreContext
 	lastVerify                    *RestoreContext
 	stopManagingFail              bool
+	interactive                   bool
 }
 
 func (p captureTestProvider) ID() string               { return p.id }
@@ -61,6 +62,9 @@ func (p captureTestProvider) Capture(_ context.Context, data *profile.Data, capC
 func (p captureTestProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, restoreCtx RestoreContext) (model.RestorePlan, error) {
 	if p.lastPlan != nil {
 		*p.lastPlan = restoreCtx
+	}
+	if p.interactive {
+		return model.RestorePlan{Operations: []model.Operation{{ID: "interactive", Provider: p.id, Resource: "semantic", Command: []string{"true"}, Interactive: true}}}, nil
 	}
 	return model.RestorePlan{}, nil
 }
