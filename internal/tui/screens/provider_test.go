@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -138,6 +139,38 @@ func TestProviderPolicyTabsExposeCaptureAndRestoreIntent(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Capture policy view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestProviderPolicyRowsPreservePackageGroupsAndDesiredAbsence(t *testing.T) {
+	screen := &Provider{
+		id:    "packages",
+		tab:   "State",
+		width: 80,
+		targets: []workflow.TargetInspection{
+			{Key: "official:git", Label: "git", Desired: workflow.TargetPresent, Current: workflow.TargetPresent},
+			{Key: "aur:foo", Label: "foo", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent},
+			{Key: "mise:node", Label: "node", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent},
+			{Key: "preinstall:tailscale", Label: "tailscale", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent},
+		},
+	}
+	view := screen.View()
+	for _, want := range []string{"Official packages", "AUR packages", "Mise tools", "Omarchy preinstalls", "foo — desired absent; current present", "tailscale — desired absent; current present"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("state policy view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {
+	screen := &Provider{
+		id: "defaults", tab: "Restore", width: 80,
+		targets:   []workflow.TargetInspection{{Key: "agent", Label: "agent", RestoreEligible: false, SafetyReason: "automatic set-only restore is not currently safe"}},
+		effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true}}},
+	}
+	view := screen.View()
+	if !strings.Contains(view, "Blocked: automatic set-only restore is not currently safe") || strings.Contains(view, "agent — Skip") {
+		t.Fatalf("restore safety block was confused with a policy skip:\n%s", view)
 	}
 }
 

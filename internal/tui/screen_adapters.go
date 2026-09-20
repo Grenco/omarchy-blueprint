@@ -161,12 +161,18 @@ func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 }
 func (s *providerScreen) Actions() []Action {
 	actions := []Action{
-		{ID: string(s.id) + ".tab", Label: "Switch saved/changes", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+		{ID: string(s.id) + ".tab", Label: "Switch policy tab", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: string(s.id) + ".refresh", Label: "Refresh " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 	}
 	if s.id == ScreenPackages {
 		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: s.ToggleSelectedLabel(), Enabled: s.CanToggleSelected(), Visible: true, DisabledReason: "select an Official, AUR, or Mise package", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
+	}
+	if s.Provider.CanSetPolicySelected() {
+		actions = append(actions,
+			Action{ID: string(s.id) + ".policy", Label: "Change selected policy", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
+			Action{ID: string(s.id) + ".policy-reset", Label: "Reset selected policy", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
+		)
 	}
 	return actions
 }
@@ -174,6 +180,9 @@ func (s *providerScreen) Bindings() []Binding {
 	bindings := []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}, {Label: "Collapse group", Key: "enter"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
 	if s.id == ScreenPackages {
 		bindings = append(bindings, Binding{ActionID: string(s.id) + ".toggle", Key: "space"})
+	}
+	if s.Provider.CanSetPolicySelected() {
+		bindings = append(bindings, Binding{ActionID: string(s.id) + ".policy", Key: "space"}, Binding{ActionID: string(s.id) + ".policy-reset", Key: "x"})
 	}
 	return bindings
 }
