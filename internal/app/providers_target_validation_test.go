@@ -4,14 +4,16 @@ import "testing"
 
 func TestPackagesValidateTarget(t *testing.T) {
 	cases := map[string]bool{
-		"official:firefox":           true,
-		"aur:visual-studio-code-bin": true,
-		"mise:node":                  true,
-		"firefox":                    false,
-		"bogus:firefox":              false,
-		"official:":                  false,
-		"official:has space":         false,
-		"":                           false,
+		"official:firefox":             true,
+		"aur:visual-studio-code-bin":   true,
+		"mise:node":                    true,
+		"preinstalls":                  true,
+		"preinstall:libreoffice-fresh": true,
+		"firefox":                      false,
+		"bogus:firefox":                false,
+		"official:":                    false,
+		"official:has space":           false,
+		"":                             false,
 	}
 	for target, want := range cases {
 		_, err := (packagesStateProvider{}).ValidateTarget(target)

@@ -579,7 +579,8 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	if err != nil {
 		return nil, err
 	}
-	desired := d.Packages
+	preinstalls := current.Preinstalls
+	desired := packagesprovider.CanonicalizePreinstallOwnership(d.Packages, preinstalls.Items)
 
 	desiredPortable, currentPortable := map[string]bool{}, map[string]bool{}
 	for _, name := range desired.Official {
@@ -622,14 +623,63 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	for key := range absent {
 		keys[key] = true
 	}
-	sortedKeys := make([]string, 0, len(keys))
+	portableKeys := make([]string, 0, len(keys))
 	for key := range keys {
-		sortedKeys = append(sortedKeys, key)
+		portableKeys = append(portableKeys, key)
 	}
-	sort.Strings(sortedKeys)
+	sort.Strings(portableKeys)
 
-	targets := make([]workflow.TargetInspection, 0, len(sortedKeys)+len(current.MachineSpecific))
-	for _, key := range sortedKeys {
+	targets := make([]workflow.TargetInspection, 0, len(portableKeys)+len(current.MachineSpecific)+len(preinstalls.Items)+1)
+	preinstallGroupDesired := workflow.TargetUnknown
+	if desired.Preinstalls.Managed {
+		preinstallGroupDesired = currentPresence(!desired.Preinstalls.RemovedAll)
+	}
+	targets = append(targets, workflow.TargetInspection{
+		Key:             "preinstalls",
+		Label:           "Omarchy preinstalls",
+		Desired:         preinstallGroupDesired,
+		Current:         currentPresence(!preinstalls.RemovedAll),
+		CaptureEligible: true,
+		RestoreEligible: true,
+		Capabilities: workflow.TargetCapabilities{
+			SupportsCapture:        true,
+			SupportsRestore:        true,
+			SupportsDesiredAbsence: true,
+			SupportsExactRemoval:   true,
+			Hierarchical:           true,
+		},
+	})
+	preinstallKeys := map[string]bool{}
+	for id := range preinstalls.Items {
+		preinstallKeys[id] = true
+	}
+	for id := range desired.Preinstalls.Items {
+		preinstallKeys[id] = true
+	}
+	for _, id := range sortedKeys(preinstallKeys) {
+		desiredState := workflow.TargetUnknown
+		if present, known := desired.Preinstalls.Items[id]; known {
+			desiredState = currentPresence(present)
+		}
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "preinstall:" + id,
+			Parent:          "preinstalls",
+			Ancestors:       []string{"preinstalls"},
+			Label:           id,
+			Desired:         desiredState,
+			Current:         currentPresence(preinstalls.Items[id]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture:        true,
+				SupportsRestore:        true,
+				SupportsDesiredAbsence: true,
+				SupportsExactRemoval:   true,
+				Hierarchical:           true,
+			},
+		})
+	}
+	for _, key := range portableKeys {
 		currentState := currentPresence(currentPortable[key])
 		if excluded[key] {
 			// Legacy Excluded is Capture Disabled + Restore Disabled with no
@@ -748,6 +798,10 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, cap
 	if err != nil {
 		return nil, nil, err
 	}
+	migrateLegacyPreinstallPolicyAliases(&d.Policy, current.Preinstalls.Items)
+	for i := range d.Machines.Items {
+		migrateLegacyPreinstallPolicyAliases(&d.Machines.Items[i].Policy, current.Preinstalls.Items)
+	}
 	merged := packagesprovider.Merge(d.Packages, current, func(ref string) bool {
 		decision, ok := capCtx.Lookup(ref)
 		return ok && decision.Capture
@@ -756,6 +810,46 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, cap
 	d.Packages = merged
 	d.Manifest.Capture.Packages = true
 	return merged, changes, nil
+}
+
+// migrateLegacyPreinstallPolicyAliases persists the same canonicalization
+// used by workflow policy resolution once capture has authoritative catalogue
+// data. A direct preinstall rule wins; legacy aliases are removed on save.
+func migrateLegacyPreinstallPolicyAliases(rules *policy.Rules, catalogue map[string]bool) {
+	if len(catalogue) == 0 {
+		return
+	}
+	migrate := func(items []policy.Rule) []policy.Rule {
+		out := append([]policy.Rule(nil), items...)
+		for id := range catalogue {
+			canonical := "preinstall:" + id
+			hasCanonical := false
+			for _, rule := range out {
+				hasCanonical = hasCanonical || (rule.Category == "packages" && rule.Target == canonical)
+			}
+			for i := range out {
+				if out[i].Category != "packages" || (out[i].Target != "official:"+id && out[i].Target != "aur:"+id) {
+					continue
+				}
+				if hasCanonical {
+					out[i].Target = ""
+					out[i].Category = ""
+					continue
+				}
+				out[i].Target = canonical
+				hasCanonical = true
+			}
+		}
+		filtered := out[:0]
+		for _, rule := range out {
+			if rule.Category != "" {
+				filtered = append(filtered, rule)
+			}
+		}
+		return filtered
+	}
+	rules.Capture = migrate(rules.Capture)
+	rules.Restore = migrate(rules.Restore)
 }
 
 func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
@@ -789,11 +883,13 @@ func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info om
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
+	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, current.Preinstalls.Items)
 	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, packagesprovider.PlanOptions{Exact: exact})
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -814,11 +910,13 @@ func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data, resto
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
+	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, current.Preinstalls.Items)
 	saved, _, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return packagesprovider.Verify(saved, current), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return provider.Verify(ctx, saved, current, packagesprovider.VerifyOptions{Exact: exact, Schema: d.Manifest.Schema}), nil
 }
 
 // filterPackagesForRestoreSkip returns a copy of saved with every
@@ -889,6 +987,47 @@ func filterPackagesForRestoreSkip(saved profile.Packages, restoreCtx workflow.Re
 		filtered.Absent = absent
 	}
 
+	if saved.Preinstalls.Managed {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "preinstalls")
+		if err != nil {
+			return profile.Packages{}, nil, err
+		}
+		if skip {
+			filtered.Preinstalls.Managed = false
+			matched = append(matched, entry)
+		}
+	}
+	if len(saved.Preinstalls.Items) > 0 {
+		items := make(map[string]bool, len(saved.Preinstalls.Items))
+		childSkipped := false
+		for id, present := range saved.Preinstalls.Items {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "preinstall:"+id)
+			if err != nil {
+				return profile.Packages{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				childSkipped = true
+				continue
+			}
+			items[id] = present
+		}
+		filtered.Preinstalls.Items = items
+		// Installing or removing the whole Omarchy preinstall set can mutate
+		// every child. Defer that group transition when even one child is
+		// Restore-Skip; individual Apply children can still converge safely.
+		if childSkipped && saved.Preinstalls.Managed {
+			filtered.Preinstalls.Managed = false
+			groupRecorded := false
+			for _, entry := range matched {
+				groupRecorded = groupRecorded || entry.Key == "preinstalls"
+			}
+			if !groupRecorded {
+				matched = append(matched, restoreSkip{Key: "preinstalls", Reason: "group transition blocked because it could mutate a Restore-Skip child"})
+			}
+		}
+	}
+
 	return filtered, matched, nil
 }
 
@@ -917,19 +1056,23 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 	return provider.Check(ctx, d.Packages)
 }
 
-// ValidateTarget accepts only a fully qualified official:<name>, aur:<name>,
-// or mise:<name> reference, canonicalized to itself. It never requires the
+// ValidateTarget accepts only a preinstalls group or fully qualified
+// official:<name>, aur:<name>, mise:<name>, or preinstall:<name> reference,
+// canonicalized to itself. It never requires the
 // package to currently be installed or excluded -- a not-yet-captured or
 // already-tombstoned reference must validate too.
 func (packagesStateProvider) ValidateTarget(target string) (string, error) {
+	if target == "preinstalls" {
+		return target, nil
+	}
 	kind, name, ok := strings.Cut(target, ":")
 	if !ok || name == "" {
-		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+		return "", fmt.Errorf("packages: invalid target %q; use preinstalls, official:<name>, aur:<name>, mise:<name>, or preinstall:<name>", target)
 	}
 	switch kind {
-	case "official", "aur", "mise":
+	case "official", "aur", "mise", "preinstall":
 	default:
-		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+		return "", fmt.Errorf("packages: invalid target %q; use preinstalls, official:<name>, aur:<name>, mise:<name>, or preinstall:<name>", target)
 	}
 	if strings.ContainsAny(name, " \t\n") {
 		return "", fmt.Errorf("packages: invalid target %q", target)
@@ -942,6 +1085,13 @@ func (packagesStateProvider) ValidateTarget(target string) (string, error) {
 // metadata itself (unlike Themes/Plugins/Hooks), so there is nothing else on
 // disk to remove.
 func (packagesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	if target == "preinstalls" {
+		if !d.Packages.Preinstalls.Managed {
+			return profile.Data{}, fmt.Errorf("packages: %q is not managed", target)
+		}
+		d.Packages.Preinstalls.Managed = false
+		return d, nil
+	}
 	kind, ref, ok := strings.Cut(target, ":")
 	if !ok || ref == "" {
 		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)
@@ -965,6 +1115,16 @@ func (packagesStateProvider) StopManaging(_ context.Context, d profile.Data, tar
 				}
 			}
 			d.Packages.Mise, found = next, true
+		}
+	case "preinstall":
+		if _, ok := d.Packages.Preinstalls.Items[ref]; ok {
+			next := make(map[string]bool, len(d.Packages.Preinstalls.Items)-1)
+			for id, present := range d.Packages.Preinstalls.Items {
+				if id != ref {
+					next[id] = present
+				}
+			}
+			d.Packages.Preinstalls.Items, found = next, true
 		}
 	default:
 		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)

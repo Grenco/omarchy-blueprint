@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -15,6 +16,12 @@ type Runner interface {
 
 type OutputRunner interface {
 	RunOutput(ctx context.Context, limit int64, name string, args ...string) ([]byte, error)
+}
+
+// InteractiveRunner executes a command attached to the process terminal so
+// prompts, authentication URLs, and user input remain visible and usable.
+type InteractiveRunner interface {
+	RunInteractive(ctx context.Context, name string, args ...string) error
 }
 
 func RunOutput(ctx context.Context, runner Runner, limit int64, name string, args ...string) ([]byte, error) {
@@ -60,6 +67,19 @@ func (SystemRunner) Run(ctx context.Context, name string, args ...string) (strin
 		return string(out), &RunError{Name: name, Args: args, Output: string(out), ExitCode: exitCode, Err: err}
 	}
 	return string(out), nil
+}
+
+func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		exitCode := -1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+		return &RunError{Name: name, Args: args, ExitCode: exitCode, Err: err}
+	}
+	return nil
 }
 
 var errOutputLimit = errors.New("output limit exceeded")

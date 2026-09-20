@@ -10,6 +10,24 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+func savePreinstallFile(dir string, state Preinstalls) error {
+	path := filepath.Join(dir, "packages", "preinstalls.toml")
+	if !state.Managed && len(state.Items) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	b, err := toml.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return atomicWrite(path, b)
+}
+
 // savePackageAbsenceFile writes packages/absent.toml, or removes it when
 // absent is empty: only tombstones that actually exist need to be written.
 func savePackageAbsenceFile(dir string, absent []PackageAbsence) error {

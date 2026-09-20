@@ -113,6 +113,9 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 		return RestoreResult{}, err
 	}
 	result := RestoreResult{Options: resolved, Plan: plan}
+	if operation, ok := interactiveOperation(plan); ok {
+		return result, fmt.Errorf("restore operation %s requires an interactive terminal and cannot run through this executor", operation.Resource)
+	}
 	if len(plan.Operations) == 0 {
 		result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
 		return result, err
@@ -140,6 +143,15 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 		return result, fmt.Errorf("restore completed with %d failed operation(s)", len(result.Execution.Failed))
 	}
 	return result, nil
+}
+
+func interactiveOperation(plan model.RestorePlan) (model.Operation, bool) {
+	for _, operation := range plan.Operations {
+		if operation.Interactive {
+			return operation, true
+		}
+	}
+	return model.Operation{}, false
 }
 
 func (s *Session) restorePlan(ctx context.Context, only string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {

@@ -17,7 +17,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 12
+const Schema = 13
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -33,6 +33,7 @@ const (
 	gitStateSchema       = 10
 	machineOverlaySchema = 11
 	policySchema         = 12
+	preinstallSchema     = 13
 )
 
 type Manifest struct {
@@ -68,6 +69,15 @@ type Packages struct {
 	Official []string  `json:"official"`
 	AUR      []string  `json:"aur"`
 	Mise     MiseTools `json:"mise,omitempty" toml:"-"`
+	// MiseInstalled is live scratch state from `mise ls --json`; declarations
+	// and installed versions are distinct and only the former is persisted.
+	MiseInstalled     map[string]bool `json:"-" toml:"-"`
+	SemanticInstalled map[string]bool `json:"-" toml:"-"`
+	SemanticRemoved   map[string]bool `json:"-" toml:"-"`
+	// Preinstalls carries Omarchy's own portable preinstall intent. Managed
+	// distinguishes an uncaptured legacy profile from an explicit opt-in or
+	// opt-out whose zero-value RemovedAll flag is meaningful.
+	Preinstalls Preinstalls `json:"preinstalls,omitempty" toml:"-"`
 	// Absent is the explicit desired-absence tombstone list: a previously
 	// managed package/tool the user removed while Capture was Update. It is
 	// persisted separately in packages/absent.toml, not this struct's
@@ -76,6 +86,12 @@ type Packages struct {
 	MachineSpecific []string         `json:"machine_specific,omitempty"`
 	Excluded        []string         `json:"excluded,omitempty"`
 	Installed       []string         `json:"-" toml:"-"`
+}
+
+type Preinstalls struct {
+	Managed    bool            `json:"managed" toml:"managed"`
+	RemovedAll bool            `json:"removed_all" toml:"removed_all"`
+	Items      map[string]bool `json:"items,omitempty" toml:"items,omitempty"`
 }
 
 // MiseTool is one normalized global Mise tool declaration.
@@ -339,6 +355,16 @@ func Load(dir string) (Data, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
+	if loadedSchema >= preinstallSchema {
+		preinstalls, err := os.ReadFile(filepath.Join(dir, "packages", "preinstalls.toml"))
+		if err == nil {
+			if err := toml.Unmarshal(preinstalls, &d.Packages.Preinstalls); err != nil {
+				return d, fmt.Errorf("parse packages/preinstalls.toml: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
 	themes, err := os.ReadFile(filepath.Join(dir, "themes", "themes.toml"))
 	if err == nil {
 		if err := toml.Unmarshal(themes, &d.Themes); err != nil {
@@ -527,6 +553,9 @@ func Save(dir string, d Data) error {
 		return err
 	}
 	if err := savePackageAbsenceFile(dir, d.Packages.Absent); err != nil {
+		return err
+	}
+	if err := savePreinstallFile(dir, d.Packages.Preinstalls); err != nil {
 		return err
 	}
 	resources, err := MarshalResources(d.Resources)

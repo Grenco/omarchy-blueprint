@@ -1,3 +1,4 @@
 /omarchy-blueprint
 /dist/
+.worktrees/
 *.tmp

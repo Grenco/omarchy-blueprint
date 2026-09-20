@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,18 @@ func TestApplyRestoreResultStoresResolvedOptions(t *testing.T) {
 	}
 	if result.Options != policy.DefaultRestoreOptions() {
 		t.Fatalf("result.Options = %+v, want the resolved Safe+Additive default", result.Options)
+	}
+}
+
+func TestApplyRestoreRejectsFreshInteractivePlanBeforeExecutor(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}, interactive: true, targets: []TargetInspection{{Key: "official:tailscale"}}}})
+	result, err := session.ApplyRestore(context.Background(), "", nil)
+	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
+		t.Fatalf("ApplyRestore err=%v, want interactive executor rejection", err)
+	}
+	if result.Applied {
+		t.Fatalf("result=%#v, want no executor/journal application", result)
 	}
 }
 

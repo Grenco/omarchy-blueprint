@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,17 +30,19 @@ import (
 )
 
 type machineRunner struct {
-	official     map[string]bool
-	aur          map[string]bool
-	dependencies map[string]bool
-	failInstall  string
-	theme        string
-	themeDir     string
-	plugins      map[string]bool
-	pluginDir    string
-	failReload   bool
-	defaults     map[string]string
-	miseCommands [][]string
+	official           map[string]bool
+	aur                map[string]bool
+	dependencies       map[string]bool
+	failInstall        string
+	theme              string
+	themeDir           string
+	plugins            map[string]bool
+	pluginDir          string
+	failReload         bool
+	defaults           map[string]string
+	miseCommands       [][]string
+	preinstallsRemoved bool
+	preinstalls        map[string]bool
 }
 
 // fakeBaselineHistory is opt-in: command tests retain nil-history behavior.
@@ -69,6 +72,15 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return "stable\n", nil
 	case "mise --version":
 		return "2026.1.0\n", nil
+	case "sh -c command -v omarchy-remove-preinstalls":
+		return "/usr/bin/omarchy-remove-preinstalls\n", nil
+	case "cat /usr/bin/omarchy-remove-preinstalls":
+		return "#!/bin/bash\nomarchy-pkg-drop \\\n  aether \\\n  libreoffice-fresh\n", nil
+	case `sh -c [ -f "$HOME/.local/state/omarchy/preinstalls-removed" ]`:
+		if r.preinstallsRemoved {
+			return "", nil
+		}
+		return "", &command.RunError{Name: "sh", Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
 	case "pacman -Qqen":
 		return keys(r.official), nil
 	case "pacman -Qqem":
@@ -110,6 +122,12 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 			return "", fmt.Errorf("hyprctl reload failed")
 		}
 		return "", nil
+	}
+	if name == "pacman" && len(args) == 2 && args[0] == "-Q" {
+		if r.preinstalls[args[1]] {
+			return args[1] + " 1.0-1\n", nil
+		}
+		return "", &command.RunError{Name: name, Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
 	}
 	if len(args) == 2 && name == "omarchy" && args[0] == "default" {
 		if value, ok := r.defaults[args[1]]; ok {
@@ -2982,6 +3000,48 @@ func TestPackagesMiseThreeSourceRestore(t *testing.T) {
 	}
 }
 
+func TestPackagesRestoreRecalculatesBeforeExactMiseRemoval(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	miseConfig := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(miseConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(miseConfig, []byte("[tools]\nnode = '24'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official, runner.aur = map[string]bool{}, map[string]bool{}
+	if code, out := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Packages.Mise = profile.MiseTools{}
+	d.Packages.Absent = []profile.PackageAbsence{{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}}}
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	deps.MiseGlobalConfig = func() (string, error) {
+		lookups++
+		if lookups == 3 {
+			if err := os.WriteFile(miseConfig, []byte("[tools]\nnode = '22'\n"), 0o644); err != nil {
+				return "", err
+			}
+		}
+		return miseConfig, nil
+	}
+	if code, out := configRun(t, deps, profileDir, "restore", "packages", "--exact", "--yes"); code == 0 || !strings.Contains(out, "plan changed after approval") {
+		t.Fatalf("restore code=%d lookups=%d out=%s, want stale exact Mise plan rejected before execution", code, lookups, out)
+	}
+	if len(runner.miseCommands) != 0 {
+		t.Fatalf("mise commands=%#v, want no stale uninstall", runner.miseCommands)
+	}
+}
+
 func TestTrackTrackedAndUntrackResources(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	home := filepath.Join(t.TempDir(), "home")
@@ -3130,6 +3190,37 @@ func TestRenderResourceProgressUsesResourceLabels(t *testing.T) {
 	}
 }
 
+func TestRenderPlanSurfacesInteractiveAuthenticationNotice(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		Provider:    "packages",
+		Action:      "install",
+		Resource:    "official:tailscale",
+		Risk:        model.RiskHigh,
+		Interactive: true,
+		Notice:      "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint.",
+	}}}
+	got := renderPlan(plan, true)
+	if !strings.Contains(got, "interactive device authentication") || !strings.Contains(got, "credentials are not stored") {
+		t.Fatalf("rendered plan = %q", got)
+	}
+}
+
+func TestInteractiveRestoreRequiresTerminal(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{{ID: "interactive", Resource: "official:tailscale", Interactive: true}}}
+	if err := requireInteractiveTerminal(plan, false, false); err == nil || !strings.Contains(err.Error(), "official:tailscale") {
+		t.Fatalf("err = %v, want non-terminal interactive restore rejection", err)
+	}
+	if err := requireInteractiveTerminal(plan, true, false); err != nil {
+		t.Fatalf("interactive terminal rejected: %v", err)
+	}
+	if err := requireInteractiveTerminal(plan, true, true); err == nil || !strings.Contains(err.Error(), "--json") {
+		t.Fatalf("interactive JSON restore err = %v, want rejection", err)
+	}
+	if err := requireInteractiveTerminal(model.RestorePlan{}, false, true); err != nil {
+		t.Fatalf("non-interactive plan rejected: %v", err)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
@@ -3148,6 +3239,8 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	runner := deps.Runner.(*machineRunner)
 	runner.official = map[string]bool{"htop": true, "firefox": true, "nvidia-utils": true}
 	runner.aur = map[string]bool{}
+	runner.preinstallsRemoved = true
+	runner.preinstalls = map[string]bool{"aether": true}
 
 	d := profile.Data{Packages: profile.Packages{
 		Official: []string{"htop"},
@@ -3177,6 +3270,171 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	}
 	if got, ok := byKey["official:nvidia-utils"]; !ok || got.CaptureEligible || got.SafetyReason == "" {
 		t.Fatalf("nvidia-utils (machine-specific) = %#v, ok=%v", got, ok)
+	}
+	if got := byKey["preinstalls"]; got.Current != workflow.TargetAbsent || !got.Capabilities.Hierarchical {
+		t.Fatalf("preinstalls group = %#v, want removed group with hierarchy", got)
+	}
+	if got := byKey["preinstall:aether"]; got.Parent != "preinstalls" || got.Current != workflow.TargetPresent {
+		t.Fatalf("preinstall:aether = %#v, want present child of preinstalls", got)
+	}
+	if got := byKey["preinstall:libreoffice-fresh"]; got.Parent != "preinstalls" || got.Current != workflow.TargetAbsent {
+		t.Fatalf("preinstall:libreoffice-fresh = %#v, want absent child of preinstalls", got)
+	}
+}
+
+func TestPackagesCaptureRecordsRemoveAllAndReinstalledPreinstall(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstallsRemoved = true
+	runner.preinstalls = map[string]bool{"aether": true}
+
+	d := profile.Data{}
+	ctx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{
+		"preinstalls":                  {Capture: true, Resolved: true},
+		"preinstall:aether":            {Capture: true, Resolved: true},
+		"preinstall:libreoffice-fresh": {Capture: true, Resolved: true},
+	}}
+	if _, _, err := (packagesStateProvider{deps: deps}).Capture(context.Background(), &d, ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := profile.Preinstalls{Managed: true, RemovedAll: true, Items: map[string]bool{"aether": true, "libreoffice-fresh": false}}
+	if !reflect.DeepEqual(d.Packages.Preinstalls, want) {
+		t.Fatalf("Preinstalls = %#v, want %#v", d.Packages.Preinstalls, want)
+	}
+}
+
+func TestPackagesPlanAndVerifyHonorRestoreSkipForPreinstallItem(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstalls = map[string]bool{"aether": true}
+
+	d := profile.Data{Packages: profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: true,
+		Items:   map[string]bool{"aether": false},
+	}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"preinstalls":       {Restore: true, Resolved: true},
+		"preinstall:aether": {Restore: false, Resolved: true, Reason: "machine override"},
+	}}
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 2 || plan.Skipped[0].Resource != "preinstall:aether" || plan.Skipped[1].Resource != "preinstalls" {
+		t.Fatalf("plan = %#v, want visible child and blocked-group skips with no mutation", plan)
+	}
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil || !verification.OK {
+		t.Fatalf("verification = %#v, err=%v", verification, err)
+	}
+}
+
+func TestPackagesPreinstallGroupCannotMutateRestoreSkipChild(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstallsRemoved = false
+	runner.preinstalls = map[string]bool{"aether": true}
+
+	d := profile.Data{Packages: profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true},
+	}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"preinstalls":       {Restore: true, Resolved: true},
+		"preinstall:aether": {Restore: false, Resolved: true, Reason: "keep this machine's application"},
+	}}
+
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "preinstalls" || op.Resource == "preinstall:aether" {
+			t.Fatalf("operation %#v can mutate Restore-Skip child preinstall:aether", op)
+		}
+	}
+	if len(plan.Skipped) != 2 || plan.Skipped[0].Resource != "preinstall:aether" || plan.Skipped[1].Resource != "preinstalls" {
+		t.Fatalf("Skipped = %#v, want child policy and blocked-group skips visible", plan.Skipped)
+	}
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil || !verification.OK {
+		t.Fatalf("verification = %#v, err=%v; deferred group state must not fail verification", verification, err)
+	}
+}
+
+func TestPackagesLegacyPreinstallAliasUsesChildRestorePolicy(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstalls = map[string]bool{"aether": false}
+
+	// A profile saved before schema 13 knew aether only as official:aether.
+	// Once the authoritative catalogue is available it must be governed by
+	// preinstall:aether, not require or bypass a stale generic policy key.
+	d := profile.Data{Manifest: profile.Manifest{Schema: 13}, Packages: profile.Packages{Official: []string{"aether"}}}
+	ctx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"preinstall:aether": {Restore: false, Resolved: true, Reason: "machine keeps this optional app disabled"},
+	}}
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstall:aether" {
+		t.Fatalf("plan = %#v, want legacy alias governed by child Restore Skip", plan)
+	}
+}
+
+func TestCaptureMigratesLegacyPreinstallPolicyAliases(t *testing.T) {
+	rules := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "official:aether", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "aur:aether", Setting: policy.SettingDisabled}},
+	}
+	migrateLegacyPreinstallPolicyAliases(&rules, map[string]bool{"aether": true})
+	if len(rules.Capture) != 1 || rules.Capture[0].Target != "preinstall:aether" || len(rules.Restore) != 1 || rules.Restore[0].Target != "preinstall:aether" {
+		t.Fatalf("rules = %#v, want canonical persisted preinstall policy aliases", rules)
+	}
+}
+
+func TestPackagesExactRemovalHonorsConvergenceAndRestoreSkip(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{"htop": true}
+	runner.aur = map[string]bool{}
+
+	d := profile.Data{Packages: profile.Packages{Absent: []profile.PackageAbsence{{Ref: "official:htop"}}}}
+	apply := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"official:htop": {Restore: true, Resolved: true}},
+	}
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, apply)
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].Action != "remove" {
+		t.Fatalf("exact plan=%#v err=%v", plan, err)
+	}
+
+	apply.Options.Convergence = policy.ConvergenceAdditive
+	plan, err = (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, apply)
+	if err != nil || len(plan.Operations) != 0 {
+		t.Fatalf("additive plan=%#v err=%v", plan, err)
+	}
+
+	apply.Options.Convergence = policy.ConvergenceExact
+	apply.Targets["official:htop"] = workflow.RestoreDecision{Restore: false, Resolved: true, Reason: "machine override"}
+	plan, err = (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, apply)
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "official:htop" {
+		t.Fatalf("Restore Skip plan=%#v err=%v", plan, err)
 	}
 }
 
@@ -4900,16 +5158,10 @@ func TestShellPlanOnlyRespondsToConflictsAxisNotConvergence(t *testing.T) {
 	}
 }
 
-// TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo strengthens PR
-// 3 Task 23's packages gate (still enforced at the low level by
-// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones) at the app/RestoreContext
-// layer added in PR 4: a generic desired-absent package tombstone still
-// produces no operation, no skip, and no verification failure even when
-// this run's Convergence is Exact, not just Additive -- Task 26 wired
-// RestoreContext through packagesStateProvider.Plan/Verify, but neither
-// ever reads Packages.Absent, so real Exact-only removal genuinely remains
-// PR 5's job, not something that silently started working already.
-func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
+// TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderAdditive confirms that
+// package tombstones remain inert under Additive convergence. Exact behavior
+// is covered separately by TestPackagesExactRemovalHonorsConvergenceAndRestoreSkip.
+func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderAdditive(t *testing.T) {
 	_, deps := configSandbox(t)
 	runner := deps.Runner.(*machineRunner)
 	// discord is neither currently installed nor otherwise desired, so the
@@ -4922,7 +5174,7 @@ func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
 		Absent: []profile.PackageAbsence{{Ref: "official:discord"}},
 	}}
 	restoreCtx := workflow.RestoreContext{
-		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive},
 		Targets: map[string]workflow.RestoreDecision{"official:discord": {Restore: true, Resolved: true}},
 	}
 
@@ -4931,14 +5183,14 @@ func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
-		t.Fatalf("plan = %#v, want no operations or skips for a tombstoned ref even under Exact", plan)
+		t.Fatalf("plan = %#v, want no operations or skips for a tombstoned ref under Additive", plan)
 	}
 	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !verification.OK || len(verification.Missing) != 0 {
-		t.Fatalf("verify = %#v, want OK with the tombstoned ref never reported missing, even under Exact", verification)
+		t.Fatalf("verify = %#v, want OK with the tombstoned ref ignored under Additive", verification)
 	}
 }
 
