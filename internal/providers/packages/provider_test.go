@@ -159,6 +159,19 @@ func TestPlanUsesSemanticTailscaleInstallerAndOrdinaryPackageFallback(t *testing
 	}
 }
 
+func TestSemanticPlanRepairsPartialInstallAndExactResidue(t *testing.T) {
+	installed := profile.Packages{Official: []string{"tailscale"}, Installed: []string{"tailscale"}, SemanticInstalled: map[string]bool{"tailscale": false}}
+	plan, err := (Provider{}).Plan(profile.Packages{Official: []string{"tailscale"}}, installed, 13, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].ID != "packages.install.semantic.tailscale" {
+		t.Fatalf("partial semantic plan=%#v err=%v", plan, err)
+	}
+	residue := profile.Packages{SemanticRemoved: map[string]bool{"tailscale": false}}
+	plan, err = (Provider{}).Plan(profile.Packages{Absent: []profile.PackageAbsence{{Ref: "official:tailscale"}}}, residue, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].ID != "packages.remove.semantic.tailscale" {
+		t.Fatalf("semantic residue plan=%#v err=%v", plan, err)
+	}
+}
+
 func TestSemanticVerificationRequiresTailscaleIntegrationPostconditions(t *testing.T) {
 	saved := profile.Packages{Official: []string{"tailscale"}}
 	current := profile.Packages{Official: []string{"tailscale"}, Installed: []string{"tailscale"}}
@@ -365,6 +378,22 @@ func TestPlanRetriesDeclaredMiseToolMissingFromInstalledState(t *testing.T) {
 	}
 }
 
+func TestMiseMutationAlsoRepairsAlreadyDeclaredMissingTool(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("[tools]\nnode = '24'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}, "python": {"version": "3.13"}}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}, MiseInstalled: map[string]bool{"node": false}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 2 || !reflect.DeepEqual(plan.Operations[1].Items, []string{"node", "python"}) {
+		t.Fatalf("plan=%#v err=%v, want post-config install of addition and repair", plan, err)
+	}
+}
+
 // TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool is a
 // regression for a review finding on PR 3: excluding a mise tool now strips
 // it from saved.Mise entirely (Session.SetPackageExcluded), rather than
@@ -402,14 +431,8 @@ func TestPlanPreinstallRemoveAllThenRestoresIndividuallyDesiredItem(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Operations) != 2 {
-		t.Fatalf("Operations = %#v, want native remove-all then aether reinstall", plan.Operations)
-	}
-	if !reflect.DeepEqual(plan.Operations[0].Command, []string{"sh", "-c", `omarchy-remove-preinstalls && test -f "$HOME/.local/state/omarchy/preinstalls-removed"`}) {
-		t.Fatalf("remove-all command = %#v", plan.Operations[0].Command)
-	}
-	if !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-add", "aether"}) || !reflect.DeepEqual(plan.Operations[1].DependsOn, []string{"packages.preinstalls.remove"}) {
-		t.Fatalf("individual reinstall = %#v", plan.Operations[1])
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstalls" {
+		t.Fatalf("plan = %#v, want unsafe native remove-all deferred for manual review", plan)
 	}
 
 	after := profile.Packages{Preinstalls: profile.Preinstalls{

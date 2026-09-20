@@ -39,6 +39,7 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 	}
 	packages.Preinstalls = profile.Preinstalls{Managed: true, RemovedAll: preinstalls.RemovedAll, Items: preinstalls.Items}
 	packages = CanonicalizePreinstallOwnership(packages, preinstalls.Items)
+	packages.SemanticInstalled, packages.SemanticRemoved = p.detectSemanticState(ctx)
 	if p.MiseGlobalConfig != "" {
 		mise, err := ReadMiseTools(p.MiseGlobalConfig)
 		if err != nil {
@@ -51,6 +52,34 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 		packages.MiseInstalled = p.detectMiseInstalled(ctx)
 	}
 	return classify(packages), nil
+}
+
+func (p Provider) detectSemanticState(ctx context.Context) (map[string]bool, map[string]bool) {
+	installed, removed := map[string]bool{}, map[string]bool{}
+	for _, id := range []string{"tailscale"} {
+		recipe, ok := omarchy.SemanticRecipe(id)
+		if !ok {
+			continue
+		}
+		installed[id] = p.recipeChecksPass(ctx, recipe.Verify)
+		removed[id] = p.recipeChecksPass(ctx, recipe.RemoveVerify)
+	}
+	return installed, removed
+}
+
+func (p Provider) recipeChecksPass(ctx context.Context, checks [][]string) bool {
+	if p.Runner == nil || len(checks) == 0 {
+		return false
+	}
+	for _, check := range checks {
+		if len(check) == 0 {
+			continue
+		}
+		if _, err := p.Runner.Run(ctx, check[0], check[1:]...); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (p Provider) detectMiseInstalled(ctx context.Context) map[string]bool {
@@ -151,12 +180,13 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	var missingOfficial, missingAUR []string
 	var semanticInstalls []model.Operation
 	for _, name := range saved.Official {
-		if !currentNames[name] {
-			if recipe, ok := omarchy.SemanticRecipe(name); ok {
+		if recipe, ok := omarchy.SemanticRecipe(name); ok {
+			semanticSatisfied := current.SemanticInstalled == nil || current.SemanticInstalled[name]
+			if !currentNames[name] || !semanticSatisfied {
 				semanticInstalls = append(semanticInstalls, semanticInstallOperation(recipe))
-			} else {
-				missingOfficial = append(missingOfficial, name)
 			}
+		} else if !currentNames[name] {
+			missingOfficial = append(missingOfficial, name)
 		}
 	}
 	for _, name := range saved.AUR {
@@ -283,8 +313,14 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	plan.Operations = append(plan.Operations, removalOps...)
 	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, DependsOn: removalIDs, Risk: risk, Reversible: snapshot.Exists})
 	if len(additions) > 0 {
+		for id, tool := range installOnly {
+			additions[id] = tool
+		}
 		ids := sortedMiseIDs(additions)
 		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions)})
+	} else if len(installOnly) > 0 {
+		ids := sortedMiseIDs(installOnly)
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(installOnly)})
 	}
 	return plan, nil
 }
@@ -463,12 +499,14 @@ func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []m
 		simulated[id] = present
 	}
 	if saved.Managed && saved.RemovedAll != current.RemovedAll {
+		if saved.RemovedAll {
+			// Omarchy's native remove-all also sweeps every Omarchy-style webapp
+			// and TUI launcher, outside Blueprint's tracked preinstall scope.
+			// Do not automate that broader destructive action.
+			return nil, []model.Skipped{{Provider: "packages", Resource: "preinstalls", Reason: "Omarchy remove-all can delete unmanaged webapps/TUIs; run it manually after review"}}
+		}
 		action, commandName, id := "install", "omarchy-install-preinstalls", "packages.preinstalls.install"
 		markerCheck := `test ! -f "$HOME/.local/state/omarchy/preinstalls-removed"`
-		if saved.RemovedAll {
-			action, commandName, id = "remove", "omarchy-remove-preinstalls", "packages.preinstalls.remove"
-			markerCheck = `test -f "$HOME/.local/state/omarchy/preinstalls-removed"`
-		}
 		operations = append(operations, model.Operation{
 			ID:       id,
 			Provider: "packages",
@@ -577,7 +615,9 @@ func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packag
 			if kind == "aur" {
 				present = aur[id]
 			}
-			if !present {
+			_, semantic := omarchy.SemanticRecipe(id)
+			semanticResidue := semantic && current.SemanticRemoved != nil && !current.SemanticRemoved[id]
+			if !present && !semanticResidue {
 				continue
 			}
 			commandLine := []string{"omarchy", "pkg", "drop", id}

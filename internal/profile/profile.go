@@ -71,7 +71,9 @@ type Packages struct {
 	Mise     MiseTools `json:"mise,omitempty" toml:"-"`
 	// MiseInstalled is live scratch state from `mise ls --json`; declarations
 	// and installed versions are distinct and only the former is persisted.
-	MiseInstalled map[string]bool `json:"-" toml:"-"`
+	MiseInstalled     map[string]bool `json:"-" toml:"-"`
+	SemanticInstalled map[string]bool `json:"-" toml:"-"`
+	SemanticRemoved   map[string]bool `json:"-" toml:"-"`
 	// Preinstalls carries Omarchy's own portable preinstall intent. Managed
 	// distinguishes an uncaptured legacy profile from an explicit opt-in or
 	// opt-out whose zero-value RemovedAll flag is meaningful.
