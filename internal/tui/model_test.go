@@ -498,8 +498,8 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	m.selectScreen(ScreenRestore)
 	restoreScreen := m.activeScreen().(*restoreScreen)
 	consumeScreenCmd(t, &m, restoreScreen.Update(tea.KeyPressMsg{Code: 'f'}))
-	if !strings.Contains(restoreScreen.View(), "active: [Forced]") {
-		t.Fatalf("restore mode did not toggle: %q", restoreScreen.View())
+	if !strings.Contains(restoreScreen.View(), "Conflicts: force") {
+		t.Fatalf("restore conflict setting did not toggle: %q", restoreScreen.View())
 	}
 	m.selectScreen(ScreenSync)
 	syncScreen := m.activeScreen().(*syncScreen)

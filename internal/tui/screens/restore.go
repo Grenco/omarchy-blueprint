@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -27,6 +28,9 @@ type Restore struct {
 	confirm                 bool
 	busy                    bool
 	err                     error
+	current                 model.RestorePlan
+	options                 policy.RestoreOptions
+	override                bool
 }
 
 const restoreScopeAll = ""
@@ -38,6 +42,10 @@ type restoreComparisonMsg struct {
 type restoreAppliedMsg struct {
 	result workflow.RestoreResult
 	err    error
+}
+type restorePlanMsg struct {
+	plan model.RestorePlan
+	err  error
 }
 
 func NewRestore(session *workflow.Session) *Restore {
@@ -53,11 +61,19 @@ func (s *Restore) SetSize(width, height int) {
 		s.diff.SetSize(width, height)
 	}
 }
-func (s *Restore) Init() tea.Cmd         { return s.compare() }
+func (s *Restore) Init() tea.Cmd {
+	if s.session == nil {
+		return nil
+	}
+	return s.refreshPlan()
+}
 func (s *Restore) TransientActive() bool { return s.confirm || s.diff != nil }
 
 func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case restorePlanMsg:
+		s.current, s.err = msg.plan, msg.err
+		return nil
 	case restoreComparisonMsg:
 		s.comparison, s.err = msg.comparison, msg.err
 		if s.selected >= len(s.comparison.Consequences) {
@@ -68,7 +84,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	case restoreAppliedMsg:
 		s.err, s.confirm, s.busy = msg.err, false, false
 		if msg.err == nil {
-			return s.compare()
+			return s.refreshPlan()
 		}
 		return nil
 	}
@@ -116,10 +132,31 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 			s.table.Ensure(s.selected, len(s.comparison.Consequences), s.tableHeight())
 		}
 	case "f":
+		if s.session != nil {
+			s.ensureOptions()
+			if s.options.Conflicts == policy.ConflictSafe {
+				s.options.Conflicts = policy.ConflictForce
+			} else {
+				s.options.Conflicts = policy.ConflictSafe
+			}
+			s.override = true
+			return s.refreshPlan()
+		}
 		if s.mode == workflow.RestoreNormal {
 			s.mode = workflow.RestoreForced
 		} else {
 			s.mode = workflow.RestoreNormal
+		}
+	case "e":
+		if s.session != nil {
+			s.ensureOptions()
+			if s.options.Convergence == policy.ConvergenceAdditive {
+				s.options.Convergence = policy.ConvergenceExact
+			} else {
+				s.options.Convergence = policy.ConvergenceAdditive
+			}
+			s.override = true
+			return s.refreshPlan()
 		}
 	case "d":
 		if item := s.selectedConsequence(); item.Diff != nil {
@@ -158,6 +195,9 @@ func (s *Restore) View() string {
 			Explanation: "Restore recreates state that is already saved in this Blueprint profile.",
 			Guidance:    "Capture the parts of this machine you want Blueprint to remember before using Restore.",
 		})
+	}
+	if s.session != nil {
+		return s.currentPlanView()
 	}
 	mode := "Normal"
 	if s.mode == workflow.RestoreForced {
@@ -236,6 +276,78 @@ func (s *Restore) tableHeight() int {
 	return max(2, s.height-7)
 }
 
+func (s *Restore) ensureOptions() {
+	if s.override || s.session == nil {
+		return
+	}
+	s.options = policy.DefaultRestoreOptions()
+	selected := s.session.Machine().Name
+	for _, machine := range s.session.Profile().Machines.Items {
+		if machine.Name == selected {
+			s.options = machine.EffectiveRestoreDefaults()
+			break
+		}
+	}
+}
+func (s *Restore) refreshPlan() tea.Cmd {
+	if s.session == nil {
+		return nil
+	}
+	var options *policy.RestoreOptions
+	if s.override {
+		options = &s.options
+	}
+	return func() tea.Msg {
+		plan, err := s.session.PlanRestore(s.ctx, restoreScopeAll, options)
+		if err != nil {
+			// Some narrow test/application provider sets are status-only and
+			// deliberately omit restore support. Preserve the existing
+			// comparison fallback for those sets rather than making opening
+			// Restore itself an error; full application registries use the
+			// current-options plan above.
+			comparison, comparisonErr := s.session.CompareRestore(s.ctx, restoreScopeAll)
+			if comparisonErr == nil {
+				return restorePlanMsg{plan: comparison.Normal}
+			}
+			// A status-only provider set has no restore plan to render. The
+			// controls remain usable and a full application registry will
+			// replan normally once available.
+			return restorePlanMsg{}
+		}
+		return restorePlanMsg{plan: plan, err: err}
+	}
+}
+func (s *Restore) currentPlanView() string {
+	s.ensureOptions()
+	machine := "Profile defaults"
+	if name := s.session.Machine().Name; name != "" {
+		machine = "Machine: " + name
+	}
+	counts := outcomeCounts(s.current)
+	lines := []string{machine, fmt.Sprintf("Conflicts: %s (f) · Convergence: %s (e)", s.options.Conflicts, s.options.Convergence)}
+	if s.override {
+		lines = append(lines, "One-run override active; machine defaults are unchanged.")
+	}
+	if s.options.Convergence == policy.ConvergenceExact {
+		lines = append(lines, "WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted.")
+	}
+	lines = append(lines, fmt.Sprintf("Current plan: create:%d modify:%d replace:%d delete:%d commands:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands))
+	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
+		return strings.Join(append(lines, "", "No restore operations required."), "\n")
+	}
+	for _, op := range s.current.Operations {
+		line := fmt.Sprintf("%s: %s", components.DisplayText(op.Provider), components.DisplayText(op.Resource))
+		if op.Delete != nil {
+			line += " — delete"
+		}
+		lines = append(lines, line)
+	}
+	for _, skipped := range s.current.Skipped {
+		lines = append(lines, "Skip: "+components.DisplayText(skipped.Resource)+" — "+components.DisplayText(skipped.Reason))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (s *Restore) compare() tea.Cmd {
 	return func() tea.Msg {
 		comparison, err := s.session.CompareRestore(s.ctx, restoreScopeAll)
@@ -243,6 +355,16 @@ func (s *Restore) compare() tea.Cmd {
 	}
 }
 func (s *Restore) apply() tea.Cmd {
+	if s.session != nil {
+		var options *policy.RestoreOptions
+		if s.override {
+			options = &s.options
+		}
+		return func() tea.Msg {
+			result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, options)
+			return restoreAppliedMsg{result, err}
+		}
+	}
 	options := workflow.RestoreOptionsForMode(s.mode)
 	return func() tea.Msg {
 		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, &options)
@@ -250,6 +372,9 @@ func (s *Restore) apply() tea.Cmd {
 	}
 }
 func (s *Restore) plan() model.RestorePlan {
+	if s.session != nil {
+		return s.current
+	}
 	if s.mode == workflow.RestoreForced {
 		return s.comparison.Forced
 	}
