@@ -1184,7 +1184,8 @@ func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omar
 	if blocked {
 		saved.Current = ""
 	}
-	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, themesprovider.PlanOptions{Exact: exact})
 	activation, rest := splitThemeActivationOperation(plan.Operations)
 	plan.Operations = rest
 	plan = recordRestoreSkips(plan, "themes", matched)
@@ -1213,7 +1214,8 @@ func (p themesStateProvider) Verify(ctx context.Context, d profile.Data, restore
 	if _, blocked := themeActivationBlockedReason(saved.Current, current, restoreCtx); blocked {
 		saved.Current = ""
 	}
-	return themesprovider.Verify(saved, current), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return provider.Verify(saved, current, themesprovider.VerifyOptions{Exact: exact}), nil
 }
 
 // filterThemesForRestoreSkip returns a copy of saved with the desired
@@ -1562,7 +1564,11 @@ func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info oma
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d))
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	var shellMatched []restoreSkip
+	saved, shellMatched = filterPluginsForEffectiveShellReference(p.deps, p.opt, saved, exact)
+	matched = append(matched, shellMatched...)
+	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d), pluginsprovider.PlanOptions{Exact: exact})
 	return recordRestoreSkips(plan, "plugins", matched), nil
 }
 
@@ -1579,7 +1585,69 @@ func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data, restor
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return pluginsprovider.Verify(saved, current, pluginSemantics(d)), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	saved, _ = filterPluginsForEffectiveShellReference(p.deps, p.opt, saved, exact)
+	return pluginsprovider.Verify(saved, current, pluginSemantics(d), pluginsprovider.VerifyOptions{Exact: exact}), nil
+}
+
+// filterPluginsForEffectiveShellReference removes from saved.Absent any
+// tombstone the machine's actual, currently effective Shell configuration
+// still references -- shared by Plan and Verify (round-2 review blocker)
+// so a removal Plan skips for this reason can never turn into a Verify
+// failure the way a Plan-only post-processing step could: RequiredThird
+// PartyPlugins only reports references a proposed Shell merge would newly
+// introduce, never ones the live document already has, so this is
+// deliberately a separate, independent check. When Shell's live state
+// cannot be established at all (no ShellPaths configured, or detection
+// fails), every Absent entry is treated as blocked: "provider safety
+// always wins over Exact" means unknown must fail closed, not open. Only
+// meaningful under Exact; Additive never reads Absent at all.
+func filterPluginsForEffectiveShellReference(deps Dependencies, opt *options, saved profile.Plugins, exact bool) (profile.Plugins, []restoreSkip) {
+	if !exact || len(saved.Absent) == 0 {
+		return saved, nil
+	}
+	referenced, ok := effectiveShellPluginReferences(deps, opt)
+	var matched []restoreSkip
+	absent := make([]profile.Plugin, 0, len(saved.Absent))
+	for _, item := range saved.Absent {
+		if ok && !referenced[item.ID] {
+			absent = append(absent, item)
+			continue
+		}
+		reason := fmt.Sprintf("plugin %q is still referenced by the effective Shell configuration; removal disabled", item.ID)
+		if !ok {
+			reason = fmt.Sprintf("plugin %q availability against the effective Shell configuration could not be determined; removal disabled", item.ID)
+		}
+		matched = append(matched, restoreSkip{Key: "plugin:" + item.ID, Reason: reason})
+	}
+	saved.Absent = absent
+	return saved, matched
+}
+
+// effectiveShellPluginReferences reports the machine's actual, currently
+// effective Shell configuration's plugin references, and whether that
+// state could be established at all (false on any detection failure).
+func effectiveShellPluginReferences(deps Dependencies, opt *options) (map[string]bool, bool) {
+	if deps.ShellPaths == nil {
+		return nil, false
+	}
+	baseline, user, err := deps.ShellPaths()
+	if err != nil {
+		return nil, false
+	}
+	current, err := (shellprovider.Provider{BaselinePath: baseline, UserPath: user, ProfileDir: opt.profileDir}).Detect()
+	if err != nil {
+		return nil, false
+	}
+	target := current.Baseline
+	if current.UserExists {
+		target = current.Current
+	}
+	referenced := make(map[string]bool, len(target.References))
+	for _, id := range target.References {
+		referenced[id] = true
+	}
+	return referenced, true
 }
 
 // filterPluginsForRestoreSkip returns a copy of saved with every
@@ -2695,7 +2763,8 @@ func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
-	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, hooksprovider.PlanOptions{Exact: exact})
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
@@ -2715,7 +2784,8 @@ func (p hooksStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	return hooksprovider.Verify(saved, current), nil
+	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
+	return provider.Verify(saved, current, hooksprovider.VerifyOptions{Exact: exact})
 }
 
 // filterHooksForRestoreSkip returns a copy of saved with every

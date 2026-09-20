@@ -34,6 +34,7 @@ type machineRunner struct {
 	dependencies map[string]bool
 	failInstall  string
 	theme        string
+	themeDir     string
 	plugins      map[string]bool
 	pluginDir    string
 	failReload   bool
@@ -144,6 +145,30 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 	}
 	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "set" {
 		r.theme = args[2]
+		return "", nil
+	}
+	// omarchy theme remove <id>: mirrors the real omarchy-theme-remove
+	// script's unconditional rm -rf of the theme directory (no --yes/
+	// confirmation flag exists for it -- see PR 5 research).
+	if len(args) == 3 && name == "omarchy" && args[0] == "theme" && args[1] == "remove" {
+		if r.themeDir != "" {
+			if err := os.RemoveAll(filepath.Join(r.themeDir, args[2])); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+	// omarchy plugin remove <id> --yes: mirrors the real
+	// omarchy-plugin-remove script's removal of the plugin directory.
+	if len(args) == 4 && name == "omarchy" && args[0] == "plugin" && args[1] == "remove" && args[3] == "--yes" {
+		if r.pluginDir != "" {
+			if err := os.RemoveAll(filepath.Join(r.pluginDir, args[2])); err != nil {
+				return "", err
+			}
+		}
+		if r.plugins != nil {
+			delete(r.plugins, args[2])
+		}
 		return "", nil
 	}
 	if len(args) >= 3 && name == "omarchy" && args[0] == "pkg" && args[1] == "add" {
@@ -2603,6 +2628,64 @@ func TestRestoreShellBlocksDifferingInstalledPlugin(t *testing.T) {
 	}
 }
 
+// TestRestoreShellBlocksPluginRequiredButPlannedForExactRemoval is the Task
+// 30 "Shell dependency finalization cannot reintroduce skipped plugin"
+// guarantee: Shell's captured config still requires acme.weather, but
+// Plugins has independently tombstoned it and Convergence: Exact has
+// planned a real "remove" operation for it. Shell must be blocked, not
+// wired to depend on the removal as if it made the plugin available. The
+// still-installed plugin (removal has not executed -- this is still just a
+// plan) falls into finalizeRestorePlan's existing "installed but not this
+// id's captured desired state" conflicts path before lastPluginOperationID
+// is ever consulted, so this is a genuine regression test for that
+// existing safety property under the new PR 5 removal scenario, not a
+// dedicated new code path.
+func TestRestoreShellBlocksPluginRequiredButPlannedForExactRemoval(t *testing.T) {
+	deps, opt, data, plan, providers := shellLinkFixture(t)
+	var kept []profile.Plugin
+	var tombstoned profile.Plugin
+	for _, item := range data.Plugins.Items {
+		if item.ID == "acme.weather" {
+			tombstoned = item
+		} else {
+			kept = append(kept, item)
+		}
+	}
+	if tombstoned.ID == "" {
+		t.Fatalf("fixture Items = %#v, want acme.weather captured", data.Plugins.Items)
+	}
+	data.Plugins.Items = kept
+	data.Plugins.Absent = append(data.Plugins.Absent, tombstoned)
+	plan.Operations = append(plan.Operations, model.Operation{
+		ID: "plugins.remove.acme.weather", Provider: "plugins", Action: "remove",
+		Resource: "plugin:acme.weather", Items: []string{"acme.weather"},
+		Command: []string{"omarchy", "plugin", "remove", "acme.weather", "--yes"},
+		Risk:    model.RiskHigh,
+	})
+	providers = append(providers, &pluginsStateProvider{deps: deps, opt: opt})
+
+	if err := finalizeRestorePlan(context.Background(), deps, opt, data, providers, &plan, restorePlanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Provider == "shell" {
+			t.Fatalf("Operations = %#v, want Shell blocked: it still requires a plugin planned for removal", plan.Operations)
+		}
+	}
+	var removalKept bool
+	for _, op := range plan.Operations {
+		if op.ID == "plugins.remove.acme.weather" {
+			removalKept = true
+		}
+	}
+	if !removalKept {
+		t.Fatalf("Operations = %#v, want the plugin removal itself left intact", plan.Operations)
+	}
+	if len(plan.Skipped) != 1 {
+		t.Fatalf("Skipped = %#v, want exactly one Shell skip", plan.Skipped)
+	}
+}
+
 func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model.RestorePlan, []stateProvider) {
 	t.Helper()
 	profileDir := t.TempDir()
@@ -4000,6 +4083,400 @@ func TestThemesFilterSkipsRequireForBuiltinItems(t *testing.T) {
 	}
 }
 
+// themesExactRemovalFixture captures a real local theme ("old-custom") so
+// its recorded Hash provenance genuinely matches what Detect will find on
+// disk, then moves it from Items to Absent in memory -- simulating "this
+// theme was captured before, and policy now desires it gone" -- while
+// leaving the active theme as the builtin "nord" throughout, so these tests
+// isolate the Restore-Skip/Exact wiring alone without also exercising the
+// active-theme-without-replacement guard (already covered at the low level).
+func themesExactRemovalFixture(t *testing.T) (Dependencies, *options, profile.Data) {
+	t.Helper()
+	builtin, user := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(builtin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(user, "old-custom")
+	if err := os.Mkdir(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(custom, "colors.toml"), []byte("accent = '#123456'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profileDir, deps := configSandbox(t)
+	deps.ThemeDirs = func() (string, string, error) { return builtin, user, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "nord"
+	opt := &options{profileDir: profileDir}
+
+	sp := &themesStateProvider{deps: deps, opt: opt}
+	var d profile.Data
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{
+		"active":           {Capture: true, Resolved: true},
+		"theme:old-custom": {Capture: true, Resolved: true},
+	}}
+	if _, _, err := sp.Capture(context.Background(), &d, capCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	var kept []profile.Theme
+	var tombstoned profile.Theme
+	for _, item := range d.Themes.Items {
+		if item.ID == "old-custom" {
+			tombstoned = item
+		} else {
+			kept = append(kept, item)
+		}
+	}
+	if tombstoned.ID == "" {
+		t.Fatalf("captured items = %#v, want old-custom captured with real provenance", d.Themes.Items)
+	}
+	d.Themes.Items = kept
+	d.Themes.Absent = append(d.Themes.Absent, tombstoned)
+	return deps, opt, d
+}
+
+// TestThemesPlanExactRestoreSkipSuppressesRemoval is the app-layer wiring
+// counterpart to the low-level Task 29 gate: filterThemesForRestoreSkip
+// strips a Restore-Skip Absent entry before provider.Plan ever sees it, so
+// Convergence: Exact never gets a chance to consider it for removal.
+func TestThemesPlanExactRestoreSkipSuppressesRemoval(t *testing.T) {
+	deps, opt, d := themesExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"active":           {Restore: true, Resolved: true},
+			"theme:old-custom": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+		},
+	}
+	plan, err := (themesStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal for a Restore-Skip tombstone even under Exact", plan.Operations)
+		}
+	}
+}
+
+// TestThemesPlanExactRemovesTombstonedThemeThroughAppLayer proves
+// Convergence: Exact actually threads from RestoreContext.Options through
+// themesStateProvider.Plan into the low-level provider's PlanOptions, using
+// a real captured-then-tombstoned local theme so the provenance check
+// (equivalent) genuinely passes against live detection, not a hand-built
+// fixture.
+func TestThemesPlanExactRemovesTombstonedThemeThroughAppLayer(t *testing.T) {
+	deps, opt, d := themesExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"active":           {Restore: true, Resolved: true},
+			"theme:old-custom": {Restore: true, Resolved: true},
+		},
+	}
+	plan, err := (themesStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	for _, op := range plan.Operations {
+		if op.Action == "remove" && op.Resource == "theme:old-custom" {
+			removed = true
+			if want := []string{"omarchy", "theme", "remove", "old-custom"}; !reflect.DeepEqual(op.Command, want) {
+				t.Fatalf("command = %#v, want %#v", op.Command, want)
+			}
+		}
+	}
+	if !removed {
+		t.Fatalf("Operations = %#v, want a removal operation for the tombstoned, provenance-matched local theme", plan.Operations)
+	}
+}
+
+// TestThemesVerifyExactFailsWhenTombstonedThemeStillInstalledThroughAppLayer
+// proves Convergence: Exact also threads into themesStateProvider.Verify,
+// not just Plan: verification must not report success while an Exact-only
+// tombstone the plan should have removed is (in this fixture, deliberately)
+// still present.
+func TestThemesVerifyExactFailsWhenTombstonedThemeStillInstalledThroughAppLayer(t *testing.T) {
+	deps, opt, d := themesExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"active":           {Restore: true, Resolved: true},
+			"theme:old-custom": {Restore: true, Resolved: true},
+		},
+	}
+	verification, err := (themesStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.OK {
+		t.Fatal("verification unexpectedly passed while the Exact-tombstoned theme is still installed on disk")
+	}
+}
+
+// pluginsExactRemovalFixture captures a real local third-party plugin
+// ("acme.weather") so its recorded Hash provenance genuinely matches what
+// Detect will find on disk, then moves it from Items to Absent in memory --
+// simulating "this plugin was captured before, and policy now desires it
+// gone".
+func pluginsExactRemovalFixture(t *testing.T) (Dependencies, *options, profile.Data) {
+	t.Helper()
+	pluginDir := t.TempDir()
+	custom := filepath.Join(pluginDir, "acme.weather")
+	if err := os.MkdirAll(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(custom, "Weather.qml"), []byte("captured code"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profileDir, deps := configSandbox(t)
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.pluginDir = pluginDir
+	opt := &options{profileDir: profileDir}
+
+	sp := &pluginsStateProvider{deps: deps, opt: opt}
+	var d profile.Data
+	capCtx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{"plugin:acme.weather": {Capture: true, Resolved: true}}}
+	if _, _, err := sp.Capture(context.Background(), &d, capCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	var kept []profile.Plugin
+	var tombstoned profile.Plugin
+	for _, item := range d.Plugins.Items {
+		if item.ID == "acme.weather" {
+			tombstoned = item
+		} else {
+			kept = append(kept, item)
+		}
+	}
+	if tombstoned.ID == "" {
+		t.Fatalf("captured items = %#v, want acme.weather captured with real provenance", d.Plugins.Items)
+	}
+	d.Plugins.Items = kept
+	d.Plugins.Absent = append(d.Plugins.Absent, tombstoned)
+	return deps, opt, d
+}
+
+// TestPluginsPlanExactRestoreSkipSuppressesRemoval is the app-layer wiring
+// counterpart to the low-level Task 30 gate: filterPluginsForRestoreSkip
+// strips a Restore-Skip Absent entry before provider.Plan ever sees it, so
+// Convergence: Exact never gets a chance to consider it for removal.
+func TestPluginsPlanExactRestoreSkipSuppressesRemoval(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"plugin:acme.weather": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`},
+		},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal for a Restore-Skip tombstone even under Exact", plan.Operations)
+		}
+	}
+}
+
+// TestPluginsPlanExactRemovesTombstonedThirdPartyPluginThroughAppLayer
+// proves Convergence: Exact actually threads from RestoreContext.Options
+// through pluginsStateProvider.Plan into the low-level provider's
+// PlanOptions, using a real captured-then-tombstoned local plugin so the
+// provenance check (Equivalent) genuinely passes against live detection.
+func TestPluginsPlanExactRemovesTombstonedThirdPartyPluginThroughAppLayer(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"plugin:acme.weather": {Restore: true, Resolved: true},
+		},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	for _, op := range plan.Operations {
+		if op.Action == "remove" && op.Resource == "plugin:acme.weather" {
+			removed = true
+			if want := []string{"omarchy", "plugin", "remove", "acme.weather", "--yes"}; !reflect.DeepEqual(op.Command, want) {
+				t.Fatalf("command = %#v, want %#v", op.Command, want)
+			}
+		}
+	}
+	if !removed {
+		t.Fatalf("Operations = %#v, want a removal operation for the tombstoned, provenance-matched local plugin", plan.Operations)
+	}
+}
+
+// TestPluginsVerifyExactFailsWhenTombstonedPluginStillInstalledThroughAppLayer
+// proves Convergence: Exact also threads into pluginsStateProvider.Verify.
+func TestPluginsVerifyExactFailsWhenTombstonedPluginStillInstalledThroughAppLayer(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{
+			"plugin:acme.weather": {Restore: true, Resolved: true},
+		},
+	}
+	verification, err := (pluginsStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.OK {
+		t.Fatal("verification unexpectedly passed while the Exact-tombstoned plugin is still installed on disk")
+	}
+}
+
+// referenceAcmeWeatherInEffectiveShell overwrites the fixture's user
+// shell.json so the machine's actual, currently effective Shell
+// configuration references acme.weather -- independent of anything Shell
+// itself is being asked to restore this run.
+func referenceAcmeWeatherInEffectiveShell(t *testing.T, deps Dependencies) {
+	t.Helper()
+	_, user, err := deps.ShellPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)
+	if err := os.WriteFile(user, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPluginsPlanExactSkipsRemovalReferencedByEffectiveShell is the round-2
+// review regression, relocated from the finalizeRestorePlan-only check:
+// a plugin the machine's actual, currently effective Shell configuration
+// still references must never be Exact-removed, checked directly in
+// pluginsStateProvider.Plan (not only in the cross-provider finalizer) so
+// the same predicate is available to Verify too.
+func TestPluginsPlanExactSkipsRemovalReferencedByEffectiveShell(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	referenceAcmeWeatherInEffectiveShell(t, deps)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal: the effective Shell configuration still references acme.weather", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the blocked plugin removal", plan.Skipped)
+	}
+}
+
+// TestPluginsVerifyExactDoesNotExpectRemovalShellStillReferences is the
+// round-2 review blocker-2 regression: Plan legitimately skips removing a
+// plugin the effective Shell configuration still references, so Verify
+// must not turn that same, correctly-skipped case into a verification
+// failure -- Plan and Verify now share the same effective-Shell-reference
+// filter for exactly this reason.
+func TestPluginsVerifyExactDoesNotExpectRemovalShellStillReferences(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	referenceAcmeWeatherInEffectiveShell(t, deps)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	verification, err := (pluginsStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "plugin:acme.weather" {
+			t.Fatalf("Missing = %#v, want acme.weather excluded: Plan itself refused to remove it for safety", verification.Missing)
+		}
+	}
+}
+
+// TestPluginsPlanExactFailsClosedWhenEffectiveShellCannotBeDetermined is
+// the round-2 review blocker-1 regression: when the machine's live Shell
+// state cannot be established at all (detection fails), Exact must not
+// assume "not referenced" and proceed -- provider safety always wins over
+// Exact, so unknown must fail closed (a visible skip), not open.
+func TestPluginsPlanExactFailsClosedWhenEffectiveShellCannotBeDetermined(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	baseline, _, err := deps.ShellPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(baseline); err != nil {
+		t.Fatal(err)
+	}
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal: the effective Shell state could not be determined", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip when Shell state is unknown", plan.Skipped)
+	}
+}
+
+// TestPluginsPlanExactFailsClosedWhenShellPathsNotConfigured covers the
+// other unknown-Shell-state path (deps.ShellPaths itself unset, not just
+// Detect failing): any direct caller of pluginsStateProvider.Plan without
+// going through Execute (which always defaults ShellPaths) must still fail
+// closed, not assume "no references" and proceed.
+func TestPluginsPlanExactFailsClosedWhenShellPathsNotConfigured(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	deps.ShellPaths = nil
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal: ShellPaths is unset so Shell state cannot be checked", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip when ShellPaths is unset", plan.Skipped)
+	}
+}
+
 func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
 	_, deps := configSandbox(t)
 	pluginDir := t.TempDir()
@@ -4263,6 +4740,66 @@ func TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
 	}
 	if len(matched) != 1 || matched[0].Key != "removed.sh" {
 		t.Fatalf("matched = %#v, want the tombstone reported as a visible skip", matched)
+	}
+}
+
+// TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer
+// proves Convergence: Exact actually threads from RestoreContext.Options
+// through hooksStateProvider.Plan into the low-level provider's
+// PlanOptions, and that a Restore-Skip tombstone is structurally never a
+// deletion candidate (filterHooksForRestoreSkip strips it before Plan ever
+// sees it).
+func TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	deps.HomeDir = func() (string, error) { return t.TempDir(), nil }
+	hooksDir, err := deps.HooksDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "removed.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := profile.Data{Hooks: profile.Hooks{Absent: []profile.Hook{{Path: "removed.sh", Hash: appHash(t, "#!/bin/sh\n"), Mode: "0755"}}}}
+	opt := &options{profileDir: profileDir}
+
+	skipCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"removed.sh": {Restore: false, Resolved: true, Reason: `restore disabled for machine "desktop"`}},
+	}
+	plan, err := (hooksStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, skipCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "delete" {
+			t.Fatalf("Operations = %#v, want no deletion for a Restore-Skip tombstone even under Exact", plan.Operations)
+		}
+	}
+
+	applyCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"removed.sh": {Restore: true, Resolved: true}},
+	}
+	plan, err = (hooksStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, applyCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deleted bool
+	for _, op := range plan.Operations {
+		if op.Action == "delete" && op.Resource == "hook:removed.sh" {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("Operations = %#v, want a deletion for the tombstoned, provenance-matched hook", plan.Operations)
+	}
+
+	verification, err := (hooksStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, applyCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.OK {
+		t.Fatal("verification unexpectedly passed while the Exact-tombstoned hook is still present on disk")
 	}
 }
 
@@ -4669,4 +5206,153 @@ func sliceContains(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// TestExactRestoreDestructiveSafetyGate is PR 5 Task 33's aggregate
+// destructive-safety gate: a real, full CLI restore run (real command
+// dispatch through machineRunner, real filesystem deletion) with
+// Convergence: Exact, exercising a tombstoned user theme, a tombstoned
+// third-party plugin, and a tombstoned hook together, plus untracked local
+// data no Resource references at all. Only the three provenance-matched
+// tombstones are removed; the untracked data is never touched, because
+// Resources genuinely has no delete path (Task 32) and never sweeps
+// anything it was never told to track.
+func TestExactRestoreDestructiveSafetyGate(t *testing.T) {
+	profileDir, deps := configSandbox(t)
+	home := t.TempDir()
+	deps.HomeDir = func() (string, error) { return home, nil }
+	pluginDir := t.TempDir()
+	deps.PluginDir = func() (string, error) { return pluginDir, nil }
+	themeBuiltin, themeUser, err := deps.ThemeDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(themeBuiltin, "nord"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooksDir, err := deps.HooksDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := deps.Runner.(*machineRunner)
+	runner.theme = "nord"
+	runner.themeDir = themeUser
+	runner.pluginDir = pluginDir
+	runner.plugins = map[string]bool{}
+
+	// Real, live theme/plugin/hook this run will tombstone.
+	oldTheme := filepath.Join(themeUser, "old-theme")
+	if err := os.MkdirAll(oldTheme, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldTheme, "colors.toml"), []byte("accent = '#abcdef'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldPlugin := filepath.Join(pluginDir, "old-plugin")
+	if err := os.MkdirAll(oldPlugin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldPlugin, "Plugin.qml"), []byte("old code"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := filepath.Join(hooksDir, "old-hook.sh")
+	if err := os.WriteFile(oldHook, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Untracked local data no Resource, theme, plugin, or hook references
+	// at all -- the thing Exact must never sweep just because it is absent
+	// from the profile.
+	extra := filepath.Join(home, "Documents", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out := configRun(t, deps, profileDir, "capture", "themes"); code != 0 {
+		t.Fatalf("capture themes code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "plugins"); code != 0 {
+		t.Fatalf("capture plugins code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "hooks"); code != 0 {
+		t.Fatalf("capture hooks code=%d out=%s", code, out)
+	}
+
+	d, err := profile.Load(profileDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var themeItems []profile.Theme
+	var tombstonedTheme profile.Theme
+	for _, item := range d.Themes.Items {
+		if item.ID == "old-theme" {
+			tombstonedTheme = item
+		} else {
+			themeItems = append(themeItems, item)
+		}
+	}
+	if tombstonedTheme.ID == "" {
+		t.Fatalf("captured theme items = %#v, want old-theme captured", d.Themes.Items)
+	}
+	d.Themes.Items = themeItems
+	d.Themes.Absent = append(d.Themes.Absent, tombstonedTheme)
+
+	var pluginItems []profile.Plugin
+	var tombstonedPlugin profile.Plugin
+	for _, item := range d.Plugins.Items {
+		if item.ID == "old-plugin" {
+			tombstonedPlugin = item
+		} else {
+			pluginItems = append(pluginItems, item)
+		}
+	}
+	if tombstonedPlugin.ID == "" {
+		t.Fatalf("captured plugin items = %#v, want old-plugin captured", d.Plugins.Items)
+	}
+	d.Plugins.Items = pluginItems
+	d.Plugins.Absent = append(d.Plugins.Absent, tombstonedPlugin)
+
+	var hookItems []profile.Hook
+	var tombstonedHook profile.Hook
+	for _, item := range d.Hooks.Items {
+		if item.Path == "old-hook.sh" {
+			tombstonedHook = item
+		} else {
+			hookItems = append(hookItems, item)
+		}
+	}
+	if tombstonedHook.Path == "" {
+		t.Fatalf("captured hook items = %#v, want old-hook.sh captured", d.Hooks.Items)
+	}
+	d.Hooks.Items = hookItems
+	d.Hooks.Absent = append(d.Hooks.Absent, tombstonedHook)
+
+	// Resources is captured but tracks nothing: proves Exact leaves the
+	// category alone rather than inventing a sweep for it.
+	d.Manifest.Capture.Resources = true
+
+	if err := profile.Save(profileDir, d); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := configRun(t, deps, profileDir, "restore", "--exact", "--yes")
+	if code != 0 {
+		t.Fatalf("restore code=%d out=%s", code, out)
+	}
+
+	if _, err := os.Stat(oldTheme); !os.IsNotExist(err) {
+		t.Fatalf("old-theme was not removed: err=%v", err)
+	}
+	if _, err := os.Stat(oldPlugin); !os.IsNotExist(err) {
+		t.Fatalf("old-plugin was not removed: err=%v", err)
+	}
+	if _, err := os.Stat(oldHook); !os.IsNotExist(err) {
+		t.Fatalf("old-hook.sh was not removed: err=%v", err)
+	}
+	if _, err := os.Stat(extra); err != nil {
+		t.Fatalf("untracked local data was touched: err=%v", err)
+	}
 }

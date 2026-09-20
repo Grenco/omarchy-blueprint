@@ -53,7 +53,13 @@ func lastPluginOperationID(plan model.RestorePlan, pluginID string) string {
 }
 
 // finalizeRestorePlan links Shell configuration writes to source reconstruction
-// for any third-party plugins the captured document references.
+// for any third-party plugins the captured document references. The
+// effective-Shell-reference removal-safety check formerly lived here (as
+// blockPluginRemovalsReferencedByEffectiveShell); it moved to
+// filterPluginsForEffectiveShellReference in providers.go, shared by
+// pluginsStateProvider.Plan and .Verify, so a removal Plan skips for that
+// reason can never turn into a Verify failure the way a plan-only
+// post-processing step could (round-2 review blocker).
 func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, plan *model.RestorePlan, options restorePlanOptions) error {
 	if !providerSelected(providers, "shell") {
 		return restore.ValidatePlan(*plan)
