@@ -20,9 +20,16 @@ func TestSemanticRecipeSelectsTailscaleServiceFlow(t *testing.T) {
 		Verify: [][]string{
 			{"systemctl", "is-enabled", "tailscaled"},
 			{"tailscale", "status"},
+			{"sh", "-c", `tailscale debug prefs | jq -e '.OperatorUser != ""' >/dev/null`},
 			{"systemctl", "--user", "is-enabled", "omarchy-tailscale-receive.service"},
 			{"sh", "-c", `omarchy plugin list --json | jq -e '.[] | select(.id == "omarchy.tailscale" and .enabled)' >/dev/null`},
 			{"sh", "-c", `test -f "$HOME/.local/share/applications/Tailscale.desktop"`},
+		},
+		RemoveVerify: [][]string{
+			{"sh", "-c", `! systemctl is-enabled tailscaled >/dev/null 2>&1`},
+			{"sh", "-c", `! systemctl --user is-enabled omarchy-tailscale-receive.service >/dev/null 2>&1`},
+			{"sh", "-c", `! omarchy plugin list --json | jq -e '.[] | select(.id == "omarchy.tailscale" and .enabled)' >/dev/null`},
+			{"sh", "-c", `test ! -f "$HOME/.local/share/applications/Tailscale.desktop"`},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

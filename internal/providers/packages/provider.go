@@ -2,6 +2,7 @@ package packages
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -47,8 +48,29 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 			return profile.Packages{}, err
 		}
 		packages.Mise = mise
+		packages.MiseInstalled = p.detectMiseInstalled(ctx)
 	}
 	return classify(packages), nil
+}
+
+func (p Provider) detectMiseInstalled(ctx context.Context) map[string]bool {
+	out, err := p.Runner.Run(ctx, "mise", "ls", "--json")
+	if err != nil {
+		return nil
+	}
+	var entries map[string][]struct {
+		Installed bool `json:"installed"`
+	}
+	if json.Unmarshal([]byte(out), &entries) != nil {
+		return nil
+	}
+	installed := make(map[string]bool, len(entries))
+	for id, versions := range entries {
+		for _, version := range versions {
+			installed[id] = installed[id] || version.Installed
+		}
+	}
+	return installed
 }
 
 func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
@@ -178,6 +200,16 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		return plan, nil
 	}
 	additions, conflicts, extras := classifyMiseRestore(saved.Mise, current.Mise)
+	installOnly := profile.MiseTools{}
+	if current.MiseInstalled != nil {
+		for id, tool := range saved.Mise {
+			if !current.MiseInstalled[id] {
+				if _, declarationAdded := additions[id]; !declarationAdded {
+					installOnly[id] = tool
+				}
+			}
+		}
+	}
 	for _, id := range conflicts {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "mise:" + id, Reason: "existing Mise declaration differs; overwrite disabled"})
 	}
@@ -204,7 +236,12 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		plan = skipMiseIDs(plan, removals, err.Error())
 		return plan, nil
 	}
+	if len(additions) == 0 && len(removals) == 0 && len(installOnly) == 0 {
+		return plan, nil
+	}
 	if len(additions) == 0 && len(removals) == 0 {
+		ids := sortedMiseIDs(installOnly)
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), Risk: miseInstallRisk(installOnly)})
 		return plan, nil
 	}
 	candidate, candidateErr := buildMiseMutationCandidate(snapshot, physicalCurrent.Mise, additions, removals)
@@ -281,7 +318,7 @@ func Verify(saved, current profile.Packages, options ...VerifyOptions) model.Ver
 	}
 	for _, id := range sortedMiseIDs(saved.Mise) {
 		actual, ok := current.Mise[id]
-		if !ok || !EqualMiseTool(saved.Mise[id], actual) {
+		if !ok || !EqualMiseTool(saved.Mise[id], actual) || (current.MiseInstalled != nil && !current.MiseInstalled[id]) {
 			missing = append(missing, "mise:"+id)
 		}
 	}
@@ -342,6 +379,27 @@ func (p Provider) Verify(ctx context.Context, saved, current profile.Packages, o
 					missing[resource] = true
 				}
 				break
+			}
+		}
+	}
+	if len(options) > 0 && options[0].Exact {
+		for _, absence := range saved.Absent {
+			kind, id, ok := splitRef(absence.Ref)
+			if !ok || kind != "official" || currentNames[id] {
+				continue
+			}
+			recipe, semantic := omarchy.SemanticRecipe(id)
+			if !semantic {
+				continue
+			}
+			for _, check := range recipe.RemoveVerify {
+				if _, err := p.Runner.Run(ctx, check[0], check[1:]...); err != nil {
+					if !missing[absence.Ref] {
+						result.Missing = append(result.Missing, absence.Ref)
+						missing[absence.Ref] = true
+					}
+					break
+				}
 			}
 		}
 	}

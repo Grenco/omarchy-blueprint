@@ -69,6 +69,9 @@ type Packages struct {
 	Official []string  `json:"official"`
 	AUR      []string  `json:"aur"`
 	Mise     MiseTools `json:"mise,omitempty" toml:"-"`
+	// MiseInstalled is live scratch state from `mise ls --json`; declarations
+	// and installed versions are distinct and only the former is persisted.
+	MiseInstalled map[string]bool `json:"-" toml:"-"`
 	// Preinstalls carries Omarchy's own portable preinstall intent. Managed
 	// distinguishes an uncaptured legacy profile from an explicit opt-in or
 	// opt-out whose zero-value RemovedAll flag is meaningful.
