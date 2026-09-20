@@ -1855,6 +1855,9 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 	}
 	for _, op := range plan.Operations {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
+		if op.Interactive && op.Notice != "" {
+			fmt.Fprintf(&b, "! %s\n", op.Notice)
+		}
 	}
 	for _, op := range plan.Operations {
 		if op.Provider == "shell" && op.Action == "write" && op.File != nil {

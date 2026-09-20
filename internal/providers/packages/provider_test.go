@@ -125,6 +125,30 @@ func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 	}
 }
 
+func TestPlanUsesSemanticTailscaleInstallerAndOrdinaryPackageFallback(t *testing.T) {
+	saved := profile.Packages{Official: []string{"firefox", "tailscale"}}
+	plan := Plan(saved, profile.Packages{}, 13, "4.0.0", "4.1.0")
+	if len(plan.Operations) != 2 {
+		t.Fatalf("Operations = %#v", plan.Operations)
+	}
+	var semantic, ordinary *model.Operation
+	for i := range plan.Operations {
+		op := &plan.Operations[i]
+		switch op.Resource {
+		case "official:tailscale":
+			semantic = op
+		case "official:firefox":
+			ordinary = op
+		}
+	}
+	if semantic == nil || !reflect.DeepEqual(semantic.Command, []string{"omarchy-install-service-tailscale"}) || !semantic.Interactive || semantic.Notice == "" {
+		t.Fatalf("semantic operation = %#v, want interactive Omarchy service install with notice", semantic)
+	}
+	if ordinary == nil || !reflect.DeepEqual(ordinary.Command, []string{"omarchy", "pkg", "add", "firefox"}) || ordinary.Interactive {
+		t.Fatalf("ordinary operation = %#v, want raw package fallback", ordinary)
+	}
+}
+
 func TestMachineSpecificPackagesAreSkippedEvenFromLegacyProfileLists(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "nvidia-open", "amd-ucode", "fprintd"}, AUR: []string{"nvidia-580xx-dkms", "libfprint-goodix-521d"}}
 	plan := Plan(saved, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
