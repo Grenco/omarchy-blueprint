@@ -45,6 +45,18 @@ func TestEffectivePolicyResolvesProfileDefaultsScope(t *testing.T) {
 	}
 }
 
+func TestLegacyGenericPreinstallPolicyAliasRemapsToCanonicalChild(t *testing.T) {
+	rules := policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:aether", Setting: policy.SettingDisabled}}}
+	remapped, err := remapLegacyPreinstallPolicyRules(rules, "packages", "preinstall:aether")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := policy.Resolve(policy.ResolveRequest{Axis: policy.AxisRestore, Category: "packages", Target: "preinstall:aether", ProfileRules: remapped, DefaultEnabled: true})
+	if err != nil || got.Enabled || got.Source.Target != "preinstall:aether" {
+		t.Fatalf("effective=%#v err=%v, want disabled canonical child policy", got, err)
+	}
+}
+
 func TestEffectivePolicyMachineTargetOverridesProfileCategory(t *testing.T) {
 	data := profile.New("test", time.Now())
 	data.Policy = policy.Rules{Capture: []policy.Rule{{Category: "packages", Setting: policy.SettingDisabled}}}

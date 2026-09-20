@@ -110,8 +110,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 12\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 12", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 13\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 13", savedManifest)
 	}
 }
 
@@ -422,13 +422,13 @@ func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
 	// bumps do not silently drop existing provider state.
-	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 || configOverlaySchema != 8 {
+	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 || configOverlaySchema != 8 || preinstallSchema != 13 {
 		t.Fatalf(
 			"introduction versions = config:%d defaults:%d shell:%d hooks:%d mise:%d resources:%d",
 			configSchema, defaultsSchema, shellSchema, hooksSchema, misePackagesSchema, resourcesSchema,
 		)
 	}
-	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema || configOverlaySchema > Schema {
+	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema || configOverlaySchema > Schema || preinstallSchema > Schema {
 		t.Fatalf(
 			"introduction versions must not exceed current schema %d",
 			Schema,
@@ -774,8 +774,8 @@ func TestSaveLoadMachinesRoundTripInCanonicalOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), "schema = 12\n") {
-		t.Fatalf("profile.toml = %q, want schema 12", manifest)
+	if !strings.Contains(string(manifest), "schema = 13\n") {
+		t.Fatalf("profile.toml = %q, want schema 13", manifest)
 	}
 	framework, err := os.ReadFile(filepath.Join(dir, "machines", "framework.toml"))
 	if err != nil {
@@ -1054,6 +1054,33 @@ func TestSavePackageAbsenceRoundTripsWithPriorMiseDeclaration(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Packages.Absent, d.Packages.Absent) {
 		t.Fatalf("absent = %#v, want %#v", got.Packages.Absent, d.Packages.Absent)
+	}
+}
+
+func TestSavePreinstallIntentRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	d := New("main", time.Unix(0, 0))
+	d.Packages.Preinstalls = Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Packages.Preinstalls, d.Packages.Preinstalls) {
+		t.Fatalf("Preinstalls = %#v, want %#v", got.Packages.Preinstalls, d.Packages.Preinstalls)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "packages", "preinstalls.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "removed_all = true") || !strings.Contains(string(raw), "libreoffice-fresh = false") {
+		t.Fatalf("preinstalls.toml = %q", raw)
 	}
 }
 

@@ -20,7 +20,26 @@ type queryRunner struct {
 	err    error
 }
 
-func (r queryRunner) Run(context.Context, string, ...string) (string, error) {
+type semanticVerifyRunner struct{ fail string }
+
+func (r semanticVerifyRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	key := name + " " + strings.Join(args, " ")
+	if key == r.fail {
+		return "", errors.New("semantic postcondition failed")
+	}
+	return "", nil
+}
+
+func (r queryRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	key := name + " " + strings.Join(args, " ")
+	switch key {
+	case "sh -c command -v omarchy-remove-preinstalls":
+		return "/usr/bin/omarchy-remove-preinstalls\n", nil
+	case "cat /usr/bin/omarchy-remove-preinstalls":
+		return "omarchy-pkg-drop \\\n  aether\n", nil
+	case `sh -c [ -f "$HOME/.local/state/omarchy/preinstalls-removed" ]`, "pacman -Q aether":
+		return "", &command.RunError{Name: name, Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
+	}
 	return r.output, r.err
 }
 
@@ -116,6 +135,55 @@ func TestPlanInstallsNativeBeforeAURAndNeverRemoves(t *testing.T) {
 	}
 }
 
+func TestPlanUsesSemanticTailscaleInstallerAndOrdinaryPackageFallback(t *testing.T) {
+	saved := profile.Packages{Official: []string{"firefox", "tailscale"}}
+	plan := Plan(saved, profile.Packages{}, 13, "4.0.0", "4.1.0")
+	if len(plan.Operations) != 2 {
+		t.Fatalf("Operations = %#v", plan.Operations)
+	}
+	var semantic, ordinary *model.Operation
+	for i := range plan.Operations {
+		op := &plan.Operations[i]
+		switch op.Resource {
+		case "official:tailscale":
+			semantic = op
+		case "official:firefox":
+			ordinary = op
+		}
+	}
+	if semantic == nil || !reflect.DeepEqual(semantic.Command, []string{"omarchy-install-service-tailscale"}) || !semantic.Interactive || semantic.Notice == "" {
+		t.Fatalf("semantic operation = %#v, want interactive Omarchy service install with notice", semantic)
+	}
+	if ordinary == nil || !reflect.DeepEqual(ordinary.Command, []string{"omarchy", "pkg", "add", "firefox"}) || ordinary.Interactive {
+		t.Fatalf("ordinary operation = %#v, want raw package fallback", ordinary)
+	}
+}
+
+func TestSemanticPlanRepairsPartialInstallAndExactResidue(t *testing.T) {
+	installed := profile.Packages{Official: []string{"tailscale"}, Installed: []string{"tailscale"}, SemanticInstalled: map[string]bool{"tailscale": false}}
+	plan, err := (Provider{}).Plan(profile.Packages{Official: []string{"tailscale"}}, installed, 13, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].ID != "packages.install.semantic.tailscale" {
+		t.Fatalf("partial semantic plan=%#v err=%v", plan, err)
+	}
+	residue := profile.Packages{SemanticRemoved: map[string]bool{"tailscale": false}}
+	plan, err = (Provider{}).Plan(profile.Packages{Absent: []profile.PackageAbsence{{Ref: "official:tailscale"}}}, residue, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].ID != "packages.remove.semantic.tailscale" {
+		t.Fatalf("semantic residue plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestSemanticVerificationRequiresTailscaleIntegrationPostconditions(t *testing.T) {
+	saved := profile.Packages{Official: []string{"tailscale"}}
+	current := profile.Packages{Official: []string{"tailscale"}, Installed: []string{"tailscale"}}
+	if got := (Provider{Runner: semanticVerifyRunner{}}).Verify(context.Background(), saved, current); !got.OK {
+		t.Fatalf("semantic verification = %#v, want success", got)
+	}
+	got := (Provider{Runner: semanticVerifyRunner{fail: "tailscale status"}}).Verify(context.Background(), saved, current)
+	if got.OK || !reflect.DeepEqual(got.Missing, []string{"official:tailscale"}) {
+		t.Fatalf("semantic verification = %#v, want failed Tailscale integration", got)
+	}
+}
+
 func TestMachineSpecificPackagesAreSkippedEvenFromLegacyProfileLists(t *testing.T) {
 	saved := profile.Packages{Official: []string{"git", "nvidia-open", "amd-ucode", "fprintd"}, AUR: []string{"nvidia-580xx-dkms", "libfprint-goodix-521d"}}
 	plan := Plan(saved, profile.Packages{Official: []string{"git"}}, 1, "4.0.0", "4.0.0")
@@ -145,6 +213,54 @@ func TestLinesNormalizesCommandOutput(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"git", "zoxide"}) {
 		t.Fatalf("got %#v", got)
 	}
+}
+
+func TestDetectGivesCataloguePackagesOnlyPreinstallIdentity(t *testing.T) {
+	got, err := (Provider{Runner: queryRunner{output: "aether\nfirefox\n"}}).Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slicesContain(got.Official, "aether") || slicesContain(got.AUR, "aether") {
+		t.Fatalf("detected generic aliases for preinstall aether: official=%#v aur=%#v", got.Official, got.AUR)
+	}
+	if !slicesContain(got.Official, "firefox") || !slicesContain(got.AUR, "firefox") {
+		t.Fatalf("ordinary packages were removed: official=%#v aur=%#v", got.Official, got.AUR)
+	}
+}
+
+func TestSchema13PreinstallAliasCannotBypassCanonicalIntent(t *testing.T) {
+	saved := profile.Packages{
+		Official: []string{"aether"},
+		Absent:   []profile.PackageAbsence{{Ref: "official:aether"}},
+		Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{
+			"aether": true,
+		}},
+	}
+	current := profile.Packages{
+		Official:  []string{"aether"},
+		Installed: []string{"aether"},
+		Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{
+			"aether": true,
+		}},
+	}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "official:aether" {
+			t.Fatalf("generic alias bypassed canonical preinstall intent: %#v", op)
+		}
+	}
+}
+
+func slicesContain(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPacmanOutputFixtures(t *testing.T) {
@@ -243,6 +359,41 @@ func TestPlanAppendsMissingMiseToolsAndPreservesConflicts(t *testing.T) {
 	}
 }
 
+func TestPlanRetriesDeclaredMiseToolMissingFromInstalledState(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("[tools]\nnode = '24'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}, MiseInstalled: map[string]bool{"node": false}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].ID != "packages.mise.install" {
+		t.Fatalf("plan=%#v err=%v, want retry install for the missing tool", plan, err)
+	}
+	if verification := Verify(saved, current); verification.OK {
+		t.Fatalf("verification=%#v, want missing installed tool", verification)
+	}
+}
+
+func TestMiseMutationAlsoRepairsAlreadyDeclaredMissingTool(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("[tools]\nnode = '24'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}, "python": {"version": "3.13"}}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}, MiseInstalled: map[string]bool{"node": false}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 2 || !reflect.DeepEqual(plan.Operations[1].Items, []string{"node", "python"}) {
+		t.Fatalf("plan=%#v err=%v, want post-config install of addition and repair", plan, err)
+	}
+}
+
 // TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool is a
 // regression for a review finding on PR 3: excluding a mise tool now strips
 // it from saved.Mise entirely (Session.SetPackageExcluded), rather than
@@ -263,5 +414,202 @@ func TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool(t *testing.
 	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 6, "4.0", "4.1")
 	if err != nil || len(plan.Operations) != 2 || !bytes.HasPrefix(plan.Operations[0].File.Content, existing) || !strings.Contains(string(plan.Operations[0].File.Content), "[tools.bar]") {
 		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestPlanPreinstallRemoveAllThenRestoresIndividuallyDesiredItem(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: false,
+		Items:   map[string]bool{"aether": false, "libreoffice-fresh": true},
+	}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstalls" {
+		t.Fatalf("plan = %#v, want unsafe native remove-all deferred for manual review", plan)
+	}
+
+	after := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	if verification := Verify(saved, after); !verification.OK {
+		t.Fatalf("verification = %#v", verification)
+	}
+}
+
+func TestPlanPreinstallRestoreAllThenRemovesIndividuallyAbsentItem(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: true,
+		Items:   map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": false, "libreoffice-fresh": false},
+	}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 2 || !reflect.DeepEqual(plan.Operations[0].Command, []string{"sh", "-c", `omarchy-install-preinstalls && test ! -f "$HOME/.local/state/omarchy/preinstalls-removed"`}) || !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-drop", "libreoffice-fresh"}) {
+		t.Fatalf("Operations = %#v, want native restore-all then supported individual absence", plan.Operations)
+	}
+}
+
+func TestExactPackageRemovalPlansOfficialAURAndSemanticCommands(t *testing.T) {
+	saved := profile.Packages{Absent: []profile.PackageAbsence{
+		{Ref: "official:htop"},
+		{Ref: "official:tailscale"},
+		{Ref: "aur:tool-bin"},
+	}}
+	current := profile.Packages{Official: []string{"htop", "tailscale"}, AUR: []string{"tool-bin"}, Installed: []string{"htop", "tailscale", "tool-bin"}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"official:htop":      {"omarchy", "pkg", "drop", "htop"},
+		"official:tailscale": {"omarchy-remove-service-tailscale"},
+		"aur:tool-bin":       {"omarchy", "pkg", "drop", "tool-bin"},
+	}
+	for _, op := range plan.Operations {
+		if command, ok := want[op.Resource]; ok {
+			if !reflect.DeepEqual(op.Command, command) || op.Risk != model.RiskHigh {
+				t.Fatalf("operation %s = %#v", op.Resource, op)
+			}
+			if op.Resource == "official:tailscale" && (!op.Interactive || op.Notice == "") {
+				t.Fatalf("semantic removal lost interactive metadata: %#v", op)
+			}
+			delete(want, op.Resource)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing removal operations: %#v; plan=%#v", want, plan)
+	}
+}
+
+func TestPackageRemovalNeedsExactExplicitSafeTombstone(t *testing.T) {
+	saved := profile.Packages{Absent: []profile.PackageAbsence{
+		{Ref: "official:dependency"},
+		{Ref: "official:nvidia-utils"},
+	}}
+	current := profile.Packages{
+		Official:  []string{"nvidia-utils", "unknown-extra"},
+		Installed: []string{"dependency", "nvidia-utils", "unknown-extra"},
+	}
+	for _, options := range []PlanOptions{{Exact: false}, {Exact: true}} {
+		plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1", options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, op := range plan.Operations {
+			if op.Action == "remove" {
+				t.Fatalf("unsafe removal under options %+v: %#v", options, op)
+			}
+		}
+	}
+}
+
+func TestExactMiseRemovalRequiresMatchingDeclarationAndPreconditionedRewrite(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("# keep\n[tools]\nnode = '24'\npython = '3.13'\n")
+	if err := os.WriteFile(config, existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := profile.PackageAbsence{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}}
+	saved := profile.Packages{Absent: []profile.PackageAbsence{tombstone}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}, "python": {"version": "3.13"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 3 {
+		t.Fatalf("Operations = %#v, want hash guard, uninstall, and config rewrite", plan.Operations)
+	}
+	guard, uninstall, configure := plan.Operations[0], plan.Operations[1], plan.Operations[2]
+	if guard.ID != "packages.mise.guard" || !reflect.DeepEqual(uninstall.Command, []string{"mise", "-C", "/", "uninstall", "--all", "node"}) || !reflect.DeepEqual(uninstall.DependsOn, []string{guard.ID}) || configure.File == nil || configure.File.ExpectedHash == "" || !configure.File.Backup || !reflect.DeepEqual(configure.DependsOn, []string{uninstall.ID}) {
+		t.Fatalf("guard=%#v uninstall=%#v configure=%#v", guard, uninstall, configure)
+	}
+	if strings.Contains(string(configure.File.Content), "node =") || !strings.Contains(string(configure.File.Content), "python = '3.13'") {
+		t.Fatalf("candidate = %q", configure.File.Content)
+	}
+
+	changed := profile.Packages{Mise: profile.MiseTools{"node": {"version": "22"}, "python": {"version": "3.13"}}}
+	plan, err = (Provider{MiseGlobalConfig: config}).Plan(saved, changed, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) == 0 {
+		t.Fatalf("changed declaration plan=%#v err=%v, want safe skip", plan, err)
+	}
+}
+
+func TestExactMiseAdditionAndRemovalShareOnePreconditionedRewrite(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("[tools]\nnode = '24'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{
+		Mise:   profile.MiseTools{"python": {"version": "3.13"}},
+		Absent: []profile.PackageAbsence{{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}}},
+	}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writes, uninstalls, installs []model.Operation
+	for _, op := range plan.Operations {
+		switch {
+		case op.File != nil:
+			writes = append(writes, op)
+		case op.Action == "remove":
+			uninstalls = append(uninstalls, op)
+		case op.Action == "install":
+			installs = append(installs, op)
+		}
+	}
+	var guards []model.Operation
+	for _, op := range plan.Operations {
+		if op.ID == "packages.mise.guard" {
+			guards = append(guards, op)
+		}
+	}
+	if len(writes) != 1 || len(uninstalls) != 1 || len(installs) != 1 || len(guards) != 1 {
+		t.Fatalf("Operations = %#v, want guard, uninstall, one shared rewrite, and one install", plan.Operations)
+	}
+	if !strings.Contains(string(writes[0].File.Content), "python") || strings.Contains(string(writes[0].File.Content), "node") {
+		t.Fatalf("shared candidate = %q", writes[0].File.Content)
+	}
+	if !reflect.DeepEqual(uninstalls[0].DependsOn, []string{guards[0].ID}) || !reflect.DeepEqual(writes[0].DependsOn, []string{uninstalls[0].ID}) || !reflect.DeepEqual(installs[0].DependsOn, []string{writes[0].ID}) {
+		t.Fatalf("guard=%#v uninstall=%#v rewrite=%#v install=%#v", guards[0], uninstalls[0], writes[0], installs[0])
+	}
+}
+
+func TestVerifyExactChecksOnlyActionablePackageTombstones(t *testing.T) {
+	saved := profile.Packages{Absent: []profile.PackageAbsence{
+		{Ref: "official:htop"},
+		{Ref: "official:dependency"},
+		{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}},
+	}}
+	current := profile.Packages{Official: []string{"htop"}, Installed: []string{"htop", "dependency"}, Mise: profile.MiseTools{"node": {"version": "24"}}}
+	additive := Verify(saved, current, VerifyOptions{})
+	if !additive.OK {
+		t.Fatalf("additive verification = %#v", additive)
+	}
+	exact := Verify(saved, current, VerifyOptions{Exact: true})
+	if exact.OK || !reflect.DeepEqual(exact.Missing, []string{"mise:node", "official:htop"}) {
+		t.Fatalf("exact verification = %#v", exact)
 	}
 }

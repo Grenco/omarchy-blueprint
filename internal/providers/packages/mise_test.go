@@ -166,6 +166,25 @@ func TestBuildMiseAppendCandidatePreservesExistingBytes(t *testing.T) {
 	}
 }
 
+func TestBuildMiseRemovalCandidatePreservesUnrelatedConfig(t *testing.T) {
+	existing := []byte("# keep this comment\n[tools]\nnode = '24'\npython = '3.13'\n\n[env]\nWORK = '1'\n")
+	current := profile.MiseTools{"node": {"version": "24"}, "python": {"version": "3.13"}}
+	candidate, err := BuildMiseRemovalCandidate(existing, current, []string{"node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(candidate), "node =") || !strings.Contains(string(candidate), "# keep this comment") || !strings.Contains(string(candidate), "[env]\nWORK = '1'") {
+		t.Fatalf("candidate = %q, want only node declaration removed", candidate)
+	}
+	parsed, err := ReadMiseToolsFromBytes(candidate)
+	if err != nil || !reflect.DeepEqual(parsed, profile.MiseTools{"python": {"version": "3.13"}}) {
+		t.Fatalf("parsed = %#v, err=%v", parsed, err)
+	}
+	if _, err := BuildMiseRemovalCandidate(existing, profile.MiseTools{"node": {"version": "22"}, "python": {"version": "3.13"}}, []string{"node"}); err == nil {
+		t.Fatal("stale supplied declaration accepted")
+	}
+}
+
 func TestMiseSnapshotAndMutationPathSafety(t *testing.T) {
 	dir := t.TempDir()
 	config := filepath.Join(dir, "real", "config.toml")

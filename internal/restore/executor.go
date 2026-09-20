@@ -193,6 +193,13 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 	if op.GitPatch != nil {
 		return executeGitPatch(ctx, runner, *op.GitPatch)
 	}
+	if op.Interactive {
+		interactive, ok := runner.(command.InteractiveRunner)
+		if !ok {
+			return fmt.Errorf("operation %s requires an interactive command runner", op.ID)
+		}
+		return interactive.RunInteractive(ctx, op.Command[0], op.Command[1:]...)
+	}
 	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
 	return err
 }
