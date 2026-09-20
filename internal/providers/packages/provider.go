@@ -37,6 +37,7 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 		return profile.Packages{}, fmt.Errorf("detect Omarchy preinstalls: %w", err)
 	}
 	packages.Preinstalls = profile.Preinstalls{Managed: true, RemovedAll: preinstalls.RemovedAll, Items: preinstalls.Items}
+	packages = CanonicalizePreinstallOwnership(packages, preinstalls.Items)
 	if p.MiseGlobalConfig != "" {
 		mise, err := ReadMiseTools(p.MiseGlobalConfig)
 		if err != nil {
@@ -78,6 +79,10 @@ func (p Provider) Check(ctx context.Context, saved profile.Packages) error {
 }
 
 func Diff(saved, current profile.Packages) []model.Change {
+	if saved.Preinstalls.Managed {
+		saved = CanonicalizePreinstallOwnership(saved, current.Preinstalls.Items)
+		current = CanonicalizePreinstallOwnership(current, current.Preinstalls.Items)
+	}
 	saved, current = classify(saved), classify(current)
 	savedNames := packageNames(saved)
 	currentNames := packageNames(current)
@@ -111,6 +116,10 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		return model.RestorePlan{}, err
 	}
 	saved, physicalCurrent := classify(saved), classify(current)
+	if schema >= 13 {
+		saved = CanonicalizePreinstallOwnership(saved, physicalCurrent.Preinstalls.Items)
+		physicalCurrent = CanonicalizePreinstallOwnership(physicalCurrent, physicalCurrent.Preinstalls.Items)
+	}
 	current = physicalCurrent
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
 	preinstallOps, preinstallSkipped := planPreinstalls(saved.Preinstalls, current.Preinstalls)
@@ -204,11 +213,12 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		plan = skipMiseIDs(plan, removals, candidateErr.Error())
 		return plan, nil
 	}
-	var dependencies []string
+	var removalIDs []string
+	var removalOps []model.Operation
 	for _, id := range removals {
 		opID := "packages.mise.remove." + id
-		plan.Operations = append(plan.Operations, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, Risk: model.RiskHigh})
-		dependencies = append(dependencies, opID)
+		removalOps = append(removalOps, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, DependsOn: []string{"packages.mise.configure"}, Risk: model.RiskHigh})
+		removalIDs = append(removalIDs, opID)
 	}
 	mutationIDs := append(append([]string(nil), removals...), sortedMiseIDs(additions)...)
 	write := model.FileWrite{Generated: true, Content: candidate, Destination: p.MiseGlobalConfig, SourceHash: hashBytes(candidate), Backup: snapshot.Exists, RejectSymlinkParents: true}
@@ -221,15 +231,23 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	if len(removals) > 0 {
 		risk = model.RiskHigh
 	}
-	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, DependsOn: dependencies, Risk: risk, Reversible: snapshot.Exists})
+	// Commit the hash-preconditioned declaration change before destructive
+	// uninstalls. A stale config now blocks every removal instead of being
+	// discovered only after the tool has already been removed.
+	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, Risk: risk, Reversible: snapshot.Exists})
+	plan.Operations = append(plan.Operations, removalOps...)
 	if len(additions) > 0 {
 		ids := sortedMiseIDs(additions)
-		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions)})
+		dependencies := append([]string{"packages.mise.configure"}, removalIDs...)
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: dependencies, Risk: miseInstallRisk(additions)})
 	}
 	return plan, nil
 }
 
-type VerifyOptions struct{ Exact bool }
+type VerifyOptions struct {
+	Exact  bool
+	Schema int
+}
 
 func Verify(saved, current profile.Packages, options ...VerifyOptions) model.VerificationResult {
 	var opts VerifyOptions
@@ -237,6 +255,10 @@ func Verify(saved, current profile.Packages, options ...VerifyOptions) model.Ver
 		opts = options[0]
 	}
 	saved, current = classify(saved), classify(current)
+	if opts.Schema >= 13 || saved.Preinstalls.Managed {
+		saved = CanonicalizePreinstallOwnership(saved, current.Preinstalls.Items)
+		current = CanonicalizePreinstallOwnership(current, current.Preinstalls.Items)
+	}
 	var missing []string
 	currentNames := packageNames(current)
 	for _, name := range saved.Official {
@@ -287,6 +309,37 @@ func Verify(saved, current profile.Packages, options ...VerifyOptions) model.Ver
 	}
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
+}
+
+// Verify checks package state and the non-secret postconditions owned by
+// semantic Omarchy recipes. Package presence alone is not proof that a
+// service installer completed its integration work.
+func (p Provider) Verify(ctx context.Context, saved, current profile.Packages, options ...VerifyOptions) model.VerificationResult {
+	result := Verify(saved, current, options...)
+	currentNames := packageNames(current)
+	missing := set(result.Missing)
+	for _, id := range saved.Official {
+		recipe, semantic := omarchy.SemanticRecipe(id)
+		if !semantic || !currentNames[id] {
+			continue
+		}
+		for _, check := range recipe.Verify {
+			if len(check) == 0 {
+				continue
+			}
+			if _, err := p.Runner.Run(ctx, check[0], check[1:]...); err != nil {
+				resource := "official:" + id
+				if !missing[resource] {
+					result.Missing = append(result.Missing, resource)
+					missing[resource] = true
+				}
+				break
+			}
+		}
+	}
+	sort.Strings(result.Missing)
+	result.OK = len(result.Missing) == 0
+	return result
 }
 
 func diffMise(saved, current profile.MiseTools) []model.Change {
@@ -345,15 +398,20 @@ func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []m
 	}
 	if saved.Managed && saved.RemovedAll != current.RemovedAll {
 		action, commandName, id := "install", "omarchy-install-preinstalls", "packages.preinstalls.install"
+		markerCheck := `test ! -f "$HOME/.local/state/omarchy/preinstalls-removed"`
 		if saved.RemovedAll {
 			action, commandName, id = "remove", "omarchy-remove-preinstalls", "packages.preinstalls.remove"
+			markerCheck = `test -f "$HOME/.local/state/omarchy/preinstalls-removed"`
 		}
 		operations = append(operations, model.Operation{
-			ID:          id,
-			Provider:    "packages",
-			Action:      action,
-			Resource:    "preinstalls",
-			Command:     []string{commandName},
+			ID:       id,
+			Provider: "packages",
+			Action:   action,
+			Resource: "preinstalls",
+			// Omarchy's gum confirmation returns success even when declined.
+			// Check the authoritative marker in the same operation so dependent
+			// child changes cannot run after a cancelled group transition.
+			Command:     []string{"sh", "-c", commandName + " && " + markerCheck},
 			Risk:        model.RiskHigh,
 			Interactive: true,
 			Notice:      "Omarchy's preinstall flow requests terminal confirmation before changing the managed application set.",
@@ -458,13 +516,15 @@ func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packag
 			}
 			commandLine := []string{"omarchy", "pkg", "drop", id}
 			operationID := "packages.remove." + kind + "." + id
+			interactive, notice := false, ""
 			if kind == "official" {
 				if recipe, found := omarchy.SemanticRecipe(id); found {
 					commandLine = append([]string(nil), recipe.Remove...)
 					operationID = "packages.remove.semantic." + id
+					interactive, notice = recipe.Interactive, recipe.RemoveNotice
 				}
 			}
-			plan.Operations = append(plan.Operations, model.Operation{ID: operationID, Provider: "packages", Action: "remove", Resource: absence.Ref, Items: []string{id}, Command: commandLine, Risk: model.RiskHigh})
+			plan.Operations = append(plan.Operations, model.Operation{ID: operationID, Provider: "packages", Action: "remove", Resource: absence.Ref, Items: []string{id}, Command: commandLine, Risk: model.RiskHigh, Interactive: interactive, Notice: notice})
 		}
 	}
 	return plan
@@ -560,6 +620,50 @@ func packageNames(packages profile.Packages) map[string]bool {
 	return names
 }
 
+// CanonicalizePreinstallOwnership gives every package in Omarchy's installed
+// preinstall catalogue one policy identity: preinstall:<id>. Installed is
+// deliberately retained as physical-presence scratch state, while portable
+// generic identities and tombstones are migrated to child intent so legacy
+// profiles keep their meaning without retaining a second authority path.
+func CanonicalizePreinstallOwnership(packages profile.Packages, catalogue map[string]bool) profile.Packages {
+	if len(catalogue) == 0 {
+		return packages
+	}
+	items := make(map[string]bool, len(packages.Preinstalls.Items))
+	for id, present := range packages.Preinstalls.Items {
+		items[id] = present
+	}
+	keepNames := func(names []string) []string {
+		kept := make([]string, 0, len(names))
+		for _, name := range names {
+			if _, preinstall := catalogue[name]; !preinstall {
+				kept = append(kept, name)
+			} else if _, explicit := items[name]; !explicit {
+				items[name] = true
+			}
+		}
+		return kept
+	}
+	packages.Official = keepNames(packages.Official)
+	packages.AUR = keepNames(packages.AUR)
+	absent := make([]profile.PackageAbsence, 0, len(packages.Absent))
+	for _, item := range packages.Absent {
+		kind, id, ok := splitRef(item.Ref)
+		if ok && (kind == "official" || kind == "aur") {
+			if _, preinstall := catalogue[id]; preinstall {
+				if _, explicit := items[id]; !explicit {
+					items[id] = false
+				}
+				continue
+			}
+		}
+		absent = append(absent, item)
+	}
+	packages.Absent = absent
+	packages.Preinstalls.Items = items
+	return packages
+}
+
 func operation(kind string, names, argv []string) model.Operation {
 	id := "packages.install." + kind
 	if kind == "aur" && len(names) == 1 {
@@ -569,10 +673,6 @@ func operation(kind string, names, argv []string) model.Operation {
 }
 
 func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {
-	notice := ""
-	if recipe.Interactive {
-		notice = "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint."
-	}
 	return model.Operation{
 		ID:          "packages.install.semantic." + recipe.ID,
 		Provider:    "packages",
@@ -583,7 +683,7 @@ func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {
 		Risk:        model.RiskHigh,
 		Reversible:  false,
 		Interactive: recipe.Interactive,
-		Notice:      notice,
+		Notice:      recipe.InstallNotice,
 	}
 }
 
@@ -649,6 +749,10 @@ func machineSpecific(name string) bool {
 // Capture Disabled + Restore Disabled policy rule, so Merge's own "disabled
 // preserves existing desired state" rule already keeps it unmanaged.
 func Merge(previous, current profile.Packages, enabled func(ref string) bool) profile.Packages {
+	if current.Preinstalls.Managed {
+		previous = CanonicalizePreinstallOwnership(previous, current.Preinstalls.Items)
+		current = CanonicalizePreinstallOwnership(current, current.Preinstalls.Items)
+	}
 	result := profile.Packages{Installed: current.Installed, MachineSpecific: current.MachineSpecific}
 	result.Preinstalls = mergePreinstalls(previous.Preinstalls, current.Preinstalls, enabled)
 	prevAbsent, prevAbsentMise := absenceIndex(previous.Absent)

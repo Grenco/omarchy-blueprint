@@ -11,10 +11,13 @@ func TestSemanticRecipeSelectsTailscaleServiceFlow(t *testing.T) {
 		t.Fatal("tailscale has no semantic recipe")
 	}
 	want := AppRecipe{
-		ID:          "tailscale",
-		Install:     []string{"omarchy-install-service-tailscale"},
-		Remove:      []string{"omarchy-remove-service-tailscale"},
-		Interactive: true,
+		ID:            "tailscale",
+		Install:       []string{"omarchy-install-service-tailscale"},
+		Remove:        []string{"omarchy-remove-service-tailscale"},
+		Interactive:   true,
+		InstallNotice: "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint.",
+		RemoveNotice:  "Tailscale removal uses Omarchy's interactive service teardown.",
+		Verify:        [][]string{{"systemctl", "is-enabled", "tailscaled"}, {"tailscale", "status"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recipe = %#v, want %#v", got, want)

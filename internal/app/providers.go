@@ -580,7 +580,7 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 		return nil, err
 	}
 	preinstalls := current.Preinstalls
-	desired := d.Packages
+	desired := packagesprovider.CanonicalizePreinstallOwnership(d.Packages, preinstalls.Items)
 
 	desiredPortable, currentPortable := map[string]bool{}, map[string]bool{}
 	for _, name := range desired.Official {
@@ -839,6 +839,7 @@ func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info om
 	if err != nil {
 		return model.RestorePlan{}, err
 	}
+	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, current.Preinstalls.Items)
 	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
 	if err != nil {
 		return model.RestorePlan{}, err
@@ -865,12 +866,13 @@ func (p packagesStateProvider) Verify(ctx context.Context, d profile.Data, resto
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
+	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, current.Preinstalls.Items)
 	saved, _, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
 	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
-	return packagesprovider.Verify(saved, current, packagesprovider.VerifyOptions{Exact: exact}), nil
+	return provider.Verify(ctx, saved, current, packagesprovider.VerifyOptions{Exact: exact, Schema: d.Manifest.Schema}), nil
 }
 
 // filterPackagesForRestoreSkip returns a copy of saved with every
@@ -970,8 +972,15 @@ func filterPackagesForRestoreSkip(saved profile.Packages, restoreCtx workflow.Re
 		// Installing or removing the whole Omarchy preinstall set can mutate
 		// every child. Defer that group transition when even one child is
 		// Restore-Skip; individual Apply children can still converge safely.
-		if childSkipped {
+		if childSkipped && saved.Preinstalls.Managed {
 			filtered.Preinstalls.Managed = false
+			groupRecorded := false
+			for _, entry := range matched {
+				groupRecorded = groupRecorded || entry.Key == "preinstalls"
+			}
+			if !groupRecorded {
+				matched = append(matched, restoreSkip{Key: "preinstalls", Reason: "group transition blocked because it could mutate a Restore-Skip child"})
+			}
 		}
 	}
 

@@ -3165,13 +3165,16 @@ func TestRenderPlanSurfacesInteractiveAuthenticationNotice(t *testing.T) {
 
 func TestInteractiveRestoreRequiresTerminal(t *testing.T) {
 	plan := model.RestorePlan{Operations: []model.Operation{{ID: "interactive", Resource: "official:tailscale", Interactive: true}}}
-	if err := requireInteractiveTerminal(plan, false); err == nil || !strings.Contains(err.Error(), "official:tailscale") {
+	if err := requireInteractiveTerminal(plan, false, false); err == nil || !strings.Contains(err.Error(), "official:tailscale") {
 		t.Fatalf("err = %v, want non-terminal interactive restore rejection", err)
 	}
-	if err := requireInteractiveTerminal(plan, true); err != nil {
+	if err := requireInteractiveTerminal(plan, true, false); err != nil {
 		t.Fatalf("interactive terminal rejected: %v", err)
 	}
-	if err := requireInteractiveTerminal(model.RestorePlan{}, false); err != nil {
+	if err := requireInteractiveTerminal(plan, true, true); err == nil || !strings.Contains(err.Error(), "--json") {
+		t.Fatalf("interactive JSON restore err = %v, want rejection", err)
+	}
+	if err := requireInteractiveTerminal(model.RestorePlan{}, false, true); err != nil {
 		t.Fatalf("non-interactive plan rejected: %v", err)
 	}
 }
@@ -3281,8 +3284,8 @@ func TestPackagesPlanAndVerifyHonorRestoreSkipForPreinstallItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstall:aether" {
-		t.Fatalf("plan = %#v, want one visible preinstall policy skip and no mutation", plan)
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 2 || plan.Skipped[0].Resource != "preinstall:aether" || plan.Skipped[1].Resource != "preinstalls" {
+		t.Fatalf("plan = %#v, want visible child and blocked-group skips with no mutation", plan)
 	}
 	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
 	if err != nil || !verification.OK {
@@ -3318,12 +3321,36 @@ func TestPackagesPreinstallGroupCannotMutateRestoreSkipChild(t *testing.T) {
 			t.Fatalf("operation %#v can mutate Restore-Skip child preinstall:aether", op)
 		}
 	}
-	if len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstall:aether" {
-		t.Fatalf("Skipped = %#v, want the child policy skip to remain visible", plan.Skipped)
+	if len(plan.Skipped) != 2 || plan.Skipped[0].Resource != "preinstall:aether" || plan.Skipped[1].Resource != "preinstalls" {
+		t.Fatalf("Skipped = %#v, want child policy and blocked-group skips visible", plan.Skipped)
 	}
 	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
 	if err != nil || !verification.OK {
 		t.Fatalf("verification = %#v, err=%v; deferred group state must not fail verification", verification, err)
+	}
+}
+
+func TestPackagesLegacyPreinstallAliasUsesChildRestorePolicy(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstalls = map[string]bool{"aether": false}
+
+	// A profile saved before schema 13 knew aether only as official:aether.
+	// Once the authoritative catalogue is available it must be governed by
+	// preinstall:aether, not require or bypass a stale generic policy key.
+	d := profile.Data{Manifest: profile.Manifest{Schema: 13}, Packages: profile.Packages{Official: []string{"aether"}}}
+	ctx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"preinstall:aether": {Restore: false, Resolved: true, Reason: "machine keeps this optional app disabled"},
+	}}
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstall:aether" {
+		t.Fatalf("plan = %#v, want legacy alias governed by child Restore Skip", plan)
 	}
 }
 

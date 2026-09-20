@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -1729,7 +1730,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlanWithOptions(plan, false, planOptions)+message)
 	}
-	if err := requireInteractiveTerminal(plan, deps.IsTTY()); err != nil {
+	if err := requireInteractiveTerminal(plan, deps.IsTTY(), opt.json); err != nil {
 		return err
 	}
 	if !yes {
@@ -1742,6 +1743,19 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return errors.New("restore cancelled")
 		}
 	}
+	// Approval applies to the inspected plan, not merely the command line.
+	// Reinspect immediately before creating the journal so external changes
+	// (especially a changed Mise declaration) cannot retain stale authority.
+	recalculated, recalculatedProviders, recalculatedContexts, recalculatedOptions, err := session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+	if err != nil {
+		return fmt.Errorf("recalculate approved restore plan: %w", err)
+	}
+	if !reflect.DeepEqual(plan, recalculated) {
+		return errors.New("restore plan changed after approval; inspect the new plan and approve again")
+	}
+	plan, restoreProviders, contexts, resolved = recalculated, recalculatedProviders, recalculatedContexts, recalculatedOptions
+	planOptions = restorePlanOptionsFromPolicy(resolved)
+	d = session.Profile()
 	stateHome, err := deps.StateHome()
 	if err != nil {
 		return err
@@ -1784,7 +1798,14 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
 }
 
-func requireInteractiveTerminal(plan model.RestorePlan, isTTY bool) error {
+func requireInteractiveTerminal(plan model.RestorePlan, isTTY, jsonOutput bool) error {
+	if jsonOutput {
+		for _, operation := range plan.Operations {
+			if operation.Interactive {
+				return fmt.Errorf("restore operation %s is interactive and cannot run with --json; inspect it with --dry-run and rerun without --json", operation.Resource)
+			}
+		}
+	}
 	if isTTY {
 		return nil
 	}
