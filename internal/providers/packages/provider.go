@@ -112,9 +112,14 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	plan.Skipped = append(plan.Skipped, preinstallSkipped...)
 	currentNames := packageNames(current)
 	var missingOfficial, missingAUR []string
+	var semanticInstalls []model.Operation
 	for _, name := range saved.Official {
 		if !currentNames[name] {
-			missingOfficial = append(missingOfficial, name)
+			if recipe, ok := omarchy.SemanticRecipe(name); ok {
+				semanticInstalls = append(semanticInstalls, semanticInstallOperation(recipe))
+			} else {
+				missingOfficial = append(missingOfficial, name)
+			}
 		}
 	}
 	for _, name := range saved.AUR {
@@ -125,6 +130,7 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	if len(missingOfficial) > 0 {
 		plan.Operations = append(plan.Operations, operation("official", missingOfficial, append([]string{"omarchy", "pkg", "add"}, missingOfficial...)))
 	}
+	plan.Operations = append(plan.Operations, semanticInstalls...)
 	if len(missingAUR) > 0 {
 		for _, name := range missingAUR {
 			plan.Operations = append(plan.Operations, operation("aur", []string{name}, []string{"omarchy", "pkg", "aur", "add", name}))
@@ -388,6 +394,25 @@ func operation(kind string, names, argv []string) model.Operation {
 		id += "." + names[0]
 	}
 	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false}
+}
+
+func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {
+	notice := ""
+	if recipe.Interactive {
+		notice = "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint."
+	}
+	return model.Operation{
+		ID:          "packages.install.semantic." + recipe.ID,
+		Provider:    "packages",
+		Action:      "install",
+		Resource:    "official:" + recipe.ID,
+		Items:       []string{recipe.ID},
+		Command:     append([]string(nil), recipe.Install...),
+		Risk:        model.RiskHigh,
+		Reversible:  false,
+		Interactive: recipe.Interactive,
+		Notice:      notice,
+	}
 }
 
 func classify(packages profile.Packages) profile.Packages {

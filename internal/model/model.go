@@ -26,21 +26,23 @@ const (
 )
 
 type Operation struct {
-	ID         string           `json:"id"`
-	Provider   string           `json:"provider"`
-	Action     string           `json:"action"`
-	Resource   string           `json:"resource"`
-	Items      []string         `json:"items,omitempty"`
-	Command    []string         `json:"command"`
-	Copy       *Copy            `json:"copy,omitempty"`
-	File       *FileWrite       `json:"file,omitempty"`
-	Delete     *FileDelete      `json:"delete,omitempty"`
-	Directory  *DirectoryCreate `json:"directory,omitempty"`
-	Symlink    *SymlinkWrite    `json:"symlink,omitempty"`
-	GitPatch   *GitPatchApply   `json:"git_patch,omitempty"`
-	DependsOn  []string         `json:"depends_on,omitempty"`
-	Risk       Risk             `json:"risk"`
-	Reversible bool             `json:"reversible"`
+	ID          string           `json:"id"`
+	Provider    string           `json:"provider"`
+	Action      string           `json:"action"`
+	Resource    string           `json:"resource"`
+	Items       []string         `json:"items,omitempty"`
+	Command     []string         `json:"command"`
+	Copy        *Copy            `json:"copy,omitempty"`
+	File        *FileWrite       `json:"file,omitempty"`
+	Delete      *FileDelete      `json:"delete,omitempty"`
+	Directory   *DirectoryCreate `json:"directory,omitempty"`
+	Symlink     *SymlinkWrite    `json:"symlink,omitempty"`
+	GitPatch    *GitPatchApply   `json:"git_patch,omitempty"`
+	DependsOn   []string         `json:"depends_on,omitempty"`
+	Risk        Risk             `json:"risk"`
+	Reversible  bool             `json:"reversible"`
+	Interactive bool             `json:"interactive,omitempty"`
+	Notice      string           `json:"notice,omitempty"`
 }
 
 type Copy struct {

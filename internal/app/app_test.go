@@ -3148,6 +3148,21 @@ func TestRenderResourceProgressUsesResourceLabels(t *testing.T) {
 	}
 }
 
+func TestRenderPlanSurfacesInteractiveAuthenticationNotice(t *testing.T) {
+	plan := model.RestorePlan{Operations: []model.Operation{{
+		Provider:    "packages",
+		Action:      "install",
+		Resource:    "official:tailscale",
+		Risk:        model.RiskHigh,
+		Interactive: true,
+		Notice:      "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint.",
+	}}}
+	got := renderPlan(plan, true)
+	if !strings.Contains(got, "interactive device authentication") || !strings.Contains(got, "credentials are not stored") {
+		t.Fatalf("rendered plan = %q", got)
+	}
+}
+
 func shellCanonical(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
