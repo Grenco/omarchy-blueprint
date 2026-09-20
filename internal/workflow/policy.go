@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -29,21 +30,81 @@ func (s *Session) EffectivePolicy(ctx context.Context, scope PolicyScope, catego
 	if err != nil {
 		return policy.Effective{}, err
 	}
+	machineRules, err = remapLegacyPreinstallPolicyRules(machineRules, category, target.Key)
+	if err != nil {
+		return policy.Effective{}, err
+	}
+	profileRules, err := remapLegacyPreinstallPolicyRules(s.profile.Policy, category, target.Key)
+	if err != nil {
+		return policy.Effective{}, err
+	}
 	capture, err := policy.Resolve(policy.ResolveRequest{
 		Axis: policy.AxisCapture, Machine: scope.Machine, Category: category, Target: target.Key, Ancestors: target.Ancestors,
-		MachineRules: machineRules, ProfileRules: s.profile.Policy, DefaultEnabled: true,
+		MachineRules: machineRules, ProfileRules: profileRules, DefaultEnabled: true,
 	})
 	if err != nil {
 		return policy.Effective{}, err
 	}
 	restore, err := policy.Resolve(policy.ResolveRequest{
 		Axis: policy.AxisRestore, Machine: scope.Machine, Category: category, Target: target.Key, Ancestors: target.Ancestors,
-		MachineRules: machineRules, ProfileRules: s.profile.Policy, DefaultEnabled: true,
+		MachineRules: machineRules, ProfileRules: profileRules, DefaultEnabled: true,
 	})
 	if err != nil {
 		return policy.Effective{}, err
 	}
 	return policy.Effective{Capture: capture, Restore: restore}, nil
+}
+
+// remapLegacyPreinstallPolicyRules keeps schema-12 generic package policy
+// authority intact when an installed Omarchy catalogue later gives that
+// package the canonical preinstall:<id> identity. It is deliberately scoped
+// to an inspected preinstall target: generic package rules retain their
+// normal meaning everywhere else. A canonical rule wins over its legacy
+// alias; conflicting official/aur aliases fail closed rather than guessing.
+func remapLegacyPreinstallPolicyRules(rules policy.Rules, category, target string) (policy.Rules, error) {
+	if category != "packages" || !strings.HasPrefix(target, "preinstall:") {
+		return rules, nil
+	}
+	id := strings.TrimPrefix(target, "preinstall:")
+	aliases := map[string]bool{"official:" + id: true, "aur:" + id: true}
+	remap := func(items []policy.Rule) ([]policy.Rule, error) {
+		var direct *policy.Rule
+		var alias *policy.Rule
+		kept := make([]policy.Rule, 0, len(items))
+		for _, rule := range items {
+			if rule.Category != category || (!aliases[rule.Target] && rule.Target != target) {
+				kept = append(kept, rule)
+				continue
+			}
+			if rule.Target == target {
+				copy := rule
+				direct = &copy
+				continue
+			}
+			if alias != nil && alias.Setting != rule.Setting {
+				return nil, fmt.Errorf("workflow: conflicting legacy package policy aliases for %s", target)
+			}
+			copy := rule
+			alias = &copy
+		}
+		if direct != nil {
+			kept = append(kept, *direct)
+		} else if alias != nil {
+			alias.Target = target
+			kept = append(kept, *alias)
+		}
+		return kept, nil
+	}
+	var err error
+	rules.Capture, err = remap(rules.Capture)
+	if err != nil {
+		return policy.Rules{}, err
+	}
+	rules.Restore, err = remap(rules.Restore)
+	if err != nil {
+		return policy.Rules{}, err
+	}
+	return rules, nil
 }
 
 // resolveCaptureTarget resolves one target's effective Capture policy as

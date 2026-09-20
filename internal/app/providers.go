@@ -798,6 +798,10 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, cap
 	if err != nil {
 		return nil, nil, err
 	}
+	migrateLegacyPreinstallPolicyAliases(&d.Policy, current.Preinstalls.Items)
+	for i := range d.Machines.Items {
+		migrateLegacyPreinstallPolicyAliases(&d.Machines.Items[i].Policy, current.Preinstalls.Items)
+	}
 	merged := packagesprovider.Merge(d.Packages, current, func(ref string) bool {
 		decision, ok := capCtx.Lookup(ref)
 		return ok && decision.Capture
@@ -806,6 +810,46 @@ func (p packagesStateProvider) Capture(ctx context.Context, d *profile.Data, cap
 	d.Packages = merged
 	d.Manifest.Capture.Packages = true
 	return merged, changes, nil
+}
+
+// migrateLegacyPreinstallPolicyAliases persists the same canonicalization
+// used by workflow policy resolution once capture has authoritative catalogue
+// data. A direct preinstall rule wins; legacy aliases are removed on save.
+func migrateLegacyPreinstallPolicyAliases(rules *policy.Rules, catalogue map[string]bool) {
+	if len(catalogue) == 0 {
+		return
+	}
+	migrate := func(items []policy.Rule) []policy.Rule {
+		out := append([]policy.Rule(nil), items...)
+		for id := range catalogue {
+			canonical := "preinstall:" + id
+			hasCanonical := false
+			for _, rule := range out {
+				hasCanonical = hasCanonical || (rule.Category == "packages" && rule.Target == canonical)
+			}
+			for i := range out {
+				if out[i].Category != "packages" || (out[i].Target != "official:"+id && out[i].Target != "aur:"+id) {
+					continue
+				}
+				if hasCanonical {
+					out[i].Target = ""
+					out[i].Category = ""
+					continue
+				}
+				out[i].Target = canonical
+				hasCanonical = true
+			}
+		}
+		filtered := out[:0]
+		for _, rule := range out {
+			if rule.Category != "" {
+				filtered = append(filtered, rule)
+			}
+		}
+		return filtered
+	}
+	rules.Capture = migrate(rules.Capture)
+	rules.Restore = migrate(rules.Restore)
 }
 
 func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {

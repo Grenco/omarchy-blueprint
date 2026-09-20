@@ -3396,6 +3396,17 @@ func TestPackagesLegacyPreinstallAliasUsesChildRestorePolicy(t *testing.T) {
 	}
 }
 
+func TestCaptureMigratesLegacyPreinstallPolicyAliases(t *testing.T) {
+	rules := policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "official:aether", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "aur:aether", Setting: policy.SettingDisabled}},
+	}
+	migrateLegacyPreinstallPolicyAliases(&rules, map[string]bool{"aether": true})
+	if len(rules.Capture) != 1 || rules.Capture[0].Target != "preinstall:aether" || len(rules.Restore) != 1 || rules.Restore[0].Target != "preinstall:aether" {
+		t.Fatalf("rules = %#v, want canonical persisted preinstall policy aliases", rules)
+	}
+}
+
 func TestPackagesExactRemovalHonorsConvergenceAndRestoreSkip(t *testing.T) {
 	_, deps := configSandbox(t)
 	deps.MiseGlobalConfig = func() (string, error) { return "", nil }

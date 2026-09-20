@@ -215,9 +215,18 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	}
 	var removalIDs []string
 	var removalOps []model.Operation
+	guardID := ""
+	if len(removals) > 0 {
+		guardID = "packages.mise.guard"
+		// Keep the declaration in place until every uninstall succeeds, but
+		// prove it still has the approved content immediately before the
+		// first destructive command. Positional parameters avoid embedding an
+		// untrusted path or hash into shell source.
+		plan.Operations = append(plan.Operations, model.Operation{ID: guardID, Provider: "packages", Action: "verify", Resource: "mise:global-tools", Command: []string{"sh", "-c", `test "$(sha256sum -- "$1" | cut -d ' ' -f 1)" = "$2"`, "sh", p.MiseGlobalConfig, snapshot.Hash}, Risk: model.RiskLow})
+	}
 	for _, id := range removals {
 		opID := "packages.mise.remove." + id
-		removalOps = append(removalOps, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, DependsOn: []string{"packages.mise.configure"}, Risk: model.RiskHigh})
+		removalOps = append(removalOps, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, DependsOn: []string{guardID}, Risk: model.RiskHigh})
 		removalIDs = append(removalIDs, opID)
 	}
 	mutationIDs := append(append([]string(nil), removals...), sortedMiseIDs(additions)...)
@@ -231,15 +240,14 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	if len(removals) > 0 {
 		risk = model.RiskHigh
 	}
-	// Commit the hash-preconditioned declaration change before destructive
-	// uninstalls. A stale config now blocks every removal instead of being
-	// discovered only after the tool has already been removed.
-	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, Risk: risk, Reversible: snapshot.Exists})
+	// Remove tools before committing the declaration change so a failed
+	// uninstall leaves it actionable for a later retry. The preceding guard
+	// blocks stale authority before any destructive command can start.
 	plan.Operations = append(plan.Operations, removalOps...)
+	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, DependsOn: removalIDs, Risk: risk, Reversible: snapshot.Exists})
 	if len(additions) > 0 {
 		ids := sortedMiseIDs(additions)
-		dependencies := append([]string{"packages.mise.configure"}, removalIDs...)
-		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: dependencies, Risk: miseInstallRisk(additions)})
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions)})
 	}
 	return plan, nil
 }

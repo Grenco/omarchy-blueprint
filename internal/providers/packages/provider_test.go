@@ -492,12 +492,12 @@ func TestExactMiseRemovalRequiresMatchingDeclarationAndPreconditionedRewrite(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Operations) != 2 {
-		t.Fatalf("Operations = %#v, want uninstall plus config rewrite", plan.Operations)
+	if len(plan.Operations) != 3 {
+		t.Fatalf("Operations = %#v, want hash guard, uninstall, and config rewrite", plan.Operations)
 	}
-	configure, uninstall := plan.Operations[0], plan.Operations[1]
-	if configure.File == nil || configure.File.ExpectedHash == "" || !configure.File.Backup || len(configure.DependsOn) != 0 || !reflect.DeepEqual(uninstall.Command, []string{"mise", "-C", "/", "uninstall", "--all", "node"}) || !reflect.DeepEqual(uninstall.DependsOn, []string{configure.ID}) {
-		t.Fatalf("uninstall=%#v configure=%#v", uninstall, configure)
+	guard, uninstall, configure := plan.Operations[0], plan.Operations[1], plan.Operations[2]
+	if guard.ID != "packages.mise.guard" || !reflect.DeepEqual(uninstall.Command, []string{"mise", "-C", "/", "uninstall", "--all", "node"}) || !reflect.DeepEqual(uninstall.DependsOn, []string{guard.ID}) || configure.File == nil || configure.File.ExpectedHash == "" || !configure.File.Backup || !reflect.DeepEqual(configure.DependsOn, []string{uninstall.ID}) {
+		t.Fatalf("guard=%#v uninstall=%#v configure=%#v", guard, uninstall, configure)
 	}
 	if strings.Contains(string(configure.File.Content), "node =") || !strings.Contains(string(configure.File.Content), "python = '3.13'") {
 		t.Fatalf("candidate = %q", configure.File.Content)
@@ -538,14 +538,20 @@ func TestExactMiseAdditionAndRemovalShareOnePreconditionedRewrite(t *testing.T) 
 			installs = append(installs, op)
 		}
 	}
-	if len(writes) != 1 || len(uninstalls) != 1 || len(installs) != 1 {
-		t.Fatalf("Operations = %#v, want one uninstall, one shared rewrite, one install", plan.Operations)
+	var guards []model.Operation
+	for _, op := range plan.Operations {
+		if op.ID == "packages.mise.guard" {
+			guards = append(guards, op)
+		}
+	}
+	if len(writes) != 1 || len(uninstalls) != 1 || len(installs) != 1 || len(guards) != 1 {
+		t.Fatalf("Operations = %#v, want guard, uninstall, one shared rewrite, and one install", plan.Operations)
 	}
 	if !strings.Contains(string(writes[0].File.Content), "python") || strings.Contains(string(writes[0].File.Content), "node") {
 		t.Fatalf("shared candidate = %q", writes[0].File.Content)
 	}
-	if len(writes[0].DependsOn) != 0 || !reflect.DeepEqual(uninstalls[0].DependsOn, []string{writes[0].ID}) || !reflect.DeepEqual(installs[0].DependsOn, []string{writes[0].ID, uninstalls[0].ID}) {
-		t.Fatalf("uninstall=%#v rewrite=%#v install=%#v", uninstalls[0], writes[0], installs[0])
+	if !reflect.DeepEqual(uninstalls[0].DependsOn, []string{guards[0].ID}) || !reflect.DeepEqual(writes[0].DependsOn, []string{uninstalls[0].ID}) || !reflect.DeepEqual(installs[0].DependsOn, []string{writes[0].ID}) {
+		t.Fatalf("guard=%#v uninstall=%#v rewrite=%#v install=%#v", guards[0], uninstalls[0], writes[0], installs[0])
 	}
 }
 
