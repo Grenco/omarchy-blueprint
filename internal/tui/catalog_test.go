@@ -34,6 +34,15 @@ func TestScreenCatalog(t *testing.T) {
 			t.Errorf("Config keywords %q do not contain %q", config.Keywords, keyword)
 		}
 	}
+	restore := screenInfo(ScreenRestore)
+	for _, want := range []string{"Safe", "Force", "Additive", "Exact"} {
+		if !strings.Contains(restore.Long, want) {
+			t.Errorf("Restore help omits %q: %s", want, restore.Long)
+		}
+	}
+	if strings.Contains(restore.Long, "Normal mode") || strings.Contains(restore.Long, "Forced mode") {
+		t.Errorf("Restore help retains legacy modes: %s", restore.Long)
+	}
 
 	sections := sidebarSections()
 	labels := make([]string, len(sections)-1)

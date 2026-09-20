@@ -68,7 +68,12 @@ func NewProvider(session *workflow.Session, id string) *Provider {
 func NewProviderContext(ctx context.Context, session *workflow.Session, id string) *Provider {
 	return &Provider{ctx: ctx, session: session, id: id, tab: "State"}
 }
-func (s *Provider) Refresh() tea.Cmd                   { return s.refresh() }
+func (s *Provider) Refresh() tea.Cmd { return s.refresh() }
+func (s *Provider) ShowPolicy() {
+	s.tab = "Capture"
+	s.list.SetSelected(0, len(s.rows()), s.listHeight())
+	s.selected = s.list.Selected
+}
 func (s *Provider) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Provider) SetSize(width, height int)          { s.width, s.height = width, height }
 func (s *Provider) Init() tea.Cmd                      { return s.refresh() }
@@ -101,7 +106,7 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.err, s.busy = msg.err, false
 		if msg.err == nil {
-			return s.refresh()
+			return func() tea.Msg { return AuthorityChanged{Notice: "Policy updated."} }
 		}
 		return nil
 	}
@@ -671,7 +676,14 @@ func (s *Provider) DetailView() string {
 	}
 	if s.policyTab() {
 		if row := s.selectedPolicyRow(); row.key != "" {
-			return fmt.Sprintf("%s policy\nDesired: %s\nCurrent: %s\nEffective: %s\nCapture eligible: %t\nRestore eligible: %t", title, row.target.Desired, row.target.Current, components.RenderPolicyStatus(s.tab, row.effective, ""), row.target.CaptureEligible, row.target.RestoreEligible)
+			blocked := ""
+			if s.tab == "Capture" && !row.target.CaptureEligible || s.tab == "Restore" && !row.target.RestoreEligible {
+				blocked = row.target.SafetyReason
+				if blocked == "" {
+					blocked = "not eligible on this machine"
+				}
+			}
+			return fmt.Sprintf("%s policy\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t", title, row.target.Desired, row.target.Current, components.RenderPolicyStatus(s.tab, row.effective, blocked), row.effective.Source.Kind, components.DisplayText(row.effective.Source.Machine), components.DisplayText(row.effective.Source.Category), components.DisplayText(row.effective.Source.Target), row.target.CaptureEligible, row.target.RestoreEligible, row.target.Capabilities.SupportsCapture, row.target.Capabilities.SupportsRestore, row.target.Capabilities.SupportsDesiredAbsence, row.target.Capabilities.SupportsExactRemoval, row.target.Capabilities.Hierarchical)
 		}
 		return title + " policy\n" + s.policyScopeLabel()
 	}

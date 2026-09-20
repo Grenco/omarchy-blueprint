@@ -3,27 +3,23 @@ package screens
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/Grenco/omarchy-blueprint/internal/inspection"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-// Restore presents a cached normal-versus-forced comparison. Applying always
-// asks workflow to create a fresh plan, never the previewed one.
+// Restore presents the one current plan for the selected machine and one-run
+// options. Applying always asks workflow to create a fresh plan, never the
+// previewed one.
 type Restore struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
-	comparison              workflow.RestoreComparison
-	mode                    workflow.RestoreMode
-	diff                    *components.DiffViewer
-	table                   components.Table
-	navigation              components.Selectable
 	styles                  components.Styles
 	confirm                 bool
 	busy                    bool
@@ -31,55 +27,42 @@ type Restore struct {
 	current                 model.RestorePlan
 	options                 policy.RestoreOptions
 	override                bool
+	forcedOverrides         int
 }
 
 const restoreScopeAll = ""
 
-type restoreComparisonMsg struct {
-	comparison workflow.RestoreComparison
-	err        error
-}
 type restoreAppliedMsg struct {
 	result workflow.RestoreResult
 	err    error
 }
 type restorePlanMsg struct {
-	plan model.RestorePlan
-	err  error
+	plan            model.RestorePlan
+	forcedOverrides int
+	err             error
 }
 
 func NewRestore(session *workflow.Session) *Restore {
 	return NewRestoreContext(context.Background(), session)
 }
 func NewRestoreContext(ctx context.Context, session *workflow.Session) *Restore {
-	return &Restore{ctx: ctx, session: session, mode: workflow.RestoreNormal}
+	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions()}
 }
 func (s *Restore) SetStyles(styles components.Styles) { s.styles = styles }
-func (s *Restore) SetSize(width, height int) {
-	s.width, s.height = width, height
-	if s.diff != nil {
-		s.diff.SetSize(width, height)
-	}
-}
+func (s *Restore) SetSize(width, height int)          { s.width, s.height = width, height }
 func (s *Restore) Init() tea.Cmd {
 	if s.session == nil {
 		return nil
 	}
 	return s.refreshPlan()
 }
-func (s *Restore) TransientActive() bool { return s.confirm || s.diff != nil }
+func (s *Restore) TransientActive() bool { return s.confirm }
 
 func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case restorePlanMsg:
-		s.current, s.err = msg.plan, msg.err
-		return nil
-	case restoreComparisonMsg:
-		s.comparison, s.err = msg.comparison, msg.err
-		if s.selected >= len(s.comparison.Consequences) {
-			s.selected = max(0, len(s.comparison.Consequences)-1)
-		}
-		s.table.Ensure(s.selected, len(s.comparison.Consequences), s.tableHeight())
+		s.current, s.forcedOverrides, s.err = msg.plan, msg.forcedOverrides, msg.err
+		s.selected = min(s.selected, max(0, s.currentEntryCount()-1))
 		return nil
 	case restoreAppliedMsg:
 		s.err, s.confirm, s.busy = msg.err, false, false
@@ -104,66 +87,36 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	}
-	if s.diff != nil {
-		if key.String() == "esc" {
-			s.diff = nil
-			return nil
-		}
-		return s.diff.Update(msg)
-	}
 	if s.busy {
-		return nil
-	}
-	s.navigation.Selected = s.selected
-	if s.navigation.Vim(key.String(), len(s.comparison.Consequences), s.tableHeight()) {
-		s.selected = s.navigation.Selected
-		s.table.Ensure(s.selected, len(s.comparison.Consequences), s.tableHeight())
 		return nil
 	}
 	switch key.String() {
 	case "j", "down":
-		if s.selected < len(s.comparison.Consequences)-1 {
+		if s.selected < s.currentEntryCount()-1 {
 			s.selected++
-			s.table.Ensure(s.selected, len(s.comparison.Consequences), s.tableHeight())
 		}
 	case "k", "up":
 		if s.selected > 0 {
 			s.selected--
-			s.table.Ensure(s.selected, len(s.comparison.Consequences), s.tableHeight())
 		}
 	case "f":
-		if s.session != nil {
-			s.ensureOptions()
-			if s.options.Conflicts == policy.ConflictSafe {
-				s.options.Conflicts = policy.ConflictForce
-			} else {
-				s.options.Conflicts = policy.ConflictSafe
-			}
-			s.override = true
-			return s.refreshPlan()
-		}
-		if s.mode == workflow.RestoreNormal {
-			s.mode = workflow.RestoreForced
+		s.ensureOptions()
+		if s.options.Conflicts == policy.ConflictSafe {
+			s.options.Conflicts = policy.ConflictForce
 		} else {
-			s.mode = workflow.RestoreNormal
+			s.options.Conflicts = policy.ConflictSafe
 		}
+		s.override = true
+		return s.refreshPlan()
 	case "e":
-		if s.session != nil {
-			s.ensureOptions()
-			if s.options.Convergence == policy.ConvergenceAdditive {
-				s.options.Convergence = policy.ConvergenceExact
-			} else {
-				s.options.Convergence = policy.ConvergenceAdditive
-			}
-			s.override = true
-			return s.refreshPlan()
+		s.ensureOptions()
+		if s.options.Convergence == policy.ConvergenceAdditive {
+			s.options.Convergence = policy.ConvergenceExact
+		} else {
+			s.options.Convergence = policy.ConvergenceAdditive
 		}
-	case "d":
-		if item := s.selectedConsequence(); item.Diff != nil {
-			viewer := components.NewDiffViewer(*item.Diff)
-			viewer.SetSize(s.width, s.height)
-			s.diff = &viewer
-		}
+		s.override = true
+		return s.refreshPlan()
 	case "enter":
 		if len(s.plan().Operations) > 0 {
 			if s.hasInteractiveOperation() {
@@ -186,9 +139,6 @@ func (s *Restore) View() string {
 	if s.busy {
 		return "Applying restore..."
 	}
-	if s.diff != nil {
-		return "Restore diff\n" + s.diff.View()
-	}
 	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
 		return renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "Nothing to restore yet",
@@ -196,88 +146,29 @@ func (s *Restore) View() string {
 			Guidance:    "Capture the parts of this machine you want Blueprint to remember before using Restore.",
 		})
 	}
-	if s.session != nil {
-		return s.currentPlanView()
-	}
-	mode := "Normal"
-	if s.mode == workflow.RestoreForced {
-		mode = "Forced"
-	}
-	counts := outcomeCounts(s.plan())
-	lines := []string{"Scope: All captured providers", fmt.Sprintf("Restore comparison  active: [%s]", mode), fmt.Sprintf("Active %s plan: create:%d modify:%d replace:%d delete:%d commands:%d", strings.ToLower(mode), counts.create, counts.modify, counts.replace, counts.delete, counts.commands), "Normal and Forced are both previewed. Enter applies only the active mode."}
-	if len(s.comparison.Consequences) == 0 {
-		lines = append(lines, "", "No restore operations required.")
-		return strings.Join(lines, "\n")
-	}
-	rows := []components.Row{}
-	for i, item := range s.comparison.Consequences {
-		changed := "[same]"
-		if item.Normal != item.Forced {
-			changed = "[diff]"
-		}
-		risk := string(item.Risk)
-		if risk == "" {
-			risk = "low"
-		}
-		risk = s.risk(risk)
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.Provider), components.DisplayText(item.Resource), s.outcome(item.Normal), s.outcome(item.Forced), risk + " " + changed}, Selected: i == s.selected})
-	}
-	tableWidth := s.width
-	if tableWidth == 0 {
-		tableWidth = 80
-	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "PROVIDER", Width: 10, MinWidth: 8}, {Title: "RESOURCE", Width: 0, MinWidth: 12}, {Title: "NORMAL", Width: 8, MinWidth: 7}, {Title: "FORCED", Width: 8, MinWidth: 7}, {Title: "RISK", Width: 14, MinWidth: 5}}, rows, tableWidth, s.tableHeight()+1, s.styles))
-	return strings.Join(lines, "\n")
+	return s.currentPlanView()
 }
 func (s *Restore) DetailView() string {
-	if s.diff != nil {
-		return "Restore diff\n" + s.diff.View()
+	if s.selected < len(s.current.Operations) {
+		op := s.current.Operations[s.selected]
+		return fmt.Sprintf("Restore operation\nProvider: %s\nResource: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t", components.DisplayText(op.Provider), components.DisplayText(op.Resource), components.DisplayText(op.Action), operationOutcome(op), components.DisplayText(string(op.Risk)), op.Interactive)
 	}
-	item := s.selectedConsequence()
-	if item.Resource == "" {
-		return "Restore details\nNo consequence selected."
+	skipIndex := s.selected - len(s.current.Operations)
+	if skipIndex >= 0 && skipIndex < len(s.current.Skipped) {
+		skipped := s.current.Skipped[skipIndex]
+		return fmt.Sprintf("Restore skip\nProvider: %s\nResource: %s\nReason: %s", components.DisplayText(skipped.Provider), components.DisplayText(skipped.Resource), components.DisplayText(skipped.Reason))
 	}
-	lines := []string{"Restore consequence", "Provider: " + components.DisplayText(item.Provider), "Resource: " + components.DisplayText(item.Resource), "Normal: " + components.DisplayText(string(item.Normal)), "Forced: " + components.DisplayText(string(item.Forced)), "Risk: " + components.DisplayText(string(item.Risk))}
-	if item.Difference != "" {
-		lines = append(lines, "", components.DisplayText(item.Difference))
-	}
-	if item.Diff != nil && item.Diff.Kind != inspection.DiffText {
-		lines = append(lines, "Detail is metadata-only: "+components.DisplayText(string(item.Diff.Kind)))
-	}
-	return strings.Join(lines, "\n")
-}
-func (s *Restore) risk(value string) string {
-	switch value {
-	case string(model.RiskHigh):
-		return s.styles.Error("HIGH")
-	case string(model.RiskMedium):
-		return s.styles.Warning("MEDIUM")
-	default:
-		return s.styles.Success(value)
-	}
-}
-func (s *Restore) outcome(value workflow.Outcome) string {
-	label := string(value)
-	switch value {
-	case workflow.OutcomeCreate:
-		return s.styles.Success(label)
-	case workflow.OutcomeDelete:
-		return s.styles.Error(label)
-	case workflow.OutcomeReplace:
-		return s.styles.Warning(label)
-	default:
-		return s.styles.Muted(label)
-	}
-}
-func (s *Restore) tableHeight() int {
-	if s.height == 0 {
-		return max(1, len(s.comparison.Consequences)+1)
-	}
-	return max(2, s.height-7)
+	return "Restore details\nNo plan item selected."
 }
 
 func (s *Restore) ensureOptions() {
-	if s.override || s.session == nil {
+	if s.override {
+		return
+	}
+	if s.session == nil {
+		if s.options.Conflicts == "" || s.options.Convergence == "" {
+			s.options = policy.DefaultRestoreOptions()
+		}
 		return
 	}
 	s.options = policy.DefaultRestoreOptions()
@@ -293,6 +184,8 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	if s.session == nil {
 		return nil
 	}
+	s.ensureOptions()
+	effectiveOptions := s.options
 	var options *policy.RestoreOptions
 	if s.override {
 		options = &s.options
@@ -300,27 +193,27 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	return func() tea.Msg {
 		plan, err := s.session.PlanRestore(s.ctx, restoreScopeAll, options)
 		if err != nil {
-			// Some narrow test/application provider sets are status-only and
-			// deliberately omit restore support. Preserve the existing
-			// comparison fallback for those sets rather than making opening
-			// Restore itself an error; full application registries use the
-			// current-options plan above.
-			comparison, comparisonErr := s.session.CompareRestore(s.ctx, restoreScopeAll)
-			if comparisonErr == nil {
-				return restorePlanMsg{plan: comparison.Normal}
-			}
-			// A status-only provider set has no restore plan to render. The
-			// controls remain usable and a full application registry will
-			// replan normally once available.
+			// Some narrow application/test provider sets are status-only and
+			// deliberately omit Restore support. They have no plan to render;
+			// the full application registry replans through the path below.
 			return restorePlanMsg{}
 		}
-		return restorePlanMsg{plan: plan, err: err}
+		forcedOverrides := 0
+		if effectiveOptions.Conflicts == policy.ConflictForce {
+			safe := effectiveOptions
+			safe.Conflicts = policy.ConflictSafe
+			if safePlan, safeErr := s.session.PlanRestore(s.ctx, restoreScopeAll, &safe); safeErr == nil {
+				forcedOverrides = countForcedOverrides(plan, safePlan)
+			}
+		}
+		return restorePlanMsg{plan: plan, forcedOverrides: forcedOverrides, err: err}
 	}
 }
 func (s *Restore) currentPlanView() string {
 	s.ensureOptions()
 	machine := "Profile defaults"
-	if name := s.session.Machine().Name; name != "" {
+	if s.session != nil && s.session.Machine().Name != "" {
+		name := s.session.Machine().Name
 		machine = "Machine: " + name
 	}
 	counts := outcomeCounts(s.current)
@@ -331,60 +224,61 @@ func (s *Restore) currentPlanView() string {
 	if s.options.Convergence == policy.ConvergenceExact {
 		lines = append(lines, "WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted.")
 	}
-	lines = append(lines, fmt.Sprintf("Current plan: create:%d modify:%d replace:%d delete:%d commands:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands))
+	lines = append(lines, fmt.Sprintf("Current plan: create:%d modify:%d replace:%d removals:%d commands:%d policy-skips:%d forced-overrides:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides))
 	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
-		return strings.Join(append(lines, "", "No restore operations required."), "\n")
+		return s.wrapCurrentPlan(append(lines, "", "No restore operations required."))
 	}
+	entry := 0
 	for _, op := range s.current.Operations {
 		line := fmt.Sprintf("%s: %s", components.DisplayText(op.Provider), components.DisplayText(op.Resource))
-		if op.Delete != nil {
+		if operationOutcome(op) == restoreOutcomeDelete {
 			line += " — delete"
 		}
+		if entry == s.selected {
+			line = components.Icons.Selected + " " + line
+		}
 		lines = append(lines, line)
+		entry++
 	}
 	for _, skipped := range s.current.Skipped {
-		lines = append(lines, "Skip: "+components.DisplayText(skipped.Resource)+" — "+components.DisplayText(skipped.Reason))
+		line := "Skip: " + components.DisplayText(skipped.Resource) + " — " + components.DisplayText(skipped.Reason)
+		if entry == s.selected {
+			line = components.Icons.Selected + " " + line
+		}
+		lines = append(lines, line)
+		entry++
 	}
-	return strings.Join(lines, "\n")
+	return s.wrapCurrentPlan(lines)
 }
 
-func (s *Restore) compare() tea.Cmd {
-	return func() tea.Msg {
-		comparison, err := s.session.CompareRestore(s.ctx, restoreScopeAll)
-		return restoreComparisonMsg{comparison, err}
+func (s *Restore) wrapCurrentPlan(lines []string) string {
+	width := s.width
+	if width <= 0 {
+		width = 80
 	}
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		wrapped = append(wrapped, components.WrapText(line, width)...)
+	}
+	return strings.Join(wrapped, "\n")
 }
+
 func (s *Restore) apply() tea.Cmd {
-	if s.session != nil {
-		var options *policy.RestoreOptions
-		if s.override {
-			options = &s.options
-		}
-		return func() tea.Msg {
-			result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, options)
-			return restoreAppliedMsg{result, err}
-		}
+	var options *policy.RestoreOptions
+	if s.override {
+		options = &s.options
 	}
-	options := workflow.RestoreOptionsForMode(s.mode)
 	return func() tea.Msg {
-		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, &options)
+		if s.session == nil {
+			return restoreAppliedMsg{err: fmt.Errorf("restore session is unavailable")}
+		}
+		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, options)
 		return restoreAppliedMsg{result, err}
 	}
 }
-func (s *Restore) plan() model.RestorePlan {
-	if s.session != nil {
-		return s.current
-	}
-	if s.mode == workflow.RestoreForced {
-		return s.comparison.Forced
-	}
-	return s.comparison.Normal
-}
-func (s *Restore) selectedConsequence() workflow.Consequence {
-	if s.selected >= 0 && s.selected < len(s.comparison.Consequences) {
-		return s.comparison.Consequences[s.selected]
-	}
-	return workflow.Consequence{}
+func (s *Restore) plan() model.RestorePlan { return s.current }
+func (s *Restore) currentEntryCount() int {
+	return len(s.current.Operations) + len(s.current.Skipped)
 }
 func (s *Restore) hasInteractiveOperation() bool {
 	for _, op := range s.plan().Operations {
@@ -394,25 +288,32 @@ func (s *Restore) hasInteractiveOperation() bool {
 	}
 	return false
 }
-func (s *Restore) CanDetail() bool { return s.selectedConsequence().Diff != nil }
 func (s *Restore) CanApply() bool {
 	return len(s.plan().Operations) > 0 && !s.hasInteractiveOperation()
 }
-func (s *Restore) Mode() workflow.RestoreMode { return s.mode }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }
+
+type restoreOutcome string
+
+const (
+	restoreOutcomeCreate  restoreOutcome = "create"
+	restoreOutcomeModify  restoreOutcome = "modify"
+	restoreOutcomeReplace restoreOutcome = "replace"
+	restoreOutcomeDelete  restoreOutcome = "delete"
+)
 
 func outcomeCounts(plan model.RestorePlan) restoreCounts {
 	var counts restoreCounts
 	for _, op := range plan.Operations {
 		switch operationOutcome(op) {
-		case workflow.OutcomeCreate:
+		case restoreOutcomeCreate:
 			counts.create++
-		case workflow.OutcomeModify:
+		case restoreOutcomeModify:
 			counts.modify++
-		case workflow.OutcomeReplace:
+		case restoreOutcomeReplace:
 			counts.replace++
-		case workflow.OutcomeDelete:
+		case restoreOutcomeDelete:
 			counts.delete++
 		}
 		if len(op.Command) > 0 {
@@ -421,32 +322,54 @@ func outcomeCounts(plan model.RestorePlan) restoreCounts {
 	}
 	return counts
 }
-func operationOutcome(op model.Operation) workflow.Outcome {
-	if op.Delete != nil {
-		return workflow.OutcomeDelete
+func operationOutcome(op model.Operation) restoreOutcome {
+	if op.Delete != nil || op.Action == "remove" {
+		return restoreOutcomeDelete
 	}
 	if op.File != nil {
 		if op.File.ReplaceExisting {
-			return workflow.OutcomeReplace
+			return restoreOutcomeReplace
 		}
 		if op.File.ExpectedMissing {
-			return workflow.OutcomeCreate
+			return restoreOutcomeCreate
 		}
-		return workflow.OutcomeModify
+		return restoreOutcomeModify
 	}
 	if op.Symlink != nil {
 		if op.Symlink.ReplaceExisting {
-			return workflow.OutcomeReplace
+			return restoreOutcomeReplace
 		}
 		if op.Symlink.ExpectedMissing {
-			return workflow.OutcomeCreate
+			return restoreOutcomeCreate
 		}
-		return workflow.OutcomeModify
+		return restoreOutcomeModify
 	}
 	if op.Directory != nil {
-		return workflow.OutcomeCreate
+		return restoreOutcomeCreate
 	}
-	return workflow.OutcomeModify
+	return restoreOutcomeModify
+}
+func policySkipCount(plan model.RestorePlan) int {
+	count := 0
+	for _, skipped := range plan.Skipped {
+		if strings.HasPrefix(skipped.Reason, "restore disabled") {
+			count++
+		}
+	}
+	return count
+}
+func countForcedOverrides(forced, safe model.RestorePlan) int {
+	safeByID := make(map[string]model.Operation, len(safe.Operations))
+	for _, op := range safe.Operations {
+		safeByID[op.ID] = op
+	}
+	count := 0
+	for _, op := range forced.Operations {
+		if safeOp, ok := safeByID[op.ID]; !ok || !reflect.DeepEqual(safeOp, op) {
+			count++
+		}
+	}
+	return count
 }
 func (s *Restore) confirmation() string {
 	counts := outcomeCounts(s.plan())
@@ -456,5 +379,6 @@ func (s *Restore) confirmation() string {
 			high++
 		}
 	}
-	return fmt.Sprintf("Restore all captured providers (%s mode)? create:%d modify:%d replace:%d delete:%d commands:%d high-risk:%d", s.mode, counts.create, counts.modify, counts.replace, counts.delete, counts.commands, high)
+	s.ensureOptions()
+	return fmt.Sprintf("Restore all captured providers? conflicts:%s convergence:%s create:%d modify:%d replace:%d removals:%d commands:%d policy-skips:%d forced-overrides:%d high-risk:%d", s.options.Conflicts, s.options.Convergence, counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.plan()), s.forcedOverrides, high)
 }
