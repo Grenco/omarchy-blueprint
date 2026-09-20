@@ -129,6 +129,10 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 	case "enter":
 		if len(s.plan().Operations) > 0 {
+			if s.hasInteractiveOperation() {
+				s.err = fmt.Errorf("this restore needs an interactive terminal; run the restore from the CLI")
+				return nil
+			}
 			s.confirm = true
 			return func() tea.Msg {
 				return components.ModalRequest{Title: "Apply restore", Content: components.Confirm(s.confirmation())}
@@ -257,8 +261,18 @@ func (s *Restore) selectedConsequence() workflow.Consequence {
 	}
 	return workflow.Consequence{}
 }
-func (s *Restore) CanDetail() bool            { return s.selectedConsequence().Diff != nil }
-func (s *Restore) CanApply() bool             { return len(s.plan().Operations) > 0 }
+func (s *Restore) hasInteractiveOperation() bool {
+	for _, op := range s.plan().Operations {
+		if op.Interactive {
+			return true
+		}
+	}
+	return false
+}
+func (s *Restore) CanDetail() bool { return s.selectedConsequence().Diff != nil }
+func (s *Restore) CanApply() bool {
+	return len(s.plan().Operations) > 0 && !s.hasInteractiveOperation()
+}
 func (s *Restore) Mode() workflow.RestoreMode { return s.mode }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }
