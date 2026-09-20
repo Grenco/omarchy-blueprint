@@ -10,6 +10,7 @@ type AppRecipe struct {
 	InstallNotice string
 	RemoveNotice  string
 	Verify        [][]string
+	RemoveVerify  [][]string
 }
 
 // SemanticRecipe returns the small, reviewed set of applications for which
@@ -28,9 +29,16 @@ func SemanticRecipe(id string) (AppRecipe, bool) {
 			Verify: [][]string{
 				{"systemctl", "is-enabled", "tailscaled"},
 				{"tailscale", "status"},
+				{"sh", "-c", `tailscale debug prefs | jq -e '.OperatorUser != ""' >/dev/null`},
 				{"systemctl", "--user", "is-enabled", "omarchy-tailscale-receive.service"},
 				{"sh", "-c", `omarchy plugin list --json | jq -e '.[] | select(.id == "omarchy.tailscale" and .enabled)' >/dev/null`},
 				{"sh", "-c", `test -f "$HOME/.local/share/applications/Tailscale.desktop"`},
+			},
+			RemoveVerify: [][]string{
+				{"sh", "-c", `! systemctl is-enabled tailscaled >/dev/null 2>&1`},
+				{"sh", "-c", `! systemctl --user is-enabled omarchy-tailscale-receive.service >/dev/null 2>&1`},
+				{"sh", "-c", `! omarchy plugin list --json | jq -e '.[] | select(.id == "omarchy.tailscale" and .enabled)' >/dev/null`},
+				{"sh", "-c", `test ! -f "$HOME/.local/share/applications/Tailscale.desktop"`},
 			},
 		}, true
 	default:

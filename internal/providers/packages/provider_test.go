@@ -346,6 +346,25 @@ func TestPlanAppendsMissingMiseToolsAndPreservesConflicts(t *testing.T) {
 	}
 }
 
+func TestPlanRetriesDeclaredMiseToolMissingFromInstalledState(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("[tools]\nnode = '24'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}, MiseInstalled: map[string]bool{"node": false}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].ID != "packages.mise.install" {
+		t.Fatalf("plan=%#v err=%v, want retry install for the missing tool", plan, err)
+	}
+	if verification := Verify(saved, current); verification.OK {
+		t.Fatalf("verification=%#v, want missing installed tool", verification)
+	}
+}
+
 // TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool is a
 // regression for a review finding on PR 3: excluding a mise tool now strips
 // it from saved.Mise entirely (Session.SetPackageExcluded), rather than
