@@ -1729,6 +1729,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlanWithOptions(plan, false, planOptions)+message)
 	}
+	if err := requireInteractiveTerminal(plan, deps.IsTTY()); err != nil {
+		return err
+	}
 	if !yes {
 		if opt.json {
 			return errors.New("restore with --json requires --yes or --dry-run")
@@ -1779,6 +1782,18 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
 	}
 	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+}
+
+func requireInteractiveTerminal(plan model.RestorePlan, isTTY bool) error {
+	if isTTY {
+		return nil
+	}
+	for _, operation := range plan.Operations {
+		if operation.Interactive {
+			return fmt.Errorf("restore operation %s requires an interactive terminal; inspect it with --dry-run and rerun from a terminal", operation.Resource)
+		}
+	}
+	return nil
 }
 
 func unresolvedShellConflictMessage(plan model.RestorePlan) (string, bool) {

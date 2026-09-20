@@ -55,6 +55,41 @@ func (r *failingRunner) Run(_ context.Context, name string, args ...string) (str
 	return "", nil
 }
 
+type interactiveRecordingRunner struct {
+	buffered    int
+	interactive int
+}
+
+func (r *interactiveRecordingRunner) Run(context.Context, string, ...string) (string, error) {
+	r.buffered++
+	return "", nil
+}
+
+func (r *interactiveRecordingRunner) RunInteractive(context.Context, string, ...string) error {
+	r.interactive++
+	return nil
+}
+
+func TestExecuteUsesInteractiveRunnerOnlyForInteractiveOperation(t *testing.T) {
+	journal, err := NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	runner := &interactiveRecordingRunner{}
+	plan := model.RestorePlan{Operations: []model.Operation{
+		{ID: "interactive", Command: []string{"omarchy-install-service-tailscale"}, Interactive: true},
+		{ID: "buffered", Command: []string{"omarchy", "pkg", "add", "git"}},
+	}}
+	result, err := Execute(context.Background(), runner, plan, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 0 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if runner.interactive != 1 || runner.buffered != 1 {
+		t.Fatalf("interactive=%d buffered=%d, want one of each", runner.interactive, runner.buffered)
+	}
+}
+
 func TestExecuteBlocksDependentOperationsButContinuesIndependentOnes(t *testing.T) {
 	j, err := NewJournal(t.TempDir(), time.Now())
 	if err != nil {

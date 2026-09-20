@@ -351,3 +351,144 @@ func TestPlanPreinstallRestoreAllThenRemovesIndividuallyAbsentItem(t *testing.T)
 		t.Fatalf("Operations = %#v, want native restore-all then supported individual absence", plan.Operations)
 	}
 }
+
+func TestExactPackageRemovalPlansOfficialAURAndSemanticCommands(t *testing.T) {
+	saved := profile.Packages{Absent: []profile.PackageAbsence{
+		{Ref: "official:htop"},
+		{Ref: "official:tailscale"},
+		{Ref: "aur:tool-bin"},
+	}}
+	current := profile.Packages{Official: []string{"htop", "tailscale"}, AUR: []string{"tool-bin"}, Installed: []string{"htop", "tailscale", "tool-bin"}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"official:htop":      {"omarchy", "pkg", "drop", "htop"},
+		"official:tailscale": {"omarchy-remove-service-tailscale"},
+		"aur:tool-bin":       {"omarchy", "pkg", "drop", "tool-bin"},
+	}
+	for _, op := range plan.Operations {
+		if command, ok := want[op.Resource]; ok {
+			if !reflect.DeepEqual(op.Command, command) || op.Risk != model.RiskHigh {
+				t.Fatalf("operation %s = %#v", op.Resource, op)
+			}
+			delete(want, op.Resource)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing removal operations: %#v; plan=%#v", want, plan)
+	}
+}
+
+func TestPackageRemovalNeedsExactExplicitSafeTombstone(t *testing.T) {
+	saved := profile.Packages{Absent: []profile.PackageAbsence{
+		{Ref: "official:dependency"},
+		{Ref: "official:nvidia-utils"},
+	}}
+	current := profile.Packages{
+		Official:  []string{"nvidia-utils", "unknown-extra"},
+		Installed: []string{"dependency", "nvidia-utils", "unknown-extra"},
+	}
+	for _, options := range []PlanOptions{{Exact: false}, {Exact: true}} {
+		plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1", options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, op := range plan.Operations {
+			if op.Action == "remove" {
+				t.Fatalf("unsafe removal under options %+v: %#v", options, op)
+			}
+		}
+	}
+}
+
+func TestExactMiseRemovalRequiresMatchingDeclarationAndPreconditionedRewrite(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := []byte("# keep\n[tools]\nnode = '24'\npython = '3.13'\n")
+	if err := os.WriteFile(config, existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := profile.PackageAbsence{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}}
+	saved := profile.Packages{Absent: []profile.PackageAbsence{tombstone}}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}, "python": {"version": "3.13"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 2 {
+		t.Fatalf("Operations = %#v, want uninstall plus config rewrite", plan.Operations)
+	}
+	uninstall, configure := plan.Operations[0], plan.Operations[1]
+	if !reflect.DeepEqual(uninstall.Command, []string{"mise", "-C", "/", "uninstall", "--all", "node"}) || configure.File == nil || configure.File.ExpectedHash == "" || !configure.File.Backup || !reflect.DeepEqual(configure.DependsOn, []string{uninstall.ID}) {
+		t.Fatalf("uninstall=%#v configure=%#v", uninstall, configure)
+	}
+	if strings.Contains(string(configure.File.Content), "node =") || !strings.Contains(string(configure.File.Content), "python = '3.13'") {
+		t.Fatalf("candidate = %q", configure.File.Content)
+	}
+
+	changed := profile.Packages{Mise: profile.MiseTools{"node": {"version": "22"}, "python": {"version": "3.13"}}}
+	plan, err = (Provider{MiseGlobalConfig: config}).Plan(saved, changed, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil || len(plan.Operations) != 0 || len(plan.Skipped) == 0 {
+		t.Fatalf("changed declaration plan=%#v err=%v, want safe skip", plan, err)
+	}
+}
+
+func TestExactMiseAdditionAndRemovalShareOnePreconditionedRewrite(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "mise", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, []byte("[tools]\nnode = '24'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := profile.Packages{
+		Mise:   profile.MiseTools{"python": {"version": "3.13"}},
+		Absent: []profile.PackageAbsence{{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}}},
+	}
+	current := profile.Packages{Mise: profile.MiseTools{"node": {"version": "24"}}}
+	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 13, "4.0", "4.1", PlanOptions{Exact: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writes, uninstalls, installs []model.Operation
+	for _, op := range plan.Operations {
+		switch {
+		case op.File != nil:
+			writes = append(writes, op)
+		case op.Action == "remove":
+			uninstalls = append(uninstalls, op)
+		case op.Action == "install":
+			installs = append(installs, op)
+		}
+	}
+	if len(writes) != 1 || len(uninstalls) != 1 || len(installs) != 1 {
+		t.Fatalf("Operations = %#v, want one uninstall, one shared rewrite, one install", plan.Operations)
+	}
+	if !strings.Contains(string(writes[0].File.Content), "python") || strings.Contains(string(writes[0].File.Content), "node") {
+		t.Fatalf("shared candidate = %q", writes[0].File.Content)
+	}
+	if !reflect.DeepEqual(writes[0].DependsOn, []string{uninstalls[0].ID}) || !reflect.DeepEqual(installs[0].DependsOn, []string{writes[0].ID}) {
+		t.Fatalf("uninstall=%#v rewrite=%#v install=%#v", uninstalls[0], writes[0], installs[0])
+	}
+}
+
+func TestVerifyExactChecksOnlyActionablePackageTombstones(t *testing.T) {
+	saved := profile.Packages{Absent: []profile.PackageAbsence{
+		{Ref: "official:htop"},
+		{Ref: "official:dependency"},
+		{Ref: "mise:node", Mise: profile.MiseTool{"version": "24"}},
+	}}
+	current := profile.Packages{Official: []string{"htop"}, Installed: []string{"htop", "dependency"}, Mise: profile.MiseTools{"node": {"version": "24"}}}
+	additive := Verify(saved, current, VerifyOptions{})
+	if !additive.OK {
+		t.Fatalf("additive verification = %#v", additive)
+	}
+	exact := Verify(saved, current, VerifyOptions{Exact: true})
+	if exact.OK || !reflect.DeepEqual(exact.Missing, []string{"mise:node", "official:htop"}) {
+		t.Fatalf("exact verification = %#v", exact)
+	}
+}
