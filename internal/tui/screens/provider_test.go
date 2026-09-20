@@ -174,6 +174,28 @@ func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {
 	}
 }
 
+func TestProviderPolicyDetailsShowBlockSourceAndCapabilities(t *testing.T) {
+	target := workflow.TargetInspection{
+		Key: "agent", Label: "agent", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent,
+		CaptureEligible: true, RestoreEligible: false, SafetyReason: "automatic restore is unsafe",
+		Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: false, SupportsDesiredAbsence: true, SupportsExactRemoval: true},
+	}
+	screen := &Provider{
+		id: "defaults", tab: "Restore", targets: []workflow.TargetInspection{target},
+		effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Category: "defaults", Target: "agent"}}}},
+	}
+	screen.list.Selected = 1 // group heading is row zero
+	detail := screen.DetailView()
+	for _, want := range []string{"Blocked: automatic restore is unsafe", "Source: profile-target", "Supports capture: true", "Supports restore: false", "Supports desired absence: true", "Supports Exact removal: true"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("policy detail missing %q:\n%s", want, detail)
+		}
+	}
+	if strings.Contains(detail, "Skip (explicit)") {
+		t.Fatalf("blocked target appears as an intentional skip:\n%s", detail)
+	}
+}
+
 func TestProviderLongChangesKeepSelectedRowVisible(t *testing.T) {
 	changes := make([]model.Change, 6)
 	for i := range changes {

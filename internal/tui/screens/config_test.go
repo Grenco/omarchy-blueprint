@@ -67,6 +67,29 @@ func TestConfigPolicyTabsKeepBlockedRestoreDistinctAt80Columns(t *testing.T) {
 	}
 }
 
+func TestConfigPolicyTreeDefaultsCollapsedAndShowsDescendantOverrides(t *testing.T) {
+	screen := &Config{
+		width: 80, tab: "Capture",
+		targets: []workflow.TargetInspection{
+			{Key: ".config/nvim/init.lua", Parent: ".config/nvim", Ancestors: []string{".config/nvim", ".config"}, Label: "init.lua", CaptureEligible: true},
+			{Key: ".config/nvim/lua/options.lua", Parent: ".config/nvim/lua", Ancestors: []string{".config/nvim/lua", ".config/nvim", ".config"}, Label: "options.lua", CaptureEligible: true},
+		},
+		effective: map[string]policy.Effective{
+			".config/nvim":          {Capture: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Target: ".config/nvim"}}},
+			".config/nvim/init.lua": {Capture: policy.EffectiveSetting{Enabled: true, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Target: ".config/nvim/init.lua"}}},
+		},
+	}
+	view := screen.View()
+	if !strings.Contains(view, ".config/nvim") || !strings.Contains(view, "1 descendant override") || strings.Contains(view, "init.lua") {
+		t.Fatalf("collapsed Config policy tree is wrong:\n%s", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	view = screen.View()
+	if !strings.Contains(view, "init.lua") || !strings.Contains(view, "lua") {
+		t.Fatalf("expanded Config policy tree omitted children:\n%s", view)
+	}
+}
+
 func TestConfigPresentationForEveryClassification(t *testing.T) {
 	tests := map[config.Classification]configPresentation{
 		config.ConfigAmbiguousBaseline:  {configNeedsReview, "Needs review", "This file differs, but Blueprint cannot safely tell whether it is your change or an Omarchy-version difference."},

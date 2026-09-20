@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -38,6 +39,37 @@ func TestMachinesWithoutResourcesExplainsWhyScreenIsEmpty(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("empty Machines missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{{Name: "desktop", Policy: policy.Rules{
+		Capture: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}, {Category: "config", Target: ".config/nvim", Setting: policy.SettingDisabled}},
+		Restore: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}},
+	}}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	view := screen.View()
+	for _, want := range []string{"packages: 2", "config: 1", "open policy"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("machine policy summary missing %q:\n%s", want, view)
+		}
+	}
+	cmd := screen.Update(tea.KeyPressMsg{Code: 'o'})
+	if cmd == nil {
+		t.Fatal("machine override summary did not offer navigation")
+	}
+	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "config" {
+		t.Fatalf("policy navigation = %#v", msg)
 	}
 }
 
@@ -133,7 +165,7 @@ func TestMachinesPortableGuidanceAtConstrainedHeightKeepsResourceRowsVisible(t *
 	}
 
 	screen := NewMachines(session)
-	screen.SetSize(78, 10) // the real width/height Machines receives at 80x18.
+	screen.SetSize(78, 10)                           // the real width/height Machines receives at 80x18.
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // focus the mapping table.
 	for i := 0; i < len(data.Resources.Items)-1; i++ {
 		screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})

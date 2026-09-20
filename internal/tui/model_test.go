@@ -224,6 +224,51 @@ func TestMachineMutationCompletionUpdatesRootAndReturnsToOrigin(t *testing.T) {
 	}
 }
 
+func TestMachineMutationRefreshesVisitedPolicyAndRestoreScreens(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	machines := &allMessageRecordingScreen{id: ScreenMachines}
+	packages := &recordingScreen{id: ScreenPackages}
+	restore := &recordingScreen{id: ScreenRestore}
+	m.screens[ScreenMachines], m.screens[ScreenPackages], m.screens[ScreenRestore] = machines, packages, restore
+	m.initialized[ScreenPackages], m.initialized[ScreenRestore] = true, true
+
+	updated, _ := m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.MachineMutationComplete{Notice: "Machine selected."}})
+	m = updated.(model)
+	if packages.inits != 1 || restore.inits != 1 {
+		t.Fatalf("machine mutation did not refresh cached authority: packages=%d restore=%d", packages.inits, restore.inits)
+	}
+}
+
+func TestAuthorityChangedRefreshesEveryVisitedDependentScreen(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	packages := &recordingScreen{id: ScreenPackages}
+	restore := &recordingScreen{id: ScreenRestore}
+	unvisited := &recordingScreen{id: ScreenHooks}
+	m.screens[ScreenPackages], m.screens[ScreenRestore], m.screens[ScreenHooks] = packages, restore, unvisited
+	m.initialized[ScreenPackages], m.initialized[ScreenRestore] = true, true
+
+	updated, _ := m.Update(screenMsg{Screen: ScreenPackages, Msg: screens.AuthorityChanged{Notice: "Policy updated."}})
+	m = updated.(model)
+	if packages.inits != 1 || restore.inits != 1 || unvisited.inits != 0 {
+		t.Fatalf("authority refresh counts: packages=%d restore=%d hooks=%d", packages.inits, restore.inits, unvisited.inits)
+	}
+	if m.notification != "Policy updated." {
+		t.Fatalf("notification = %q", m.notification)
+	}
+}
+
+func TestMachinePolicyNavigationOpensCategoryPolicyView(t *testing.T) {
+	m := newModelWithSession(ThemeLoader{NoColor: true}, integrationSession(t))
+	updated, _ := m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config"}})
+	m = updated.(model)
+	if m.screenID() != ScreenConfig {
+		t.Fatalf("policy navigation selected %s", m.screenID())
+	}
+	if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") {
+		t.Fatalf("policy navigation did not open Capture policy view:\n%s", view)
+	}
+}
+
 func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
 	cmd := wrapScreenCmd(ScreenResources, tea.Batch(
 		func() tea.Msg { return ownedTestMsg{step: 1} },
