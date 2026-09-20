@@ -2686,51 +2686,6 @@ func TestRestoreShellBlocksPluginRequiredButPlannedForExactRemoval(t *testing.T)
 	}
 }
 
-// TestExactPluginRemovalBlockedByEffectiveShellReferenceWithNoShellWrite is
-// the round-1 review blocker-3 regression: RequiredThirdPartyPlugins only
-// reports references a proposed Shell MERGE would newly introduce, and
-// finalizeRestorePlan returns immediately when there is no shell.write
-// operation (or Shell is not even part of this run's providers) -- so a
-// plugin the machine's actual, currently effective Shell configuration
-// already references was never checked at all before this fix, and Exact
-// could remove its availability while Shell's live config kept pointing at
-// it. This exercises exactly that gap: no shell.write operation in the
-// plan, and Shell absent from providers entirely.
-func TestExactPluginRemovalBlockedByEffectiveShellReferenceWithNoShellWrite(t *testing.T) {
-	baseline, user := shellPathsFixture(t)
-	custom := strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)
-	if err := os.WriteFile(user, []byte(custom), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	deps := Dependencies{
-		Runner:     &machineRunner{official: map[string]bool{}, aur: map[string]bool{}},
-		ShellPaths: func() (string, string, error) { return baseline, user, nil },
-	}
-	opt := &options{profileDir: t.TempDir()}
-	plan := model.RestorePlan{Operations: []model.Operation{
-		{ID: "plugins.remove.acme.weather", Provider: "plugins", Action: "remove", Resource: "plugin:acme.weather", Items: []string{"acme.weather"}, Command: []string{"omarchy", "plugin", "remove", "acme.weather", "--yes"}, Risk: model.RiskHigh},
-	}}
-	// No shell.write/restart operation at all, and Shell is not even
-	// selected for this run.
-	if err := finalizeRestorePlan(context.Background(), deps, opt, profile.Data{}, nil, &plan, restorePlanOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	for _, op := range plan.Operations {
-		if op.ID == "plugins.remove.acme.weather" {
-			t.Fatalf("Operations = %#v, want the removal blocked: the effective Shell configuration still references acme.weather", plan.Operations)
-		}
-	}
-	var found bool
-	for _, skipped := range plan.Skipped {
-		if skipped.Resource == "plugin:acme.weather" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("Skipped = %#v, want a visible skip for the blocked plugin removal", plan.Skipped)
-	}
-}
-
 func shellLinkFixture(t *testing.T) (Dependencies, *options, profile.Data, model.RestorePlan, []stateProvider) {
 	t.Helper()
 	profileDir := t.TempDir()
@@ -4376,6 +4331,149 @@ func TestPluginsVerifyExactFailsWhenTombstonedPluginStillInstalledThroughAppLaye
 	}
 	if verification.OK {
 		t.Fatal("verification unexpectedly passed while the Exact-tombstoned plugin is still installed on disk")
+	}
+}
+
+// referenceAcmeWeatherInEffectiveShell overwrites the fixture's user
+// shell.json so the machine's actual, currently effective Shell
+// configuration references acme.weather -- independent of anything Shell
+// itself is being asked to restore this run.
+func referenceAcmeWeatherInEffectiveShell(t *testing.T, deps Dependencies) {
+	t.Helper()
+	_, user, err := deps.ShellPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := strings.Replace(defaultShellJSON, `"plugins": []`, `"plugins": [{"id":"acme.weather"}]`, 1)
+	if err := os.WriteFile(user, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPluginsPlanExactSkipsRemovalReferencedByEffectiveShell is the round-2
+// review regression, relocated from the finalizeRestorePlan-only check:
+// a plugin the machine's actual, currently effective Shell configuration
+// still references must never be Exact-removed, checked directly in
+// pluginsStateProvider.Plan (not only in the cross-provider finalizer) so
+// the same predicate is available to Verify too.
+func TestPluginsPlanExactSkipsRemovalReferencedByEffectiveShell(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	referenceAcmeWeatherInEffectiveShell(t, deps)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal: the effective Shell configuration still references acme.weather", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip for the blocked plugin removal", plan.Skipped)
+	}
+}
+
+// TestPluginsVerifyExactDoesNotExpectRemovalShellStillReferences is the
+// round-2 review blocker-2 regression: Plan legitimately skips removing a
+// plugin the effective Shell configuration still references, so Verify
+// must not turn that same, correctly-skipped case into a verification
+// failure -- Plan and Verify now share the same effective-Shell-reference
+// filter for exactly this reason.
+func TestPluginsVerifyExactDoesNotExpectRemovalShellStillReferences(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	referenceAcmeWeatherInEffectiveShell(t, deps)
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	verification, err := (pluginsStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range verification.Missing {
+		if missing == "plugin:acme.weather" {
+			t.Fatalf("Missing = %#v, want acme.weather excluded: Plan itself refused to remove it for safety", verification.Missing)
+		}
+	}
+}
+
+// TestPluginsPlanExactFailsClosedWhenEffectiveShellCannotBeDetermined is
+// the round-2 review blocker-1 regression: when the machine's live Shell
+// state cannot be established at all (detection fails), Exact must not
+// assume "not referenced" and proceed -- provider safety always wins over
+// Exact, so unknown must fail closed (a visible skip), not open.
+func TestPluginsPlanExactFailsClosedWhenEffectiveShellCannotBeDetermined(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	baseline, _, err := deps.ShellPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(baseline); err != nil {
+		t.Fatal(err)
+	}
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal: the effective Shell state could not be determined", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip when Shell state is unknown", plan.Skipped)
+	}
+}
+
+// TestPluginsPlanExactFailsClosedWhenShellPathsNotConfigured covers the
+// other unknown-Shell-state path (deps.ShellPaths itself unset, not just
+// Detect failing): any direct caller of pluginsStateProvider.Plan without
+// going through Execute (which always defaults ShellPaths) must still fail
+// closed, not assume "no references" and proceed.
+func TestPluginsPlanExactFailsClosedWhenShellPathsNotConfigured(t *testing.T) {
+	deps, opt, d := pluginsExactRemovalFixture(t)
+	deps.ShellPaths = nil
+	restoreCtx := workflow.RestoreContext{
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Targets: map[string]workflow.RestoreDecision{"plugin:acme.weather": {Restore: true, Resolved: true}},
+	}
+	plan, err := (pluginsStateProvider{deps: deps, opt: opt}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Action == "remove" {
+			t.Fatalf("Operations = %#v, want no removal: ShellPaths is unset so Shell state cannot be checked", plan.Operations)
+		}
+	}
+	var found bool
+	for _, skipped := range plan.Skipped {
+		if skipped.Resource == "plugin:acme.weather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Skipped = %#v, want a visible skip when ShellPaths is unset", plan.Skipped)
 	}
 }
 
