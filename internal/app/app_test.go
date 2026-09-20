@@ -3290,6 +3290,43 @@ func TestPackagesPlanAndVerifyHonorRestoreSkipForPreinstallItem(t *testing.T) {
 	}
 }
 
+func TestPackagesPreinstallGroupCannotMutateRestoreSkipChild(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstallsRemoved = false
+	runner.preinstalls = map[string]bool{"aether": true}
+
+	d := profile.Data{Packages: profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true},
+	}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"preinstalls":       {Restore: true, Resolved: true},
+		"preinstall:aether": {Restore: false, Resolved: true, Reason: "keep this machine's application"},
+	}}
+
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Operations {
+		if op.Resource == "preinstalls" || op.Resource == "preinstall:aether" {
+			t.Fatalf("operation %#v can mutate Restore-Skip child preinstall:aether", op)
+		}
+	}
+	if len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstall:aether" {
+		t.Fatalf("Skipped = %#v, want the child policy skip to remain visible", plan.Skipped)
+	}
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil || !verification.OK {
+		t.Fatalf("verification = %#v, err=%v; deferred group state must not fail verification", verification, err)
+	}
+}
+
 func TestPackagesExactRemovalHonorsConvergenceAndRestoreSkip(t *testing.T) {
 	_, deps := configSandbox(t)
 	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
@@ -5041,16 +5078,10 @@ func TestShellPlanOnlyRespondsToConflictsAxisNotConvergence(t *testing.T) {
 	}
 }
 
-// TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo strengthens PR
-// 3 Task 23's packages gate (still enforced at the low level by
-// TestPlanAndVerifyIgnoreDesiredAbsenceTombstones) at the app/RestoreContext
-// layer added in PR 4: a generic desired-absent package tombstone still
-// produces no operation, no skip, and no verification failure even when
-// this run's Convergence is Exact, not just Additive -- Task 26 wired
-// RestoreContext through packagesStateProvider.Plan/Verify, but neither
-// ever reads Packages.Absent, so real Exact-only removal genuinely remains
-// PR 5's job, not something that silently started working already.
-func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
+// TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderAdditive confirms that
+// package tombstones remain inert under Additive convergence. Exact behavior
+// is covered separately by TestPackagesExactRemovalHonorsConvergenceAndRestoreSkip.
+func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderAdditive(t *testing.T) {
 	_, deps := configSandbox(t)
 	runner := deps.Runner.(*machineRunner)
 	// discord is neither currently installed nor otherwise desired, so the
@@ -5063,7 +5094,7 @@ func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
 		Absent: []profile.PackageAbsence{{Ref: "official:discord"}},
 	}}
 	restoreCtx := workflow.RestoreContext{
-		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact},
+		Options: policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceAdditive},
 		Targets: map[string]workflow.RestoreDecision{"official:discord": {Restore: true, Resolved: true}},
 	}
 
@@ -5072,14 +5103,14 @@ func TestPackagesPlanAndVerifyIgnoreDesiredAbsenceUnderExactToo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(plan.Operations) != 0 || len(plan.Skipped) != 0 {
-		t.Fatalf("plan = %#v, want no operations or skips for a tombstoned ref even under Exact", plan)
+		t.Fatalf("plan = %#v, want no operations or skips for a tombstoned ref under Additive", plan)
 	}
 	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !verification.OK || len(verification.Missing) != 0 {
-		t.Fatalf("verify = %#v, want OK with the tombstoned ref never reported missing, even under Exact", verification)
+		t.Fatalf("verify = %#v, want OK with the tombstoned ref ignored under Additive", verification)
 	}
 }
 

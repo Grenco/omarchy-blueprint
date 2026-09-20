@@ -953,6 +953,7 @@ func filterPackagesForRestoreSkip(saved profile.Packages, restoreCtx workflow.Re
 	}
 	if len(saved.Preinstalls.Items) > 0 {
 		items := make(map[string]bool, len(saved.Preinstalls.Items))
+		childSkipped := false
 		for id, present := range saved.Preinstalls.Items {
 			skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "preinstall:"+id)
 			if err != nil {
@@ -960,11 +961,18 @@ func filterPackagesForRestoreSkip(saved profile.Packages, restoreCtx workflow.Re
 			}
 			if skip {
 				matched = append(matched, entry)
+				childSkipped = true
 				continue
 			}
 			items[id] = present
 		}
 		filtered.Preinstalls.Items = items
+		// Installing or removing the whole Omarchy preinstall set can mutate
+		// every child. Defer that group transition when even one child is
+		// Restore-Skip; individual Apply children can still converge safely.
+		if childSkipped {
+			filtered.Preinstalls.Managed = false
+		}
 	}
 
 	return filtered, matched, nil
