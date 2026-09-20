@@ -20,7 +20,16 @@ type queryRunner struct {
 	err    error
 }
 
-func (r queryRunner) Run(context.Context, string, ...string) (string, error) {
+func (r queryRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	key := name + " " + strings.Join(args, " ")
+	switch key {
+	case "sh -c command -v omarchy-remove-preinstalls":
+		return "/usr/bin/omarchy-remove-preinstalls\n", nil
+	case "cat /usr/bin/omarchy-remove-preinstalls":
+		return "omarchy-pkg-drop \\\n  aether\n", nil
+	case `sh -c [ -f "$HOME/.local/state/omarchy/preinstalls-removed" ]`, "pacman -Q aether":
+		return "", &command.RunError{Name: name, Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
+	}
 	return r.output, r.err
 }
 
@@ -263,5 +272,58 @@ func TestPlanPreservesUnmanagedPhysicalMiseToolWhenAddingManagedTool(t *testing.
 	plan, err := (Provider{MiseGlobalConfig: config}).Plan(saved, current, 6, "4.0", "4.1")
 	if err != nil || len(plan.Operations) != 2 || !bytes.HasPrefix(plan.Operations[0].File.Content, existing) || !strings.Contains(string(plan.Operations[0].File.Content), "[tools.bar]") {
 		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestPlanPreinstallRemoveAllThenRestoresIndividuallyDesiredItem(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: false,
+		Items:   map[string]bool{"aether": false, "libreoffice-fresh": true},
+	}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 2 {
+		t.Fatalf("Operations = %#v, want native remove-all then aether reinstall", plan.Operations)
+	}
+	if !reflect.DeepEqual(plan.Operations[0].Command, []string{"omarchy-remove-preinstalls"}) {
+		t.Fatalf("remove-all command = %#v", plan.Operations[0].Command)
+	}
+	if !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-add", "aether"}) || !reflect.DeepEqual(plan.Operations[1].DependsOn, []string{"packages.preinstalls.remove"}) {
+		t.Fatalf("individual reinstall = %#v", plan.Operations[1])
+	}
+
+	after := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	if verification := Verify(saved, after); !verification.OK {
+		t.Fatalf("verification = %#v", verification)
+	}
+}
+
+func TestPlanPreinstallRestoreAllThenRemovesIndividuallyAbsentItem(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: true,
+		Items:   map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": false, "libreoffice-fresh": false},
+	}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "4.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 2 || !reflect.DeepEqual(plan.Operations[0].Command, []string{"omarchy-install-preinstalls"}) || !reflect.DeepEqual(plan.Operations[1].Command, []string{"omarchy-pkg-drop", "libreoffice-fresh"}) {
+		t.Fatalf("Operations = %#v, want native restore-all then supported individual absence", plan.Operations)
 	}
 }

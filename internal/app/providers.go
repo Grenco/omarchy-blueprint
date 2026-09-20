@@ -579,10 +579,7 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	if err != nil {
 		return nil, err
 	}
-	preinstalls, err := omarchy.DetectPreinstalls(ctx, p.deps.Runner)
-	if err != nil {
-		return nil, err
-	}
+	preinstalls := current.Preinstalls
 	desired := d.Packages
 
 	desiredPortable, currentPortable := map[string]bool{}, map[string]bool{}
@@ -633,10 +630,14 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	sort.Strings(portableKeys)
 
 	targets := make([]workflow.TargetInspection, 0, len(portableKeys)+len(current.MachineSpecific)+len(preinstalls.Items)+1)
+	preinstallGroupDesired := workflow.TargetUnknown
+	if desired.Preinstalls.Managed {
+		preinstallGroupDesired = currentPresence(!desired.Preinstalls.RemovedAll)
+	}
 	targets = append(targets, workflow.TargetInspection{
 		Key:             "preinstalls",
 		Label:           "Omarchy preinstalls",
-		Desired:         workflow.TargetUnknown,
+		Desired:         preinstallGroupDesired,
 		Current:         currentPresence(!preinstalls.RemovedAll),
 		CaptureEligible: true,
 		RestoreEligible: true,
@@ -648,13 +649,24 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 			Hierarchical:           true,
 		},
 	})
-	for _, id := range sortedKeys(preinstalls.Items) {
+	preinstallKeys := map[string]bool{}
+	for id := range preinstalls.Items {
+		preinstallKeys[id] = true
+	}
+	for id := range desired.Preinstalls.Items {
+		preinstallKeys[id] = true
+	}
+	for _, id := range sortedKeys(preinstallKeys) {
+		desiredState := workflow.TargetUnknown
+		if present, known := desired.Preinstalls.Items[id]; known {
+			desiredState = currentPresence(present)
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "preinstall:" + id,
 			Parent:          "preinstalls",
 			Ancestors:       []string{"preinstalls"},
 			Label:           id,
-			Desired:         workflow.TargetUnknown,
+			Desired:         desiredState,
 			Current:         currentPresence(preinstalls.Items[id]),
 			CaptureEligible: true,
 			RestoreEligible: true,
@@ -927,6 +939,32 @@ func filterPackagesForRestoreSkip(saved profile.Packages, restoreCtx workflow.Re
 		filtered.Absent = absent
 	}
 
+	if saved.Preinstalls.Managed {
+		skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "preinstalls")
+		if err != nil {
+			return profile.Packages{}, nil, err
+		}
+		if skip {
+			filtered.Preinstalls.Managed = false
+			matched = append(matched, entry)
+		}
+	}
+	if len(saved.Preinstalls.Items) > 0 {
+		items := make(map[string]bool, len(saved.Preinstalls.Items))
+		for id, present := range saved.Preinstalls.Items {
+			skip, entry, err := resolveRestoreSkip(restoreCtx, "packages", "preinstall:"+id)
+			if err != nil {
+				return profile.Packages{}, nil, err
+			}
+			if skip {
+				matched = append(matched, entry)
+				continue
+			}
+			items[id] = present
+		}
+		filtered.Preinstalls.Items = items
+	}
+
 	return filtered, matched, nil
 }
 
@@ -984,6 +1022,13 @@ func (packagesStateProvider) ValidateTarget(target string) (string, error) {
 // metadata itself (unlike Themes/Plugins/Hooks), so there is nothing else on
 // disk to remove.
 func (packagesStateProvider) StopManaging(_ context.Context, d profile.Data, target string) (profile.Data, error) {
+	if target == "preinstalls" {
+		if !d.Packages.Preinstalls.Managed {
+			return profile.Data{}, fmt.Errorf("packages: %q is not managed", target)
+		}
+		d.Packages.Preinstalls.Managed = false
+		return d, nil
+	}
 	kind, ref, ok := strings.Cut(target, ":")
 	if !ok || ref == "" {
 		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)
@@ -1007,6 +1052,16 @@ func (packagesStateProvider) StopManaging(_ context.Context, d profile.Data, tar
 				}
 			}
 			d.Packages.Mise, found = next, true
+		}
+	case "preinstall":
+		if _, ok := d.Packages.Preinstalls.Items[ref]; ok {
+			next := make(map[string]bool, len(d.Packages.Preinstalls.Items)-1)
+			for id, present := range d.Packages.Preinstalls.Items {
+				if id != ref {
+					next[id] = present
+				}
+			}
+			d.Packages.Preinstalls.Items, found = next, true
 		}
 	default:
 		return profile.Data{}, fmt.Errorf("packages: invalid target %q", target)

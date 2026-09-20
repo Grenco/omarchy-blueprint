@@ -9,6 +9,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -31,6 +32,11 @@ func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
 		return profile.Packages{}, fmt.Errorf("detect installed packages: %w", err)
 	}
 	packages := profile.Packages{Official: official, AUR: aur, Installed: installed}
+	preinstalls, err := omarchy.DetectPreinstalls(ctx, p.Runner)
+	if err != nil {
+		return profile.Packages{}, fmt.Errorf("detect Omarchy preinstalls: %w", err)
+	}
+	packages.Preinstalls = profile.Preinstalls{Managed: true, RemovedAll: preinstalls.RemovedAll, Items: preinstalls.Items}
 	if p.MiseGlobalConfig != "" {
 		mise, err := ReadMiseTools(p.MiseGlobalConfig)
 		if err != nil {
@@ -79,6 +85,7 @@ func Diff(saved, current profile.Packages) []model.Change {
 	out = append(out, diffKind("official", saved.Official, current.Official, savedNames, currentNames)...)
 	out = append(out, diffKind("aur", saved.AUR, current.AUR, savedNames, currentNames)...)
 	out = append(out, diffMise(saved.Mise, current.Mise)...)
+	out = append(out, diffPreinstalls(saved.Preinstalls, current.Preinstalls)...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Kind == out[j].Kind {
 			return out[i].Name < out[j].Name
@@ -100,6 +107,9 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 	saved, physicalCurrent := classify(saved), classify(current)
 	current = physicalCurrent
 	plan := model.RestorePlan{ProfileVersion: schema, OmarchyFrom: from, OmarchyTo: to}
+	preinstallOps, preinstallSkipped := planPreinstalls(saved.Preinstalls, current.Preinstalls)
+	plan.Operations = append(plan.Operations, preinstallOps...)
+	plan.Skipped = append(plan.Skipped, preinstallSkipped...)
 	currentNames := packageNames(current)
 	var missingOfficial, missingAUR []string
 	for _, name := range saved.Official {
@@ -197,6 +207,14 @@ func Verify(saved, current profile.Packages) model.VerificationResult {
 			missing = append(missing, "mise:"+id)
 		}
 	}
+	if saved.Preinstalls.Managed && saved.Preinstalls.RemovedAll != current.Preinstalls.RemovedAll {
+		missing = append(missing, "preinstalls")
+	}
+	for _, id := range sortedBoolKeys(saved.Preinstalls.Items) {
+		if current.Preinstalls.Items[id] != saved.Preinstalls.Items[id] {
+			missing = append(missing, "preinstall:"+id)
+		}
+	}
 	sort.Strings(missing)
 	return model.VerificationResult{OK: len(missing) == 0, Missing: missing}
 }
@@ -217,6 +235,92 @@ func diffMise(saved, current profile.MiseTools) []model.Change {
 		}
 	}
 	return changes
+}
+
+func diffPreinstalls(saved, current profile.Preinstalls) []model.Change {
+	if !saved.Managed && len(saved.Items) == 0 {
+		return nil
+	}
+	var changes []model.Change
+	if saved.Managed && saved.RemovedAll != current.RemovedAll {
+		changeType, summary := model.ChangeAdd, "+ Omarchy preinstalls enabled"
+		if current.RemovedAll {
+			changeType, summary = model.ChangeRemove, "- Omarchy preinstalls removed"
+		}
+		changes = append(changes, model.Change{Type: changeType, Provider: "packages", Kind: "preinstalls", Name: "preinstalls", Summary: summary})
+	}
+	for _, id := range sortedBoolKeys(saved.Items) {
+		actual, known := current.Items[id]
+		if known && actual == saved.Items[id] {
+			continue
+		}
+		changeType, prefix := model.ChangeAdd, "+ "
+		if !saved.Items[id] {
+			changeType, prefix = model.ChangeRemove, "- "
+		}
+		changes = append(changes, model.Change{Type: changeType, Provider: "packages", Kind: "preinstall", Name: id, Summary: prefix + "Omarchy preinstall " + id})
+	}
+	return changes
+}
+
+func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []model.Skipped) {
+	if !saved.Managed && len(saved.Items) == 0 {
+		return nil, nil
+	}
+	var operations []model.Operation
+	var groupDependency []string
+	simulated := make(map[string]bool, len(current.Items))
+	for id, present := range current.Items {
+		simulated[id] = present
+	}
+	if saved.Managed && saved.RemovedAll != current.RemovedAll {
+		action, commandName, id := "install", "omarchy-install-preinstalls", "packages.preinstalls.install"
+		if saved.RemovedAll {
+			action, commandName, id = "remove", "omarchy-remove-preinstalls", "packages.preinstalls.remove"
+		}
+		operations = append(operations, model.Operation{ID: id, Provider: "packages", Action: action, Resource: "preinstalls", Command: []string{commandName}, Risk: model.RiskHigh})
+		groupDependency = []string{id}
+		for item := range simulated {
+			simulated[item] = !saved.RemovedAll
+		}
+	}
+	var skipped []model.Skipped
+	for _, item := range sortedBoolKeys(saved.Items) {
+		want := saved.Items[item]
+		actual, supported := simulated[item]
+		if !supported {
+			skipped = append(skipped, model.Skipped{Provider: "packages", Resource: "preinstall:" + item, Reason: "not present in the installed Omarchy preinstall catalogue"})
+			continue
+		}
+		if actual == want {
+			continue
+		}
+		action, commandName, risk := "install", "omarchy-pkg-add", model.RiskLow
+		if !want {
+			action, commandName, risk = "remove", "omarchy-pkg-drop", model.RiskHigh
+		}
+		operations = append(operations, model.Operation{
+			ID:         "packages.preinstall." + action + "." + item,
+			Provider:   "packages",
+			Action:     action,
+			Resource:   "preinstall:" + item,
+			Items:      []string{item},
+			Command:    []string{commandName, item},
+			DependsOn:  append([]string(nil), groupDependency...),
+			Risk:       risk,
+			Reversible: false,
+		})
+	}
+	return operations, skipped
+}
+
+func sortedBoolKeys(items map[string]bool) []string {
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func classifyMiseRestore(saved, current profile.MiseTools) (profile.MiseTools, []string, []string) {
@@ -349,6 +453,7 @@ func machineSpecific(name string) bool {
 // preserves existing desired state" rule already keeps it unmanaged.
 func Merge(previous, current profile.Packages, enabled func(ref string) bool) profile.Packages {
 	result := profile.Packages{Installed: current.Installed, MachineSpecific: current.MachineSpecific}
+	result.Preinstalls = mergePreinstalls(previous.Preinstalls, current.Preinstalls, enabled)
 	prevAbsent, prevAbsentMise := absenceIndex(previous.Absent)
 	var absences []profile.PackageAbsence
 	result.Official, absences = mergeNames("official", set(previous.Official), set(current.Official), prevAbsent, enabled, absences)
@@ -358,6 +463,31 @@ func Merge(previous, current profile.Packages, enabled func(ref string) bool) pr
 	sort.Strings(result.AUR)
 	sort.Slice(absences, func(i, j int) bool { return absences[i].Ref < absences[j].Ref })
 	result.Absent = absences
+	return result
+}
+
+func mergePreinstalls(previous, current profile.Preinstalls, enabled func(ref string) bool) profile.Preinstalls {
+	result := profile.Preinstalls{Managed: previous.Managed, RemovedAll: previous.RemovedAll, Items: map[string]bool{}}
+	if enabled("preinstalls") {
+		result.Managed = current.Managed
+		result.RemovedAll = current.RemovedAll
+	}
+	items := map[string]bool{}
+	for id := range previous.Items {
+		items[id] = true
+	}
+	for id := range current.Items {
+		items[id] = true
+	}
+	for id := range items {
+		if enabled("preinstall:" + id) {
+			if present, known := current.Items[id]; known {
+				result.Items[id] = present
+			}
+		} else if present, known := previous.Items[id]; known {
+			result.Items[id] = present
+		}
+	}
 	return result
 }
 

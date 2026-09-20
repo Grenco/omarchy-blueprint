@@ -44,6 +44,28 @@ func TestPackagesStopManagingUnmanagedTargetIsError(t *testing.T) {
 	}
 }
 
+func TestPackagesStopManagingPreinstallTargets(t *testing.T) {
+	d := profile.Data{Packages: profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}}
+	withoutItem, err := (packagesStateProvider{}).StopManaging(context.Background(), d, "preinstall:aether")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := withoutItem.Packages.Preinstalls.Items["aether"]; ok {
+		t.Fatalf("Preinstalls = %#v, want aether unmanaged", withoutItem.Packages.Preinstalls)
+	}
+	withoutGroup, err := (packagesStateProvider{}).StopManaging(context.Background(), d, "preinstalls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutGroup.Packages.Preinstalls.Managed || !withoutGroup.Packages.Preinstalls.Items["aether"] {
+		t.Fatalf("Preinstalls = %#v, want only group intent unmanaged", withoutGroup.Packages.Preinstalls)
+	}
+}
+
 func TestThemesStopManagingRemovesItemAndArtifact(t *testing.T) {
 	profileDir := t.TempDir()
 	artifact := filepath.Join(profileDir, "themes", "local", "nord")

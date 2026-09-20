@@ -3209,6 +3209,59 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	}
 }
 
+func TestPackagesCaptureRecordsRemoveAllAndReinstalledPreinstall(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstallsRemoved = true
+	runner.preinstalls = map[string]bool{"aether": true}
+
+	d := profile.Data{}
+	ctx := workflow.CaptureContext{Targets: map[string]workflow.CaptureDecision{
+		"preinstalls":                  {Capture: true, Resolved: true},
+		"preinstall:aether":            {Capture: true, Resolved: true},
+		"preinstall:libreoffice-fresh": {Capture: true, Resolved: true},
+	}}
+	if _, _, err := (packagesStateProvider{deps: deps}).Capture(context.Background(), &d, ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := profile.Preinstalls{Managed: true, RemovedAll: true, Items: map[string]bool{"aether": true, "libreoffice-fresh": false}}
+	if !reflect.DeepEqual(d.Packages.Preinstalls, want) {
+		t.Fatalf("Preinstalls = %#v, want %#v", d.Packages.Preinstalls, want)
+	}
+}
+
+func TestPackagesPlanAndVerifyHonorRestoreSkipForPreinstallItem(t *testing.T) {
+	_, deps := configSandbox(t)
+	deps.MiseGlobalConfig = func() (string, error) { return "", nil }
+	runner := deps.Runner.(*machineRunner)
+	runner.official = map[string]bool{}
+	runner.aur = map[string]bool{}
+	runner.preinstalls = map[string]bool{"aether": true}
+
+	d := profile.Data{Packages: profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: true,
+		Items:   map[string]bool{"aether": false},
+	}}}
+	restoreCtx := workflow.RestoreContext{Targets: map[string]workflow.RestoreDecision{
+		"preinstalls":       {Restore: true, Resolved: true},
+		"preinstall:aether": {Restore: false, Resolved: true, Reason: "machine override"},
+	}}
+	plan, err := (packagesStateProvider{deps: deps}).Plan(context.Background(), d, omarchy.Info{Version: "4.0.0"}, restoreCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 0 || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "preinstall:aether" {
+		t.Fatalf("plan = %#v, want one visible preinstall policy skip and no mutation", plan)
+	}
+	verification, err := (packagesStateProvider{deps: deps}).Verify(context.Background(), d, restoreCtx)
+	if err != nil || !verification.OK {
+		t.Fatalf("verification = %#v, err=%v", verification, err)
+	}
+}
+
 // TestPackagesPlanAndVerifyHonorRestoreSkip is Task 26's Plan+Verify Skip
 // regression for packages: a Restore-Skip target must produce no operation
 // (not even batched together with an Apply target in the same bulk

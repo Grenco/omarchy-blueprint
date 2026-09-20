@@ -153,6 +153,37 @@ func TestMergeMiseUnTombstonesWithCurrentDeclaration(t *testing.T) {
 	}
 }
 
+func TestMergePreinstallsCapturesRemoveAllWithOneReinstalledItem(t *testing.T) {
+	previous := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: false,
+	}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": true, "libreoffice-fresh": false},
+	}}
+	got := Merge(previous, current, alwaysEnabled)
+	if !reflect.DeepEqual(got.Preinstalls, current.Preinstalls) {
+		t.Fatalf("Preinstalls = %#v, want %#v", got.Preinstalls, current.Preinstalls)
+	}
+}
+
+func TestMergePreinstallsPreservesDisabledChild(t *testing.T) {
+	previous := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed: true,
+		Items:   map[string]bool{"aether": true, "libreoffice-fresh": true},
+	}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{
+		Managed:    true,
+		RemovedAll: true,
+		Items:      map[string]bool{"aether": false, "libreoffice-fresh": false},
+	}}
+	got := Merge(previous, current, func(ref string) bool { return ref != "preinstall:aether" })
+	if !got.Preinstalls.RemovedAll || !got.Preinstalls.Items["aether"] || got.Preinstalls.Items["libreoffice-fresh"] {
+		t.Fatalf("Preinstalls = %#v, want group removed, aether preserved, libreoffice absent", got.Preinstalls)
+	}
+}
+
 // TestPlanAndVerifyIgnoreDesiredAbsenceTombstones is Task 23's PR 3 safety
 // gate, still holding after PR 4 Task 26 activated Restore-side policy: a
 // Capture-produced desired-absence tombstone remains write-only at this
