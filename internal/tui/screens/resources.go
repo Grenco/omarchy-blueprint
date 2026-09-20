@@ -407,7 +407,7 @@ func (s *Resources) View() string {
 	if s.discover {
 		active = discover
 	}
-	lines := []string{components.TabBar([]string{tracked, discover}, active, s.styles)}
+	lines := []string{components.TabBar([]string{tracked, discover}, active, s.styles), "Safety: Exact restore never deletes Resource data."}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}

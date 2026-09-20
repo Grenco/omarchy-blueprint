@@ -27,6 +27,7 @@ func TestResourcesEmptyTrackedViewExplainsOptionalPurpose(t *testing.T) {
 		"No extra resources tracked",
 		"files, folders, or Git projects",
 		"do not fit one of its normal categories",
+		"Exact restore never deletes Resource data.",
 		"Press Tab to Discover one.",
 	} {
 		if !strings.Contains(view, want) {
