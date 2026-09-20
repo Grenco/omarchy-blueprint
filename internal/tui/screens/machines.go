@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -251,6 +252,14 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 			s.browser = &browser
 			return s.browser.Init()
 		}
+	case "f":
+		if !s.focusMappings && s.selectedMachine().Name != "" {
+			return s.toggleRestoreConflict()
+		}
+	case "e":
+		if !s.focusMappings && s.selectedMachine().Name != "" {
+			return s.toggleRestoreConvergence()
+		}
 	}
 	return nil
 }
@@ -307,11 +316,44 @@ func (s *Machines) View() string {
 		rightWidth = 80
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
-	existingView := lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
+	defaults := s.restoreDefaultsView()
+	existingView := defaults + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
 	if guidance, ok := s.portableGuidance(); ok {
 		return guidance + "\n\n" + existingView
 	}
 	return existingView
+}
+
+func (s *Machines) restoreDefaultsView() string {
+	machine := s.selectedMachine()
+	if machine.Name == "" {
+		return "Restore defaults: select a machine"
+	}
+	options := machine.EffectiveRestoreDefaults()
+	return fmt.Sprintf("Restore defaults for %s: conflicts %s (f) · convergence %s (e) · policy overrides %d", components.DisplayText(machine.Name), options.Conflicts, options.Convergence, machinePolicyOverrideCount(machine.Policy))
+}
+func machinePolicyOverrideCount(rules policy.Rules) int {
+	return len(rules.Capture) + len(rules.Restore)
+}
+func (s *Machines) toggleRestoreConflict() tea.Cmd {
+	machine := s.selectedMachine()
+	options := machine.EffectiveRestoreDefaults()
+	if options.Conflicts == policy.ConflictSafe {
+		options.Conflicts = policy.ConflictForce
+	} else {
+		options.Conflicts = policy.ConflictSafe
+	}
+	return s.mutate("Restore conflict default updated.", func() error { return s.session.SetMachineRestoreDefaults(machine.Name, options) })
+}
+func (s *Machines) toggleRestoreConvergence() tea.Cmd {
+	machine := s.selectedMachine()
+	options := machine.EffectiveRestoreDefaults()
+	if options.Convergence == policy.ConvergenceAdditive {
+		options.Convergence = policy.ConvergenceExact
+	} else {
+		options.Convergence = policy.ConvergenceAdditive
+	}
+	return s.mutate("Restore convergence default updated.", func() error { return s.session.SetMachineRestoreDefaults(machine.Name, options) })
 }
 
 // hasOverrides reports whether any machine has a saved Resource mapping,
