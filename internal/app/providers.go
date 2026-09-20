@@ -579,6 +579,10 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	if err != nil {
 		return nil, err
 	}
+	preinstalls, err := omarchy.DetectPreinstalls(ctx, p.deps.Runner)
+	if err != nil {
+		return nil, err
+	}
 	desired := d.Packages
 
 	desiredPortable, currentPortable := map[string]bool{}, map[string]bool{}
@@ -622,14 +626,48 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	for key := range absent {
 		keys[key] = true
 	}
-	sortedKeys := make([]string, 0, len(keys))
+	portableKeys := make([]string, 0, len(keys))
 	for key := range keys {
-		sortedKeys = append(sortedKeys, key)
+		portableKeys = append(portableKeys, key)
 	}
-	sort.Strings(sortedKeys)
+	sort.Strings(portableKeys)
 
-	targets := make([]workflow.TargetInspection, 0, len(sortedKeys)+len(current.MachineSpecific))
-	for _, key := range sortedKeys {
+	targets := make([]workflow.TargetInspection, 0, len(portableKeys)+len(current.MachineSpecific)+len(preinstalls.Items)+1)
+	targets = append(targets, workflow.TargetInspection{
+		Key:             "preinstalls",
+		Label:           "Omarchy preinstalls",
+		Desired:         workflow.TargetUnknown,
+		Current:         currentPresence(!preinstalls.RemovedAll),
+		CaptureEligible: true,
+		RestoreEligible: true,
+		Capabilities: workflow.TargetCapabilities{
+			SupportsCapture:        true,
+			SupportsRestore:        true,
+			SupportsDesiredAbsence: true,
+			SupportsExactRemoval:   true,
+			Hierarchical:           true,
+		},
+	})
+	for _, id := range sortedKeys(preinstalls.Items) {
+		targets = append(targets, workflow.TargetInspection{
+			Key:             "preinstall:" + id,
+			Parent:          "preinstalls",
+			Ancestors:       []string{"preinstalls"},
+			Label:           id,
+			Desired:         workflow.TargetUnknown,
+			Current:         currentPresence(preinstalls.Items[id]),
+			CaptureEligible: true,
+			RestoreEligible: true,
+			Capabilities: workflow.TargetCapabilities{
+				SupportsCapture:        true,
+				SupportsRestore:        true,
+				SupportsDesiredAbsence: true,
+				SupportsExactRemoval:   true,
+				Hierarchical:           true,
+			},
+		})
+	}
+	for _, key := range portableKeys {
 		currentState := currentPresence(currentPortable[key])
 		if excluded[key] {
 			// Legacy Excluded is Capture Disabled + Restore Disabled with no
@@ -917,19 +955,23 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 	return provider.Check(ctx, d.Packages)
 }
 
-// ValidateTarget accepts only a fully qualified official:<name>, aur:<name>,
-// or mise:<name> reference, canonicalized to itself. It never requires the
+// ValidateTarget accepts only a preinstalls group or fully qualified
+// official:<name>, aur:<name>, mise:<name>, or preinstall:<name> reference,
+// canonicalized to itself. It never requires the
 // package to currently be installed or excluded -- a not-yet-captured or
 // already-tombstoned reference must validate too.
 func (packagesStateProvider) ValidateTarget(target string) (string, error) {
+	if target == "preinstalls" {
+		return target, nil
+	}
 	kind, name, ok := strings.Cut(target, ":")
 	if !ok || name == "" {
-		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+		return "", fmt.Errorf("packages: invalid target %q; use preinstalls, official:<name>, aur:<name>, mise:<name>, or preinstall:<name>", target)
 	}
 	switch kind {
-	case "official", "aur", "mise":
+	case "official", "aur", "mise", "preinstall":
 	default:
-		return "", fmt.Errorf("packages: invalid target %q; use official:<name>, aur:<name>, or mise:<name>", target)
+		return "", fmt.Errorf("packages: invalid target %q; use preinstalls, official:<name>, aur:<name>, mise:<name>, or preinstall:<name>", target)
 	}
 	if strings.ContainsAny(name, " \t\n") {
 		return "", fmt.Errorf("packages: invalid target %q", target)

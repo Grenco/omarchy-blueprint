@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,17 +30,19 @@ import (
 )
 
 type machineRunner struct {
-	official     map[string]bool
-	aur          map[string]bool
-	dependencies map[string]bool
-	failInstall  string
-	theme        string
-	themeDir     string
-	plugins      map[string]bool
-	pluginDir    string
-	failReload   bool
-	defaults     map[string]string
-	miseCommands [][]string
+	official           map[string]bool
+	aur                map[string]bool
+	dependencies       map[string]bool
+	failInstall        string
+	theme              string
+	themeDir           string
+	plugins            map[string]bool
+	pluginDir          string
+	failReload         bool
+	defaults           map[string]string
+	miseCommands       [][]string
+	preinstallsRemoved bool
+	preinstalls        map[string]bool
 }
 
 // fakeBaselineHistory is opt-in: command tests retain nil-history behavior.
@@ -69,6 +72,15 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 		return "stable\n", nil
 	case "mise --version":
 		return "2026.1.0\n", nil
+	case "sh -c command -v omarchy-remove-preinstalls":
+		return "/usr/bin/omarchy-remove-preinstalls\n", nil
+	case "cat /usr/bin/omarchy-remove-preinstalls":
+		return "#!/bin/bash\nomarchy-pkg-drop \\\n  aether \\\n  libreoffice-fresh\n", nil
+	case `sh -c [ -f "$HOME/.local/state/omarchy/preinstalls-removed" ]`:
+		if r.preinstallsRemoved {
+			return "", nil
+		}
+		return "", &command.RunError{Name: "sh", Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
 	case "pacman -Qqen":
 		return keys(r.official), nil
 	case "pacman -Qqem":
@@ -110,6 +122,12 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 			return "", fmt.Errorf("hyprctl reload failed")
 		}
 		return "", nil
+	}
+	if name == "pacman" && len(args) == 2 && args[0] == "-Q" {
+		if r.preinstalls[args[1]] {
+			return args[1] + " 1.0-1\n", nil
+		}
+		return "", &command.RunError{Name: name, Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
 	}
 	if len(args) == 2 && name == "omarchy" && args[0] == "default" {
 		if value, ok := r.defaults[args[1]]; ok {
@@ -3148,6 +3166,8 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	runner := deps.Runner.(*machineRunner)
 	runner.official = map[string]bool{"htop": true, "firefox": true, "nvidia-utils": true}
 	runner.aur = map[string]bool{}
+	runner.preinstallsRemoved = true
+	runner.preinstalls = map[string]bool{"aether": true}
 
 	d := profile.Data{Packages: profile.Packages{
 		Official: []string{"htop"},
@@ -3177,6 +3197,15 @@ func TestPackagesInspectTargetsClassifiesAddUpdateAbsentAndMachineSpecific(t *te
 	}
 	if got, ok := byKey["official:nvidia-utils"]; !ok || got.CaptureEligible || got.SafetyReason == "" {
 		t.Fatalf("nvidia-utils (machine-specific) = %#v, ok=%v", got, ok)
+	}
+	if got := byKey["preinstalls"]; got.Current != workflow.TargetAbsent || !got.Capabilities.Hierarchical {
+		t.Fatalf("preinstalls group = %#v, want removed group with hierarchy", got)
+	}
+	if got := byKey["preinstall:aether"]; got.Parent != "preinstalls" || got.Current != workflow.TargetPresent {
+		t.Fatalf("preinstall:aether = %#v, want present child of preinstalls", got)
+	}
+	if got := byKey["preinstall:libreoffice-fresh"]; got.Parent != "preinstalls" || got.Current != workflow.TargetAbsent {
+		t.Fatalf("preinstall:libreoffice-fresh = %#v, want absent child of preinstalls", got)
 	}
 }
 
