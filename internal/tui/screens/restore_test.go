@@ -91,7 +91,7 @@ func TestRestoreUsesOneCurrentPlanAndShowsExactSafetyAt80Columns(t *testing.T) {
 	screen.options = policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact}
 	screen.override = true
 	view := screen.View()
-	for _, want := range []string{"Conflicts: safe", "Convergence: exact", "One-run override active", "WARNING: Exact", "delete"} {
+	for _, want := range []string{"Conflicts: Safe", "Convergence: Exact", "One-run override active", "WARNING: Exact", "Remove"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("current restore plan missing %q:\n%s", want, view)
 		}
@@ -102,6 +102,34 @@ func TestRestoreUsesOneCurrentPlanAndShowsExactSafetyAt80Columns(t *testing.T) {
 	for _, line := range strings.Split(view, "\n") {
 		if width := lipgloss.Width(line); width > 80 {
 			t.Fatalf("current-plan safety line is %d columns wide:\n%s", width, view)
+		}
+	}
+}
+
+func TestRestoreCurrentPlanUsesResponsiveOperationAndSkipTables(t *testing.T) {
+	for _, width := range []int{140, 100, 80} {
+		screen := NewRestore(nil)
+		screen.width = width
+		screen.options = policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact}
+		screen.override = true
+		screen.forcedOverrides = 1
+		screen.current = model.RestorePlan{
+			Operations: []model.Operation{{Provider: "packages", Resource: "official:spotify", Action: "remove", Command: []string{"pacman", "-R"}, Risk: model.RiskHigh}},
+			Skipped:    []model.Skipped{{Provider: "config", Resource: ".config/example", Reason: "restore disabled by profile policy"}},
+		}
+		view := screen.View()
+		for _, want := range []string{"Conflicts: Force", "Convergence: Exact", "removals:1", "policy-skips:1", "forced-overrides:1", "Changes", "CATEGORY", "TARGET", "ACTION", "RISK", "Packages", "official:spotify", "Remove", "High", "Skipped by policy / safety", "REASON", "Config", ".config/example", "Policy: Skip"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column Restore view missing %q:\n%s", width, want, view)
+			}
+		}
+		if strings.Contains(view, "packages: official:spotify") || strings.Contains(view, "Skip: .config/example —") {
+			t.Fatalf("%d-column Restore view retained prose rows:\n%s", width, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Fatalf("%d-column Restore line is %d columns: %q", width, got, line)
+			}
 		}
 	}
 }
