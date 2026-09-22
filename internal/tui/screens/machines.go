@@ -114,6 +114,9 @@ func (s *Machines) MappingFocused() bool   { return s.focusMappings }
 func (s *Machines) CanOpenPolicy() bool {
 	return !s.focusMappings && len(machinePolicyCategories(s.selectedMachine().Policy)) > 0
 }
+func (s *Machines) CanCyclePolicy() bool {
+	return !s.focusMappings && len(machinePolicyCategories(s.selectedMachine().Policy)) > 1
+}
 
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	if submitted, ok := msg.(components.TextInputSubmitted); ok {
@@ -333,7 +336,7 @@ func (s *Machines) View() string {
 		} else {
 			overrideLabel = s.styles.Muted(overrideLabel)
 		}
-		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active), defaults, overrideLabel}, Selected: i == s.machineList.Selected, Focused: !s.focusMappings})
+		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active), defaults, overrideLabel}, Selected: i == s.machineList.Selected && !s.focusMappings, Focused: !s.focusMappings})
 	}
 	if len(machineRows) == 0 {
 		machineRows = append(machineRows, components.Row{Cells: []string{"No machine overlays."}})
@@ -348,7 +351,7 @@ func (s *Machines) View() string {
 		} else {
 			source = s.styles.Muted(source)
 		}
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: i == s.resource, Focused: s.focusMappings})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: i == s.resource && s.focusMappings, Focused: s.focusMappings})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
@@ -381,10 +384,14 @@ func (s *Machines) policyCategoriesView(width int) string {
 	}
 	rows := make([]components.Row, 0, len(categories))
 	for i, item := range categories {
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.category), fmt.Sprint(item.count)}, Selected: i == min(s.policyCategory, len(categories)-1), Focused: !s.focusMappings})
+		selected := ""
+		if i == min(s.policyCategory, len(categories)-1) {
+			selected = "Yes"
+		}
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.category), fmt.Sprint(item.count), selected}})
 	}
 	height := len(rows) + 1
-	return "Policy categories  ([/]: select · o: open policy)\n" + s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", MinWidth: 9}}, rows, width, height, s.styles)
+	return "Policy categories\n" + s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", Width: 14, MinWidth: 9}, {Title: "SELECTED", MinWidth: 8}}, rows, width, height, s.styles)
 }
 
 func restoreDefaultsLabel(options policy.RestoreOptions) string {

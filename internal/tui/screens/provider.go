@@ -246,7 +246,6 @@ func (s *Provider) policyView() string {
 	lines := []string{
 		components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles),
 		s.policyScopeLabel(),
-		"p: toggle policy scope   space: change policy   x: reset override",
 	}
 	if s.busy {
 		lines = append(lines, "Loading...")

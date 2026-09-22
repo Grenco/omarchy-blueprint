@@ -59,10 +59,16 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"CATEGORY", "OVERRIDES", "config", "packages", "open policy"} {
+	for _, want := range []string{"CATEGORY", "OVERRIDES", "SELECTED", "config", "packages", "Yes"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("machine policy summary missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "[/]") || strings.Contains(view, "open policy") {
+		t.Fatalf("machine policy key hints duplicate the footer above the table:\n%s", view)
+	}
+	if got := strings.Count(view, "> "); got != 1 {
+		t.Fatalf("Machines must show exactly one focused selection, got %d:\n%s", got, view)
 	}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'o'})
 	if cmd == nil {
@@ -229,10 +235,18 @@ func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"MACHINE", "ACTIVE", "desktop", "Yes", "Resource paths", "PORTABLE", "> projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
+	for _, want := range []string{"MACHINE", "ACTIVE", "> desktop", "Yes", "Resource paths", "PORTABLE", "projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "> projects") {
+		t.Fatalf("unfocused Resource paths table shows a competing selection:\n%s", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	view = screen.View()
+	if !strings.Contains(view, "> projects") || strings.Contains(view, "> desktop") {
+		t.Fatalf("Tab did not move the sole visible selection to Resource paths:\n%s", view)
 	}
 }
 
