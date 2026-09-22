@@ -58,7 +58,8 @@ type providerScreen struct {
 	id ScreenID
 }
 
-func (s *resourcesScreen) ID() ScreenID { return ScreenResources }
+func (s *resourcesScreen) ID() ScreenID  { return ScreenResources }
+func (s *resourcesScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *resourcesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "tab" {
 		return KeyResult{}
@@ -152,7 +153,8 @@ func (s *syncScreen) Actions() []Action {
 }
 func (s *syncScreen) Bindings() []Binding { return bindingsFromSyncActions(s.Sync.Actions()) }
 
-func (s *providerScreen) ID() ScreenID { return s.id }
+func (s *providerScreen) ID() ScreenID  { return s.id }
+func (s *providerScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	if !screenKey(key.String()) && key.String() != "tab" {
 		return KeyResult{}
@@ -193,7 +195,8 @@ func (s *providerScreen) Bindings() []Binding {
 	return bindings
 }
 
-func (s *configScreen) ID() ScreenID { return ScreenConfig }
+func (s *configScreen) ID() ScreenID  { return ScreenConfig }
+func (s *configScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" && key.String() != "tab" {
 		return KeyResult{}

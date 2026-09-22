@@ -227,6 +227,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if isKey {
 		transient := m.activeTransient()
+		if key == "tab" {
+			if owner, ok := m.activeScreen().(TabOwner); ok && owner.OwnsTab() {
+				if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
+					return m, wrapScreenCmd(m.screenID(), result.Cmd)
+				}
+			}
+		}
 		// Active transients always own their input. Outside a transient, only the
 		// workspace may offer a key to its screen before root fallback.
 		if transient || m.focus == focusWorkspace {
