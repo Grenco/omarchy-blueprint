@@ -94,14 +94,14 @@ func stateColumns(width int) []components.Column {
 		return []components.Column{
 			{Title: "ITEM", Width: 38, MinWidth: 12},
 			{Title: "DESIRED", Width: 12, MinWidth: 7},
-			{Title: "STATUS", Width: 18, MinWidth: 7},
+			{Title: "STATUS", MinWidth: 7},
 		}
 	}
 	return []components.Column{
 		{Title: "ITEM", Width: 42, MinWidth: 12},
 		{Title: "DESIRED", Width: 12, MinWidth: 7},
 		{Title: "CURRENT", Width: 12, MinWidth: 7},
-		{Title: "STATUS", Width: 18, MinWidth: 7},
+		{Title: "STATUS", MinWidth: 7},
 	}
 }
 
@@ -115,14 +115,14 @@ func policyColumns(tab string, width int) []components.Column {
 		return []components.Column{
 			{Title: "ITEM", Width: 40, MinWidth: 12},
 			{Title: decision, Width: 13, MinWidth: 7},
-			{Title: "STATE", Width: 16, MinWidth: 7},
+			{Title: "STATE", MinWidth: 7},
 		}
 	}
 	return []components.Column{
 		{Title: "ITEM", Width: 42, MinWidth: 12},
 		{Title: state, Width: 12, MinWidth: 7},
 		{Title: decision, Width: 13, MinWidth: 7},
-		{Title: "SOURCE", Width: 16, MinWidth: 7},
+		{Title: "SOURCE", MinWidth: 7},
 	}
 }
 

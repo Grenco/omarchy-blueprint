@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -112,7 +113,16 @@ func TestProviderCapturedEmptyDefaultsKeepsConcreteRows(t *testing.T) {
 }
 
 func TestProviderDefaultsToStateTypedDataAndCyclesPolicyTabs(t *testing.T) {
-	screen := &Provider{id: "packages", status: workflow.ProviderStatus{ID: "packages", Captured: true, Changes: []model.Change{{Summary: "git differs"}}, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}, Excluded: []string{"linux"}}}}
+	targets := []workflow.TargetInspection{
+		{Key: "official:git", Label: "git", Desired: workflow.TargetPresent, Current: workflow.TargetPresent, CaptureEligible: true, RestoreEligible: true},
+		{Key: "aur:yay", Label: "yay", Desired: workflow.TargetPresent, Current: workflow.TargetPresent, CaptureEligible: true, RestoreEligible: true},
+		{Key: "mise:node", Label: "node", Desired: workflow.TargetPresent, Current: workflow.TargetPresent, CaptureEligible: true, RestoreEligible: true},
+	}
+	effective := map[string]policy.Effective{}
+	for _, target := range targets {
+		effective[target.Key] = policy.Effective{Capture: policy.EffectiveSetting{Enabled: true}, Restore: policy.EffectiveSetting{Enabled: true}}
+	}
+	screen := &Provider{id: "packages", status: workflow.ProviderStatus{ID: "packages", Captured: true, Changes: []model.Change{{Summary: "git differs"}}, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}, Excluded: []string{"linux"}}}, targets: targets, effective: effective}
 	view := screen.View()
 	for _, want := range []string{"[active] State   Capture   Restore", "Official packages", "git", "AUR packages", "yay", "Mise tools", "node"} {
 		if !strings.Contains(view, want) {
@@ -180,9 +190,66 @@ func TestProviderPolicyRowsPreservePackageGroupsAndDesiredAbsence(t *testing.T) 
 		},
 	}
 	view := screen.View()
-	for _, want := range []string{"Official packages", "AUR packages", "Mise tools", "Omarchy preinstalls", "foo — desired absent; current present", "tailscale — desired absent; current present"} {
+	for _, want := range []string{"ITEM", "DESIRED", "STATUS", "Official packages", "AUR packages", "Mise tools", "Omarchy preinstalls", "foo", "Absent", "Desired absent", "tailscale"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("state policy view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestProviderTablesKeepCategoryMeaningAndDecisionsScannable(t *testing.T) {
+	tests := []struct {
+		name   string
+		screen *Provider
+		want   []string
+	}{
+		{
+			name: "packages state",
+			screen: &Provider{id: "packages", tab: "State", targets: []workflow.TargetInspection{
+				{Key: "official:firefox", Label: "firefox", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent},
+				{Key: "aur:spotify", Label: "spotify", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent},
+			}},
+			want: []string{"Official packages", "AUR packages", "ITEM", "DESIRED", "firefox", "Present", "Missing", "spotify", "Absent", "Desired absent"},
+		},
+		{
+			name: "themes capture",
+			screen: &Provider{id: "themes", tab: "Capture", targets: []workflow.TargetInspection{
+				{Key: "active", Label: "osaka-jade", Desired: workflow.TargetPresent, Current: workflow.TargetPresent, CaptureEligible: true},
+			}, effective: map[string]policy.Effective{"active": {Capture: policy.EffectiveSetting{Enabled: false, Source: policy.Source{Kind: policy.SourceMachineTarget}}}}},
+			want: []string{"Active theme", "CAPTURE", "Preserve", "This machine"},
+		},
+		{
+			name: "defaults blocked restore",
+			screen: &Provider{id: "defaults", tab: "Restore", targets: []workflow.TargetInspection{
+				{Key: "agent", Label: "agent", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent, RestoreEligible: false, SafetyReason: "unsafe automatic default"},
+			}, effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Source: policy.Source{Kind: policy.SourceProfileTarget}}}}},
+			want: []string{"Application defaults", "RESTORE", "Blocked", "Safety"},
+		},
+		{
+			name: "hooks restore",
+			screen: &Provider{id: "hooks", tab: "Restore", targets: []workflow.TargetInspection{
+				{Key: "cleanup", Label: "cleanup", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent, RestoreEligible: true},
+			}, effective: map[string]policy.Effective{"cleanup": {Restore: policy.EffectiveSetting{Enabled: true, Source: policy.Source{Kind: policy.SourceDefault}}}}},
+			want: []string{"Hooks", "cleanup", "Absent", "Apply", "Default"},
+		},
+	}
+	for _, test := range tests {
+		for _, width := range []int{140, 100, 80} {
+			t.Run(test.name+"/"+fmt.Sprint(width), func(t *testing.T) {
+				test.screen.width = width
+				view := test.screen.View()
+				for _, want := range test.want {
+					if width == 80 && (want == "This machine" || want == "Safety" || want == "Default") {
+						continue // Source moves to Details in the compact table.
+					}
+					if !strings.Contains(view, want) {
+						t.Fatalf("%d-column view missing %q:\n%s", width, want, view)
+					}
+				}
+				if strings.Contains(view, " — desired ") || strings.Contains(view, " — Include") || strings.Contains(view, " — Apply") {
+					t.Fatalf("%d-column view regressed to prose rows:\n%s", width, view)
+				}
+			})
 		}
 	}
 }
@@ -194,8 +261,12 @@ func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {
 		effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true}}},
 	}
 	view := screen.View()
-	if !strings.Contains(view, "Blocked: automatic set-only restore is not currently safe") || strings.Contains(view, "agent — Skip") {
+	if !strings.Contains(view, "Blocked") || strings.Contains(view, "automatic set-only restore is not currently safe") || strings.Contains(view, "agent — Skip") {
 		t.Fatalf("restore safety block was confused with a policy skip:\n%s", view)
+	}
+	screen.list.Selected = 1
+	if detail := screen.DetailView(); !strings.Contains(detail, "Blocked: automatic set-only restore is not currently safe") {
+		t.Fatalf("restore safety reason did not remain in Details:\n%s", detail)
 	}
 }
 
@@ -207,11 +278,14 @@ func TestProviderPolicyDetailsShowBlockSourceAndCapabilities(t *testing.T) {
 	}
 	screen := &Provider{
 		id: "defaults", tab: "Restore", targets: []workflow.TargetInspection{target},
-		effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Category: "defaults", Target: "agent"}}}},
+		effective: map[string]policy.Effective{"agent": {
+			Capture: policy.EffectiveSetting{Enabled: true, Source: policy.Source{Kind: policy.SourceDefault, Category: "defaults", Target: "agent"}},
+			Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Category: "defaults", Target: "agent"}},
+		}},
 	}
 	screen.list.Selected = 1 // group heading is row zero
 	detail := screen.DetailView()
-	for _, want := range []string{"Blocked: automatic restore is unsafe", "Source: profile-target", "Supports capture: true", "Supports restore: false", "Supports desired absence: true", "Supports Exact removal: true"} {
+	for _, want := range []string{"Target: agent", "Capture policy: Include (inherited)", "Capture source: default", "Restore policy: Blocked: automatic restore is unsafe", "Restore source: profile-target", "Restore source is explicit", "Supports capture: true", "Supports restore: false", "Supports desired absence: true", "Supports Exact removal: true"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("policy detail missing %q:\n%s", want, detail)
 		}

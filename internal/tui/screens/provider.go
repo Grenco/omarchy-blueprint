@@ -34,6 +34,7 @@ type Provider struct {
 	effective               map[string]policy.Effective
 	policyScope             workflow.PolicyScope
 	list                    components.Selectable
+	table                   components.Table
 	styles                  components.Styles
 	busy, confirm           bool
 	collapsed               map[string]bool
@@ -226,42 +227,11 @@ func (s *Provider) View() string {
 			rows = []providerRow{{value: message}}
 		}
 	}
-	rendered := make([]string, len(rows))
-	for i, row := range rows {
-		if row.group != "" {
-			icon := components.Icons.Expanded
-			if s.collapsed[row.group] {
-				icon = components.Icons.Collapsed
-			}
-			rendered[i] = s.styles.Accent(icon + " " + components.DisplayText(row.group))
-			if i == s.list.Selected {
-				if !s.styles.Palette.ColorEnabled {
-					rendered[i] = components.Icons.Selected + rendered[i]
-				}
-				rendered[i] = s.styles.Selection(rendered[i], true)
-			}
-		} else {
-			marker := "  "
-			if row.state == "included" {
-				marker = s.styles.Added("+ ")
-			}
-			if row.state == "not included" {
-				marker = s.styles.Removed("- ")
-			}
-			rendered[i] = marker + components.DisplayText(row.value)
-			if i == s.list.Selected {
-				if !s.styles.Palette.ColorEnabled {
-					rendered[i] = components.Icons.Selected + rendered[i][1:]
-				}
-				rendered[i] = s.styles.Selection(rendered[i], true)
-			}
-		}
-	}
 	width := s.width
 	if width == 0 {
 		width = 120
 	}
-	lines = append(lines, s.list.View(rendered, width, s.listHeight()))
+	lines = append(lines, s.renderStateTable(rows, width))
 	return strings.Join(lines, "\n")
 }
 func (s *Provider) policyView() string {
@@ -275,27 +245,84 @@ func (s *Provider) policyView() string {
 	}
 	rows := s.rows()
 	if len(rows) == 0 {
-		rows = []providerRow{{value: components.RenderPolicyStatus(s.tab, policy.EffectiveSetting{Enabled: true}, "")}}
-	}
-	rendered := make([]string, len(rows))
-	for i, row := range rows {
-		if row.group != "" {
-			rendered[i] = s.styles.Accent(components.Icons.Expanded + " " + components.DisplayText(row.group))
-		} else {
-			rendered[i] = components.DisplayText(row.value)
-		}
-		if i == s.list.Selected {
-			if !s.styles.Palette.ColorEnabled {
-				rendered[i] = components.Icons.Selected + rendered[i]
-			}
-			rendered[i] = s.styles.Selection(rendered[i], true)
-		}
+		return strings.Join(append(lines, "No policy targets."), "\n")
 	}
 	width := s.width
 	if width == 0 {
-		width = 80
+		width = 120
 	}
-	return strings.Join(append(lines, s.list.View(rendered, width, s.listHeight())), "\n")
+	return strings.Join(append(lines, s.renderPolicyTable(rows, width)), "\n")
+}
+
+func (s *Provider) renderStateTable(rows []providerRow, width int) string {
+	columns := stateColumns(width)
+	rendered := make([]components.Row, 0, len(rows))
+	for i, row := range rows {
+		cells := make([]string, len(columns))
+		if row.group != "" {
+			cells = groupCells(row.group, len(columns), !s.collapsed[row.group], s.styles)
+		} else if row.target.Key != "" {
+			label := row.target.Label
+			if label == "" {
+				label = row.target.Key
+			}
+			desired := styledDecision(s.styles, stateValue(string(row.target.Desired)))
+			status := styledDecision(s.styles, targetStatus(row.target))
+			if len(columns) == 3 {
+				cells = []string{components.DisplayText(label), desired, status}
+			} else {
+				cells = []string{components.DisplayText(label), desired, styledDecision(s.styles, stateValue(string(row.target.Current))), status}
+			}
+		} else {
+			label := components.DisplayText(row.value)
+			if row.state == "included" {
+				label = s.styles.Added("+ " + label)
+			} else if row.state == "not included" {
+				label = s.styles.Removed("- " + label)
+			}
+			cells[0] = label
+		}
+		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true})
+	}
+	s.table.Ensure(s.list.Selected, len(rows), max(1, s.listHeight()-1))
+	return s.table.Render(columns, rendered, width, s.listHeight()+1, s.styles)
+}
+
+func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
+	columns := policyColumns(s.tab, width)
+	rendered := make([]components.Row, 0, len(rows))
+	for i, row := range rows {
+		cells := make([]string, len(columns))
+		if row.group != "" {
+			cells = groupCells(row.group, len(columns), true, s.styles)
+		} else {
+			blocked := s.policyBlocked(row.target)
+			decision := styledDecision(s.styles, policyDecision(s.tab, row.effective.Enabled, blocked))
+			state := row.target.Current
+			if s.tab == "Restore" {
+				state = row.target.Desired
+			}
+			label := row.target.Label
+			if label == "" {
+				label = row.target.Key
+			}
+			if len(columns) == 3 {
+				cells = []string{components.DisplayText(label), decision, styledDecision(s.styles, stateValue(string(state)))}
+			} else {
+				cells = []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(state))), decision, styledDecision(s.styles, policySourceLabel(row.effective.Source, blocked))}
+			}
+		}
+		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true})
+	}
+	s.table.Ensure(s.list.Selected, len(rows), max(1, s.listHeight()-1))
+	return s.table.Render(columns, rendered, width, s.listHeight()+1, s.styles)
+}
+
+func (s *Provider) policyBlocked(target workflow.TargetInspection) bool {
+	if s.tab == "Capture" {
+		return !target.CaptureEligible
+	}
+	return !target.RestoreEligible
 }
 func countLabel(count int) string { return fmt.Sprintf(" %d", count) }
 func (s *Provider) tabLabel() string {
@@ -369,7 +396,7 @@ func (s *Provider) targetStateRows() []providerRow {
 		if label == "" {
 			label = target.Key
 		}
-		rows = append(rows, providerRow{value: fmt.Sprintf("%s — desired %s; current %s", label, target.Desired, target.Current), key: target.Key, target: target})
+		rows = append(rows, providerRow{value: label, key: target.Key, target: target})
 	}
 	return rows
 }
@@ -384,28 +411,14 @@ func (s *Provider) policyRows() []providerRow {
 		}
 		effective := s.effective[target.Key]
 		setting := effective.Capture
-		blocked := ""
 		if s.tab == "Restore" {
 			setting = effective.Restore
-			if !target.RestoreEligible {
-				blocked = target.SafetyReason
-			}
-		} else if !target.CaptureEligible {
-			blocked = target.SafetyReason
-		}
-		if blocked == "" {
-			if s.tab == "Capture" && !target.CaptureEligible {
-				blocked = "not eligible for capture"
-			}
-			if s.tab == "Restore" && !target.RestoreEligible {
-				blocked = "not eligible for restore"
-			}
 		}
 		label := target.Label
 		if label == "" {
 			label = target.Key
 		}
-		rows = append(rows, providerRow{value: label + " — " + components.RenderPolicyStatus(s.tab, setting, blocked), key: target.Key, target: target, effective: setting})
+		rows = append(rows, providerRow{value: label, key: target.Key, target: target, effective: setting})
 	}
 	return rows
 }
@@ -678,17 +691,10 @@ func (s *Provider) DetailView() string {
 			return title + " change\n" + components.DisplayText(change.Summary)
 		}
 	}
+	if row := s.selectedTargetRow(); row.key != "" {
+		return s.targetDetail(title, row)
+	}
 	if s.policyTab() {
-		if row := s.selectedPolicyRow(); row.key != "" {
-			blocked := ""
-			if s.tab == "Capture" && !row.target.CaptureEligible || s.tab == "Restore" && !row.target.RestoreEligible {
-				blocked = row.target.SafetyReason
-				if blocked == "" {
-					blocked = "not eligible on this machine"
-				}
-			}
-			return fmt.Sprintf("%s policy\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t", title, row.target.Desired, row.target.Current, components.RenderPolicyStatus(s.tab, row.effective, blocked), row.effective.Source.Kind, components.DisplayText(row.effective.Source.Machine), components.DisplayText(row.effective.Source.Category), components.DisplayText(row.effective.Source.Target), row.target.CaptureEligible, row.target.RestoreEligible, row.target.Capabilities.SupportsCapture, row.target.Capabilities.SupportsRestore, row.target.Capabilities.SupportsDesiredAbsence, row.target.Capabilities.SupportsExactRemoval, row.target.Capabilities.Hierarchical)
-		}
 		return title + " policy\n" + s.policyScopeLabel()
 	}
 	if row := s.selectedSavedRow(); row.value != "" {
@@ -698,6 +704,62 @@ func (s *Provider) DetailView() string {
 		return title + " saved state\n" + copy.Heading
 	}
 	return title + " saved state\n" + emptyTabMessage("Saved", s.status.Captured)
+}
+
+func (s *Provider) selectedTargetRow() providerRow {
+	rows := s.rows()
+	if s.list.Selected >= 0 && s.list.Selected < len(rows) && rows[s.list.Selected].target.Key != "" {
+		return rows[s.list.Selected]
+	}
+	return providerRow{}
+}
+
+func (s *Provider) targetDetail(title string, row providerRow) string {
+	effective := s.effective[row.key]
+	captureBlocked := !row.target.CaptureEligible
+	restoreBlocked := !row.target.RestoreEligible
+	return fmt.Sprintf("%s target\nTarget: %s\nDesired: %s\nCurrent: %s\nCapture policy: %s\nCapture source: %s\nCapture source is %s\nCapture source machine: %s\nCapture source category: %s\nCapture source target: %s\nRestore policy: %s\nRestore source: %s\nRestore source is %s\nRestore source machine: %s\nRestore source category: %s\nRestore source target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t",
+		title,
+		components.DisplayText(row.key),
+		stateValue(string(row.target.Desired)),
+		stateValue(string(row.target.Current)),
+		policyDetailDecision("Capture", effective.Capture, captureBlocked, row.target.SafetyReason),
+		effective.Capture.Source.Kind,
+		explicitLabel(effective.Capture.Explicit),
+		components.DisplayText(effective.Capture.Source.Machine),
+		components.DisplayText(effective.Capture.Source.Category),
+		components.DisplayText(effective.Capture.Source.Target),
+		policyDetailDecision("Restore", effective.Restore, restoreBlocked, row.target.SafetyReason),
+		effective.Restore.Source.Kind,
+		explicitLabel(effective.Restore.Explicit),
+		components.DisplayText(effective.Restore.Source.Machine),
+		components.DisplayText(effective.Restore.Source.Category),
+		components.DisplayText(effective.Restore.Source.Target),
+		row.target.CaptureEligible,
+		row.target.RestoreEligible,
+		row.target.Capabilities.SupportsCapture,
+		row.target.Capabilities.SupportsRestore,
+		row.target.Capabilities.SupportsDesiredAbsence,
+		row.target.Capabilities.SupportsExactRemoval,
+		row.target.Capabilities.Hierarchical,
+	)
+}
+
+func policyDetailDecision(tab string, setting policy.EffectiveSetting, blocked bool, reason string) string {
+	if blocked {
+		if reason == "" {
+			reason = "not eligible on this machine"
+		}
+		return "Blocked: " + components.DisplayText(reason)
+	}
+	return policyDecision(tab, setting.Enabled, false) + " (" + explicitLabel(setting.Explicit) + ")"
+}
+
+func explicitLabel(explicit bool) string {
+	if explicit {
+		return "explicit"
+	}
+	return "inherited"
 }
 func (s *Provider) selectedChange() model.Change {
 	if s.tab != "Changes" {
@@ -726,7 +788,7 @@ func (s *Provider) listHeight() int {
 	if s.height == 0 {
 		return max(1, len(s.rows()))
 	}
-	return max(1, s.height-2)
+	return max(1, s.height-3)
 }
 func titleFor(id string) string {
 	if id == "" {
