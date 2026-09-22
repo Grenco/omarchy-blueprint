@@ -323,7 +323,7 @@ func TestMachinePolicyNavigationRefreshesAnAlreadyVisitedScope(t *testing.T) {
 	updated, cmd = m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "desktop"}})
 	m = updated.(model)
 	consumeScreenCmd(t, &m, cmd)
-	if view := m.activeScreen().View(); !strings.Contains(view, "Ignore (explicit)") {
+	if view := m.activeScreen().View(); !strings.Contains(view, "Preserve") || !strings.Contains(view, "This machine") {
 		t.Fatalf("desktop policy was not refreshed after deep-link:\n%s", view)
 	}
 
@@ -524,6 +524,14 @@ func TestTabbedScreensOwnTabThroughRootFromDetailsFocus(t *testing.T) {
 			if m.focus != focusDetails {
 				t.Fatalf("second Tab moved root focus to %d", m.focus)
 			}
+
+			m = updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+			if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") {
+				t.Fatalf("Shift+Tab did not cycle back to Capture: %q", view)
+			}
+			if m.focus != focusDetails {
+				t.Fatalf("Shift+Tab moved root focus to %d", m.focus)
+			}
 		})
 	}
 }
@@ -537,6 +545,29 @@ func TestUntabbedScreenKeepsRootTabFocusNavigation(t *testing.T) {
 		t.Fatalf("un-tabbed screen Tab focus = %d, want details", m.focus)
 	}
 }
+
+func TestProviderResponsiveColumnsUseTerminalTierNotPaneWidth(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	probe := &terminalWidthProbe{id: ScreenPackages}
+	m.screens[ScreenPackages] = probe
+	m.selected = screenIndex(t, ScreenPackages)
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 140, Height: 30})
+	if probe.terminalWidth != 140 {
+		t.Fatalf("screen terminal width = %d, want 140 (pane width %d)", probe.terminalWidth, probe.width)
+	}
+}
+
+type terminalWidthProbe struct {
+	id                   ScreenID
+	width, terminalWidth int
+}
+
+func (s *terminalWidthProbe) ID() ScreenID               { return s.id }
+func (s *terminalWidthProbe) SetSize(width, _ int)       { s.width = width }
+func (s *terminalWidthProbe) SetTerminalWidth(width int) { s.terminalWidth = width }
+func (*terminalWidthProbe) Update(tea.Msg) tea.Cmd       { return nil }
+func (*terminalWidthProbe) View() string                 { return "responsive probe" }
+func (*terminalWidthProbe) Actions() []Action            { return nil }
 
 func assertBindingLabels(t *testing.T, bindings []Binding, want ...string) {
 	t.Helper()
@@ -655,7 +686,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	consumeScreenCmd(t, &m, m.selectScreen(ScreenRestore))
 	restoreScreen := m.activeScreen().(*restoreScreen)
 	consumeScreenCmd(t, &m, restoreScreen.Update(tea.KeyPressMsg{Code: 'f'}))
-	if !strings.Contains(restoreScreen.View(), "Conflicts: force") {
+	if !strings.Contains(restoreScreen.View(), "Conflicts: Force") {
 		t.Fatalf("restore conflict setting did not toggle: %q", restoreScreen.View())
 	}
 	m.selectScreen(ScreenSync)

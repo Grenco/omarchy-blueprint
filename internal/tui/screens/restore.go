@@ -162,12 +162,12 @@ func (s *Restore) View() string {
 func (s *Restore) DetailView() string {
 	if s.selected < len(s.current.Operations) {
 		op := s.current.Operations[s.selected]
-		return fmt.Sprintf("Restore operation\nProvider: %s\nResource: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t", components.DisplayText(op.Provider), components.DisplayText(op.Resource), components.DisplayText(op.Action), operationOutcome(op), components.DisplayText(string(op.Risk)), op.Interactive)
+		return fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive)
 	}
 	skipIndex := s.selected - len(s.current.Operations)
 	if skipIndex >= 0 && skipIndex < len(s.current.Skipped) {
 		skipped := s.current.Skipped[skipIndex]
-		return fmt.Sprintf("Restore skip\nProvider: %s\nResource: %s\nReason: %s", components.DisplayText(skipped.Provider), components.DisplayText(skipped.Resource), components.DisplayText(skipped.Reason))
+		return fmt.Sprintf("Restore skip\nCategory: %s\nTarget: %s\nReason: %s", components.DisplayText(restoreCategoryLabel(skipped.Provider)), components.DisplayText(skipped.Resource), components.DisplayText(skipped.Reason))
 	}
 	return "Restore details\nNo plan item selected."
 }
@@ -261,7 +261,7 @@ func (s *Restore) currentPlanView() string {
 		for i, skipped := range s.current.Skipped {
 			rows = append(rows, components.Row{Cells: []string{components.DisplayText(restoreCategoryLabel(skipped.Provider)), components.DisplayText(skipped.Resource), s.styles.Warning(skipReasonLabel(skipped.Reason))}, Selected: len(s.current.Operations)+i == s.selected, Focused: true})
 		}
-		sections = append(sections, "Skipped by policy / safety", s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
+		sections = append(sections, "Skipped by policy / safety / mode", s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
 	}
 	return strings.Join(sections, "\n")
 }
@@ -349,7 +349,16 @@ func skipReasonLabel(reason string) string {
 	if strings.Contains(lower, "restore disabled") || strings.Contains(lower, "policy") {
 		return "Policy: Skip"
 	}
-	return "Safety"
+	if strings.Contains(lower, "additional") && strings.Contains(lower, "removal disabled") {
+		return "Additive"
+	}
+	if strings.Contains(lower, "overwrite disabled") || strings.Contains(lower, "conflict") {
+		return "Safe"
+	}
+	if strings.Contains(lower, "blocked") || strings.Contains(lower, "unsafe") || strings.Contains(lower, "not safe") {
+		return "Safety"
+	}
+	return "Skipped"
 }
 
 func (s *Restore) apply() tea.Cmd {

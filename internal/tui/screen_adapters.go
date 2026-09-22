@@ -19,6 +19,7 @@ type screen interface {
 type initializableScreen interface{ Init() tea.Cmd }
 type transientScreen interface{ TransientActive() bool }
 type styleableScreen interface{ SetStyles(components.Styles) }
+type terminalWidthScreen interface{ SetTerminalWidth(int) }
 type headerStateScreen interface{ HeaderState() string }
 type bindingScreen interface{ Bindings() []Binding }
 
@@ -61,7 +62,7 @@ type providerScreen struct {
 func (s *resourcesScreen) ID() ScreenID  { return ScreenResources }
 func (s *resourcesScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *resourcesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "tab" {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "tab" && key.String() != "shift+tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
@@ -156,7 +157,7 @@ func (s *syncScreen) Bindings() []Binding { return bindingsFromSyncActions(s.Syn
 func (s *providerScreen) ID() ScreenID  { return s.id }
 func (s *providerScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !screenKey(key.String()) && key.String() != "tab" {
+	if !screenKey(key.String()) && key.String() != "tab" && key.String() != "shift+tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
@@ -198,7 +199,7 @@ func (s *providerScreen) Bindings() []Binding {
 func (s *configScreen) ID() ScreenID  { return ScreenConfig }
 func (s *configScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" && key.String() != "tab" {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" && key.String() != "tab" && key.String() != "shift+tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}

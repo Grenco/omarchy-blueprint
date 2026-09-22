@@ -254,6 +254,20 @@ func TestProviderTablesKeepCategoryMeaningAndDecisionsScannable(t *testing.T) {
 	}
 }
 
+func TestProviderResponsiveTierUsesTerminalWidthInsideNarrowerPane(t *testing.T) {
+	screen := &Provider{id: "packages", targets: []workflow.TargetInspection{{Key: "official:firefox", Label: "firefox", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent}}}
+	screen.SetSize(78, 20)
+	screen.SetTerminalWidth(140)
+	if view := screen.View(); !strings.Contains(view, "CURRENT") {
+		t.Fatalf("wide terminal lost full columns in narrower pane:\n%s", view)
+	}
+	screen.SetSize(78, 20)
+	screen.SetTerminalWidth(80)
+	if view := screen.View(); strings.Contains(view, "CURRENT") {
+		t.Fatalf("narrow terminal did not select compact columns:\n%s", view)
+	}
+}
+
 func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {
 	screen := &Provider{
 		id: "defaults", tab: "Restore", width: 80,
