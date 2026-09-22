@@ -59,7 +59,7 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"packages: 2", "config: 1", "open policy"} {
+	for _, want := range []string{"CATEGORY", "OVERRIDES", "config", "packages", "open policy"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("machine policy summary missing %q:\n%s", want, view)
 		}
@@ -70,6 +70,36 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	}
 	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "config" || msg.Machine != "desktop" {
 		t.Fatalf("policy navigation = %#v", msg)
+	}
+}
+
+func TestMachinesTableKeepsDefaultsAndOverridesScannable(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{
+		{Name: "desktop", RestoreConflicts: policy.ConflictForce, RestoreConvergence: policy.ConvergenceExact, Policy: policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}}},
+		{Name: "laptop"},
+	}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, width := range []int{140, 100, 80} {
+		screen := NewMachines(session)
+		screen.SetSize(width, 30)
+		view := screen.View()
+		for _, want := range []string{"MACHINE", "ACTIVE", "RESTORE DEFAULT", "OVERRIDES", "desktop", "Yes", "Force / Exact", "packages", "1", "Resource paths", "projects"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column Machines view missing %q:\n%s", width, want, view)
+			}
+		}
+		if strings.Contains(view, "Restore defaults for desktop:") {
+			t.Fatalf("%d-column Machines view retained prose summary:\n%s", width, view)
+		}
 	}
 }
 
@@ -199,7 +229,7 @@ func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"desktop [active]", "Resource", "Portable", "> projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
+	for _, want := range []string{"MACHINE", "ACTIVE", "desktop", "Yes", "Resource paths", "PORTABLE", "> projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -26,6 +25,8 @@ type Machines struct {
 	focusMapping            string
 	focusMappings           bool
 	machineList             components.Selectable
+	machineTable            components.Table
+	policyTable             components.Table
 	mappingNavigation       components.Selectable
 	mappingTable            components.Table
 	styles                  components.Styles
@@ -312,69 +313,89 @@ func (s *Machines) View() string {
 			Guidance:    "There is nothing to configure on this screen.",
 		})
 	}
-	machineLines := make([]string, 0, len(s.machines()))
+	machineRows := make([]components.Row, 0, len(s.machines()))
 	for i, item := range s.machines() {
-		active := ""
+		active := "No"
 		if item.Name == s.session.Machine().Name {
-			active = " " + s.styles.Success("[active]")
+			active = "Yes"
 		}
-		line := "  " + components.DisplayText(item.Name) + active
-		if i == s.machineList.Selected {
-			if !s.styles.Palette.ColorEnabled {
-				line = components.Icons.Selected + line[1:]
-			}
-			line = s.styles.Selection(line, !s.focusMappings)
+		options := item.EffectiveRestoreDefaults()
+		defaults := restoreDefaultsLabel(options)
+		if options.Conflicts == policy.ConflictForce || options.Convergence == policy.ConvergenceExact {
+			defaults = s.styles.Warning(defaults)
+		} else {
+			defaults = s.styles.Muted(defaults)
 		}
-		machineLines = append(machineLines, line)
+		overrides := len(item.Policy.Capture) + len(item.Policy.Restore)
+		overrideLabel := fmt.Sprint(overrides)
+		if overrides > 0 {
+			overrideLabel = s.styles.Accent(overrideLabel)
+		} else {
+			overrideLabel = s.styles.Muted(overrideLabel)
+		}
+		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active), defaults, overrideLabel}, Selected: i == s.machineList.Selected, Focused: !s.focusMappings})
 	}
-	if len(machineLines) == 0 {
-		machineLines = append(machineLines, "No machine overlays.")
+	if len(machineRows) == 0 {
+		machineRows = append(machineRows, components.Row{Cells: []string{"No machine overlays."}})
 	}
 	rows := []components.Row{}
 	for i, row := range s.mappingRows() {
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), components.DisplayText(row.source)}, Selected: i == s.resource, Focused: s.focusMappings})
+		source := components.DisplayText(row.source)
+		if row.source == "dormant" {
+			source = s.styles.Warning(source)
+		} else if row.source == "override" {
+			source = s.styles.Accent(source)
+		} else {
+			source = s.styles.Muted(source)
+		}
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: i == s.resource, Focused: s.focusMappings})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
 	}
-	leftWidth := max(20, s.width/3)
-	if s.width == 0 {
-		leftWidth = 28
+	width := s.width
+	if width <= 0 {
+		width = 120
 	}
-	left := s.machineList.View(machineLines, leftWidth, s.listHeight())
-	rightWidth := s.width - leftWidth - 2
-	if s.width == 0 {
-		rightWidth = 80
+	machineHeight := s.machineRenderHeight()
+	s.machineTable.Ensure(s.machineList.Selected, len(machineRows), max(1, machineHeight-1))
+	machines := s.machineTable.Render([]components.Column{{Title: "MACHINE", Width: 30, MinWidth: 12}, {Title: "ACTIVE", Width: 9, MinWidth: 6}, {Title: "RESTORE DEFAULT", Width: 22, MinWidth: 15}, {Title: "OVERRIDES", MinWidth: 9}}, machineRows, width, machineHeight, s.styles)
+	parts := []string{"Machines", machines}
+	if categories := s.policyCategoriesView(width); categories != "" {
+		parts = append(parts, categories)
 	}
-	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
-	defaults := s.restoreDefaultsView()
-	existingView := defaults + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
+	right := s.mappingTable.Render([]components.Column{{Title: "RESOURCE", Width: 18, MinWidth: 10}, {Title: "PORTABLE", Width: 28, MinWidth: 12}, {Title: "EFFECTIVE", Width: 28, MinWidth: 12}, {Title: "SOURCE", MinWidth: 8}}, rows, width, s.tableHeight()+1, s.styles)
+	parts = append(parts, "Resource paths", right)
+	existingView := strings.Join(parts, "\n")
 	if guidance, ok := s.portableGuidance(); ok {
 		return guidance + "\n\n" + existingView
 	}
 	return existingView
 }
 
-func (s *Machines) restoreDefaultsView() string {
+func (s *Machines) policyCategoriesView(width int) string {
 	machine := s.selectedMachine()
-	if machine.Name == "" {
-		return "Restore defaults: select a machine"
-	}
-	options := machine.EffectiveRestoreDefaults()
 	categories := machinePolicyCategories(machine.Policy)
-	parts := make([]string, 0, len(categories))
+	if len(categories) == 0 {
+		return ""
+	}
+	rows := make([]components.Row, 0, len(categories))
 	for i, item := range categories {
-		label := fmt.Sprintf("%s: %d", item.category, item.count)
-		if i == min(s.policyCategory, max(0, len(categories)-1)) {
-			label = "[" + label + "]"
-		}
-		parts = append(parts, label)
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.category), fmt.Sprint(item.count)}, Selected: i == min(s.policyCategory, len(categories)-1), Focused: !s.focusMappings})
 	}
-	summary := "none"
-	if len(parts) > 0 {
-		summary = strings.Join(parts, " · ") + "  ([/]: select, o: open policy)"
+	height := len(rows) + 1
+	return "Policy categories  ([/]: select · o: open policy)\n" + s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", MinWidth: 9}}, rows, width, height, s.styles)
+}
+
+func restoreDefaultsLabel(options policy.RestoreOptions) string {
+	return titleMode(string(options.Conflicts)) + " / " + titleMode(string(options.Convergence))
+}
+
+func titleMode(value string) string {
+	if value == "" {
+		return "Default"
 	}
-	return fmt.Sprintf("Restore defaults for %s: conflicts %s (f) · convergence %s (e)\nPolicy overrides by category: %s", components.DisplayText(machine.Name), options.Conflicts, options.Convergence, summary)
+	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 type machinePolicyCategory struct {
@@ -543,18 +564,32 @@ func (s *Machines) resourceExists(id string) bool {
 	return false
 }
 func (s *Machines) listHeight() int {
-	height := s.contentHeight()
-	if height <= 0 {
-		return len(s.machines()) + 2
-	}
-	return max(1, height-2)
+	return max(1, s.machineRenderHeight()-1)
 }
 func (s *Machines) tableHeight() int {
+	return max(1, s.mappingRenderHeight()-1)
+}
+func (s *Machines) machineRenderHeight() int {
 	height := s.contentHeight()
 	if height <= 0 {
-		return len(s.mappingRows()) + 1
+		return max(2, len(s.machines())+1)
 	}
-	return max(1, height-3)
+	reserved := 3 + s.policyBlockHeight()
+	return max(2, min(len(s.machines())+1, max(2, height-reserved)))
+}
+func (s *Machines) policyBlockHeight() int {
+	categories := machinePolicyCategories(s.selectedMachine().Policy)
+	if len(categories) == 0 {
+		return 0
+	}
+	return len(categories) + 2
+}
+func (s *Machines) mappingRenderHeight() int {
+	height := s.contentHeight()
+	if height <= 0 {
+		return max(2, len(s.mappingRows())+1)
+	}
+	return max(2, height-2-s.machineRenderHeight()-s.policyBlockHeight())
 }
 func (s *Machines) confirmModal() tea.Cmd {
 	prompt := "Rename machine to " + components.DisplayText(s.name) + "?"
