@@ -286,7 +286,7 @@ func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {
 
 func TestProviderPolicyDetailsShowBlockSourceAndCapabilities(t *testing.T) {
 	target := workflow.TargetInspection{
-		Key: "agent", Label: "agent", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent,
+		Key: "agent", Label: "agent", Desired: workflow.TargetPresent, Current: workflow.TargetUnknown,
 		CaptureEligible: true, RestoreEligible: false, SafetyReason: "automatic restore is unsafe",
 		Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: false, SupportsDesiredAbsence: true, SupportsExactRemoval: true},
 	}
@@ -299,7 +299,7 @@ func TestProviderPolicyDetailsShowBlockSourceAndCapabilities(t *testing.T) {
 	}
 	screen.list.Selected = 1 // group heading is row zero
 	detail := screen.DetailView()
-	for _, want := range []string{"Target: agent", "Capture policy: Include (inherited)", "Capture source: default", "Restore policy: Blocked: automatic restore is unsafe", "Restore source: profile-target", "Restore source is explicit", "Supports capture: true", "Supports restore: false", "Supports desired absence: true", "Supports Exact removal: true"} {
+	for _, want := range []string{"Target: agent", "Current: Not checked", "Capture policy: Include (inherited)", "Capture source: default", "Restore policy: Blocked: automatic restore is unsafe", "Restore source: profile-target", "Restore source is explicit", "Supports capture: true", "Supports restore: false", "Supports desired absence: true", "Supports Exact removal: true"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("policy detail missing %q:\n%s", want, detail)
 		}
