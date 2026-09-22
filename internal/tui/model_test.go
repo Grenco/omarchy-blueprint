@@ -494,6 +494,50 @@ func TestGroupNavigationBindingsFollowFocusAndStayOutOfFooter(t *testing.T) {
 	assertBindingLabels(t, m.bindings(), "Previous sidebar section", "Next sidebar section")
 }
 
+func TestTabbedScreensOwnTabThroughRootFromDetailsFocus(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		id     ScreenID
+		screen screen
+	}{
+		{name: "Config", id: ScreenConfig, screen: &configScreen{Config: screens.NewConfig(nil)}},
+		{name: "Packages", id: ScreenPackages, screen: &providerScreen{Provider: screens.NewProvider(nil, "packages"), id: ScreenPackages}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
+			m.screens[test.id] = test.screen
+			m.selected = screenIndex(t, test.id)
+			m.focus = focusDetails
+
+			m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+			if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") {
+				t.Fatalf("first Tab did not select Capture: %q", view)
+			}
+			if m.focus != focusDetails {
+				t.Fatalf("first Tab moved root focus to %d", m.focus)
+			}
+
+			m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+			if view := m.activeScreen().View(); !strings.Contains(view, "[active] Restore") {
+				t.Fatalf("second Tab did not select Restore: %q", view)
+			}
+			if m.focus != focusDetails {
+				t.Fatalf("second Tab moved root focus to %d", m.focus)
+			}
+		})
+	}
+}
+
+func TestUntabbedScreenKeepsRootTabFocusNavigation(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
+	m.selected = screenIndex(t, ScreenOverview)
+	m.focus = focusWorkspace
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.focus != focusDetails {
+		t.Fatalf("un-tabbed screen Tab focus = %d, want details", m.focus)
+	}
+}
+
 func assertBindingLabels(t *testing.T, bindings []Binding, want ...string) {
 	t.Helper()
 	labels := make([]string, 0, len(bindings))
