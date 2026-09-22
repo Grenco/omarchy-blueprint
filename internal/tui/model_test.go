@@ -304,6 +304,39 @@ func TestMachinePolicyNavigationOpensCategoryPolicyView(t *testing.T) {
 	}
 }
 
+func TestMachinePolicyNavigationRefreshesAnAlreadyVisitedScope(t *testing.T) {
+	session := integrationSession(t)
+	if err := session.AddMachine(context.Background(), "laptop", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPolicy(workflow.PolicyScope{Machine: "desktop"}, policy.AxisCapture, "config", ".config/example", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+	m := newModelWithSession(ThemeLoader{NoColor: true}, session)
+	updated, cmd := m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "laptop"}})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if view := m.activeScreen().View(); !strings.Contains(view, "Include") {
+		t.Fatalf("laptop policy did not load:\n%s", view)
+	}
+
+	updated, cmd = m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "desktop"}})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if view := m.activeScreen().View(); !strings.Contains(view, "Ignore (explicit)") {
+		t.Fatalf("desktop policy was not refreshed after deep-link:\n%s", view)
+	}
+
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	for _, machine := range session.Profile().Machines.Items {
+		if machine.Name == "desktop" && (len(machine.Policy.Capture) != 1 || machine.Policy.Capture[0].Setting != policy.SettingEnabled) {
+			t.Fatalf("desktop toggle used stale laptop effective state: %#v", machine.Policy)
+		}
+	}
+}
+
 func TestBatchedScreenCommandsKeepTheirOwner(t *testing.T) {
 	cmd := wrapScreenCmd(ScreenResources, tea.Batch(
 		func() tea.Msg { return ownedTestMsg{step: 1} },
@@ -575,7 +608,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 		t.Fatalf("machine mapping lost shared profile data: %q", view)
 	}
 
-	m.selectScreen(ScreenRestore)
+	consumeScreenCmd(t, &m, m.selectScreen(ScreenRestore))
 	restoreScreen := m.activeScreen().(*restoreScreen)
 	consumeScreenCmd(t, &m, restoreScreen.Update(tea.KeyPressMsg{Code: 'f'}))
 	if !strings.Contains(restoreScreen.View(), "Conflicts: force") {
