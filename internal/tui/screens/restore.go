@@ -30,6 +30,8 @@ type Restore struct {
 	override                bool
 	forcedOverrides         int
 	planRequestID           uint64
+	changesTable            components.Table
+	skipsTable              components.Table
 }
 
 const restoreScopeAll = ""
@@ -226,7 +228,7 @@ func (s *Restore) currentPlanView() string {
 		machine = "Machine: " + name
 	}
 	counts := outcomeCounts(s.current)
-	lines := []string{machine, fmt.Sprintf("Conflicts: %s (f) · Convergence: %s (e)", s.options.Conflicts, s.options.Convergence)}
+	lines := []string{machine, fmt.Sprintf("Conflicts: %s (f) · Convergence: %s (e)", titleMode(string(s.options.Conflicts)), titleMode(string(s.options.Convergence)))}
 	if s.override {
 		lines = append(lines, "One-run override active; machine defaults are unchanged.")
 	}
@@ -237,27 +239,31 @@ func (s *Restore) currentPlanView() string {
 	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
 		return s.wrapCurrentPlan(append(lines, "", "No restore operations required."))
 	}
-	entry := 0
-	for _, op := range s.current.Operations {
-		line := fmt.Sprintf("%s: %s", components.DisplayText(op.Provider), components.DisplayText(op.Resource))
-		if operationOutcome(op) == restoreOutcomeDelete {
-			line += " — delete"
+	width := s.widthOrDefault()
+	wrapped := s.wrapCurrentPlan(lines)
+	sections := []string{wrapped}
+	if len(s.current.Operations) > 0 {
+		columns := restoreOperationColumns(width)
+		rows := make([]components.Row, 0, len(s.current.Operations))
+		for i, op := range s.current.Operations {
+			action := operationAction(op)
+			risk := operationRisk(op)
+			cells := []string{components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), styleRestoreAction(s.styles, action), styleRestoreRisk(s.styles, risk)}
+			if len(columns) == 3 {
+				cells = []string{components.DisplayText(op.Resource), styleRestoreAction(s.styles, action), styleRestoreRisk(s.styles, risk)}
+			}
+			rows = append(rows, components.Row{Cells: cells, Selected: i == s.selected, Focused: true})
 		}
-		if entry == s.selected {
-			line = components.Icons.Selected + " " + line
-		}
-		lines = append(lines, line)
-		entry++
+		sections = append(sections, "Changes", s.changesTable.Render(columns, rows, width, len(rows)+1, s.styles))
 	}
-	for _, skipped := range s.current.Skipped {
-		line := "Skip: " + components.DisplayText(skipped.Resource) + " — " + components.DisplayText(skipped.Reason)
-		if entry == s.selected {
-			line = components.Icons.Selected + " " + line
+	if len(s.current.Skipped) > 0 {
+		rows := make([]components.Row, 0, len(s.current.Skipped))
+		for i, skipped := range s.current.Skipped {
+			rows = append(rows, components.Row{Cells: []string{components.DisplayText(restoreCategoryLabel(skipped.Provider)), components.DisplayText(skipped.Resource), s.styles.Warning(skipReasonLabel(skipped.Reason))}, Selected: len(s.current.Operations)+i == s.selected, Focused: true})
 		}
-		lines = append(lines, line)
-		entry++
+		sections = append(sections, "Skipped by policy / safety", s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
 	}
-	return s.wrapCurrentPlan(lines)
+	return strings.Join(sections, "\n")
 }
 
 func (s *Restore) wrapCurrentPlan(lines []string) string {
@@ -270,6 +276,80 @@ func (s *Restore) wrapCurrentPlan(lines []string) string {
 		wrapped = append(wrapped, components.WrapText(line, width)...)
 	}
 	return strings.Join(wrapped, "\n")
+}
+
+func (s *Restore) widthOrDefault() int {
+	if s.width <= 0 {
+		return 80
+	}
+	return s.width
+}
+
+func restoreOperationColumns(width int) []components.Column {
+	if width > 0 && width < 70 {
+		return []components.Column{{Title: "TARGET", Width: 32, MinWidth: 12}, {Title: "ACTION", Width: 12, MinWidth: 8}, {Title: "RISK", MinWidth: 6}}
+	}
+	return []components.Column{{Title: "CATEGORY", Width: 18, MinWidth: 10}, {Title: "TARGET", Width: 48, MinWidth: 12}, {Title: "ACTION", Width: 14, MinWidth: 8}, {Title: "RISK", MinWidth: 6}}
+}
+
+func restoreSkipColumns(width int) []components.Column {
+	return []components.Column{{Title: "CATEGORY", Width: 18, MinWidth: 10}, {Title: "TARGET", Width: 42, MinWidth: 12}, {Title: "REASON", MinWidth: 12}}
+}
+
+func restoreCategoryLabel(provider string) string {
+	switch provider {
+	case "plugins":
+		return "Installed plugins"
+	case "defaults":
+		return "Defaults"
+	case "":
+		return "Other"
+	default:
+		return titleFor(provider)
+	}
+}
+
+func operationAction(op model.Operation) string {
+	if operationOutcome(op) == restoreOutcomeDelete {
+		return "Remove"
+	}
+	if op.Action != "" {
+		return titleMode(op.Action)
+	}
+	return titleMode(string(operationOutcome(op)))
+}
+
+func operationRisk(op model.Operation) string {
+	if op.Risk == "" {
+		return "Normal"
+	}
+	return titleMode(string(op.Risk))
+}
+
+func styleRestoreAction(styles components.Styles, action string) string {
+	if action == "Remove" {
+		return styles.Removed(action)
+	}
+	return styles.Added(action)
+}
+
+func styleRestoreRisk(styles components.Styles, risk string) string {
+	switch risk {
+	case "High":
+		return styles.Error(risk)
+	case "Medium":
+		return styles.Warning(risk)
+	default:
+		return styles.Muted(risk)
+	}
+}
+
+func skipReasonLabel(reason string) string {
+	lower := strings.ToLower(reason)
+	if strings.Contains(lower, "restore disabled") || strings.Contains(lower, "policy") {
+		return "Policy: Skip"
+	}
+	return "Safety"
 }
 
 func (s *Restore) apply() tea.Cmd {
