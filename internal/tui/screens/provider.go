@@ -217,9 +217,6 @@ func (s *Provider) View() string {
 		return s.policyView()
 	}
 	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles)}
-	if providerItemCanToggleID(s.id) {
-		lines = append(lines, "+ included in Blueprint   - not included in Blueprint")
-	}
 	if s.busy {
 		lines = append(lines, "Loading...")
 	}
@@ -243,9 +240,9 @@ func (s *Provider) View() string {
 	return strings.Join(lines, "\n")
 }
 func (s *Provider) policyView() string {
-	lines := []string{
-		components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles),
-		s.policyScopeLabel(),
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
+	if scope := s.policyScopeLabel(); scope != "" {
+		lines = append(lines, scope)
 	}
 	if s.busy {
 		lines = append(lines, "Loading...")
@@ -289,7 +286,7 @@ func (s *Provider) renderStateTable(rows []providerRow, width int) string {
 			}
 			cells[0] = label
 		}
-		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true})
+		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true, Divider: row.group != ""})
 	}
 	s.table.Ensure(s.list.Selected, len(rows), max(1, s.listHeight()-1))
 	return s.table.Render(columns, rendered, width, s.listHeight()+1, s.styles)
@@ -327,7 +324,7 @@ func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
 				cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel), decision, styledDecision(s.styles, policySourceLabel(row.effective.Source, blocked))}
 			}
 		}
-		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true})
+		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true, Divider: row.group != ""})
 	}
 	s.table.Ensure(s.list.Selected, len(rows), max(1, s.listHeight()-1))
 	return s.table.Render(columns, rendered, width, s.listHeight()+1, s.styles)
@@ -365,7 +362,7 @@ func previousProviderTab(tab string) string {
 }
 func (s *Provider) policyTab() bool { return s.tab == "Capture" || s.tab == "Restore" }
 func (s *Provider) policyScopeLabel() string {
-	return policyScopeLabel(s.policyScope)
+	return policyScopeLabel(s.policyScope, activeMachineName(s.session))
 }
 func emptyTabMessage(tab string, captured bool) string {
 	if !captured {
@@ -698,9 +695,6 @@ func providerItemCanToggle(id, section string) bool {
 	}
 	return false
 }
-func providerItemCanToggleID(id string) bool {
-	return id == "packages"
-}
 func containsValue(values []string, value string) bool {
 	for _, item := range values {
 		if item == value {
@@ -723,7 +717,10 @@ func (s *Provider) DetailView() string {
 		return s.targetDetail(title, row)
 	}
 	if s.policyTab() {
-		return title + " policy\n" + s.policyScopeLabel()
+		if scope := s.policyScopeLabel(); scope != "" {
+			return title + " policy\n" + scope
+		}
+		return title + " policy"
 	}
 	if row := s.selectedSavedRow(); row.value != "" {
 		return title + " saved state\n" + components.DisplayText(row.value)

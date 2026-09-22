@@ -166,11 +166,11 @@ func TestEveryPolicyScreenCanSelectProfileDefaultsWithoutChangingActiveMachine(t
 	}
 	for _, test := range screens {
 		t.Run(test.name, func(t *testing.T) {
-			if view := test.screen.View(); !strings.Contains(view, "Machine: desktop") {
+			if view := test.screen.View(); !strings.Contains(view, "Policy scope: desktop") {
 				t.Fatalf("initial named scope missing:\n%s", view)
 			}
 			test.screen.Update(tea.KeyPressMsg{Code: 'p'})
-			if view := test.screen.View(); !strings.Contains(view, "Profile defaults") || strings.Contains(view, "Machine: desktop") {
+			if view := test.screen.View(); !strings.Contains(view, "Profile defaults") || strings.Contains(view, "Policy scope: desktop") {
 				t.Fatalf("profile-default scope unavailable:\n%s", view)
 			}
 		})
@@ -190,6 +190,9 @@ func TestProviderPolicyRowsPreservePackageGroupsAndDesiredAbsence(t *testing.T) 
 		},
 	}
 	view := screen.View()
+	if strings.Contains(view, "included in Blueprint") {
+		t.Fatalf("Packages retained its obsolete inclusion legend:\n%s", view)
+	}
 	for _, want := range []string{"ITEM", "DESIRED", "STATUS", "Official packages", "AUR packages", "Mise tools", "Omarchy preinstalls", "foo", "Absent", "Desired absent", "tailscale"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("state policy view missing %q:\n%s", want, view)

@@ -45,7 +45,7 @@ func TestConfigAdapterOwnsPolicyTabNavigation(t *testing.T) {
 
 func TestMachinesFooterIncludesPolicyCategoryNavigation(t *testing.T) {
 	screen := &machinesScreen{Machines: screens.NewMachines(integrationSession(t))}
-	want := map[string]bool{"[": false, "]": false, "o": false}
+	want := map[string]bool{"tab": false, "[": false, "]": false, "o": false}
 	for _, binding := range screen.Bindings() {
 		if _, ok := want[binding.Key]; ok {
 			want[binding.Key] = true

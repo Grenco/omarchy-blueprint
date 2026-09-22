@@ -19,6 +19,7 @@ type Row struct {
 	Cells    []string
 	Selected bool
 	Focused  bool
+	Divider  bool
 }
 
 func (t *Table) Move(delta, count, height int) {
@@ -66,12 +67,27 @@ func (t *Table) Render(columns []Column, rows []Row, width, height int, styles S
 			row.Cells[0] = Icons.Selected + " " + row.Cells[0]
 		}
 		line := tableLine(row.Cells, widths)
+		if row.Divider && len(row.Cells) > 0 {
+			line = dividerLine(row.Cells[0], widths)
+		}
 		if row.Selected {
 			line = styles.Selection(line, row.Focused)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func dividerLine(label string, widths []int) string {
+	width := len(widths) - 1
+	for _, columnWidth := range widths {
+		width += columnWidth
+	}
+	remaining := width - lipgloss.Width(label) - 1
+	if remaining <= 0 {
+		return pad(label, width)
+	}
+	return pad(label+" "+strings.Repeat("─", remaining), width)
 }
 
 func tableColumns(columns []Column, width int) ([]Column, []int) {

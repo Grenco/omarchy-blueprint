@@ -59,7 +59,7 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"CATEGORY", "OVERRIDES", "SELECTED", "config", "packages", "Yes"} {
+	for _, want := range []string{"CATEGORY", "OVERRIDES", "config", "packages", "\n\nPolicy overrides\n", "\n\nResource paths\n"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("machine policy summary missing %q:\n%s", want, view)
 		}
@@ -70,12 +70,32 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	if got := strings.Count(view, "> "); got != 1 {
 		t.Fatalf("Machines must show exactly one focused selection, got %d:\n%s", got, view)
 	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	view = screen.View()
+	if !strings.Contains(view, "> config") || strings.Contains(view, "> desktop") || strings.Contains(view, "> projects") {
+		t.Fatalf("Tab did not focus the policy summary as its own region:\n%s", view)
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "explicit Capture or Restore overrides") {
+		t.Fatalf("policy summary purpose is unclear in Details:\n%s", detail)
+	}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'o'})
 	if cmd == nil {
 		t.Fatal("machine override summary did not offer navigation")
 	}
 	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "config" || msg.Machine != "desktop" {
 		t.Fatalf("policy navigation = %#v", msg)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	view = screen.View()
+	if !strings.Contains(view, "> projects") || strings.Contains(view, "> desktop") || strings.Contains(view, "> config") {
+		t.Fatalf("second Tab did not focus Resource paths:\n%s", view)
+	}
+
+	screen = NewMachines(session)
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	view = screen.View()
+	if !strings.Contains(view, "> desktop") || strings.Contains(view, "> projects") {
+		t.Fatalf("right navigation still jumps between vertically stacked regions:\n%s", view)
 	}
 }
 
@@ -221,6 +241,34 @@ func TestMachinesPortableGuidanceAtConstrainedHeightKeepsResourceRowsVisible(t *
 	}
 }
 
+func TestMachinesAt80ColumnScreenKeepsAllThreeRegionsVisible(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{{Name: "desktop", Policy: policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}}}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	screen.SetSize(78, 21)
+	view := screen.View()
+	for _, want := range []string{"Machines", "Policy overrides", "Resource paths", "projects"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("80-column Machines lost %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "\n\nPolicy overrides") || strings.Contains(view, "\n\nResource paths") {
+		t.Fatalf("80-column Machines kept spacious region separators despite its reduced content budget:\n%s", view)
+	}
+	if lines := strings.Count(view, "\n") + 1; lines > 21 {
+		t.Fatalf("80-column Machines emitted %d lines for a 21-line budget:\n%s", lines, view)
+	}
+}
+
 func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
 	data := profile.New("test", time.Now())
@@ -275,7 +323,7 @@ func TestMachineScreenUnmapIsOnlyAvailableForOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen := NewMachines(session)
-	screen.focusMappings = true
+	screen.region = machineRegionResources
 	if row := screen.selectedMapping(); row.override {
 		t.Fatalf("portable mapping reported as override: %#v", row)
 	}
@@ -301,7 +349,7 @@ func TestMachineScreenDownSelectsMachineAndMapping(t *testing.T) {
 	if machine := screen.selectedMachine(); machine.Name != "laptop" {
 		t.Fatalf("selected machine=%#v", machine)
 	}
-	screen.focusMappings = true
+	screen.region = machineRegionResources
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if mapping := screen.selectedMapping(); mapping.id != "projects" {
 		t.Fatalf("selected mapping=%#v", mapping)
@@ -310,16 +358,14 @@ func TestMachineScreenDownSelectsMachineAndMapping(t *testing.T) {
 
 func TestMachineScreenKeepsPaneNavigationUntilOuterEdge(t *testing.T) {
 	screen := &Machines{}
-	for _, key := range []string{"tab", "l", "right", "j", "down", "k", "up"} {
+	for _, key := range []string{"tab", "j", "down", "k", "up"} {
 		if !screen.OwnsWorkspaceKey(key) {
 			t.Errorf("Machines must own %q in its workspace", key)
 		}
 	}
-	if screen.OwnsWorkspaceKey("h") || screen.OwnsWorkspaceKey("left") || screen.OwnsWorkspaceKey(":") {
-		t.Fatal("root command palette key must remain root-owned")
-	}
-	screen.focusMappings = true
-	if !screen.OwnsWorkspaceKey("h") || !screen.OwnsWorkspaceKey("left") || screen.OwnsWorkspaceKey("l") || screen.OwnsWorkspaceKey("right") {
-		t.Fatal("machine pane boundaries do not escape to root")
+	for _, key := range []string{"h", "left", "l", "right", ":"} {
+		if screen.OwnsWorkspaceKey(key) {
+			t.Fatalf("stacked Machines regions must not own horizontal key %q", key)
+		}
 	}
 }

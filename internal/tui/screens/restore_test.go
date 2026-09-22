@@ -134,6 +134,30 @@ func TestRestoreCurrentPlanUsesResponsiveOperationAndSkipTables(t *testing.T) {
 	}
 }
 
+func TestRestoreCurrentPlanSeparatesSettingsSummaryAndTables(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.width = 100
+	screen.current = model.RestorePlan{
+		Operations: []model.Operation{{Provider: "config", Resource: "settings", Action: "write", Risk: model.RiskLow}},
+		Skipped:    []model.Skipped{{Provider: "packages", Resource: "extra", Reason: "additional package left installed; removal disabled"}},
+	}
+	view := screen.currentPlanView()
+	lines := strings.Split(view, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	view = strings.Join(lines, "\n")
+	for _, want := range []string{
+		"Convergence: Additive (e)\n\nCurrent plan:",
+		"forced-overrides:0\n\nChanges\n",
+		"Low\n\nSkipped by policy / safety / mode\n",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Restore summary lacks readable spacing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestRestoreSkipReasonLabelsDoNotInventSafety(t *testing.T) {
 	for _, test := range []struct {
 		reason string

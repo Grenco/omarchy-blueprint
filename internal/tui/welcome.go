@@ -34,7 +34,6 @@ func (m model) handleProfileCreated(created profileCreatedMsg) (tea.Model, tea.C
 	}
 	fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, dir, m.createProfile)
 	fresh.width, fresh.height = m.width, m.height
-	fresh.notification = "Profile " + created.verb + " at " + dir
 	fresh.setScreenSizes()
 	return fresh, fresh.Init()
 }

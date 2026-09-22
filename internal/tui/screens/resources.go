@@ -524,9 +524,11 @@ func (s *Resources) DetailView() string {
 	return "Resources details"
 }
 func (s *Resources) policyView() string {
-	scope := "Profile defaults"
-	scope = policyScopeLabel(s.policyScope)
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "Safety: Exact never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
+	if scope := policyScopeLabel(s.policyScope, activeMachineName(s.session)); scope != "" {
+		lines = append(lines, scope)
+	}
+	lines = append(lines, "Safety: Exact never deletes Resource data.")
 	if len(s.targets) == 0 {
 		return strings.Join(append(lines, "No tracked Resources."), "\n")
 	}

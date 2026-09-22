@@ -105,6 +105,7 @@ func (s *machinesScreen) Actions() []Action {
 		primaryLabel, primaryEnabled, primaryReason = "Remove resource mapping", s.CanUnmapResource(), "selected resource has no override"
 	}
 	return []Action{
+		{ID: "machines.next-region", Label: "Focus next section", Group: "Machines", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: "machines.add", Label: "Add machine", Group: "Machines", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
 		{ID: "machines.primary", Label: primaryLabel, Group: "Machines", Enabled: primaryEnabled, Visible: true, DisabledReason: primaryReason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'u'}) }},
 		{ID: "machines.clear", Label: "Clear active machine", Group: "Machines", Enabled: s.CanClearMachine(), Visible: true, DisabledReason: "no active machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
@@ -119,7 +120,7 @@ func (s *machinesScreen) Actions() []Action {
 	}
 }
 func (s *machinesScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.previous-policy", Key: "["}, {ActionID: "machines.next-policy", Key: "]"}, {ActionID: "machines.open-policy", Key: "o"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
+	return []Binding{{ActionID: "machines.next-region", Key: "tab", FooterPriority: -10}, {ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.previous-policy", Key: "["}, {ActionID: "machines.next-policy", Key: "]"}, {ActionID: "machines.open-policy", Key: "o"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
 }
 
 func (s *restoreScreen) ID() ScreenID { return ScreenRestore }

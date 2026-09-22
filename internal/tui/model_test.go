@@ -270,7 +270,7 @@ func TestMachinePolicyNavigationOpensCategoryPolicyView(t *testing.T) {
 	if m.screenID() != ScreenConfig {
 		t.Fatalf("policy navigation selected %s", m.screenID())
 	}
-	if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") || !strings.Contains(view, "Machine: desktop") || strings.Contains(view, "Machine: laptop") {
+	if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") || strings.Contains(view, "Machine: desktop") || strings.Contains(view, "Machine: laptop") {
 		t.Fatalf("policy navigation did not open Capture policy view:\n%s", view)
 	}
 	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
@@ -862,6 +862,22 @@ func TestRootHeaderSanitizesProfileName(t *testing.T) {
 	header := m.header()
 	if strings.Contains(header, "\x1b") || !strings.Contains(header, "profile?name?") {
 		t.Fatalf("unsafe header=%q", header)
+	}
+}
+
+func TestRootHeaderShowsProfilePathWithoutFooterOpenNotice(t *testing.T) {
+	session := integrationSession(t)
+	dir := session.ProfileDir()
+	m := newModelWithContext(context.Background(), func() {}, ThemeLoader{NoColor: true}, session, dir, nil)
+	m.width, m.height = 140, 30
+
+	if header := m.header(); lipgloss.Width(header) != m.width || !strings.Contains(header, string(filepath.Separator)+"tmp"+string(filepath.Separator)) {
+		t.Fatalf("profile path is not anchored at the top-right: %q", header)
+	}
+	updated, _ := m.handleProfileCreated(profileCreatedMsg{session: session, dir: dir, verb: "opened"})
+	opened := updated.(model)
+	if opened.notification != "" {
+		t.Fatalf("profile-open notice still competes with footer bindings: %q", opened.notification)
 	}
 }
 

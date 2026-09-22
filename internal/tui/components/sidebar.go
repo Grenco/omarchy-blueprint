@@ -30,7 +30,7 @@ func RenderSidebar(sections []NavSection, selectedID string, width int, styles S
 			if len(rendered.Lines) > 0 {
 				rendered.Lines = append(rendered.Lines, "")
 			}
-			rendered.Lines = append(rendered.Lines, pad(styles.Muted(strings.ToUpper(section.Label)), width))
+			rendered.Lines = append(rendered.Lines, pad(styles.SubtleAccent(strings.ToUpper(section.Label)), width))
 		}
 		indent := ""
 		if section.Label != "" {

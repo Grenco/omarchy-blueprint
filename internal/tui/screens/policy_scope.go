@@ -12,11 +12,21 @@ func initialPolicyScope(session *workflow.Session) workflow.PolicyScope {
 	return workflow.PolicyScope{Machine: session.Machine().Name}
 }
 
-func policyScopeLabel(scope workflow.PolicyScope) string {
+func policyScopeLabel(scope workflow.PolicyScope, activeMachine string) string {
 	if scope.Machine != "" {
-		return "Machine: " + components.DisplayText(scope.Machine)
+		if scope.Machine == activeMachine {
+			return ""
+		}
+		return "Policy scope: " + components.DisplayText(scope.Machine)
 	}
 	return "Profile defaults"
+}
+
+func activeMachineName(session *workflow.Session) string {
+	if session == nil {
+		return ""
+	}
+	return session.Machine().Name
 }
 
 // togglePolicyScope makes the portable profile scope directly reachable
