@@ -748,7 +748,7 @@ func (s *Provider) targetDetail(title string, row providerRow) string {
 		title,
 		components.DisplayText(row.key),
 		stateValue(string(row.target.Desired)),
-		stateValue(string(row.target.Current)),
+		currentStateValue(row.target.Current),
 		policyDetailDecision("Capture", effective.Capture, captureBlocked, row.target.SafetyReason),
 		effective.Capture.Source.Kind,
 		explicitLabel(effective.Capture.Explicit),
