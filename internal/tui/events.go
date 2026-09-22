@@ -59,17 +59,60 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 		// Machines.Update also consumes this message to clear its own busy
 		// state and re-clamp selection, so it must still reach the origin
 		// screen in addition to the root notification set above.
+		var originCmd tea.Cmd
 		if origin != "" {
 			if current := m.screens[origin]; current != nil {
-				return m, wrapScreenCmd(origin, current.Update(msg)), true
+				originCmd = wrapScreenCmd(origin, current.Update(msg))
 			}
 		}
-		return m, nil, true
+		if msg.Err == nil {
+			return m, tea.Batch(originCmd, m.refreshInitializedAuthorityScreens(origin)), true
+		}
+		return m, originCmd, true
+	case screens.AuthorityChanged:
+		m.notification = msg.Notice
+		return m, m.refreshInitializedAuthorityScreens(""), true
+	case screens.PolicyNavigation:
+		id := ScreenID(msg.Category)
+		wasInitialized := m.initialized[id]
+		switch current := m.screens[id].(type) {
+		case *providerScreen:
+			current.ShowPolicy(msg.Machine)
+		case *configScreen:
+			current.ShowPolicy(msg.Machine)
+		case *resourcesScreen:
+			current.ShowPolicy(msg.Machine)
+		}
+		cmd := m.selectScreen(id)
+		if wasInitialized {
+			cmd = m.refreshScreen(id)
+		}
+		return m, cmd, true
 	case screens.Notice:
 		m.notification = msg.Message
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+func (m model) refreshInitializedAuthorityScreens(exclude ScreenID) tea.Cmd {
+	commands := make([]tea.Cmd, 0, len(m.screens))
+	for id := range m.screens {
+		if id == exclude || !m.initialized[id] {
+			continue
+		}
+		commands = append(commands, m.refreshScreen(id))
+	}
+	return tea.Batch(commands...)
+}
+
+func (m model) refreshScreen(id ScreenID) tea.Cmd {
+	current := m.screens[id]
+	initializable, ok := current.(initializableScreen)
+	if !ok {
+		return nil
+	}
+	return wrapScreenCmd(id, initializable.Init())
 }
 
 // handleOverviewTarget is the canonical Overview deep-link navigation

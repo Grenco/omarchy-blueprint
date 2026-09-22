@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/inspection"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -44,6 +45,48 @@ func TestConfigEmptyFilterDoesNotClaimGlobalEmptyState(t *testing.T) {
 	}
 	if strings.Contains(view, "nothing suitable for Config to manage") {
 		t.Fatalf("filter-empty view claimed globally empty Config:\n%s", view)
+	}
+}
+
+func TestConfigPolicyTabsKeepBlockedRestoreDistinctAt80Columns(t *testing.T) {
+	screen := &Config{
+		width:      80,
+		tab:        "Restore",
+		candidates: []config.Candidate{{Path: ".config/example", Classification: config.ConfigAdded}},
+		targets:    []workflow.TargetInspection{{Key: ".config/example", RestoreEligible: false, SafetyReason: "owned by a stronger provider"}},
+		effective:  map[string]policy.Effective{".config/example": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true}}},
+	}
+	view := screen.View()
+	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults", "Blocked: owned by a stronger provider"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("policy view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Skip (explicit)") {
+		t.Fatalf("blocked Config target was rendered as an intentional Skip:\n%s", view)
+	}
+}
+
+func TestConfigPolicyTreeDefaultsCollapsedAndShowsDescendantOverrides(t *testing.T) {
+	screen := &Config{
+		width: 80, tab: "Capture",
+		targets: []workflow.TargetInspection{
+			{Key: ".config/nvim/init.lua", Parent: ".config/nvim", Ancestors: []string{".config/nvim", ".config"}, Label: "init.lua", CaptureEligible: true},
+			{Key: ".config/nvim/lua/options.lua", Parent: ".config/nvim/lua", Ancestors: []string{".config/nvim/lua", ".config/nvim", ".config"}, Label: "options.lua", CaptureEligible: true},
+		},
+		effective: map[string]policy.Effective{
+			".config/nvim":          {Capture: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Target: ".config/nvim"}}},
+			".config/nvim/init.lua": {Capture: policy.EffectiveSetting{Enabled: true, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Target: ".config/nvim/init.lua"}}},
+		},
+	}
+	view := screen.View()
+	if !strings.Contains(view, ".config/nvim") || !strings.Contains(view, "1 descendant override") || strings.Contains(view, "init.lua") {
+		t.Fatalf("collapsed Config policy tree is wrong:\n%s", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	view = screen.View()
+	if !strings.Contains(view, "init.lua") || !strings.Contains(view, "lua") {
+		t.Fatalf("expanded Config policy tree omitted children:\n%s", view)
 	}
 }
 

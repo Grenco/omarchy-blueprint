@@ -3,10 +3,13 @@ package screens
 import (
 	"context"
 	"fmt"
+	"path"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/inspection"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -23,7 +26,13 @@ type Config struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
+	tab                     string
+	policySelected          int
+	policyExpanded          map[string]bool
 	candidates              []config.Candidate
+	targets                 []workflow.TargetInspection
+	effective               map[string]policy.Effective
+	policyScope             workflow.PolicyScope
 	inspection              workflow.ConfigInspection
 	diff                    *components.DiffViewer
 	confirm                 string
@@ -43,6 +52,8 @@ type Config struct {
 type configStatusMsg struct {
 	requestID  uint64
 	candidates []config.Candidate
+	targets    []workflow.TargetInspection
+	effective  map[string]policy.Effective
 	err        error
 }
 type configInspectionMsg struct {
@@ -59,7 +70,7 @@ func NewConfig(session *workflow.Session) *Config {
 	return NewConfigContext(context.Background(), session)
 }
 func NewConfigContext(ctx context.Context, session *workflow.Session) *Config {
-	return &Config{ctx: ctx, session: session}
+	return &Config{ctx: ctx, session: session, tab: "State", policyScope: initialPolicyScope(session)}
 }
 func (s *Config) Focus(path string) tea.Cmd {
 	s.focusPath, s.filter, s.filtering = path, "", false
@@ -80,8 +91,11 @@ func (s *Config) SetSize(width, height int) {
 	}
 }
 func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
-func (s *Config) Init() tea.Cmd                      { return s.rescan() }
-func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil || s.filtering }
+func (s *Config) ShowPolicy(machine string) {
+	s.policyScope, s.tab, s.policySelected = workflow.PolicyScope{Machine: machine}, "Capture", 0
+}
+func (s *Config) Init() tea.Cmd         { return s.rescan() }
+func (s *Config) TransientActive() bool { return s.confirm != "" || s.diff != nil || s.filtering }
 
 func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -93,7 +107,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			s.err, s.busy = msg.err, false
 			return nil
 		}
-		s.candidates, s.err, s.busy = msg.candidates, nil, false
+		s.candidates, s.targets, s.effective, s.err, s.busy = msg.candidates, msg.targets, msg.effective, nil, false
 		for _, candidate := range s.candidates {
 			if candidate.Path == s.focusPath {
 				if s.collapsed == nil {
@@ -144,7 +158,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.notice = "Policy updated."
-		return s.rescan()
+		return func() tea.Msg { return AuthorityChanged{Notice: "Policy updated."} }
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -163,6 +177,24 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	}
 	if s.busy {
 		return nil
+	}
+	if key.String() == "tab" {
+		switch s.tab {
+		case "State", "":
+			s.tab = "Capture"
+		case "Capture":
+			s.tab = "Restore"
+		default:
+			s.tab = "State"
+		}
+		return nil
+	}
+	if s.tab == "Capture" || s.tab == "Restore" {
+		if key.String() == "p" {
+			s.policyScope = togglePolicyScope(s.session, s.policyScope)
+			return s.rescan()
+		}
+		return s.updatePolicy(key)
 	}
 	if s.diff != nil {
 		if key.String() == "esc" {
@@ -284,7 +316,13 @@ func (s *Config) View() string {
 		}
 		return "Config diff: " + components.DisplayText(document.OldLabel) + " <-> " + components.DisplayText(document.NewLabel) + "\n" + s.diff.View()
 	}
-	lines := []string{"Review  " + s.reviewCounts()}
+	if s.tab == "" {
+		s.tab = "State"
+	}
+	if s.tab == "Capture" || s.tab == "Restore" {
+		return s.policyView()
+	}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), "Review  " + s.reviewCounts()}
 	if s.busy {
 		lines = append(lines, "Working...")
 	}
@@ -339,6 +377,180 @@ func (s *Config) View() string {
 		lines = append(lines, "Filter: "+s.filter)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (s *Config) policyView() string {
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel(), "p: toggle policy scope   space: change policy   x: reset override"}
+	rows := s.configPolicyRows()
+	policyRows := make([]string, 0, len(rows))
+	for i, row := range rows {
+		target, effective := row.target, s.effective[row.target.Key]
+		setting := effective.Capture
+		blocked := ""
+		if s.tab == "Restore" {
+			setting = effective.Restore
+			if !target.RestoreEligible {
+				blocked = target.SafetyReason
+			}
+		} else if !target.CaptureEligible {
+			blocked = target.SafetyReason
+		}
+		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
+			blocked = "not eligible on this machine"
+		}
+		marker := "  "
+		if row.directory {
+			marker = components.Icons.Collapsed + " "
+			if s.policyExpanded[target.Key] {
+				marker = components.Icons.Expanded + " "
+			}
+		}
+		label := strings.Repeat("  ", row.depth) + marker + components.DisplayText(target.Key)
+		if row.overrides > 0 {
+			label += fmt.Sprintf("  (%d descendant override%s)", row.overrides, map[bool]string{true: "", false: "s"}[row.overrides == 1])
+		}
+		line := label + "\n" + strings.Repeat("  ", row.depth+2) + components.RenderPolicyStatus(s.tab, setting, blocked)
+		if i == s.policySelected {
+			line = components.Icons.Selected + line
+		}
+		policyRows = append(policyRows, line)
+	}
+	if len(policyRows) == 0 {
+		lines = append(lines, "No Config paths available for policy.")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, policyRows...)
+	return strings.Join(lines, "\n")
+}
+
+type configPolicyRow struct {
+	target    workflow.TargetInspection
+	depth     int
+	directory bool
+	overrides int
+}
+
+func (s *Config) configPolicyRows() []configPolicyRow {
+	directories := map[string]workflow.TargetInspection{}
+	leaves := map[string]workflow.TargetInspection{}
+	children := map[string][]string{}
+	for _, target := range s.targets {
+		leaves[target.Key] = target
+		parent := target.Parent
+		if parent == ".config" {
+			parent = ""
+		}
+		children[parent] = append(children[parent], target.Key)
+		for _, directory := range target.Ancestors {
+			if directory == ".config" {
+				continue
+			}
+			ancestors := configPathAncestors(directory)
+			directories[directory] = workflow.TargetInspection{Key: directory, Parent: path.Dir(directory), Ancestors: ancestors, Label: path.Base(directory), CaptureEligible: true, RestoreEligible: true, Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true, Hierarchical: true}}
+		}
+	}
+	for key, directory := range directories {
+		parent := directory.Parent
+		if parent == ".config" || parent == "." {
+			parent = ""
+		}
+		children[parent] = append(children[parent], key)
+	}
+	for parent := range children {
+		sort.Strings(children[parent])
+		children[parent] = compactStrings(children[parent])
+	}
+	var rows []configPolicyRow
+	var add func(string, int)
+	add = func(key string, depth int) {
+		if directory, ok := directories[key]; ok {
+			overrides := 0
+			for leafKey, effective := range s.effective {
+				if !strings.HasPrefix(leafKey, key+"/") {
+					continue
+				}
+				setting := effective.Capture
+				if s.tab == "Restore" {
+					setting = effective.Restore
+				}
+				if setting.Explicit && setting.Source.Target == leafKey {
+					overrides++
+				}
+			}
+			rows = append(rows, configPolicyRow{target: directory, depth: depth, directory: true, overrides: overrides})
+			if !s.policyExpanded[key] {
+				return
+			}
+			for _, child := range children[key] {
+				add(child, depth+1)
+			}
+			return
+		}
+		if leaf, ok := leaves[key]; ok {
+			rows = append(rows, configPolicyRow{target: leaf, depth: depth})
+		}
+	}
+	for _, root := range children[""] {
+		add(root, 0)
+	}
+	return rows
+}
+
+func configPathAncestors(logical string) []string {
+	var ancestors []string
+	for directory := path.Dir(logical); directory != "." && directory != "/" && directory != ""; directory = path.Dir(directory) {
+		ancestors = append(ancestors, directory)
+	}
+	return ancestors
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
+	rows := s.configPolicyRows()
+	if len(rows) == 0 {
+		return nil
+	}
+	switch key.String() {
+	case "j", "down":
+		s.policySelected = min(len(rows)-1, s.policySelected+1)
+	case "k", "up":
+		s.policySelected = max(0, s.policySelected-1)
+	case "enter":
+		if row := rows[s.policySelected]; row.directory {
+			if s.policyExpanded == nil {
+				s.policyExpanded = map[string]bool{}
+			}
+			s.policyExpanded[row.target.Key] = !s.policyExpanded[row.target.Key]
+		}
+	case "space", " ":
+		return s.setTargetPolicy(rows[s.policySelected].target.Key)
+	case "x":
+		return s.clearTargetPolicy(rows[s.policySelected].target.Key)
+	}
+	return nil
+}
+func (s *Config) policyScopeLabel() string {
+	return policyScopeLabel(s.policyScope)
+}
+func (s *Config) targetPolicy(path string) (workflow.TargetInspection, policy.Effective) {
+	for _, target := range s.targets {
+		if target.Key == path {
+			return target, s.effective[path]
+		}
+	}
+	return workflow.TargetInspection{Key: path, Label: path, CaptureEligible: true, RestoreEligible: true}, policy.Effective{Capture: policy.EffectiveSetting{Enabled: true}, Restore: policy.EffectiveSetting{Enabled: true}}
 }
 
 func ptrDiff(document inspection.DiffDocument, width, height int) *components.DiffViewer {
@@ -444,6 +656,7 @@ func (s *Config) confirmModal() tea.Cmd {
 func (s *Config) rescan() tea.Cmd {
 	s.statusID++
 	requestID := s.statusID
+	scope := s.policyScope
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, "config")
@@ -452,7 +665,35 @@ func (s *Config) rescan() tea.Cmd {
 		}
 		for _, provider := range report.Providers {
 			if provider.ID == "config" && provider.ConfigScan != nil {
-				return configStatusMsg{requestID: requestID, candidates: provider.ConfigScan.Candidates}
+				targets, err := s.session.PolicyTargets(s.ctx, "config")
+				if err != nil {
+					return configStatusMsg{requestID: requestID, err: err}
+				}
+				effective := make(map[string]policy.Effective, len(targets))
+				for _, target := range targets {
+					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "config", target)
+					if err != nil {
+						return configStatusMsg{requestID: requestID, err: err}
+					}
+					effective[target.Key] = resolved
+				}
+				directories := map[string]bool{}
+				for _, target := range targets {
+					for _, directory := range target.Ancestors {
+						if directory != ".config" {
+							directories[directory] = true
+						}
+					}
+				}
+				for directory := range directories {
+					synthetic := workflow.TargetInspection{Key: directory, Ancestors: configPathAncestors(directory)}
+					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "config", synthetic)
+					if err != nil {
+						return configStatusMsg{requestID: requestID, err: err}
+					}
+					effective[directory] = resolved
+				}
+				return configStatusMsg{requestID: requestID, candidates: provider.ConfigScan.Candidates, targets: targets, effective: effective}
 			}
 		}
 		return configStatusMsg{requestID: requestID, err: fmt.Errorf("config scan is unavailable")}
@@ -481,6 +722,35 @@ func (s *Config) setPolicy(logical, policy string) tea.Cmd {
 		return configPolicyMsg{requestID: requestID, err: s.session.SetConfigPolicy(s.ctx, logical, policy)}
 	}
 }
+func (s *Config) setTargetPolicy(logical string) tea.Cmd {
+	s.busy = true
+	requestID := s.statusID
+	scope := s.policyScope
+	axis := policy.AxisCapture
+	current := s.effective[logical].Capture
+	if s.tab == "Restore" {
+		axis, current = policy.AxisRestore, s.effective[logical].Restore
+	}
+	setting := policy.SettingDisabled
+	if !current.Enabled {
+		setting = policy.SettingEnabled
+	}
+	return func() tea.Msg {
+		return configPolicyMsg{requestID: requestID, err: s.session.SetPolicy(scope, axis, "config", logical, setting)}
+	}
+}
+func (s *Config) clearTargetPolicy(logical string) tea.Cmd {
+	s.busy = true
+	requestID := s.statusID
+	scope := s.policyScope
+	axis := policy.AxisCapture
+	if s.tab == "Restore" {
+		axis = policy.AxisRestore
+	}
+	return func() tea.Msg {
+		return configPolicyMsg{requestID: requestID, err: s.session.ClearPolicy(scope, axis, "config", logical)}
+	}
+}
 func (s *Config) nextPolicy(path string) string {
 	for _, excluded := range s.session.Profile().Config.Excluded {
 		if excluded == path {
@@ -499,9 +769,34 @@ func (s *Config) validLive() bool {
 }
 func (s *Config) CanHandoff() bool { return s.validLive() }
 func (s *Config) CanPolicy() bool  { return s.selectedCandidate().Path != "" }
+func (s *Config) PolicyTab() bool  { return s.tab == "Capture" || s.tab == "Restore" }
+func (s *Config) CanPolicyTarget() bool {
+	return len(s.configPolicyRows()) > 0
+}
 
 // DetailView supplies the root three-pane preview without duplicating it below the list.
 func (s *Config) DetailView() string {
+	if s.tab == "Capture" || s.tab == "Restore" {
+		rows := s.configPolicyRows()
+		if len(rows) == 0 {
+			return "Config policy\nNo target selected."
+		}
+		row := rows[min(s.policySelected, len(rows)-1)]
+		effective := s.effective[row.target.Key].Capture
+		blocked := ""
+		if s.tab == "Restore" {
+			effective = s.effective[row.target.Key].Restore
+			if !row.target.RestoreEligible {
+				blocked = row.target.SafetyReason
+			}
+		} else if !row.target.CaptureEligible {
+			blocked = row.target.SafetyReason
+		}
+		if blocked == "" && ((s.tab == "Capture" && !row.target.CaptureEligible) || (s.tab == "Restore" && !row.target.RestoreEligible)) {
+			blocked = "not eligible on this machine"
+		}
+		return fmt.Sprintf("Config policy: %s\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t\nDescendant overrides: %d", components.DisplayText(row.target.Key), row.target.Desired, row.target.Current, components.RenderPolicyStatus(s.tab, effective, blocked), effective.Source.Kind, components.DisplayText(effective.Source.Machine), components.DisplayText(effective.Source.Category), components.DisplayText(effective.Source.Target), row.target.Capabilities.SupportsCapture, row.target.Capabilities.SupportsRestore, row.target.Capabilities.SupportsDesiredAbsence, row.target.Capabilities.SupportsExactRemoval, row.target.Capabilities.Hierarchical, row.overrides)
+	}
 	candidate := s.selectedCandidate()
 	if candidate.Path == "" {
 		return "Config details"

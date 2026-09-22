@@ -9,12 +9,17 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-type providerRow struct{ group, section, value, key, state string }
+type providerRow struct {
+	group, section, value, key, state string
+	target                            workflow.TargetInspection
+	effective                         policy.EffectiveSetting
+}
 
 // Provider presents typed saved state and semantic changes without inventing
 // provider-specific policy.
@@ -25,6 +30,9 @@ type Provider struct {
 	width, height, selected int
 	tab                     string
 	status                  workflow.ProviderStatus
+	targets                 []workflow.TargetInspection
+	effective               map[string]policy.Effective
+	policyScope             workflow.PolicyScope
 	list                    components.Selectable
 	styles                  components.Styles
 	busy, confirm           bool
@@ -35,6 +43,8 @@ type Provider struct {
 type providerStatusMsg struct {
 	requestID uint64
 	status    workflow.ProviderStatus
+	targets   []workflow.TargetInspection
+	effective map[string]policy.Effective
 	err       error
 }
 type providerCaptureMsg struct {
@@ -57,23 +67,30 @@ func NewProvider(session *workflow.Session, id string) *Provider {
 	return NewProviderContext(context.Background(), session, id)
 }
 func NewProviderContext(ctx context.Context, session *workflow.Session, id string) *Provider {
-	return &Provider{ctx: ctx, session: session, id: id, tab: "Saved"}
+	return &Provider{ctx: ctx, session: session, id: id, tab: "State", policyScope: initialPolicyScope(session)}
 }
-func (s *Provider) Refresh() tea.Cmd                   { return s.refresh() }
+func (s *Provider) Refresh() tea.Cmd { return s.refresh() }
+
+func (s *Provider) ShowPolicy(machine string) {
+	s.policyScope = workflow.PolicyScope{Machine: machine}
+	s.tab = "Capture"
+	s.list.SetSelected(0, len(s.rows()), s.listHeight())
+	s.selected = s.list.Selected
+}
 func (s *Provider) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Provider) SetSize(width, height int)          { s.width, s.height = width, height }
 func (s *Provider) Init() tea.Cmd                      { return s.refresh() }
 func (s *Provider) TransientActive() bool              { return s.confirm }
 func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	if s.tab == "" {
-		s.tab = "Saved"
+		s.tab = "State"
 	}
 	switch msg := msg.(type) {
 	case providerStatusMsg:
 		if msg.requestID != s.requestID {
 			return nil
 		}
-		s.status, s.err, s.busy = msg.status, msg.err, false
+		s.status, s.targets, s.effective, s.err, s.busy = msg.status, msg.targets, msg.effective, msg.err, false
 		s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 		return nil
@@ -92,7 +109,7 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.err, s.busy = msg.err, false
 		if msg.err == nil {
-			return s.refresh()
+			return func() tea.Msg { return AuthorityChanged{Notice: "Policy updated."} }
 		}
 		return nil
 	}
@@ -126,13 +143,14 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			return s.refresh()
 		}
 	case "tab":
-		if s.tab == "Saved" {
-			s.tab = "Changes"
-		} else {
-			s.tab = "Saved"
-		}
+		s.tab = nextProviderTab(s.tab)
 		s.list.SetSelected(0, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
+	case "p":
+		if s.policyTab() {
+			s.policyScope = togglePolicyScope(s.session, s.policyScope)
+			return s.refresh()
+		}
 	case "j", "down":
 		s.list.Move(1, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
@@ -149,9 +167,23 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			s.selected = s.list.Selected
 		}
 	case "space", " ":
+		if s.policyTab() && !s.busy {
+			if row := s.selectedPolicyRow(); row.key != "" {
+				s.busy = true
+				return s.setPolicy(row)
+			}
+			break
+		}
 		if row := s.selectedSavedRow(); s.activeTab() == "Saved" && row.value != "" && providerItemCanToggle(s.id, row.section) && !s.busy {
 			s.busy = true
 			return s.toggleItem(row)
+		}
+	case "x":
+		if s.policyTab() && !s.busy {
+			if row := s.selectedPolicyRow(); row.key != "" {
+				s.busy = true
+				return s.clearPolicy(row)
+			}
 		}
 	case "c":
 		if !s.busy {
@@ -167,19 +199,22 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 }
 func (s *Provider) View() string {
 	if s.tab == "" {
-		s.tab = "Saved"
+		s.tab = "State"
 	}
 	if s.err != nil {
 		return s.styles.Error("! Unable to load " + titleFor(s.id) + ": " + components.DisplayText(s.err.Error()))
 	}
-	lines := []string{components.TabBar([]string{"Changes" + countLabel(len(s.status.Changes)), "Saved"}, s.tabLabel(), s.styles)}
-	if s.tab == "Saved" && providerItemCanToggleID(s.id) {
+	if s.policyTab() {
+		return s.policyView()
+	}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles)}
+	if providerItemCanToggleID(s.id) {
 		lines = append(lines, "+ included in Blueprint   - not included in Blueprint")
 	}
 	if s.busy {
 		lines = append(lines, "Loading...")
 	}
-	if !s.busy {
+	if !s.busy && len(s.targets) == 0 {
 		if copy, ok := providerEmptyState(s.id, s.status, s.activeTab()); ok {
 			lines = append(lines, renderEmptyState(s.styles, s.width, copy))
 			return strings.Join(lines, "\n")
@@ -229,12 +264,56 @@ func (s *Provider) View() string {
 	lines = append(lines, s.list.View(rendered, width, s.listHeight()))
 	return strings.Join(lines, "\n")
 }
+func (s *Provider) policyView() string {
+	lines := []string{
+		components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles),
+		s.policyScopeLabel(),
+		"p: toggle policy scope   space: change policy   x: reset override",
+	}
+	if s.busy {
+		lines = append(lines, "Loading...")
+	}
+	rows := s.rows()
+	if len(rows) == 0 {
+		rows = []providerRow{{value: components.RenderPolicyStatus(s.tab, policy.EffectiveSetting{Enabled: true}, "")}}
+	}
+	rendered := make([]string, len(rows))
+	for i, row := range rows {
+		if row.group != "" {
+			rendered[i] = s.styles.Accent(components.Icons.Expanded + " " + components.DisplayText(row.group))
+		} else {
+			rendered[i] = components.DisplayText(row.value)
+		}
+		if i == s.list.Selected {
+			if !s.styles.Palette.ColorEnabled {
+				rendered[i] = components.Icons.Selected + rendered[i]
+			}
+			rendered[i] = s.styles.Selection(rendered[i], true)
+		}
+	}
+	width := s.width
+	if width == 0 {
+		width = 80
+	}
+	return strings.Join(append(lines, s.list.View(rendered, width, s.listHeight())), "\n")
+}
 func countLabel(count int) string { return fmt.Sprintf(" %d", count) }
 func (s *Provider) tabLabel() string {
-	if s.tab == "Changes" {
-		return "Changes" + countLabel(len(s.status.Changes))
+	return "State"
+}
+func nextProviderTab(tab string) string {
+	switch tab {
+	case "State", "Saved", "Changes", "":
+		return "Capture"
+	case "Capture":
+		return "Restore"
+	default:
+		return "State"
 	}
-	return "Saved"
+}
+func (s *Provider) policyTab() bool { return s.tab == "Capture" || s.tab == "Restore" }
+func (s *Provider) policyScopeLabel() string {
+	return policyScopeLabel(s.policyScope)
 }
 func emptyTabMessage(tab string, captured bool) string {
 	if !captured {
@@ -246,6 +325,12 @@ func emptyTabMessage(tab string, captured bool) string {
 	return "No saved items."
 }
 func (s *Provider) rows() []providerRow {
+	if s.policyTab() {
+		return s.policyRows()
+	}
+	if s.activeTab() == "Saved" && len(s.targets) > 0 {
+		return s.targetStateRows()
+	}
 	if s.activeTab() == "Changes" {
 		rows := make([]providerRow, len(s.status.Changes))
 		for i, change := range s.status.Changes {
@@ -270,6 +355,94 @@ func (s *Provider) rows() []providerRow {
 		}
 	}
 	return visible
+}
+func (s *Provider) targetStateRows() []providerRow {
+	rows := make([]providerRow, 0, len(s.targets))
+	lastGroup := ""
+	for _, target := range s.targets {
+		group := providerTargetGroup(s.id, target)
+		if group != lastGroup {
+			rows = append(rows, providerRow{group: group})
+			lastGroup = group
+		}
+		label := target.Label
+		if label == "" {
+			label = target.Key
+		}
+		rows = append(rows, providerRow{value: fmt.Sprintf("%s — desired %s; current %s", label, target.Desired, target.Current), key: target.Key, target: target})
+	}
+	return rows
+}
+func (s *Provider) policyRows() []providerRow {
+	rows := make([]providerRow, 0, len(s.targets))
+	lastGroup := ""
+	for _, target := range s.targets {
+		group := providerTargetGroup(s.id, target)
+		if group != lastGroup {
+			rows = append(rows, providerRow{group: group})
+			lastGroup = group
+		}
+		effective := s.effective[target.Key]
+		setting := effective.Capture
+		blocked := ""
+		if s.tab == "Restore" {
+			setting = effective.Restore
+			if !target.RestoreEligible {
+				blocked = target.SafetyReason
+			}
+		} else if !target.CaptureEligible {
+			blocked = target.SafetyReason
+		}
+		if blocked == "" {
+			if s.tab == "Capture" && !target.CaptureEligible {
+				blocked = "not eligible for capture"
+			}
+			if s.tab == "Restore" && !target.RestoreEligible {
+				blocked = "not eligible for restore"
+			}
+		}
+		label := target.Label
+		if label == "" {
+			label = target.Key
+		}
+		rows = append(rows, providerRow{value: label + " — " + components.RenderPolicyStatus(s.tab, setting, blocked), key: target.Key, target: target, effective: setting})
+	}
+	return rows
+}
+func providerTargetGroup(id string, target workflow.TargetInspection) string {
+	if id != "packages" {
+		switch id {
+		case "themes":
+			if target.Key == "active" {
+				return "Active theme"
+			}
+			return "Available themes"
+		case "plugins":
+			return "Plugins (Shell owns enablement)"
+		case "defaults":
+			return "Application defaults"
+		case "shell":
+			return "Shell customization"
+		case "hooks":
+			return "Hooks"
+		case "resources":
+			return "Resources (Exact never deletes resource data)"
+		default:
+			return titleFor(id)
+		}
+	}
+	switch {
+	case target.Key == "preinstalls" || strings.HasPrefix(target.Key, "preinstall:"):
+		return "Omarchy preinstalls"
+	case strings.HasPrefix(target.Key, "official:"):
+		return "Official packages"
+	case strings.HasPrefix(target.Key, "aur:"):
+		return "AUR packages"
+	case strings.HasPrefix(target.Key, "mise:"):
+		return "Mise tools"
+	default:
+		return "Other packages"
+	}
 }
 func (s *Provider) groupAnchors() []int {
 	rows := s.rows()
@@ -384,6 +557,7 @@ func sourceLabel(source string) string {
 func (s *Provider) refresh() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, s.id)
@@ -395,7 +569,19 @@ func (s *Provider) refresh() tea.Cmd {
 		}
 		for _, status := range report.Providers {
 			if status.ID == s.id {
-				return providerStatusMsg{requestID: requestID, status: status}
+				targets, err := s.session.PolicyTargets(s.ctx, s.id)
+				if err != nil {
+					return providerStatusMsg{requestID: requestID, err: err}
+				}
+				effective := make(map[string]policy.Effective, len(targets))
+				for _, target := range targets {
+					resolved, err := s.session.EffectivePolicy(s.ctx, scope, s.id, target)
+					if err != nil {
+						return providerStatusMsg{requestID: requestID, err: err}
+					}
+					effective[target.Key] = resolved
+				}
+				return providerStatusMsg{requestID: requestID, status: status, targets: targets, effective: effective}
 			}
 		}
 		return providerStatusMsg{requestID: requestID, err: fmt.Errorf("%s status is unavailable", s.id)}
@@ -417,6 +603,13 @@ func (s *Provider) CanToggleSelected() bool {
 	row := s.selectedSavedRow()
 	return !s.busy && s.activeTab() == "Saved" && row.value != "" && providerItemCanToggle(s.id, row.section)
 }
+
+// CanSetPolicySelected reports whether the selected target may receive an
+// explicit policy override on the active Capture/Restore tab.
+func (s *Provider) CanSetPolicySelected() bool {
+	return !s.busy && s.policyTab() && s.selectedPolicyRow().key != ""
+}
+func (s *Provider) PolicyTab() bool { return s.policyTab() }
 func (s *Provider) ToggleSelectedLabel() string {
 	if s.selectedSavedRow().state == "not included" {
 		return "Include selected package"
@@ -428,6 +621,34 @@ func (s *Provider) toggleItem(row providerRow) tea.Cmd {
 	requestID := s.requestID
 	return func() tea.Msg {
 		return providerToggleMsg{requestID: requestID, err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
+	}
+}
+func (s *Provider) policyAxis() policy.Axis {
+	if s.tab == "Restore" {
+		return policy.AxisRestore
+	}
+	return policy.AxisCapture
+}
+func (s *Provider) setPolicy(row providerRow) tea.Cmd {
+	s.requestID++
+	requestID := s.requestID
+	scope := s.policyScope
+	axis := s.policyAxis()
+	setting := policy.SettingDisabled
+	if !row.effective.Enabled {
+		setting = policy.SettingEnabled
+	}
+	return func() tea.Msg {
+		return providerToggleMsg{requestID: requestID, err: s.session.SetPolicy(scope, axis, s.id, row.key, setting)}
+	}
+}
+func (s *Provider) clearPolicy(row providerRow) tea.Cmd {
+	s.requestID++
+	requestID := s.requestID
+	scope := s.policyScope
+	axis := s.policyAxis()
+	return func() tea.Msg {
+		return providerToggleMsg{requestID: requestID, err: s.session.ClearPolicy(scope, axis, s.id, row.key)}
 	}
 }
 func providerItemCanToggle(id, section string) bool {
@@ -457,6 +678,19 @@ func (s *Provider) DetailView() string {
 			return title + " change\n" + components.DisplayText(change.Summary)
 		}
 	}
+	if s.policyTab() {
+		if row := s.selectedPolicyRow(); row.key != "" {
+			blocked := ""
+			if s.tab == "Capture" && !row.target.CaptureEligible || s.tab == "Restore" && !row.target.RestoreEligible {
+				blocked = row.target.SafetyReason
+				if blocked == "" {
+					blocked = "not eligible on this machine"
+				}
+			}
+			return fmt.Sprintf("%s policy\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t", title, row.target.Desired, row.target.Current, components.RenderPolicyStatus(s.tab, row.effective, blocked), row.effective.Source.Kind, components.DisplayText(row.effective.Source.Machine), components.DisplayText(row.effective.Source.Category), components.DisplayText(row.effective.Source.Target), row.target.CaptureEligible, row.target.RestoreEligible, row.target.Capabilities.SupportsCapture, row.target.Capabilities.SupportsRestore, row.target.Capabilities.SupportsDesiredAbsence, row.target.Capabilities.SupportsExactRemoval, row.target.Capabilities.Hierarchical)
+		}
+		return title + " policy\n" + s.policyScopeLabel()
+	}
 	if row := s.selectedSavedRow(); row.value != "" {
 		return title + " saved state\n" + components.DisplayText(row.value)
 	}
@@ -476,7 +710,14 @@ func (s *Provider) selectedChange() model.Change {
 }
 func (s *Provider) selectedSavedRow() providerRow {
 	rows := s.rows()
-	if s.tab == "Saved" && s.list.Selected >= 0 && s.list.Selected < len(rows) {
+	if s.activeTab() == "Saved" && s.list.Selected >= 0 && s.list.Selected < len(rows) {
+		return rows[s.list.Selected]
+	}
+	return providerRow{}
+}
+func (s *Provider) selectedPolicyRow() providerRow {
+	rows := s.rows()
+	if s.policyTab() && s.list.Selected >= 0 && s.list.Selected < len(rows) {
 		return rows[s.list.Selected]
 	}
 	return providerRow{}

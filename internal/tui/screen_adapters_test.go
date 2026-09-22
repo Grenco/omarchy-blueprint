@@ -3,6 +3,9 @@ package tui
 import (
 	"context"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/tui/screens"
 )
 
 func TestNewScreensBuildsPlaceholdersWithoutSession(t *testing.T) {
@@ -15,6 +18,28 @@ func TestNewScreensBuildsPlaceholdersWithoutSession(t *testing.T) {
 		if _, ok := screen.(*placeholderScreen); !ok {
 			t.Fatalf("%s = %T, want *placeholderScreen", id, screen)
 		}
+	}
+}
+
+func TestConfigAdapterOwnsPolicyTabNavigation(t *testing.T) {
+	screen := &configScreen{Config: screens.NewConfig(nil)}
+	if result := screen.HandleKey(tea.KeyPressMsg{Code: tea.KeyTab}); !result.Consumed {
+		t.Fatal("Config did not consume Tab for State/Capture/Restore navigation")
+	}
+	found := false
+	for _, action := range screen.Actions() {
+		found = found || action.ID == "config.tab"
+	}
+	if !found {
+		t.Fatal("Config actions omitted policy tab navigation")
+	}
+	foundSet, foundLegacyExclude := false, false
+	for _, action := range screen.Actions() {
+		foundSet = foundSet || action.ID == "config.policy-set"
+		foundLegacyExclude = foundLegacyExclude || action.ID == "config.exclude"
+	}
+	if !foundSet || foundLegacyExclude {
+		t.Fatalf("Capture tab actions did not switch to policy engine controls: %#v", screen.Actions())
 	}
 }
 

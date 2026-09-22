@@ -2,12 +2,24 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 )
+
+func TestPolicyTargetsReturnsProviderOwnedInspection(t *testing.T) {
+	session := newCaptureSession(t, profile.New("test", time.Now()))
+	want := []TargetInspection{{Key: "official:firefox", Label: "Firefox"}}
+	session.SetProviders([]Provider{captureTestProvider{id: "packages", order: &[]string{}, targets: want}})
+	got, err := session.PolicyTargets(context.Background(), "packages")
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("PolicyTargets = %#v, %v; want %#v", got, err, want)
+	}
+}
 
 type inspectTestProvider struct{ id string }
 
