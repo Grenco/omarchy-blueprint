@@ -361,7 +361,7 @@ func (s *Config) View() string {
 	for i, row := range rows {
 		if row.group != "" {
 			marker := components.Icons.Expanded
-			if s.collapsed[row.group] {
+			if s.groupCollapsed(row.group) {
 				marker = components.Icons.Collapsed
 			}
 			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + string(row.group)), "", ""}, Selected: i == s.selected, Focused: true})

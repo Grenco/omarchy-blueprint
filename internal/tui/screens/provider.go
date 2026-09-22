@@ -302,7 +302,7 @@ func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
 	for i, row := range rows {
 		cells := make([]string, len(columns))
 		if row.group != "" {
-			cells = groupCells(row.group, len(columns), true, s.styles)
+			cells = groupCells(row.group, len(columns), !s.collapsed[row.group], s.styles)
 		} else {
 			blocked := s.policyBlocked(row.target)
 			decision := styledDecision(s.styles, policyDecision(s.tab, row.effective.Enabled, blocked))
@@ -395,6 +395,9 @@ func (s *Provider) rows() []providerRow {
 	if len(s.collapsed) == 0 {
 		return rows
 	}
+	return s.visibleGroupRows(rows)
+}
+func (s *Provider) visibleGroupRows(rows []providerRow) []providerRow {
 	visible := make([]providerRow, 0, len(rows))
 	collapsed := false
 	for _, row := range rows {
@@ -424,7 +427,7 @@ func (s *Provider) targetStateRows() []providerRow {
 		}
 		rows = append(rows, providerRow{value: label, key: target.Key, target: target})
 	}
-	return rows
+	return s.visibleGroupRows(rows)
 }
 func (s *Provider) policyRows() []providerRow {
 	rows := make([]providerRow, 0, len(s.targets))
@@ -446,7 +449,7 @@ func (s *Provider) policyRows() []providerRow {
 		}
 		rows = append(rows, providerRow{value: label, key: target.Key, target: target, effective: setting})
 	}
-	return rows
+	return s.visibleGroupRows(rows)
 }
 func providerTargetGroup(id string, target workflow.TargetInspection) string {
 	if id != "packages" {
