@@ -111,13 +111,15 @@ func (s *machinesScreen) Actions() []Action {
 		{ID: "machines.rename", Label: "Rename machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: "machines.restore-conflicts", Label: "Toggle Safe/Force default", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }},
 		{ID: "machines.restore-convergence", Label: "Toggle Additive/Exact default", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
+		{ID: "machines.previous-policy", Label: "Select previous policy category", Group: "Machines", Enabled: s.CanCyclePolicy(), Visible: true, DisabledReason: "selected machine has fewer than two policy categories", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: '['}) }},
+		{ID: "machines.next-policy", Label: "Select next policy category", Group: "Machines", Enabled: s.CanCyclePolicy(), Visible: true, DisabledReason: "selected machine has fewer than two policy categories", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: ']'}) }},
 		{ID: "machines.open-policy", Label: "Open selected policy category", Group: "Machines", Enabled: s.CanOpenPolicy(), Visible: true, DisabledReason: "selected machine has no policy overrides", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
 		{ID: "machines.remove", Label: "Remove machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
 		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Enabled: s.CanMapResource(), Visible: true, DisabledReason: "select a resource path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
 	}
 }
 func (s *machinesScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.open-policy", Key: "o"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
+	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.previous-policy", Key: "["}, {ActionID: "machines.next-policy", Key: "]"}, {ActionID: "machines.open-policy", Key: "o"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
 }
 
 func (s *restoreScreen) ID() ScreenID { return ScreenRestore }

@@ -456,12 +456,12 @@ func (s *Resources) View() string {
 	if s.tab == "Capture" || s.tab == "Restore" {
 		return s.policyView()
 	}
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d · d: Discover", len(s.items)), "Safety: Exact never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d", len(s.items)), "Safety: Exact never deletes Resource data."}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}
 	if s.discover {
-		return strings.Join(lines, "\n")
+		return strings.Join(append(lines, "Discover resource"), "\n")
 	}
 	if len(s.items) == 0 {
 		lines = append(lines, renderEmptyState(s.styles, s.width, emptyStateCopy{
@@ -526,7 +526,7 @@ func (s *Resources) DetailView() string {
 func (s *Resources) policyView() string {
 	scope := "Profile defaults"
 	scope = policyScopeLabel(s.policyScope)
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "p: toggle policy scope   space: change policy   x: reset override", "Safety: Exact never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "Safety: Exact never deletes Resource data."}
 	if len(s.targets) == 0 {
 		return strings.Join(append(lines, "No tracked Resources."), "\n")
 	}

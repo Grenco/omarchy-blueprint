@@ -386,7 +386,7 @@ func (s *Config) View() string {
 }
 
 func (s *Config) policyView() string {
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel(), "p: toggle policy scope   space: change policy   x: reset override"}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel()}
 	rows := s.configPolicyRows()
 	columns := configPolicyColumns(s.tab, s.presentationWidth())
 	policyRows := make([]components.Row, 0, len(rows))

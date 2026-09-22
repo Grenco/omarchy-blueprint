@@ -65,6 +65,9 @@ func TestResourcesUseStateAndPolicyTablesAtResponsiveWidths(t *testing.T) {
 			targets: []workflow.TargetInspection{{Key: "resource:projects", Label: "projects", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent, CaptureEligible: true, RestoreEligible: true}},
 		}
 		view := state.View()
+		if strings.Contains(view, "d: Discover") {
+			t.Fatalf("%d-column Resource State duplicates its footer binding:\n%s", width, view)
+		}
 		for _, want := range []string{"RESOURCE", "DESIRED", "projects", "Absent", "Desired absent", "Exact never deletes Resource data"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%d-column Resource State missing %q:\n%s", width, want, view)
@@ -77,6 +80,9 @@ func TestResourcesUseStateAndPolicyTablesAtResponsiveWidths(t *testing.T) {
 			policies: map[string]policy.Effective{"resource:projects": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceMachineTarget}}}},
 		}
 		view = policyScreen.View()
+		if strings.Contains(view, "toggle policy scope") || strings.Contains(view, "change policy") {
+			t.Fatalf("%d-column Resource policy duplicates footer bindings:\n%s", width, view)
+		}
 		for _, want := range []string{"RESOURCE", "RESTORE", "projects", "Skip", "Exact never deletes Resource data"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%d-column Resource Restore missing %q:\n%s", width, want, view)

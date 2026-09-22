@@ -266,6 +266,10 @@ func TestProviderResponsiveTierUsesTerminalWidthInsideNarrowerPane(t *testing.T)
 	if view := screen.View(); strings.Contains(view, "CURRENT") {
 		t.Fatalf("narrow terminal did not select compact columns:\n%s", view)
 	}
+	screen.tab = "Capture"
+	if view := screen.View(); strings.Contains(view, "toggle policy scope") || strings.Contains(view, "change policy") {
+		t.Fatalf("policy key hints duplicate the footer above the table:\n%s", view)
+	}
 }
 
 func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {

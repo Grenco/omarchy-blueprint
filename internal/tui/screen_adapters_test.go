@@ -43,6 +43,21 @@ func TestConfigAdapterOwnsPolicyTabNavigation(t *testing.T) {
 	}
 }
 
+func TestMachinesFooterIncludesPolicyCategoryNavigation(t *testing.T) {
+	screen := &machinesScreen{Machines: screens.NewMachines(integrationSession(t))}
+	want := map[string]bool{"[": false, "]": false, "o": false}
+	for _, binding := range screen.Bindings() {
+		if _, ok := want[binding.Key]; ok {
+			want[binding.Key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("Machines footer bindings omitted %q", key)
+		}
+	}
+}
+
 func TestNewScreensBuildsExpectedAdaptersWithSession(t *testing.T) {
 	got := newScreens(context.Background(), integrationSession(t))
 

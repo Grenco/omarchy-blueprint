@@ -89,6 +89,9 @@ func TestConfigPolicyTreeDefaultsCollapsedAndShowsDescendantOverrides(t *testing
 		},
 	}
 	view := screen.View()
+	if strings.Contains(view, "toggle policy scope") || strings.Contains(view, "change policy") {
+		t.Fatalf("Config policy key hints duplicate the footer above the table:\n%s", view)
+	}
 	if !strings.Contains(view, ".config/nvim") || !strings.Contains(view, "1 descendant override") || strings.Contains(view, "init.lua") {
 		t.Fatalf("collapsed Config policy tree is wrong:\n%s", view)
 	}
