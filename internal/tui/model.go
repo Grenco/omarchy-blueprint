@@ -227,7 +227,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if isKey {
 		transient := m.activeTransient()
-		if key == "tab" {
+		if key == "tab" || key == "shift+tab" {
 			if owner, ok := m.activeScreen().(TabOwner); ok && owner.OwnsTab() {
 				if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
 					return m, wrapScreenCmd(m.screenID(), result.Cmd)

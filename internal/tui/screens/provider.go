@@ -28,6 +28,7 @@ type Provider struct {
 	session                 *workflow.Session
 	id                      string
 	width, height, selected int
+	terminalWidth           int
 	tab                     string
 	status                  workflow.ProviderStatus
 	targets                 []workflow.TargetInspection
@@ -79,9 +80,12 @@ func (s *Provider) ShowPolicy(machine string) {
 	s.selected = s.list.Selected
 }
 func (s *Provider) SetStyles(styles components.Styles) { s.styles = styles }
-func (s *Provider) SetSize(width, height int)          { s.width, s.height = width, height }
-func (s *Provider) Init() tea.Cmd                      { return s.refresh() }
-func (s *Provider) TransientActive() bool              { return s.confirm }
+func (s *Provider) SetSize(width, height int) {
+	s.width, s.height, s.terminalWidth = width, height, width
+}
+func (s *Provider) SetTerminalWidth(width int) { s.terminalWidth = width }
+func (s *Provider) Init() tea.Cmd              { return s.refresh() }
+func (s *Provider) TransientActive() bool      { return s.confirm }
 func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 	if s.tab == "" {
 		s.tab = "State"
@@ -145,6 +149,10 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		}
 	case "tab":
 		s.tab = nextProviderTab(s.tab)
+		s.list.SetSelected(0, len(s.rows()), s.listHeight())
+		s.selected = s.list.Selected
+	case "shift+tab":
+		s.tab = previousProviderTab(s.tab)
 		s.list.SetSelected(0, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 	case "p":
@@ -255,7 +263,7 @@ func (s *Provider) policyView() string {
 }
 
 func (s *Provider) renderStateTable(rows []providerRow, width int) string {
-	columns := stateColumns(width)
+	columns := stateColumns(s.presentationWidth())
 	rendered := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
 		cells := make([]string, len(columns))
@@ -289,7 +297,7 @@ func (s *Provider) renderStateTable(rows []providerRow, width int) string {
 }
 
 func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
-	columns := policyColumns(s.tab, width)
+	columns := policyColumns(s.tab, s.presentationWidth())
 	rendered := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
 		cells := make([]string, len(columns))
@@ -342,6 +350,16 @@ func nextProviderTab(tab string) string {
 		return "Capture"
 	case "Capture":
 		return "Restore"
+	default:
+		return "State"
+	}
+}
+func previousProviderTab(tab string) string {
+	switch tab {
+	case "State", "Saved", "Changes", "":
+		return "Restore"
+	case "Restore":
+		return "Capture"
 	default:
 		return "State"
 	}
@@ -797,6 +815,12 @@ func (s *Provider) listHeight() int {
 		return max(1, len(s.rows()))
 	}
 	return max(1, s.height-3)
+}
+func (s *Provider) presentationWidth() int {
+	if s.terminalWidth > 0 {
+		return s.terminalWidth
+	}
+	return s.width
 }
 func titleFor(id string) string {
 	if id == "" {

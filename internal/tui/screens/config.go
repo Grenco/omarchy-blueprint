@@ -26,6 +26,7 @@ type Config struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
+	terminalWidth           int
 	tab                     string
 	policySelected          int
 	policyExpanded          map[string]bool
@@ -85,11 +86,12 @@ func (s *Config) Focus(path string) tea.Cmd {
 	return s.rescan()
 }
 func (s *Config) SetSize(width, height int) {
-	s.width, s.height = width, height
+	s.width, s.height, s.terminalWidth = width, height, width
 	if s.diff != nil {
 		s.diff.SetSize(width, height)
 	}
 }
+func (s *Config) SetTerminalWidth(width int)         { s.terminalWidth = width }
 func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Config) ShowPolicy(machine string) {
 	s.policyScope, s.tab, s.policySelected = workflow.PolicyScope{Machine: machine}, "Capture", 0
@@ -178,7 +180,11 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	if s.busy {
 		return nil
 	}
-	if key.String() == "tab" {
+	if key.String() == "tab" || key.String() == "shift+tab" {
+		if key.String() == "shift+tab" {
+			s.tab = previousProviderTab(s.tab)
+			return nil
+		}
 		switch s.tab {
 		case "State", "":
 			s.tab = "Capture"
@@ -382,7 +388,7 @@ func (s *Config) View() string {
 func (s *Config) policyView() string {
 	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel(), "p: toggle policy scope   space: change policy   x: reset override"}
 	rows := s.configPolicyRows()
-	columns := configPolicyColumns(s.tab, s.widthOrDefault())
+	columns := configPolicyColumns(s.tab, s.presentationWidth())
 	policyRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
 		target, effective := row.target, s.effective[row.target.Key]
@@ -656,6 +662,12 @@ func (s *Config) widthOrDefault() int {
 		return 120
 	}
 	return s.width
+}
+func (s *Config) presentationWidth() int {
+	if s.terminalWidth > 0 {
+		return s.terminalWidth
+	}
+	return s.widthOrDefault()
 }
 func (s *Config) confirmModal() tea.Cmd {
 	prompt := fmt.Sprintf("Set %s policy for %s?", s.confirm, components.DisplayText(s.selectedCandidate().Path))

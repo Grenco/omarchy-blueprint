@@ -29,6 +29,7 @@ type Resources struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
+	terminalWidth           int
 	tab                     string
 	discover                bool
 	items                   []profile.Resource
@@ -102,11 +103,12 @@ func NewResourcesContext(ctx context.Context, session *workflow.Session) *Resour
 }
 func (s *Resources) Focus(id string) tea.Cmd { s.focusID = id; return s.rescan() }
 func (s *Resources) SetSize(width, height int) {
-	s.width, s.height = width, height
+	s.width, s.height, s.terminalWidth = width, height, width
 	if s.browser != nil {
 		s.browser.SetSize(width, height)
 	}
 }
+func (s *Resources) SetTerminalWidth(width int) { s.terminalWidth = width }
 func (s *Resources) SetStyles(styles components.Styles) {
 	s.styles = styles
 	if s.browser != nil {
@@ -351,6 +353,8 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	switch key.String() {
 	case "tab":
 		s.tab = nextProviderTab(s.tab)
+	case "shift+tab":
+		s.tab = previousProviderTab(s.tab)
 	case "d":
 		s.discover, s.err = true, nil
 		if s.session == nil {
@@ -475,7 +479,7 @@ func (s *Resources) View() string {
 			targets = append(targets, workflow.TargetInspection{Key: "resource:" + item.ID, Label: item.ID, Desired: workflow.TargetPresent, Current: workflow.TargetUnknown})
 		}
 	}
-	columns := stateColumns(width)
+	columns := stateColumns(s.presentationWidth())
 	columns[0].Title = "RESOURCE"
 	rows := make([]components.Row, 0, len(targets))
 	for i, target := range targets {
@@ -526,7 +530,7 @@ func (s *Resources) policyView() string {
 	if len(s.targets) == 0 {
 		return strings.Join(append(lines, "No tracked Resources."), "\n")
 	}
-	columns := policyColumns(s.tab, s.widthOrDefault())
+	columns := policyColumns(s.tab, s.presentationWidth())
 	columns[0].Title = "RESOURCE"
 	rows := make([]components.Row, 0, len(s.targets))
 	for i, target := range s.targets {
@@ -569,6 +573,12 @@ func (s *Resources) widthOrDefault() int {
 		return 120
 	}
 	return s.width
+}
+func (s *Resources) presentationWidth() int {
+	if s.terminalWidth > 0 {
+		return s.terminalWidth
+	}
+	return s.widthOrDefault()
 }
 
 func (s *Resources) selectedPolicyTarget() workflow.TargetInspection {

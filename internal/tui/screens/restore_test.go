@@ -134,6 +134,23 @@ func TestRestoreCurrentPlanUsesResponsiveOperationAndSkipTables(t *testing.T) {
 	}
 }
 
+func TestRestoreSkipReasonLabelsDoNotInventSafety(t *testing.T) {
+	for _, test := range []struct {
+		reason string
+		want   string
+	}{
+		{"restore disabled by profile policy", "Policy: Skip"},
+		{"additional package left installed; removal disabled", "Additive"},
+		{"overwrite disabled for existing file", "Safe"},
+		{"hardware target blocked for this machine", "Safety"},
+		{"already satisfied", "Skipped"},
+	} {
+		if got := skipReasonLabel(test.reason); got != test.want {
+			t.Errorf("skipReasonLabel(%q) = %q, want %q", test.reason, got, test.want)
+		}
+	}
+}
+
 func TestRestoreConfirmationReportsCurrentAuthorityAndDestructiveCounts(t *testing.T) {
 	session, _ := newSyncSession(t)
 	screen := NewRestore(session)
@@ -224,11 +241,11 @@ func TestRestoreCurrentPlanSelectionDrivesDetails(t *testing.T) {
 		Operations: []model.Operation{{Provider: "config", Resource: "one", Action: "write", Risk: model.RiskLow}},
 		Skipped:    []model.Skipped{{Provider: "packages", Resource: "two", Reason: "restore disabled"}},
 	}
-	if detail := screen.DetailView(); !strings.Contains(detail, "Restore operation") || !strings.Contains(detail, "Resource: one") {
+	if detail := screen.DetailView(); !strings.Contains(detail, "Restore operation") || !strings.Contains(detail, "Category: Config") || !strings.Contains(detail, "Target: one") {
 		t.Fatalf("first current-plan detail = %q", detail)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if detail := screen.DetailView(); !strings.Contains(detail, "Restore skip") || !strings.Contains(detail, "Resource: two") || !strings.Contains(detail, "restore disabled") {
+	if detail := screen.DetailView(); !strings.Contains(detail, "Restore skip") || !strings.Contains(detail, "Category: Packages") || !strings.Contains(detail, "Target: two") || !strings.Contains(detail, "restore disabled") {
 		t.Fatalf("selected current-plan detail = %q", detail)
 	}
 }
@@ -239,7 +256,7 @@ func TestRestoreSanitizesCurrentPlanAndErrors(t *testing.T) {
 	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?resource?") {
 		t.Fatalf("unsafe restore=%q", view)
 	}
-	if detail := screen.DetailView(); strings.Contains(detail, "\x1b") || !strings.Contains(detail, "bad?provider?") {
+	if detail := screen.DetailView(); strings.Contains(detail, "\x1b") || !strings.Contains(detail, "Bad?provider?") {
 		t.Fatalf("unsafe detail=%q", detail)
 	}
 	screen.err = errors.New("bad\nerror\x1b")

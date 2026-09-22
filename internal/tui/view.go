@@ -120,6 +120,9 @@ func (m *model) setScreenSizes() {
 	for id, current := range m.screens {
 		width, height := m.screenSize(id)
 		current.SetSize(width, height)
+		if responsive, ok := current.(terminalWidthScreen); ok {
+			responsive.SetTerminalWidth(m.width)
+		}
 	}
 }
 
