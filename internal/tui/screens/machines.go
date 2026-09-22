@@ -3,10 +3,12 @@ package screens
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -20,6 +22,7 @@ type Machines struct {
 	name, mode, confirm     string
 	browser                 *components.Browser
 	resource                int
+	policyCategory          int
 	focusMapping            string
 	focusMappings           bool
 	machineList             components.Selectable
@@ -33,6 +36,16 @@ type Machines struct {
 type MachineMutationComplete struct {
 	Notice string
 	Err    error
+}
+
+// AuthorityChanged tells the root that persisted machine or policy intent
+// changed and every already-visited authority-dependent screen must refresh.
+type AuthorityChanged struct{ Notice string }
+
+// PolicyNavigation asks the root to open a category's policy controls.
+type PolicyNavigation struct {
+	Category string
+	Machine  string
 }
 
 func NewMachines(session *workflow.Session) *Machines {
@@ -97,6 +110,9 @@ func (s *Machines) CanMapResource() bool {
 }
 func (s *Machines) CanUnmapResource() bool { return s.CanMapResource() && s.selectedMapping().override }
 func (s *Machines) MappingFocused() bool   { return s.focusMappings }
+func (s *Machines) CanOpenPolicy() bool {
+	return !s.focusMappings && len(machinePolicyCategories(s.selectedMachine().Policy)) > 0
+}
 
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	if submitted, ok := msg.(components.TextInputSubmitted); ok {
@@ -251,6 +267,30 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 			s.browser = &browser
 			return s.browser.Init()
 		}
+	case "f":
+		if !s.focusMappings && s.selectedMachine().Name != "" {
+			return s.toggleRestoreConflict()
+		}
+	case "e":
+		if !s.focusMappings && s.selectedMachine().Name != "" {
+			return s.toggleRestoreConvergence()
+		}
+	case "[", "]":
+		categories := machinePolicyCategories(s.selectedMachine().Policy)
+		if len(categories) > 0 {
+			delta := 1
+			if key.String() == "[" {
+				delta = -1
+			}
+			s.policyCategory = (s.policyCategory + delta + len(categories)) % len(categories)
+		}
+	case "o":
+		categories := machinePolicyCategories(s.selectedMachine().Policy)
+		if len(categories) > 0 {
+			category := categories[min(s.policyCategory, len(categories)-1)].category
+			machine := s.selectedMachine().Name
+			return func() tea.Msg { return PolicyNavigation{Category: category, Machine: machine} }
+		}
 	}
 	return nil
 }
@@ -307,11 +347,72 @@ func (s *Machines) View() string {
 		rightWidth = 80
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "Resource", Width: 14, MinWidth: 10}, {Title: "Portable", Width: 20, MinWidth: 12}, {Title: "Effective", Width: 20, MinWidth: 12}, {Title: "Source", MinWidth: 8}}, rows, max(1, rightWidth), s.tableHeight()+1, s.styles)
-	existingView := lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
+	defaults := s.restoreDefaultsView()
+	existingView := defaults + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, "Overlays\n"+left, "  ", "Resource paths\n"+right)
 	if guidance, ok := s.portableGuidance(); ok {
 		return guidance + "\n\n" + existingView
 	}
 	return existingView
+}
+
+func (s *Machines) restoreDefaultsView() string {
+	machine := s.selectedMachine()
+	if machine.Name == "" {
+		return "Restore defaults: select a machine"
+	}
+	options := machine.EffectiveRestoreDefaults()
+	categories := machinePolicyCategories(machine.Policy)
+	parts := make([]string, 0, len(categories))
+	for i, item := range categories {
+		label := fmt.Sprintf("%s: %d", item.category, item.count)
+		if i == min(s.policyCategory, max(0, len(categories)-1)) {
+			label = "[" + label + "]"
+		}
+		parts = append(parts, label)
+	}
+	summary := "none"
+	if len(parts) > 0 {
+		summary = strings.Join(parts, " · ") + "  ([/]: select, o: open policy)"
+	}
+	return fmt.Sprintf("Restore defaults for %s: conflicts %s (f) · convergence %s (e)\nPolicy overrides by category: %s", components.DisplayText(machine.Name), options.Conflicts, options.Convergence, summary)
+}
+
+type machinePolicyCategory struct {
+	category string
+	count    int
+}
+
+func machinePolicyCategories(rules policy.Rules) []machinePolicyCategory {
+	counts := map[string]int{}
+	for _, rule := range append(append([]policy.Rule(nil), rules.Capture...), rules.Restore...) {
+		counts[rule.Category]++
+	}
+	categories := make([]machinePolicyCategory, 0, len(counts))
+	for category, count := range counts {
+		categories = append(categories, machinePolicyCategory{category: category, count: count})
+	}
+	sort.Slice(categories, func(i, j int) bool { return categories[i].category < categories[j].category })
+	return categories
+}
+func (s *Machines) toggleRestoreConflict() tea.Cmd {
+	machine := s.selectedMachine()
+	options := machine.EffectiveRestoreDefaults()
+	if options.Conflicts == policy.ConflictSafe {
+		options.Conflicts = policy.ConflictForce
+	} else {
+		options.Conflicts = policy.ConflictSafe
+	}
+	return s.mutate("Restore conflict default updated.", func() error { return s.session.SetMachineRestoreDefaults(machine.Name, options) })
+}
+func (s *Machines) toggleRestoreConvergence() tea.Cmd {
+	machine := s.selectedMachine()
+	options := machine.EffectiveRestoreDefaults()
+	if options.Convergence == policy.ConvergenceAdditive {
+		options.Convergence = policy.ConvergenceExact
+	} else {
+		options.Convergence = policy.ConvergenceAdditive
+	}
+	return s.mutate("Restore convergence default updated.", func() error { return s.session.SetMachineRestoreDefaults(machine.Name, options) })
 }
 
 // hasOverrides reports whether any machine has a saved Resource mapping,

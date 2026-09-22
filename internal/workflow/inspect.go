@@ -10,6 +10,16 @@ import (
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 )
 
+// PolicyTargets exposes provider-owned target inspection to presentation
+// layers without exposing profile serialization details.
+func (s *Session) PolicyTargets(ctx context.Context, category string) ([]TargetInspection, error) {
+	provider, ok := ProviderByID(s.providers, category)
+	if !ok {
+		return nil, fmt.Errorf("workflow: unknown policy category %q", category)
+	}
+	return provider.InspectTargets(ctx, s.profile)
+}
+
 type GitInspection struct {
 	Root           string   `json:"root"`
 	Remote         string   `json:"remote,omitempty"`

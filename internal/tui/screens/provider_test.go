@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -110,10 +111,10 @@ func TestProviderCapturedEmptyDefaultsKeepsConcreteRows(t *testing.T) {
 	}
 }
 
-func TestProviderDefaultsToSavedTypedDataAndSwitchesToChanges(t *testing.T) {
+func TestProviderDefaultsToStateTypedDataAndCyclesPolicyTabs(t *testing.T) {
 	screen := &Provider{id: "packages", status: workflow.ProviderStatus{ID: "packages", Captured: true, Changes: []model.Change{{Summary: "git differs"}}, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}, Excluded: []string{"linux"}}}}
 	view := screen.View()
-	for _, want := range []string{"Changes 1   [active] Saved", "Official packages", "git", "AUR packages", "yay", "Mise tools", "node"} {
+	for _, want := range []string{"[active] State   Capture   Restore", "Official packages", "git", "AUR packages", "yay", "Mise tools", "node"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -122,8 +123,101 @@ func TestProviderDefaultsToSavedTypedDataAndSwitchesToChanges(t *testing.T) {
 		t.Fatalf("saved tab exposed drift or JSON: %q", view)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if view = screen.View(); !strings.Contains(view, "git differs") || strings.Contains(view, "Official packages") {
-		t.Fatalf("changes tab=%q", view)
+	if view = screen.View(); !strings.Contains(view, "[active] Capture") || !strings.Contains(view, "Include") {
+		t.Fatalf("capture tab=%q", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if view = screen.View(); !strings.Contains(view, "[active] Restore") || !strings.Contains(view, "Apply") {
+		t.Fatalf("restore tab=%q", view)
+	}
+}
+
+func TestProviderPolicyTabsExposeCaptureAndRestoreIntent(t *testing.T) {
+	screen := &Provider{id: "packages", tab: "Capture", width: 80, status: workflow.ProviderStatus{ID: "packages", Captured: true}}
+	view := screen.View()
+	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Capture policy view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestEveryPolicyScreenCanSelectProfileDefaultsWithoutChangingActiveMachine(t *testing.T) {
+	screens := []struct {
+		name   string
+		screen interface {
+			Update(tea.Msg) tea.Cmd
+			View() string
+		}
+	}{
+		{name: "provider", screen: &Provider{id: "packages", tab: "Capture", policyScope: workflow.PolicyScope{Machine: "desktop"}}},
+		{name: "config", screen: &Config{tab: "Capture", policyScope: workflow.PolicyScope{Machine: "desktop"}}},
+		{name: "resources", screen: &Resources{tab: "Capture", policyScope: workflow.PolicyScope{Machine: "desktop"}}},
+	}
+	for _, test := range screens {
+		t.Run(test.name, func(t *testing.T) {
+			if view := test.screen.View(); !strings.Contains(view, "Machine: desktop") {
+				t.Fatalf("initial named scope missing:\n%s", view)
+			}
+			test.screen.Update(tea.KeyPressMsg{Code: 'p'})
+			if view := test.screen.View(); !strings.Contains(view, "Profile defaults") || strings.Contains(view, "Machine: desktop") {
+				t.Fatalf("profile-default scope unavailable:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestProviderPolicyRowsPreservePackageGroupsAndDesiredAbsence(t *testing.T) {
+	screen := &Provider{
+		id:    "packages",
+		tab:   "State",
+		width: 80,
+		targets: []workflow.TargetInspection{
+			{Key: "official:git", Label: "git", Desired: workflow.TargetPresent, Current: workflow.TargetPresent},
+			{Key: "aur:foo", Label: "foo", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent},
+			{Key: "mise:node", Label: "node", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent},
+			{Key: "preinstall:tailscale", Label: "tailscale", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent},
+		},
+	}
+	view := screen.View()
+	for _, want := range []string{"Official packages", "AUR packages", "Mise tools", "Omarchy preinstalls", "foo — desired absent; current present", "tailscale — desired absent; current present"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("state policy view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestProviderRestorePolicyShowsSafetyBlockSeparately(t *testing.T) {
+	screen := &Provider{
+		id: "defaults", tab: "Restore", width: 80,
+		targets:   []workflow.TargetInspection{{Key: "agent", Label: "agent", RestoreEligible: false, SafetyReason: "automatic set-only restore is not currently safe"}},
+		effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true}}},
+	}
+	view := screen.View()
+	if !strings.Contains(view, "Blocked: automatic set-only restore is not currently safe") || strings.Contains(view, "agent — Skip") {
+		t.Fatalf("restore safety block was confused with a policy skip:\n%s", view)
+	}
+}
+
+func TestProviderPolicyDetailsShowBlockSourceAndCapabilities(t *testing.T) {
+	target := workflow.TargetInspection{
+		Key: "agent", Label: "agent", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent,
+		CaptureEligible: true, RestoreEligible: false, SafetyReason: "automatic restore is unsafe",
+		Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: false, SupportsDesiredAbsence: true, SupportsExactRemoval: true},
+	}
+	screen := &Provider{
+		id: "defaults", tab: "Restore", targets: []workflow.TargetInspection{target},
+		effective: map[string]policy.Effective{"agent": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget, Category: "defaults", Target: "agent"}}}},
+	}
+	screen.list.Selected = 1 // group heading is row zero
+	detail := screen.DetailView()
+	for _, want := range []string{"Blocked: automatic restore is unsafe", "Source: profile-target", "Supports capture: true", "Supports restore: false", "Supports desired absence: true", "Supports Exact removal: true"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("policy detail missing %q:\n%s", want, detail)
+		}
+	}
+	if strings.Contains(detail, "Skip (explicit)") {
+		t.Fatalf("blocked target appears as an intentional skip:\n%s", detail)
 	}
 }
 

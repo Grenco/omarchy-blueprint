@@ -5,7 +5,6 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/screens"
-	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
 // screen is the root-facing contract every workspace screen must satisfy.
@@ -78,6 +77,8 @@ func (s *resourcesScreen) Actions() []Action {
 				key.Code = tea.KeySpace
 			case "enter":
 				key.Code = tea.KeyEnter
+			case "tab":
+				key.Code = tea.KeyTab
 			}
 			return s.Update(key)
 		}})
@@ -106,12 +107,15 @@ func (s *machinesScreen) Actions() []Action {
 		{ID: "machines.primary", Label: primaryLabel, Group: "Machines", Enabled: primaryEnabled, Visible: true, DisabledReason: primaryReason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'u'}) }},
 		{ID: "machines.clear", Label: "Clear active machine", Group: "Machines", Enabled: s.CanClearMachine(), Visible: true, DisabledReason: "no active machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 		{ID: "machines.rename", Label: "Rename machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
+		{ID: "machines.restore-conflicts", Label: "Toggle Safe/Force default", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }},
+		{ID: "machines.restore-convergence", Label: "Toggle Additive/Exact default", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
+		{ID: "machines.open-policy", Label: "Open selected policy category", Group: "Machines", Enabled: s.CanOpenPolicy(), Visible: true, DisabledReason: "selected machine has no policy overrides", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
 		{ID: "machines.remove", Label: "Remove machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
 		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Enabled: s.CanMapResource(), Visible: true, DisabledReason: "select a resource path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
 	}
 }
 func (s *machinesScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
+	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.open-policy", Key: "o"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
 }
 
 func (s *restoreScreen) ID() ScreenID { return ScreenRestore }
@@ -122,14 +126,10 @@ func (s *restoreScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *restoreScreen) Actions() []Action {
-	label := "Restore all (normal)"
-	if s.Mode() == workflow.RestoreForced {
-		label = "Restore all (forced)"
-	}
-	return []Action{{ID: "restore.force", Label: "Toggle forced restore", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.detail", Label: "View restore detail", Group: "Restore", Enabled: s.CanDetail(), Visible: true, DisabledReason: "selected consequence has no diff", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }}, {ID: "restore.apply", Label: label, Group: "Restore", Enabled: s.CanApply(), Visible: true, DisabledReason: "active restore plan has no operations", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
+	return []Action{{ID: "restore.conflicts", Label: "Toggle Safe/Force for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }}, {ID: "restore.convergence", Label: "Toggle Additive/Exact for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }}, {ID: "restore.apply", Label: "Restore current plan", Group: "Restore", Enabled: s.CanApply(), Visible: true, DisabledReason: "current restore plan has no operations", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }}}
 }
 func (s *restoreScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "restore.force", Key: "f"}, {ActionID: "restore.detail", Key: "d"}, {ActionID: "restore.apply", Key: "enter"}}
+	return []Binding{{ActionID: "restore.conflicts", Key: "f"}, {ActionID: "restore.convergence", Key: "e"}, {ActionID: "restore.apply", Key: "enter"}}
 }
 
 func (s *syncScreen) ID() ScreenID { return ScreenSync }
@@ -161,12 +161,21 @@ func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 }
 func (s *providerScreen) Actions() []Action {
 	actions := []Action{
-		{ID: string(s.id) + ".tab", Label: "Switch saved/changes", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+		{ID: string(s.id) + ".tab", Label: "Switch policy tab", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: string(s.id) + ".refresh", Label: "Refresh " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 	}
 	if s.id == ScreenPackages {
 		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: s.ToggleSelectedLabel(), Enabled: s.CanToggleSelected(), Visible: true, DisabledReason: "select an Official, AUR, or Mise package", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
+	}
+	if s.Provider.PolicyTab() {
+		actions = append(actions, Action{ID: string(s.id) + ".policy-scope", Label: "Toggle Profile defaults / active machine", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'p'}) }})
+	}
+	if s.Provider.CanSetPolicySelected() {
+		actions = append(actions,
+			Action{ID: string(s.id) + ".policy", Label: "Change selected policy", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
+			Action{ID: string(s.id) + ".policy-reset", Label: "Reset selected policy", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
+		)
 	}
 	return actions
 }
@@ -175,19 +184,34 @@ func (s *providerScreen) Bindings() []Binding {
 	if s.id == ScreenPackages {
 		bindings = append(bindings, Binding{ActionID: string(s.id) + ".toggle", Key: "space"})
 	}
+	if s.Provider.PolicyTab() {
+		bindings = append(bindings, Binding{ActionID: string(s.id) + ".policy-scope", Key: "p"})
+	}
+	if s.Provider.CanSetPolicySelected() {
+		bindings = append(bindings, Binding{ActionID: string(s.id) + ".policy", Key: "space"}, Binding{ActionID: string(s.id) + ".policy-reset", Key: "x"})
+	}
 	return bindings
 }
 
 func (s *configScreen) ID() ScreenID { return ScreenConfig }
 func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" && key.String() != "tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *configScreen) Actions() []Action {
 	policyEnabled := s.CanPolicy()
+	if s.PolicyTab() {
+		return []Action{
+			{ID: "config.tab", Label: "Switch policy tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+			{ID: "config.policy-scope", Label: "Toggle Profile defaults / active machine", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'p'}) }},
+			{ID: "config.policy-set", Label: "Change selected policy", Group: "Config", Enabled: s.CanPolicyTarget(), Visible: true, DisabledReason: "select a Config policy target", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
+			{ID: "config.policy-reset", Label: "Reset selected policy", Group: "Config", Enabled: s.CanPolicyTarget(), Visible: true, DisabledReason: "select a Config policy target", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
+		}
+	}
 	return []Action{
+		{ID: "config.tab", Label: "Switch policy tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: "config.diff", Label: "View Config diff", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
 		{ID: "config.policy", Label: "Cycle Config policy", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
 		{ID: "config.include", Label: "Include Config path", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'i'}) }},
@@ -199,7 +223,10 @@ func (s *configScreen) Actions() []Action {
 	}
 }
 func (s *configScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "config.policy", Key: "space"}, {ActionID: "config.diff", Key: "d"}, {ActionID: "config.include", Key: "i"}, {ActionID: "config.exclude", Key: "x"}, {ActionID: "config.auto", Key: "a"}, {ActionID: "config.edit", Key: "e"}, {ActionID: "config.open", Key: "o"}, {ActionID: "config.copy", Key: "y"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
+	if s.PolicyTab() {
+		return []Binding{{ActionID: "config.tab", Key: "tab"}, {ActionID: "config.policy-scope", Key: "p"}, {ActionID: "config.policy-set", Key: "space"}, {ActionID: "config.policy-reset", Key: "x"}}
+	}
+	return []Binding{{ActionID: "config.tab", Key: "tab"}, {ActionID: "config.policy", Key: "space"}, {ActionID: "config.diff", Key: "d"}, {ActionID: "config.include", Key: "i"}, {ActionID: "config.exclude", Key: "x"}, {ActionID: "config.auto", Key: "a"}, {ActionID: "config.edit", Key: "e"}, {ActionID: "config.open", Key: "o"}, {ActionID: "config.copy", Key: "y"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
 }
 
 func (s *overviewScreen) ID() ScreenID { return ScreenOverview }

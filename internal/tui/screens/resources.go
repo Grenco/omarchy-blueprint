@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -28,8 +29,12 @@ type Resources struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
+	tab                     string
 	discover                bool
 	items                   []profile.Resource
+	targets                 []workflow.TargetInspection
+	policies                map[string]policy.Effective
+	policyScope             workflow.PolicyScope
 	git                     map[string]resourcesprovider.GitWorkingSummary
 	effective               map[string]string
 	browser                 *components.Browser
@@ -65,6 +70,8 @@ type resourcesStatusMsg struct {
 	items     []profile.Resource
 	git       map[string]resourcesprovider.GitWorkingSummary
 	effective map[string]string
+	targets   []workflow.TargetInspection
+	policies  map[string]policy.Effective
 	err       error
 }
 type resourceTrackedMsg struct {
@@ -72,6 +79,10 @@ type resourceTrackedMsg struct {
 	err       error
 }
 type resourceUntrackedMsg struct {
+	requestID uint64
+	err       error
+}
+type resourcePolicyMsg struct {
 	requestID uint64
 	err       error
 }
@@ -87,7 +98,7 @@ func NewResources(session *workflow.Session) *Resources {
 	return NewResourcesContext(context.Background(), session)
 }
 func NewResourcesContext(ctx context.Context, session *workflow.Session) *Resources {
-	return &Resources{ctx: ctx, session: session, phase: resourceBrowse}
+	return &Resources{ctx: ctx, session: session, phase: resourceBrowse, tab: "State", policyScope: initialPolicyScope(session)}
 }
 func (s *Resources) Focus(id string) tea.Cmd { s.focusID = id; return s.rescan() }
 func (s *Resources) SetSize(width, height int) {
@@ -103,6 +114,9 @@ func (s *Resources) SetStyles(styles components.Styles) {
 	}
 }
 func (s *Resources) Init() tea.Cmd { return s.rescan() }
+func (s *Resources) ShowPolicy(machine string) {
+	s.policyScope, s.tab, s.selected = workflow.PolicyScope{Machine: machine}, "Capture", 0
+}
 func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
@@ -120,8 +134,19 @@ func (s *Resources) Actions() []ResourceAction {
 	if s.discover {
 		return nil
 	}
+	actions := []ResourceAction{
+		{ID: "tab", Label: "Switch policy tab", Shortcut: "tab", Enabled: true},
+		{ID: "discover", Label: "Discover resource", Shortcut: "d", Enabled: s.tab == "State"},
+	}
+	if s.tab == "Capture" || s.tab == "Restore" {
+		enabled := s.selectedPolicyTarget().Key != ""
+		return append(actions,
+			ResourceAction{ID: "policy-scope", Label: "Toggle Profile defaults / active machine", Shortcut: "p", Enabled: true},
+			ResourceAction{ID: "policy", Label: "Change selected policy", Shortcut: "space", Enabled: enabled, DisabledReason: "select a tracked resource"},
+			ResourceAction{ID: "policy-reset", Label: "Reset selected policy", Shortcut: "x", Enabled: enabled, DisabledReason: "select a tracked resource"},
+		)
+	}
 	item := s.selectedResource()
-	actions := []ResourceAction{}
 	if item.ID == "" {
 		return actions
 	}
@@ -145,7 +170,7 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		if msg.requestID != s.requestID {
 			return nil
 		}
-		s.items, s.git, s.effective = msg.items, msg.git, msg.effective
+		s.items, s.git, s.effective, s.targets, s.policies = msg.items, msg.git, msg.effective, msg.targets, msg.policies
 		if msg.err != nil {
 			s.err = msg.err
 		}
@@ -181,6 +206,15 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.phase = resourceBrowse
 		return s.rescan()
+	case resourcePolicyMsg:
+		if msg.requestID != s.requestID {
+			return nil
+		}
+		s.err = msg.err
+		if msg.err == nil {
+			return func() tea.Msg { return AuthorityChanged{Notice: "Resource policy updated."} }
+		}
+		return nil
 	case resourceExistingInspectMsg:
 		if msg.requestID != s.requestID {
 			return nil
@@ -254,6 +288,17 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
 		return nil
 	}
+	if !s.discover && (s.tab == "Capture" || s.tab == "Restore") {
+		switch key.String() {
+		case "p":
+			s.policyScope = togglePolicyScope(s.session, s.policyScope)
+			return s.rescan()
+		case "space", " ":
+			return s.setResourcePolicy(false)
+		case "x":
+			return s.setResourcePolicy(true)
+		}
+	}
 	if s.phase == resourceStrategy {
 		switch key.String() {
 		case "esc":
@@ -305,18 +350,17 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	}
 	switch key.String() {
 	case "tab":
-		if !s.discover {
-			s.discover, s.err = true, nil
-			if s.session == nil {
-				return nil
-			}
-			browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
-			browser.SetSize(s.width, s.height)
-			browser.SetStyles(s.styles)
-			s.browser = &browser
-			return s.browser.Init()
+		s.tab = nextProviderTab(s.tab)
+	case "d":
+		s.discover, s.err = true, nil
+		if s.session == nil {
+			return nil
 		}
-		s.resetDiscovery()
+		browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
+		browser.SetSize(s.width, s.height)
+		browser.SetStyles(s.styles)
+		s.browser = &browser
+		return s.browser.Init()
 	case "j", "down":
 		s.list.Move(1, len(s.items), s.listHeight())
 		s.selected = s.list.Selected
@@ -402,12 +446,13 @@ func (s *Resources) View() string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	tracked, discover := "Tracked "+fmt.Sprint(len(s.items)), "Discover"
-	active := tracked
-	if s.discover {
-		active = discover
+	if s.tab == "" {
+		s.tab = "State"
 	}
-	lines := []string{components.TabBar([]string{tracked, discover}, active, s.styles)}
+	if s.tab == "Capture" || s.tab == "Restore" {
+		return s.policyView()
+	}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d · d: Discover", len(s.items)), "Safety: Exact restore never deletes Resource data."}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}
@@ -418,7 +463,7 @@ func (s *Resources) View() string {
 		lines = append(lines, renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "No extra resources tracked",
 			Explanation: "Resources are files, folders, or Git projects you want Blueprint to carry when they do not fit one of its normal categories. You only need this when there is something extra you want to reconstruct.",
-			Guidance:    "Press Tab to Discover one.",
+			Guidance:    "Press d to Discover one.",
 		}))
 		return strings.Join(lines, "\n")
 	}
@@ -435,6 +480,26 @@ func (s *Resources) View() string {
 }
 
 func (s *Resources) DetailView() string {
+	if s.tab == "Capture" || s.tab == "Restore" {
+		target := s.selectedPolicyTarget()
+		if target.Key == "" {
+			return "Resource policy\nNo tracked Resource selected."
+		}
+		effective := s.policies[target.Key].Capture
+		blocked := ""
+		if s.tab == "Restore" {
+			effective = s.policies[target.Key].Restore
+			if !target.RestoreEligible {
+				blocked = target.SafetyReason
+			}
+		} else if !target.CaptureEligible {
+			blocked = target.SafetyReason
+		}
+		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
+			blocked = "not eligible on this machine"
+		}
+		return fmt.Sprintf("Resource policy: %s\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t\nExact restore deletes Resource data: never", components.DisplayText(target.Label), target.Desired, target.Current, components.RenderPolicyStatus(s.tab, effective, blocked), effective.Source.Kind, components.DisplayText(effective.Source.Machine), components.DisplayText(effective.Source.Category), components.DisplayText(effective.Source.Target), target.Capabilities.SupportsCapture, target.Capabilities.SupportsRestore, target.Capabilities.SupportsDesiredAbsence, target.Capabilities.SupportsExactRemoval, target.Capabilities.Hierarchical)
+	}
 	if s.browser != nil {
 		return s.browser.DetailView()
 	}
@@ -450,6 +515,74 @@ func (s *Resources) DetailView() string {
 		return strings.Join(lines, "\n")
 	}
 	return "Resources details"
+}
+func (s *Resources) policyView() string {
+	scope := "Profile defaults"
+	scope = policyScopeLabel(s.policyScope)
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "p: toggle policy scope   space: change policy   x: reset override", "Safety: Exact restore never deletes Resource data."}
+	if len(s.targets) == 0 {
+		return strings.Join(append(lines, "No tracked Resources."), "\n")
+	}
+	for i, target := range s.targets {
+		effective := s.policies[target.Key].Capture
+		blocked := ""
+		if s.tab == "Restore" {
+			effective = s.policies[target.Key].Restore
+			if !target.RestoreEligible {
+				blocked = target.SafetyReason
+			}
+		} else if !target.CaptureEligible {
+			blocked = target.SafetyReason
+		}
+		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
+			blocked = "not eligible on this machine"
+		}
+		label := target.Label
+		if label == "" {
+			label = strings.TrimPrefix(target.Key, "resource:")
+		}
+		line := fmt.Sprintf("  %s — %s", components.DisplayText(label), components.RenderPolicyStatus(s.tab, effective, blocked))
+		if i == s.selected {
+			line = components.Icons.Selected + line[1:]
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (s *Resources) selectedPolicyTarget() workflow.TargetInspection {
+	if s.selected >= 0 && s.selected < len(s.targets) {
+		return s.targets[s.selected]
+	}
+	return workflow.TargetInspection{}
+}
+
+func (s *Resources) setResourcePolicy(clear bool) tea.Cmd {
+	target := s.selectedPolicyTarget()
+	if target.Key == "" || s.session == nil {
+		return nil
+	}
+	s.requestID++
+	requestID := s.requestID
+	scope := s.policyScope
+	axis := policy.AxisCapture
+	effective := s.policies[target.Key].Capture
+	if s.tab == "Restore" {
+		axis, effective = policy.AxisRestore, s.policies[target.Key].Restore
+	}
+	return func() tea.Msg {
+		var err error
+		if clear {
+			err = s.session.ClearPolicy(scope, axis, "resources", target.Key)
+		} else {
+			setting := policy.SettingDisabled
+			if !effective.Enabled {
+				setting = policy.SettingEnabled
+			}
+			err = s.session.SetPolicy(scope, axis, "resources", target.Key, setting)
+		}
+		return resourcePolicyMsg{requestID: requestID, err: err}
+	}
 }
 func resourceDetail(path string, inspection workflow.PathInspection) string {
 	lines := []string{"Candidate: " + components.DisplayText(path)}
@@ -530,6 +663,7 @@ func (s *Resources) resetDiscovery() {
 func (s *Resources) rescan() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, "resources")
 		if err != nil {
@@ -544,7 +678,19 @@ func (s *Resources) rescan() tea.Cmd {
 						effective[item.ID] = inspection.EffectivePath
 					}
 				}
-				return resourcesStatusMsg{requestID: requestID, items: report.Profile.Resources.Items, git: provider.ResourceGit, effective: effective}
+				targets, err := s.session.PolicyTargets(s.ctx, "resources")
+				if err != nil {
+					return resourcesStatusMsg{requestID: requestID, err: err}
+				}
+				policies := make(map[string]policy.Effective, len(targets))
+				for _, target := range targets {
+					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "resources", target)
+					if err != nil {
+						return resourcesStatusMsg{requestID: requestID, err: err}
+					}
+					policies[target.Key] = resolved
+				}
+				return resourcesStatusMsg{requestID: requestID, items: report.Profile.Resources.Items, git: provider.ResourceGit, effective: effective, targets: targets, policies: policies}
 			}
 		}
 		return resourcesStatusMsg{requestID: requestID}

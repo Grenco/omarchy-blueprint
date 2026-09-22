@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -27,11 +28,29 @@ func TestResourcesEmptyTrackedViewExplainsOptionalPurpose(t *testing.T) {
 		"No extra resources tracked",
 		"files, folders, or Git projects",
 		"do not fit one of its normal categories",
-		"Press Tab to Discover one.",
+		"Exact restore never deletes Resource data.",
+		"Press d to Discover one.",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("empty Resources missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestResourcesExposePerIDCaptureAndRestorePolicy(t *testing.T) {
+	screen := &Resources{
+		width: 80, phase: resourceBrowse, tab: "Restore",
+		targets:  []workflow.TargetInspection{{Key: "resource:projects", Label: "projects", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent, CaptureEligible: true, RestoreEligible: true, Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true}}},
+		policies: map[string]policy.Effective{"resource:projects": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget}}}},
+	}
+	view := screen.View()
+	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults", "projects", "Skip (explicit)", "Exact restore never deletes Resource data"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Resources policy view missing %q:\n%s", want, view)
+		}
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "Source: profile-target") || !strings.Contains(detail, "Supports restore: true") {
+		t.Fatalf("Resources policy details incomplete:\n%s", detail)
 	}
 }
 
@@ -91,7 +110,7 @@ func deliverResourceBrowser(t *testing.T, browser *components.Browser, cmd tea.C
 
 func TestResourceActionsAreContextual(t *testing.T) {
 	screen := &Resources{phase: resourceBrowse, items: []profile.Resource{{ID: "projects", Path: "~/Projects", Strategy: "copy"}}}
-	if got := resourceActionIDs(screen.Actions()); !reflect.DeepEqual(got, []string{"strategy", "untrack", "edit", "open", "copy"}) {
+	if got := resourceActionIDs(screen.Actions()); !reflect.DeepEqual(got, []string{"tab", "discover", "strategy", "untrack", "edit", "open", "copy"}) {
 		t.Fatalf("tracked actions=%v", got)
 	}
 	screen.discover = true
@@ -165,7 +184,7 @@ func TestResourceScreenTrackedTableHidesTrailingColumnsResponsively(t *testing.T
 			t.Fatalf("narrow table missing %q:\n%s", want, view)
 		}
 	}
-	for _, unwanted := range []string{"Effective path", "State"} {
+	for _, unwanted := range []string{"Effective path", "\nState       "} {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("narrow table retained %q:\n%s", unwanted, view)
 		}

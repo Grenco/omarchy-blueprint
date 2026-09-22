@@ -187,8 +187,8 @@ func (s *Session) SetProviders(providers []Provider) error {
 
 // SetRestoreFinalizer installs application-specific aggregate restore rules.
 // The finalizer receives the same policy.RestoreOptions that planned every
-// selected provider, not the legacy RestoreMode, so it can never diverge
-// from the effective Restore intent that produced the plan it is adjusting.
+// selected provider, so it cannot diverge from the effective Restore intent
+// that produced the plan it is adjusting.
 func (s *Session) SetRestoreFinalizer(finalize func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error) {
 	s.finalizeRestore = finalize
 }

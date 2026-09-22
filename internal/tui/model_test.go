@@ -15,6 +15,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	blueprintmodel "github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/config"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
@@ -221,6 +222,118 @@ func TestMachineMutationCompletionUpdatesRootAndReturnsToOrigin(t *testing.T) {
 	}
 	if len(owner.messages) != 1 {
 		t.Fatalf("completion did not return to Machines: %#v", owner.messages)
+	}
+}
+
+func TestMachineMutationRefreshesVisitedPolicyAndRestoreScreens(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	machines := &allMessageRecordingScreen{id: ScreenMachines}
+	packages := &recordingScreen{id: ScreenPackages}
+	restore := &recordingScreen{id: ScreenRestore}
+	m.screens[ScreenMachines], m.screens[ScreenPackages], m.screens[ScreenRestore] = machines, packages, restore
+	m.initialized[ScreenPackages], m.initialized[ScreenRestore] = true, true
+
+	updated, _ := m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.MachineMutationComplete{Notice: "Machine selected."}})
+	m = updated.(model)
+	if packages.inits != 1 || restore.inits != 1 {
+		t.Fatalf("machine mutation did not refresh cached authority: packages=%d restore=%d", packages.inits, restore.inits)
+	}
+}
+
+func TestAuthorityChangedRefreshesEveryVisitedDependentScreen(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	packages := &recordingScreen{id: ScreenPackages}
+	restore := &recordingScreen{id: ScreenRestore}
+	unvisited := &recordingScreen{id: ScreenHooks}
+	m.screens[ScreenPackages], m.screens[ScreenRestore], m.screens[ScreenHooks] = packages, restore, unvisited
+	m.initialized[ScreenPackages], m.initialized[ScreenRestore] = true, true
+
+	updated, _ := m.Update(screenMsg{Screen: ScreenPackages, Msg: screens.AuthorityChanged{Notice: "Policy updated."}})
+	m = updated.(model)
+	if packages.inits != 1 || restore.inits != 1 || unvisited.inits != 0 {
+		t.Fatalf("authority refresh counts: packages=%d restore=%d hooks=%d", packages.inits, restore.inits, unvisited.inits)
+	}
+	if m.notification != "Policy updated." {
+		t.Fatalf("notification = %q", m.notification)
+	}
+}
+
+func TestMachinePolicyNavigationOpensCategoryPolicyView(t *testing.T) {
+	session := integrationSession(t)
+	if err := session.AddMachine(context.Background(), "laptop", true); err != nil {
+		t.Fatal(err)
+	}
+	m := newModelWithSession(ThemeLoader{NoColor: true}, session)
+	updated, cmd := m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "desktop"}})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if m.screenID() != ScreenConfig {
+		t.Fatalf("policy navigation selected %s", m.screenID())
+	}
+	if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") || !strings.Contains(view, "Machine: desktop") || strings.Contains(view, "Machine: laptop") {
+		t.Fatalf("policy navigation did not open Capture policy view:\n%s", view)
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	for _, machine := range session.Profile().Machines.Items {
+		if machine.Name == "desktop" && (len(machine.Policy.Capture) != 1 || machine.Policy.Capture[0].Target != ".config/example") {
+			t.Fatalf("selected desktop policy was not edited: %#v", machine.Policy)
+		}
+		if machine.Name == "laptop" && len(machine.Policy.Capture) != 0 {
+			t.Fatalf("desktop navigation edited active laptop: %#v", machine.Policy)
+		}
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: 'p'})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if view := m.activeScreen().View(); !strings.Contains(view, "Profile defaults") {
+		t.Fatalf("profile-default policy scope is not independently selectable:\n%s", view)
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	rules := session.Profile().Policy.Capture
+	if len(rules) != 1 || rules[0].Category != "config" || rules[0].Target != ".config/example" || rules[0].Setting != policy.SettingDisabled {
+		t.Fatalf("profile-default edit wrote wrong scope: %#v", session.Profile().Policy)
+	}
+	for _, machine := range session.Profile().Machines.Items {
+		if machine.Name == "laptop" && len(machine.Policy.Capture) != 0 {
+			t.Fatalf("profile-default edit leaked into active laptop: %#v", machine.Policy)
+		}
+	}
+}
+
+func TestMachinePolicyNavigationRefreshesAnAlreadyVisitedScope(t *testing.T) {
+	session := integrationSession(t)
+	if err := session.AddMachine(context.Background(), "laptop", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPolicy(workflow.PolicyScope{Machine: "desktop"}, policy.AxisCapture, "config", ".config/example", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+	m := newModelWithSession(ThemeLoader{NoColor: true}, session)
+	updated, cmd := m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "laptop"}})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if view := m.activeScreen().View(); !strings.Contains(view, "Include") {
+		t.Fatalf("laptop policy did not load:\n%s", view)
+	}
+
+	updated, cmd = m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "desktop"}})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	if view := m.activeScreen().View(); !strings.Contains(view, "Ignore (explicit)") {
+		t.Fatalf("desktop policy was not refreshed after deep-link:\n%s", view)
+	}
+
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m = updated.(model)
+	consumeScreenCmd(t, &m, cmd)
+	for _, machine := range session.Profile().Machines.Items {
+		if machine.Name == "desktop" && (len(machine.Policy.Capture) != 1 || machine.Policy.Capture[0].Setting != policy.SettingEnabled) {
+			t.Fatalf("desktop toggle used stale laptop effective state: %#v", machine.Policy)
+		}
 	}
 }
 
@@ -495,11 +608,11 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 		t.Fatalf("machine mapping lost shared profile data: %q", view)
 	}
 
-	m.selectScreen(ScreenRestore)
+	consumeScreenCmd(t, &m, m.selectScreen(ScreenRestore))
 	restoreScreen := m.activeScreen().(*restoreScreen)
 	consumeScreenCmd(t, &m, restoreScreen.Update(tea.KeyPressMsg{Code: 'f'}))
-	if !strings.Contains(restoreScreen.View(), "active: [Forced]") {
-		t.Fatalf("restore mode did not toggle: %q", restoreScreen.View())
+	if !strings.Contains(restoreScreen.View(), "Conflicts: force") {
+		t.Fatalf("restore conflict setting did not toggle: %q", restoreScreen.View())
 	}
 	m.selectScreen(ScreenSync)
 	syncScreen := m.activeScreen().(*syncScreen)
@@ -1081,7 +1194,7 @@ type configIntegrationProvider struct{}
 func (configIntegrationProvider) ID() string                 { return "config" }
 func (configIntegrationProvider) Captured(profile.Data) bool { return true }
 func (configIntegrationProvider) InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error) {
-	return nil, nil
+	return []workflow.TargetInspection{{Key: ".config/example/settings.toml", Parent: ".config/example", Ancestors: []string{".config/example", ".config"}, Label: "settings.toml", CaptureEligible: true, RestoreEligible: true, Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true, Hierarchical: true}}}, nil
 }
 func (configIntegrationProvider) Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []blueprintmodel.Change, error) {
 	return nil, nil, nil
@@ -1118,6 +1231,24 @@ func (resourcesIntegrationProvider) Diff(context.Context, profile.Data) ([]bluep
 func (resourcesIntegrationProvider) DiffWithGitWorkingState(context.Context, profile.Data) ([]blueprintmodel.Change, map[string]resourcesprovider.GitWorkingSummary, error) {
 	return nil, map[string]resourcesprovider.GitWorkingSummary{"projects": {UnstagedTracked: 1}}, nil
 }
+func (resourcesIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (blueprintmodel.RestorePlan, error) {
+	return blueprintmodel.RestorePlan{}, nil
+}
+func (resourcesIntegrationProvider) Verify(context.Context, profile.Data, workflow.RestoreContext) (blueprintmodel.VerificationResult, error) {
+	return blueprintmodel.VerificationResult{OK: true}, nil
+}
+
+type integrationRunner struct{ command.SystemRunner }
+
+func (r integrationRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	if name == "omarchy" && len(args) > 0 && args[0] == "version" {
+		if len(args) == 2 && args[1] == "channel" {
+			return "stable", nil
+		}
+		return "4.0.0", nil
+	}
+	return r.SystemRunner.Run(ctx, name, args...)
+}
 
 func integrationSession(t *testing.T) *workflow.Session {
 	t.Helper()
@@ -1138,7 +1269,7 @@ func integrationSession(t *testing.T) *workflow.Session {
 	if _, err := (command.SystemRunner{}).Run(context.Background(), "git", "-C", root, "init"); err != nil {
 		t.Fatal(err)
 	}
-	session, err := workflow.Open(workflow.Dependencies{Runner: command.SystemRunner{}, StateHome: func() (string, error) { return state, nil }}, workflow.Options{ProfileDir: root, ExplicitMachine: "desktop"})
+	session, err := workflow.Open(workflow.Dependencies{Runner: integrationRunner{}, Now: time.Now, StateHome: func() (string, error) { return state, nil }}, workflow.Options{ProfileDir: root, ExplicitMachine: "desktop"})
 	if err != nil {
 		t.Fatal(err)
 	}
