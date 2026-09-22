@@ -43,7 +43,10 @@ type MachineMutationComplete struct {
 type AuthorityChanged struct{ Notice string }
 
 // PolicyNavigation asks the root to open a category's policy controls.
-type PolicyNavigation struct{ Category string }
+type PolicyNavigation struct {
+	Category string
+	Machine  string
+}
 
 func NewMachines(session *workflow.Session) *Machines {
 	return NewMachinesContext(context.Background(), session)
@@ -285,7 +288,8 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		categories := machinePolicyCategories(s.selectedMachine().Policy)
 		if len(categories) > 0 {
 			category := categories[min(s.policyCategory, len(categories)-1)].category
-			return func() tea.Msg { return PolicyNavigation{Category: category} }
+			machine := s.selectedMachine().Name
+			return func() tea.Msg { return PolicyNavigation{Category: category, Machine: machine} }
 		}
 	}
 	return nil

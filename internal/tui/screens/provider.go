@@ -32,6 +32,7 @@ type Provider struct {
 	status                  workflow.ProviderStatus
 	targets                 []workflow.TargetInspection
 	effective               map[string]policy.Effective
+	policyScope             workflow.PolicyScope
 	list                    components.Selectable
 	styles                  components.Styles
 	busy, confirm           bool
@@ -66,10 +67,12 @@ func NewProvider(session *workflow.Session, id string) *Provider {
 	return NewProviderContext(context.Background(), session, id)
 }
 func NewProviderContext(ctx context.Context, session *workflow.Session, id string) *Provider {
-	return &Provider{ctx: ctx, session: session, id: id, tab: "State"}
+	return &Provider{ctx: ctx, session: session, id: id, tab: "State", policyScope: initialPolicyScope(session)}
 }
 func (s *Provider) Refresh() tea.Cmd { return s.refresh() }
-func (s *Provider) ShowPolicy() {
+
+func (s *Provider) ShowPolicy(machine string) {
+	s.policyScope = workflow.PolicyScope{Machine: machine}
 	s.tab = "Capture"
 	s.list.SetSelected(0, len(s.rows()), s.listHeight())
 	s.selected = s.list.Selected
@@ -143,6 +146,11 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 		s.tab = nextProviderTab(s.tab)
 		s.list.SetSelected(0, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
+	case "p":
+		if s.policyTab() {
+			s.policyScope = togglePolicyScope(s.session, s.policyScope)
+			return s.refresh()
+		}
 	case "j", "down":
 		s.list.Move(1, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
@@ -260,7 +268,7 @@ func (s *Provider) policyView() string {
 	lines := []string{
 		components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles),
 		s.policyScopeLabel(),
-		"space: change policy   x: reset override",
+		"p: toggle policy scope   space: change policy   x: reset override",
 	}
 	if s.busy {
 		lines = append(lines, "Loading...")
@@ -305,10 +313,7 @@ func nextProviderTab(tab string) string {
 }
 func (s *Provider) policyTab() bool { return s.tab == "Capture" || s.tab == "Restore" }
 func (s *Provider) policyScopeLabel() string {
-	if s.session != nil && s.session.Machine().Name != "" {
-		return "Machine: " + s.session.Machine().Name
-	}
-	return "Profile defaults"
+	return policyScopeLabel(s.policyScope)
 }
 func emptyTabMessage(tab string, captured bool) string {
 	if !captured {
@@ -552,6 +557,7 @@ func sourceLabel(source string) string {
 func (s *Provider) refresh() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, s.id)
@@ -568,7 +574,6 @@ func (s *Provider) refresh() tea.Cmd {
 					return providerStatusMsg{requestID: requestID, err: err}
 				}
 				effective := make(map[string]policy.Effective, len(targets))
-				scope := workflow.PolicyScope{Machine: s.session.Machine().Name}
 				for _, target := range targets {
 					resolved, err := s.session.EffectivePolicy(s.ctx, scope, s.id, target)
 					if err != nil {
@@ -604,6 +609,7 @@ func (s *Provider) CanToggleSelected() bool {
 func (s *Provider) CanSetPolicySelected() bool {
 	return !s.busy && s.policyTab() && s.selectedPolicyRow().key != ""
 }
+func (s *Provider) PolicyTab() bool { return s.policyTab() }
 func (s *Provider) ToggleSelectedLabel() string {
 	if s.selectedSavedRow().state == "not included" {
 		return "Include selected package"
@@ -617,12 +623,6 @@ func (s *Provider) toggleItem(row providerRow) tea.Cmd {
 		return providerToggleMsg{requestID: requestID, err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
 	}
 }
-func (s *Provider) policyScope() workflow.PolicyScope {
-	if s.session == nil {
-		return workflow.PolicyScope{}
-	}
-	return workflow.PolicyScope{Machine: s.session.Machine().Name}
-}
 func (s *Provider) policyAxis() policy.Axis {
 	if s.tab == "Restore" {
 		return policy.AxisRestore
@@ -632,19 +632,23 @@ func (s *Provider) policyAxis() policy.Axis {
 func (s *Provider) setPolicy(row providerRow) tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
+	axis := s.policyAxis()
 	setting := policy.SettingDisabled
 	if !row.effective.Enabled {
 		setting = policy.SettingEnabled
 	}
 	return func() tea.Msg {
-		return providerToggleMsg{requestID: requestID, err: s.session.SetPolicy(s.policyScope(), s.policyAxis(), s.id, row.key, setting)}
+		return providerToggleMsg{requestID: requestID, err: s.session.SetPolicy(scope, axis, s.id, row.key, setting)}
 	}
 }
 func (s *Provider) clearPolicy(row providerRow) tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
+	axis := s.policyAxis()
 	return func() tea.Msg {
-		return providerToggleMsg{requestID: requestID, err: s.session.ClearPolicy(s.policyScope(), s.policyAxis(), s.id, row.key)}
+		return providerToggleMsg{requestID: requestID, err: s.session.ClearPolicy(scope, axis, s.id, row.key)}
 	}
 }
 func providerItemCanToggle(id, section string) bool {

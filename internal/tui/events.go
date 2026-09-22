@@ -74,15 +74,15 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 		return m, m.refreshInitializedAuthorityScreens(""), true
 	case screens.PolicyNavigation:
 		id := ScreenID(msg.Category)
-		cmd := m.selectScreen(id)
 		switch current := m.screens[id].(type) {
 		case *providerScreen:
-			current.ShowPolicy()
+			current.ShowPolicy(msg.Machine)
 		case *configScreen:
-			current.ShowPolicy()
+			current.ShowPolicy(msg.Machine)
 		case *resourcesScreen:
-			current.ShowPolicy()
+			current.ShowPolicy(msg.Machine)
 		}
+		cmd := m.selectScreen(id)
 		return m, cmd, true
 	case screens.Notice:
 		m.notification = msg.Message
