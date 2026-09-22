@@ -364,7 +364,7 @@ func (s *Config) View() string {
 			if s.groupCollapsed(row.group) {
 				marker = components.Icons.Collapsed
 			}
-			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + string(row.group)), "", ""}, Selected: i == s.selected, Focused: true})
+			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + string(row.group)), "", ""}, Selected: i == s.selected, Focused: true, Divider: true})
 			continue
 		}
 		policy := s.candidatePolicy(row.candidate.Path)
@@ -386,7 +386,10 @@ func (s *Config) View() string {
 }
 
 func (s *Config) policyView() string {
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel()}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
+	if scope := s.policyScopeLabel(); scope != "" {
+		lines = append(lines, scope)
+	}
 	rows := s.configPolicyRows()
 	columns := configPolicyColumns(s.tab, s.presentationWidth())
 	policyRows := make([]components.Row, 0, len(rows))
@@ -558,7 +561,7 @@ func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 func (s *Config) policyScopeLabel() string {
-	return policyScopeLabel(s.policyScope)
+	return policyScopeLabel(s.policyScope, activeMachineName(s.session))
 }
 func (s *Config) targetPolicy(path string) (workflow.TargetInspection, policy.Effective) {
 	for _, target := range s.targets {

@@ -23,7 +23,7 @@ type Machines struct {
 	resource                int
 	policyCategory          int
 	focusMapping            string
-	focusMappings           bool
+	region                  machineRegion
 	machineList             components.Selectable
 	machineTable            components.Table
 	policyTable             components.Table
@@ -33,6 +33,14 @@ type Machines struct {
 	busy                    bool
 	err                     error
 }
+
+type machineRegion uint8
+
+const (
+	machineRegionMachines machineRegion = iota
+	machineRegionPolicy
+	machineRegionResources
+)
 
 type MachineMutationComplete struct {
 	Notice string
@@ -66,12 +74,10 @@ func (s *Machines) SetStyles(styles components.Styles) {
 // edge is reached, where root focus navigation may take over.
 func (s *Machines) OwnsWorkspaceKey(key string) bool {
 	switch key {
-	case "h", "left":
-		return s.focusMappings
-	case "l", "right":
-		return !s.focusMappings
 	case "tab", "j", "down", "k", "up":
 		return true
+	case "h", "left", "l", "right":
+		return false
 	}
 	return key != ":" && key != "?" && key != "q"
 }
@@ -100,22 +106,24 @@ func (s *Machines) SetSize(width, height int) {
 func (s *Machines) Init() tea.Cmd         { return nil }
 func (s *Machines) TransientActive() bool { return s.browser != nil || s.confirm != "" || s.mode != "" }
 func (s *Machines) HasSelectedMachine() bool {
-	return !s.focusMappings && s.selectedMachine().Name != ""
+	return s.region == machineRegionMachines && s.selectedMachine().Name != ""
 }
 func (s *Machines) CanUseMachine() bool {
 	return s.HasSelectedMachine() && s.selectedMachine().Name != s.session.Machine().Name
 }
-func (s *Machines) CanClearMachine() bool { return !s.focusMappings && s.session.Machine().Name != "" }
+func (s *Machines) CanClearMachine() bool {
+	return s.region == machineRegionMachines && s.session.Machine().Name != ""
+}
 func (s *Machines) CanMapResource() bool {
-	return s.focusMappings && s.selectedMachine().Name != "" && s.selectedMapping().id != ""
+	return s.region == machineRegionResources && s.selectedMachine().Name != "" && s.selectedMapping().id != ""
 }
 func (s *Machines) CanUnmapResource() bool { return s.CanMapResource() && s.selectedMapping().override }
-func (s *Machines) MappingFocused() bool   { return s.focusMappings }
+func (s *Machines) MappingFocused() bool   { return s.region == machineRegionResources }
 func (s *Machines) CanOpenPolicy() bool {
-	return !s.focusMappings && len(machinePolicyCategories(s.selectedMachine().Policy)) > 0
+	return s.region == machineRegionPolicy && len(machinePolicyCategories(s.selectedMachine().Policy)) > 0
 }
 func (s *Machines) CanCyclePolicy() bool {
-	return !s.focusMappings && len(machinePolicyCategories(s.selectedMachine().Policy)) > 1
+	return s.region == machineRegionPolicy && len(machinePolicyCategories(s.selectedMachine().Policy)) > 1
 }
 
 func (s *Machines) Update(msg tea.Msg) tea.Cmd {
@@ -203,38 +211,37 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	}
-	if s.focusMappings {
+	if s.region == machineRegionResources {
 		s.mappingNavigation.Selected = s.resource
 		if s.mappingNavigation.Vim(key.String(), len(s.mappingRows()), s.tableHeight()) {
 			s.resource = s.mappingNavigation.Selected
 			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
 			return nil
 		}
-	} else if s.machineList.Vim(key.String(), len(s.machines()), s.listHeight()) {
+	} else if s.region == machineRegionMachines && s.machineList.Vim(key.String(), len(s.machines()), s.listHeight()) {
 		s.selected = s.machineList.Selected
 		s.resource = 0
+		return nil
+	} else if s.region == machineRegionPolicy && (key.String() == "j" || key.String() == "down" || key.String() == "k" || key.String() == "up") {
+		s.movePolicyCategory(key.String() == "j" || key.String() == "down")
 		return nil
 	}
 	switch key.String() {
 	case "tab":
-		s.focusMappings = !s.focusMappings
-	case "h", "left":
-		s.focusMappings = false
-	case "l", "right":
-		s.focusMappings = true
+		s.nextRegion()
 	case "j", "down":
-		if s.focusMappings {
+		if s.region == machineRegionResources {
 			s.resource = min(len(s.mappingRows())-1, s.resource+1)
 			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
-		} else if s.machineList.Move(1, len(s.machines()), s.listHeight()) {
+		} else if s.region == machineRegionMachines && s.machineList.Move(1, len(s.machines()), s.listHeight()) {
 			s.selected = s.machineList.Selected
 			s.resource = 0
 		}
 	case "k", "up":
-		if s.focusMappings {
+		if s.region == machineRegionResources {
 			s.resource = max(0, s.resource-1)
 			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
-		} else if s.machineList.Move(-1, len(s.machines()), s.listHeight()) {
+		} else if s.region == machineRegionMachines && s.machineList.Move(-1, len(s.machines()), s.listHeight()) {
 			s.selected = s.machineList.Selected
 			s.resource = 0
 		}
@@ -243,28 +250,28 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		s.name, _ = s.session.SuggestedMachineName()
 		return s.nameModal("Add machine")
 	case "u":
-		if !s.focusMappings {
+		if s.region == machineRegionMachines {
 			return s.use()
 		}
 		if s.selectedMapping().override {
 			return s.unmapResource()
 		}
 	case "c":
-		if !s.focusMappings {
+		if s.region == machineRegionMachines {
 			return s.clear()
 		}
 	case "r":
-		if !s.focusMappings && s.selectedMachine().Name != "" {
+		if s.region == machineRegionMachines && s.selectedMachine().Name != "" {
 			s.mode, s.name = "rename", s.selectedMachine().Name
 			return s.nameModal("Rename machine")
 		}
 	case "x":
-		if !s.focusMappings && s.selectedMachine().Name != "" {
+		if s.region == machineRegionMachines && s.selectedMachine().Name != "" {
 			s.confirm = "remove"
 			return s.confirmModal()
 		}
 	case "m":
-		if s.focusMappings && s.selectedMachine().Name != "" && s.selectedMapping().id != "" {
+		if s.region == machineRegionResources && s.selectedMachine().Name != "" && s.selectedMapping().id != "" {
 			browser := components.NewBrowser(components.PickDirectory, components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath})
 			browser.SetSize(s.width, s.height)
 			browser.SetStyles(s.styles)
@@ -272,25 +279,20 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 			return s.browser.Init()
 		}
 	case "f":
-		if !s.focusMappings && s.selectedMachine().Name != "" {
+		if s.region == machineRegionMachines && s.selectedMachine().Name != "" {
 			return s.toggleRestoreConflict()
 		}
 	case "e":
-		if !s.focusMappings && s.selectedMachine().Name != "" {
+		if s.region == machineRegionMachines && s.selectedMachine().Name != "" {
 			return s.toggleRestoreConvergence()
 		}
 	case "[", "]":
-		categories := machinePolicyCategories(s.selectedMachine().Policy)
-		if len(categories) > 0 {
-			delta := 1
-			if key.String() == "[" {
-				delta = -1
-			}
-			s.policyCategory = (s.policyCategory + delta + len(categories)) % len(categories)
+		if s.region == machineRegionPolicy {
+			s.movePolicyCategory(key.String() == "]")
 		}
 	case "o":
 		categories := machinePolicyCategories(s.selectedMachine().Policy)
-		if len(categories) > 0 {
+		if s.region == machineRegionPolicy && len(categories) > 0 {
 			category := categories[min(s.policyCategory, len(categories)-1)].category
 			machine := s.selectedMachine().Name
 			return func() tea.Msg { return PolicyNavigation{Category: category, Machine: machine} }
@@ -336,7 +338,7 @@ func (s *Machines) View() string {
 		} else {
 			overrideLabel = s.styles.Muted(overrideLabel)
 		}
-		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active), defaults, overrideLabel}, Selected: i == s.machineList.Selected && !s.focusMappings, Focused: !s.focusMappings})
+		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active), defaults, overrideLabel}, Selected: i == s.machineList.Selected && s.region == machineRegionMachines, Focused: s.region == machineRegionMachines})
 	}
 	if len(machineRows) == 0 {
 		machineRows = append(machineRows, components.Row{Cells: []string{"No machine overlays."}})
@@ -351,7 +353,7 @@ func (s *Machines) View() string {
 		} else {
 			source = s.styles.Muted(source)
 		}
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: i == s.resource && s.focusMappings, Focused: s.focusMappings})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: i == s.resource && s.region == machineRegionResources, Focused: s.region == machineRegionResources})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
@@ -369,7 +371,15 @@ func (s *Machines) View() string {
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "RESOURCE", Width: 18, MinWidth: 10}, {Title: "PORTABLE", Width: 28, MinWidth: 12}, {Title: "EFFECTIVE", Width: 28, MinWidth: 12}, {Title: "SOURCE", MinWidth: 8}}, rows, width, s.tableHeight()+1, s.styles)
 	parts = append(parts, "Resource paths", right)
-	existingView := strings.Join(parts, "\n")
+	separator := "\n\n"
+	// The portable-path guidance can consume much of the screen even when the
+	// outer height looks generous. Compact the section gaps according to the
+	// space that remains for the tables, so the Resource paths region is not
+	// pushed below an 80-column viewport.
+	if s.contentHeight() > 0 && s.contentHeight() < 18 {
+		separator = "\n"
+	}
+	existingView := strings.Join(parts, separator)
 	if guidance, ok := s.portableGuidance(); ok {
 		return guidance + "\n\n" + existingView
 	}
@@ -384,14 +394,39 @@ func (s *Machines) policyCategoriesView(width int) string {
 	}
 	rows := make([]components.Row, 0, len(categories))
 	for i, item := range categories {
-		selected := ""
-		if i == min(s.policyCategory, len(categories)-1) {
-			selected = "Yes"
-		}
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.category), fmt.Sprint(item.count), selected}})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.category), fmt.Sprint(item.count)}, Selected: i == min(s.policyCategory, len(categories)-1) && s.region == machineRegionPolicy, Focused: s.region == machineRegionPolicy})
 	}
 	height := len(rows) + 1
-	return "Policy categories\n" + s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", Width: 14, MinWidth: 9}, {Title: "SELECTED", MinWidth: 8}}, rows, width, height, s.styles)
+	return "Policy overrides\n" + s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", MinWidth: 9}}, rows, width, height, s.styles)
+}
+
+func (s *Machines) movePolicyCategory(forward bool) {
+	categories := machinePolicyCategories(s.selectedMachine().Policy)
+	if len(categories) == 0 {
+		return
+	}
+	delta := -1
+	if forward {
+		delta = 1
+	}
+	s.policyCategory = (s.policyCategory + delta + len(categories)) % len(categories)
+}
+
+func (s *Machines) nextRegion() {
+	regions := []machineRegion{machineRegionMachines}
+	if len(machinePolicyCategories(s.selectedMachine().Policy)) > 0 {
+		regions = append(regions, machineRegionPolicy)
+	}
+	if len(s.mappingRows()) > 0 {
+		regions = append(regions, machineRegionResources)
+	}
+	for i, region := range regions {
+		if region == s.region {
+			s.region = regions[(i+1)%len(regions)]
+			return
+		}
+	}
+	s.region = regions[0]
 }
 
 func restoreDefaultsLabel(options policy.RestoreOptions) string {
@@ -507,9 +542,17 @@ func (s *Machines) DetailView() string {
 	if s.browser != nil {
 		return s.browser.DetailView()
 	}
-	if s.focusMappings {
+	if s.region == machineRegionResources {
 		row := s.selectedMapping()
 		return "Mapping\nMachine: " + components.DisplayText(s.selectedMachine().Name) + "\nResource: " + components.DisplayText(row.id) + "\nPortable: " + components.DisplayText(row.portable) + "\nEffective: " + components.DisplayText(row.effective) + "\nSource: " + components.DisplayText(row.source)
+	}
+	if s.region == machineRegionPolicy {
+		categories := machinePolicyCategories(s.selectedMachine().Policy)
+		if len(categories) == 0 {
+			return "Policy overrides\nNo explicit Capture or Restore overrides."
+		}
+		selected := categories[min(s.policyCategory, len(categories)-1)]
+		return "Policy overrides\nCategory: " + components.DisplayText(selected.category) + "\nOverrides: " + fmt.Sprint(selected.count) + "\nThese categories contain explicit Capture or Restore overrides for the selected machine. Open one to review its targets."
 	}
 	item := s.selectedMachine()
 	if item.Name == "" {

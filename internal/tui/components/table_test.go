@@ -37,3 +37,18 @@ func TestTableRenderKeepsLogicalRowsSingleLine(t *testing.T) {
 		}
 	}
 }
+
+func TestTableRenderSectionRowRunsDividerAcrossTable(t *testing.T) {
+	table := Table{}
+	view := table.Render(
+		[]Column{{Title: "ITEM", MinWidth: 12}, {Title: "STATE", MinWidth: 8}},
+		[]Row{{Cells: []string{"▼ Official packages"}, Divider: true}},
+		50,
+		3,
+		Styles{},
+	)
+	lines := strings.Split(view, "\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], "▼ Official packages ─────") || len([]rune(lines[1])) != 50 {
+		t.Fatalf("section divider did not preserve the table shape: %q", view)
+	}
+}

@@ -235,7 +235,7 @@ func (s *Restore) currentPlanView() string {
 	if s.options.Convergence == policy.ConvergenceExact {
 		lines = append(lines, "WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted.")
 	}
-	lines = append(lines, fmt.Sprintf("Current plan: create:%d modify:%d replace:%d removals:%d commands:%d policy-skips:%d forced-overrides:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides))
+	lines = append(lines, "", fmt.Sprintf("Current plan: create:%d modify:%d replace:%d removals:%d commands:%d policy-skips:%d forced-overrides:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides))
 	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
 		return s.wrapCurrentPlan(append(lines, "", "No restore operations required."))
 	}
@@ -263,7 +263,7 @@ func (s *Restore) currentPlanView() string {
 		}
 		sections = append(sections, "Skipped by policy / safety / mode", s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
 	}
-	return strings.Join(sections, "\n")
+	return strings.Join(sections, "\n\n")
 }
 
 func (s *Restore) wrapCurrentPlan(lines []string) string {

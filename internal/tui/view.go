@@ -62,7 +62,21 @@ func (m model) header() string {
 	} else if strings.HasPrefix(state, "~") {
 		state = m.muted(state)
 	}
-	return m.accent("Blueprint") + "  profile: " + profileName + "  machine: " + machine + "  " + state
+	left := m.accent("Blueprint") + "  profile: " + profileName + "  machine: " + machine + "  " + state
+	return alignHeader(left, components.DisplayText(m.profileDir), m.width)
+}
+
+func alignHeader(left, right string, width int) string {
+	if right == "" || width <= 0 {
+		return left
+	}
+	available := width - lipgloss.Width(left) - 2
+	if available < 12 {
+		return left
+	}
+	right = lipgloss.NewStyle().MaxWidth(available).Render(right)
+	gap := max(2, width-lipgloss.Width(left)-lipgloss.Width(right))
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func (m model) accent(value string) string  { return m.color(value, m.palette.Accent) }
@@ -103,8 +117,9 @@ func (m model) contentView(layout layout) string {
 func (m model) workspaceContent(panelWidth int) string {
 	width, _ := components.InteriorSize(panelWidth, 0)
 	description := components.WrapText(screenInfo(m.screenID()).Short, width)
+	styles := components.NewStyles(m.palette)
 	for i, line := range description {
-		description[i] = m.muted(line)
+		description[i] = styles.SubtleAccent(line)
 	}
 	return strings.Join(description, "\n") + "\n\n" + m.activeScreen().View()
 }
