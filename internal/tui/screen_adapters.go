@@ -168,6 +168,9 @@ func (s *providerScreen) Actions() []Action {
 	if s.id == ScreenPackages {
 		actions = append(actions, Action{ID: string(s.id) + ".toggle", Label: s.ToggleSelectedLabel(), Enabled: s.CanToggleSelected(), Visible: true, DisabledReason: "select an Official, AUR, or Mise package", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }})
 	}
+	if s.Provider.PolicyTab() {
+		actions = append(actions, Action{ID: string(s.id) + ".policy-scope", Label: "Toggle Profile defaults / active machine", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'p'}) }})
+	}
 	if s.Provider.CanSetPolicySelected() {
 		actions = append(actions,
 			Action{ID: string(s.id) + ".policy", Label: "Change selected policy", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
@@ -180,6 +183,9 @@ func (s *providerScreen) Bindings() []Binding {
 	bindings := []Binding{{ActionID: string(s.id) + ".tab", Key: "tab"}, {ActionID: string(s.id) + ".refresh", Key: "r"}, {ActionID: string(s.id) + ".capture", Key: "c"}, {Label: "Collapse group", Key: "enter"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
 	if s.id == ScreenPackages {
 		bindings = append(bindings, Binding{ActionID: string(s.id) + ".toggle", Key: "space"})
+	}
+	if s.Provider.PolicyTab() {
+		bindings = append(bindings, Binding{ActionID: string(s.id) + ".policy-scope", Key: "p"})
 	}
 	if s.Provider.CanSetPolicySelected() {
 		bindings = append(bindings, Binding{ActionID: string(s.id) + ".policy", Key: "space"}, Binding{ActionID: string(s.id) + ".policy-reset", Key: "x"})
@@ -199,6 +205,7 @@ func (s *configScreen) Actions() []Action {
 	if s.PolicyTab() {
 		return []Action{
 			{ID: "config.tab", Label: "Switch policy tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+			{ID: "config.policy-scope", Label: "Toggle Profile defaults / active machine", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'p'}) }},
 			{ID: "config.policy-set", Label: "Change selected policy", Group: "Config", Enabled: s.CanPolicyTarget(), Visible: true, DisabledReason: "select a Config policy target", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
 			{ID: "config.policy-reset", Label: "Reset selected policy", Group: "Config", Enabled: s.CanPolicyTarget(), Visible: true, DisabledReason: "select a Config policy target", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
 		}
@@ -217,7 +224,7 @@ func (s *configScreen) Actions() []Action {
 }
 func (s *configScreen) Bindings() []Binding {
 	if s.PolicyTab() {
-		return []Binding{{ActionID: "config.tab", Key: "tab"}, {ActionID: "config.policy-set", Key: "space"}, {ActionID: "config.policy-reset", Key: "x"}}
+		return []Binding{{ActionID: "config.tab", Key: "tab"}, {ActionID: "config.policy-scope", Key: "p"}, {ActionID: "config.policy-set", Key: "space"}, {ActionID: "config.policy-reset", Key: "x"}}
 	}
 	return []Binding{{ActionID: "config.tab", Key: "tab"}, {ActionID: "config.policy", Key: "space"}, {ActionID: "config.diff", Key: "d"}, {ActionID: "config.include", Key: "i"}, {ActionID: "config.exclude", Key: "x"}, {ActionID: "config.auto", Key: "a"}, {ActionID: "config.edit", Key: "e"}, {ActionID: "config.open", Key: "o"}, {ActionID: "config.copy", Key: "y"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
 }

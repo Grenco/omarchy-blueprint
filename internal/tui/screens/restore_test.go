@@ -5,12 +5,48 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
+
+type restoreErrorRunner struct{}
+
+func (restoreErrorRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	if name != "omarchy" || len(args) == 0 || args[0] != "version" {
+		return "", errors.New("unexpected command")
+	}
+	if len(args) == 2 && args[1] == "channel" {
+		return "stable", nil
+	}
+	return "4.0.0", nil
+}
+
+type restoreErrorProvider struct{}
+
+func (restoreErrorProvider) ID() string                 { return "broken" }
+func (restoreErrorProvider) Captured(profile.Data) bool { return true }
+func (restoreErrorProvider) InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error) {
+	return nil, nil
+}
+func (restoreErrorProvider) Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error) {
+	return nil, nil, nil
+}
+func (restoreErrorProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return nil, nil
+}
+func (restoreErrorProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (model.RestorePlan, error) {
+	return model.RestorePlan{}, errors.New("planning exploded")
+}
+func (restoreErrorProvider) Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error) {
+	return model.VerificationResult{OK: true}, nil
+}
 
 func TestRestoreExplainsWhenNothingHasEverBeenCaptured(t *testing.T) {
 	session, _ := newSyncSession(t)
@@ -91,6 +127,40 @@ func TestRestoreConfirmationReportsCurrentAuthorityAndDestructiveCounts(t *testi
 	}
 	if strings.Contains(confirmation, "normal mode") {
 		t.Fatalf("confirmation used legacy mode: %s", confirmation)
+	}
+}
+
+func TestRestoreIgnoresOutOfOrderPlanResponses(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.planRequestID = 2
+	screen.Update(restorePlanMsg{requestID: 2, plan: model.RestorePlan{Operations: []model.Operation{{ID: "force-exact"}}}})
+	screen.Update(restorePlanMsg{requestID: 1, plan: model.RestorePlan{Operations: []model.Operation{{ID: "safe-additive"}}}})
+	if got := screen.current.Operations[0].ID; got != "force-exact" {
+		t.Fatalf("stale plan replaced current authority: got %q", got)
+	}
+}
+
+func TestRestorePlanningErrorsRemainVisible(t *testing.T) {
+	root, state := t.TempDir(), t.TempDir()
+	if err := profile.Save(root, profile.New("test", time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{Runner: restoreErrorRunner{}, StateHome: func() (string, error) { return state, nil }}, workflow.Options{ProfileDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]workflow.Provider{restoreErrorProvider{}}); err != nil {
+		t.Fatal(err)
+	}
+	screen := NewRestore(session)
+	cmd := screen.Init()
+	screen.Update(cmd())
+	view := screen.View()
+	if !strings.Contains(view, "Unable to prepare restore") || !strings.Contains(view, "planning exploded") {
+		t.Fatalf("planning error was not visible:\n%s", view)
+	}
+	if strings.Contains(view, "No restore operations required") {
+		t.Fatalf("planning failure was presented as convergence:\n%s", view)
 	}
 }
 

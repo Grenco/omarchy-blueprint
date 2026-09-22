@@ -28,6 +28,7 @@ type Restore struct {
 	options                 policy.RestoreOptions
 	override                bool
 	forcedOverrides         int
+	planRequestID           uint64
 }
 
 const restoreScopeAll = ""
@@ -37,6 +38,7 @@ type restoreAppliedMsg struct {
 	err    error
 }
 type restorePlanMsg struct {
+	requestID       uint64
 	plan            model.RestorePlan
 	forcedOverrides int
 	err             error
@@ -61,6 +63,9 @@ func (s *Restore) TransientActive() bool { return s.confirm }
 func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case restorePlanMsg:
+		if msg.requestID != s.planRequestID {
+			return nil
+		}
 		s.current, s.forcedOverrides, s.err = msg.plan, msg.forcedOverrides, msg.err
 		s.selected = min(s.selected, max(0, s.currentEntryCount()-1))
 		return nil
@@ -184,6 +189,8 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	if s.session == nil {
 		return nil
 	}
+	s.planRequestID++
+	requestID := s.planRequestID
 	s.ensureOptions()
 	effectiveOptions := s.options
 	var options *policy.RestoreOptions
@@ -193,10 +200,7 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	return func() tea.Msg {
 		plan, err := s.session.PlanRestore(s.ctx, restoreScopeAll, options)
 		if err != nil {
-			// Some narrow application/test provider sets are status-only and
-			// deliberately omit Restore support. They have no plan to render;
-			// the full application registry replans through the path below.
-			return restorePlanMsg{}
+			return restorePlanMsg{requestID: requestID, err: err}
 		}
 		forcedOverrides := 0
 		if effectiveOptions.Conflicts == policy.ConflictForce {
@@ -206,7 +210,7 @@ func (s *Restore) refreshPlan() tea.Cmd {
 				forcedOverrides = countForcedOverrides(plan, safePlan)
 			}
 		}
-		return restorePlanMsg{plan: plan, forcedOverrides: forcedOverrides, err: err}
+		return restorePlanMsg{requestID: requestID, plan: plan, forcedOverrides: forcedOverrides}
 	}
 }
 func (s *Restore) currentPlanView() string {

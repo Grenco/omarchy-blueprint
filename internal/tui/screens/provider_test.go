@@ -142,6 +142,31 @@ func TestProviderPolicyTabsExposeCaptureAndRestoreIntent(t *testing.T) {
 	}
 }
 
+func TestEveryPolicyScreenCanSelectProfileDefaultsWithoutChangingActiveMachine(t *testing.T) {
+	screens := []struct {
+		name   string
+		screen interface {
+			Update(tea.Msg) tea.Cmd
+			View() string
+		}
+	}{
+		{name: "provider", screen: &Provider{id: "packages", tab: "Capture", policyScope: workflow.PolicyScope{Machine: "desktop"}}},
+		{name: "config", screen: &Config{tab: "Capture", policyScope: workflow.PolicyScope{Machine: "desktop"}}},
+		{name: "resources", screen: &Resources{tab: "Capture", policyScope: workflow.PolicyScope{Machine: "desktop"}}},
+	}
+	for _, test := range screens {
+		t.Run(test.name, func(t *testing.T) {
+			if view := test.screen.View(); !strings.Contains(view, "Machine: desktop") {
+				t.Fatalf("initial named scope missing:\n%s", view)
+			}
+			test.screen.Update(tea.KeyPressMsg{Code: 'p'})
+			if view := test.screen.View(); !strings.Contains(view, "Profile defaults") || strings.Contains(view, "Machine: desktop") {
+				t.Fatalf("profile-default scope unavailable:\n%s", view)
+			}
+		})
+	}
+}
+
 func TestProviderPolicyRowsPreservePackageGroupsAndDesiredAbsence(t *testing.T) {
 	screen := &Provider{
 		id:    "packages",

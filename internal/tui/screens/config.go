@@ -32,6 +32,7 @@ type Config struct {
 	candidates              []config.Candidate
 	targets                 []workflow.TargetInspection
 	effective               map[string]policy.Effective
+	policyScope             workflow.PolicyScope
 	inspection              workflow.ConfigInspection
 	diff                    *components.DiffViewer
 	confirm                 string
@@ -69,7 +70,7 @@ func NewConfig(session *workflow.Session) *Config {
 	return NewConfigContext(context.Background(), session)
 }
 func NewConfigContext(ctx context.Context, session *workflow.Session) *Config {
-	return &Config{ctx: ctx, session: session, tab: "State"}
+	return &Config{ctx: ctx, session: session, tab: "State", policyScope: initialPolicyScope(session)}
 }
 func (s *Config) Focus(path string) tea.Cmd {
 	s.focusPath, s.filter, s.filtering = path, "", false
@@ -90,9 +91,11 @@ func (s *Config) SetSize(width, height int) {
 	}
 }
 func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
-func (s *Config) ShowPolicy()                        { s.tab, s.policySelected = "Capture", 0 }
-func (s *Config) Init() tea.Cmd                      { return s.rescan() }
-func (s *Config) TransientActive() bool              { return s.confirm != "" || s.diff != nil || s.filtering }
+func (s *Config) ShowPolicy(machine string) {
+	s.policyScope, s.tab, s.policySelected = workflow.PolicyScope{Machine: machine}, "Capture", 0
+}
+func (s *Config) Init() tea.Cmd         { return s.rescan() }
+func (s *Config) TransientActive() bool { return s.confirm != "" || s.diff != nil || s.filtering }
 
 func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -187,6 +190,10 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	if s.tab == "Capture" || s.tab == "Restore" {
+		if key.String() == "p" {
+			s.policyScope = togglePolicyScope(s.session, s.policyScope)
+			return s.rescan()
+		}
 		return s.updatePolicy(key)
 	}
 	if s.diff != nil {
@@ -373,7 +380,7 @@ func (s *Config) View() string {
 }
 
 func (s *Config) policyView() string {
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel(), "space: change policy   x: reset override"}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel(), "p: toggle policy scope   space: change policy   x: reset override"}
 	rows := s.configPolicyRows()
 	policyRows := make([]string, 0, len(rows))
 	for i, row := range rows {
@@ -535,10 +542,7 @@ func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 func (s *Config) policyScopeLabel() string {
-	if s.session != nil && s.session.Machine().Name != "" {
-		return "Machine: " + s.session.Machine().Name
-	}
-	return "Profile defaults"
+	return policyScopeLabel(s.policyScope)
 }
 func (s *Config) targetPolicy(path string) (workflow.TargetInspection, policy.Effective) {
 	for _, target := range s.targets {
@@ -652,6 +656,7 @@ func (s *Config) confirmModal() tea.Cmd {
 func (s *Config) rescan() tea.Cmd {
 	s.statusID++
 	requestID := s.statusID
+	scope := s.policyScope
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, "config")
@@ -665,7 +670,6 @@ func (s *Config) rescan() tea.Cmd {
 					return configStatusMsg{requestID: requestID, err: err}
 				}
 				effective := make(map[string]policy.Effective, len(targets))
-				scope := workflow.PolicyScope{Machine: s.session.Machine().Name}
 				for _, target := range targets {
 					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "config", target)
 					if err != nil {
@@ -721,6 +725,7 @@ func (s *Config) setPolicy(logical, policy string) tea.Cmd {
 func (s *Config) setTargetPolicy(logical string) tea.Cmd {
 	s.busy = true
 	requestID := s.statusID
+	scope := s.policyScope
 	axis := policy.AxisCapture
 	current := s.effective[logical].Capture
 	if s.tab == "Restore" {
@@ -731,18 +736,19 @@ func (s *Config) setTargetPolicy(logical string) tea.Cmd {
 		setting = policy.SettingEnabled
 	}
 	return func() tea.Msg {
-		return configPolicyMsg{requestID: requestID, err: s.session.SetPolicy(workflow.PolicyScope{Machine: s.session.Machine().Name}, axis, "config", logical, setting)}
+		return configPolicyMsg{requestID: requestID, err: s.session.SetPolicy(scope, axis, "config", logical, setting)}
 	}
 }
 func (s *Config) clearTargetPolicy(logical string) tea.Cmd {
 	s.busy = true
 	requestID := s.statusID
+	scope := s.policyScope
 	axis := policy.AxisCapture
 	if s.tab == "Restore" {
 		axis = policy.AxisRestore
 	}
 	return func() tea.Msg {
-		return configPolicyMsg{requestID: requestID, err: s.session.ClearPolicy(workflow.PolicyScope{Machine: s.session.Machine().Name}, axis, "config", logical)}
+		return configPolicyMsg{requestID: requestID, err: s.session.ClearPolicy(scope, axis, "config", logical)}
 	}
 }
 func (s *Config) nextPolicy(path string) string {

@@ -34,6 +34,7 @@ type Resources struct {
 	items                   []profile.Resource
 	targets                 []workflow.TargetInspection
 	policies                map[string]policy.Effective
+	policyScope             workflow.PolicyScope
 	git                     map[string]resourcesprovider.GitWorkingSummary
 	effective               map[string]string
 	browser                 *components.Browser
@@ -97,7 +98,7 @@ func NewResources(session *workflow.Session) *Resources {
 	return NewResourcesContext(context.Background(), session)
 }
 func NewResourcesContext(ctx context.Context, session *workflow.Session) *Resources {
-	return &Resources{ctx: ctx, session: session, phase: resourceBrowse, tab: "State"}
+	return &Resources{ctx: ctx, session: session, phase: resourceBrowse, tab: "State", policyScope: initialPolicyScope(session)}
 }
 func (s *Resources) Focus(id string) tea.Cmd { s.focusID = id; return s.rescan() }
 func (s *Resources) SetSize(width, height int) {
@@ -113,7 +114,9 @@ func (s *Resources) SetStyles(styles components.Styles) {
 	}
 }
 func (s *Resources) Init() tea.Cmd { return s.rescan() }
-func (s *Resources) ShowPolicy()   { s.tab, s.selected = "Capture", 0 }
+func (s *Resources) ShowPolicy(machine string) {
+	s.policyScope, s.tab, s.selected = workflow.PolicyScope{Machine: machine}, "Capture", 0
+}
 func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
@@ -138,6 +141,7 @@ func (s *Resources) Actions() []ResourceAction {
 	if s.tab == "Capture" || s.tab == "Restore" {
 		enabled := s.selectedPolicyTarget().Key != ""
 		return append(actions,
+			ResourceAction{ID: "policy-scope", Label: "Toggle Profile defaults / active machine", Shortcut: "p", Enabled: true},
 			ResourceAction{ID: "policy", Label: "Change selected policy", Shortcut: "space", Enabled: enabled, DisabledReason: "select a tracked resource"},
 			ResourceAction{ID: "policy-reset", Label: "Reset selected policy", Shortcut: "x", Enabled: enabled, DisabledReason: "select a tracked resource"},
 		)
@@ -286,6 +290,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	}
 	if !s.discover && (s.tab == "Capture" || s.tab == "Restore") {
 		switch key.String() {
+		case "p":
+			s.policyScope = togglePolicyScope(s.session, s.policyScope)
+			return s.rescan()
 		case "space", " ":
 			return s.setResourcePolicy(false)
 		case "x":
@@ -511,10 +518,8 @@ func (s *Resources) DetailView() string {
 }
 func (s *Resources) policyView() string {
 	scope := "Profile defaults"
-	if s.session != nil && s.session.Machine().Name != "" {
-		scope = "Machine: " + s.session.Machine().Name
-	}
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "space: change policy   x: reset override", "Safety: Exact restore never deletes Resource data."}
+	scope = policyScopeLabel(s.policyScope)
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "p: toggle policy scope   space: change policy   x: reset override", "Safety: Exact restore never deletes Resource data."}
 	if len(s.targets) == 0 {
 		return strings.Join(append(lines, "No tracked Resources."), "\n")
 	}
@@ -559,12 +564,12 @@ func (s *Resources) setResourcePolicy(clear bool) tea.Cmd {
 	}
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
 	axis := policy.AxisCapture
 	effective := s.policies[target.Key].Capture
 	if s.tab == "Restore" {
 		axis, effective = policy.AxisRestore, s.policies[target.Key].Restore
 	}
-	scope := workflow.PolicyScope{Machine: s.session.Machine().Name}
 	return func() tea.Msg {
 		var err error
 		if clear {
@@ -658,6 +663,7 @@ func (s *Resources) resetDiscovery() {
 func (s *Resources) rescan() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
+	scope := s.policyScope
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, "resources")
 		if err != nil {
@@ -677,7 +683,6 @@ func (s *Resources) rescan() tea.Cmd {
 					return resourcesStatusMsg{requestID: requestID, err: err}
 				}
 				policies := make(map[string]policy.Effective, len(targets))
-				scope := workflow.PolicyScope{Machine: s.session.Machine().Name}
 				for _, target := range targets {
 					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "resources", target)
 					if err != nil {

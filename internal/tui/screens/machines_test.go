@@ -68,7 +68,7 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("machine override summary did not offer navigation")
 	}
-	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "config" {
+	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "config" || msg.Machine != "desktop" {
 		t.Fatalf("policy navigation = %#v", msg)
 	}
 }
