@@ -342,6 +342,38 @@ func TestProviderCollapsesSavedGroup(t *testing.T) {
 	}
 }
 
+func TestProviderCollapsesInspectedStateGroup(t *testing.T) {
+	screen := &Provider{
+		id:      "packages",
+		width:   100,
+		targets: []workflow.TargetInspection{{Key: "official:git", Label: "git", Desired: workflow.TargetPresent, Current: workflow.TargetPresent}},
+	}
+
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	view := screen.View()
+	if !strings.Contains(view, "▶ Official packages") || strings.Contains(view, "git") {
+		t.Fatalf("inspected State group did not collapse with matching heading:\n%s", view)
+	}
+}
+
+func TestProviderCollapsesPolicyGroup(t *testing.T) {
+	screen := &Provider{
+		id:      "packages",
+		tab:     "Capture",
+		width:   100,
+		targets: []workflow.TargetInspection{{Key: "official:git", Label: "git", Current: workflow.TargetPresent, CaptureEligible: true}},
+		effective: map[string]policy.Effective{
+			"official:git": {Capture: policy.EffectiveSetting{Enabled: true}},
+		},
+	}
+
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	view := screen.View()
+	if !strings.Contains(view, "▶ Official packages") || strings.Contains(view, "git") {
+		t.Fatalf("policy group did not collapse with matching heading:\n%s", view)
+	}
+}
+
 func TestProviderGroupNavigationPreservesCollapsedGroups(t *testing.T) {
 	screen := &Provider{id: "packages", status: workflow.ProviderStatus{Captured: true, Snapshot: profile.Packages{Official: []string{"git"}, AUR: []string{"yay"}, Mise: profile.MiseTools{"node": {}}}}}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // Official package child.

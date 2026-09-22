@@ -164,7 +164,7 @@ func TestConfigScreenRendersBroadGroupsWithUserFacingStateAndPolicy(t *testing.T
 func TestConfigScreenGroupsAndDefaultCollapse(t *testing.T) {
 	screen := &Config{width: 80, candidates: []config.Candidate{{Path: ".config/review", Classification: config.ConfigAmbiguousBaseline}, {Path: ".config/a", Classification: config.ConfigAdded, Reason: "added"}, {Path: ".config/b", Classification: config.ConfigAdded, Reason: "added"}, {Path: ".config/unchanged", Classification: config.ConfigUnchangedBaseline}, {Path: ".config/c", Classification: config.ConfigSensitive, Reason: "sensitive"}}}
 	view := screen.View()
-	for _, want := range []string{"Needs review", "Changes", "No action needed", "Not managed by Config"} {
+	for _, want := range []string{"Needs review", "Changes", "▶ No action needed", "▶ Not managed by Config"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing group %q:\n%s", want, view)
 		}
