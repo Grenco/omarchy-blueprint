@@ -271,7 +271,7 @@ func (s *Provider) renderStateTable(rows []providerRow, width int) string {
 			if len(columns) == 3 {
 				cells = []string{components.DisplayText(label), desired, status}
 			} else {
-				cells = []string{components.DisplayText(label), desired, styledDecision(s.styles, stateValue(string(row.target.Current))), status}
+				cells = []string{components.DisplayText(label), desired, styledDecision(s.styles, currentStateValue(row.target.Current)), status}
 			}
 		} else {
 			label := components.DisplayText(row.value)
@@ -307,9 +307,17 @@ func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
 				label = row.target.Key
 			}
 			if len(columns) == 3 {
-				cells = []string{components.DisplayText(label), decision, styledDecision(s.styles, stateValue(string(state)))}
+				stateLabel := stateValue(string(state))
+				if s.tab == "Capture" {
+					stateLabel = currentStateValue(state)
+				}
+				cells = []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel)}
 			} else {
-				cells = []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(state))), decision, styledDecision(s.styles, policySourceLabel(row.effective.Source, blocked))}
+				stateLabel := stateValue(string(state))
+				if s.tab == "Capture" {
+					stateLabel = currentStateValue(state)
+				}
+				cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel), decision, styledDecision(s.styles, policySourceLabel(row.effective.Source, blocked))}
 			}
 		}
 		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true})

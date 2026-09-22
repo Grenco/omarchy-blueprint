@@ -452,7 +452,7 @@ func (s *Resources) View() string {
 	if s.tab == "Capture" || s.tab == "Restore" {
 		return s.policyView()
 	}
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d · d: Discover", len(s.items)), "Safety: Exact restore never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d · d: Discover", len(s.items)), "Safety: Exact never deletes Resource data."}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}
@@ -467,15 +467,29 @@ func (s *Resources) View() string {
 		}))
 		return strings.Join(lines, "\n")
 	}
-	rows := make([]components.Row, 0, len(s.items))
-	for i, item := range s.items {
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.ID), components.DisplayText(item.Strategy), components.DisplayText(item.Path), components.DisplayText(s.effective[item.ID]), components.DisplayText(s.resourceState(item))}, Selected: i == s.selected, Focused: true})
+	width := s.widthOrDefault()
+	targets := s.targets
+	if len(targets) == 0 {
+		targets = make([]workflow.TargetInspection, 0, len(s.items))
+		for _, item := range s.items {
+			targets = append(targets, workflow.TargetInspection{Key: "resource:" + item.ID, Label: item.ID, Desired: workflow.TargetPresent, Current: workflow.TargetUnknown})
+		}
 	}
-	width := s.width
-	if width == 0 {
-		width = 120
+	columns := stateColumns(width)
+	columns[0].Title = "RESOURCE"
+	rows := make([]components.Row, 0, len(targets))
+	for i, target := range targets {
+		label := target.Label
+		if label == "" {
+			label = strings.TrimPrefix(target.Key, "resource:")
+		}
+		cells := []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired))), styledDecision(s.styles, targetStatus(target))}
+		if len(columns) == 4 {
+			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired))), styledDecision(s.styles, currentStateValue(target.Current)), styledDecision(s.styles, targetStatus(target))}
+		}
+		rows = append(rows, components.Row{Cells: cells, Selected: i == s.selected, Focused: true})
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "Resource", MinWidth: 10}, {Title: "Strategy", MinWidth: 8}, {Title: "Portable path", MinWidth: 16}, {Title: "Effective path", MinWidth: 16}, {Title: "State", MinWidth: 9}}, rows, width, s.listHeight(), s.styles))
+	lines = append(lines, s.table.Render(columns, rows, width, s.listHeight(), s.styles))
 	return strings.Join(lines, "\n")
 }
 
@@ -485,20 +499,9 @@ func (s *Resources) DetailView() string {
 		if target.Key == "" {
 			return "Resource policy\nNo tracked Resource selected."
 		}
-		effective := s.policies[target.Key].Capture
-		blocked := ""
-		if s.tab == "Restore" {
-			effective = s.policies[target.Key].Restore
-			if !target.RestoreEligible {
-				blocked = target.SafetyReason
-			}
-		} else if !target.CaptureEligible {
-			blocked = target.SafetyReason
-		}
-		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
-			blocked = "not eligible on this machine"
-		}
-		return fmt.Sprintf("Resource policy: %s\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t\nExact restore deletes Resource data: never", components.DisplayText(target.Label), target.Desired, target.Current, components.RenderPolicyStatus(s.tab, effective, blocked), effective.Source.Kind, components.DisplayText(effective.Source.Machine), components.DisplayText(effective.Source.Category), components.DisplayText(effective.Source.Target), target.Capabilities.SupportsCapture, target.Capabilities.SupportsRestore, target.Capabilities.SupportsDesiredAbsence, target.Capabilities.SupportsExactRemoval, target.Capabilities.Hierarchical)
+		lines := policyDetailLines("Resource policy: "+components.DisplayText(target.Label), target.Key, target, s.policies[target.Key])
+		lines = append(lines, "Exact deletes Resource data: never")
+		return strings.Join(lines, "\n")
 	}
 	if s.browser != nil {
 		return s.browser.DetailView()
@@ -519,35 +522,53 @@ func (s *Resources) DetailView() string {
 func (s *Resources) policyView() string {
 	scope := "Profile defaults"
 	scope = policyScopeLabel(s.policyScope)
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "p: toggle policy scope   space: change policy   x: reset override", "Safety: Exact restore never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "p: toggle policy scope   space: change policy   x: reset override", "Safety: Exact never deletes Resource data."}
 	if len(s.targets) == 0 {
 		return strings.Join(append(lines, "No tracked Resources."), "\n")
 	}
+	columns := policyColumns(s.tab, s.widthOrDefault())
+	columns[0].Title = "RESOURCE"
+	rows := make([]components.Row, 0, len(s.targets))
 	for i, target := range s.targets {
 		effective := s.policies[target.Key].Capture
-		blocked := ""
+		blocked := !target.CaptureEligible
 		if s.tab == "Restore" {
 			effective = s.policies[target.Key].Restore
-			if !target.RestoreEligible {
-				blocked = target.SafetyReason
-			}
-		} else if !target.CaptureEligible {
-			blocked = target.SafetyReason
-		}
-		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
-			blocked = "not eligible on this machine"
+			blocked = !target.RestoreEligible
 		}
 		label := target.Label
 		if label == "" {
 			label = strings.TrimPrefix(target.Key, "resource:")
 		}
-		line := fmt.Sprintf("  %s — %s", components.DisplayText(label), components.RenderPolicyStatus(s.tab, effective, blocked))
-		if i == s.selected {
-			line = components.Icons.Selected + line[1:]
+		state := target.Current
+		if s.tab == "Restore" {
+			state = target.Desired
 		}
-		lines = append(lines, line)
+		decision := styledDecision(s.styles, policyDecision(s.tab, effective.Enabled, blocked))
+		stateLabel := stateValue(string(state))
+		if s.tab == "Capture" {
+			stateLabel = currentStateValue(state)
+		}
+		cells := []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel)}
+		if len(columns) == 4 {
+			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel), decision, styledDecision(s.styles, policySourceLabel(effective.Source, blocked))}
+		}
+		rows = append(rows, components.Row{Cells: cells, Selected: i == s.selected, Focused: true})
 	}
+	height := s.listHeight()
+	if s.height == 0 {
+		height = len(rows) + 1
+	}
+	s.table.Ensure(s.selected, len(rows), max(1, height-1))
+	lines = append(lines, s.table.Render(columns, rows, s.widthOrDefault(), height, s.styles))
 	return strings.Join(lines, "\n")
+}
+
+func (s *Resources) widthOrDefault() int {
+	if s.width <= 0 {
+		return 120
+	}
+	return s.width
 }
 
 func (s *Resources) selectedPolicyTarget() workflow.TargetInspection {
