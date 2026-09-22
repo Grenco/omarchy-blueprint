@@ -74,6 +74,7 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 		return m, m.refreshInitializedAuthorityScreens(""), true
 	case screens.PolicyNavigation:
 		id := ScreenID(msg.Category)
+		wasInitialized := m.initialized[id]
 		switch current := m.screens[id].(type) {
 		case *providerScreen:
 			current.ShowPolicy(msg.Machine)
@@ -83,6 +84,9 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 			current.ShowPolicy(msg.Machine)
 		}
 		cmd := m.selectScreen(id)
+		if wasInitialized {
+			cmd = m.refreshScreen(id)
+		}
 		return m, cmd, true
 	case screens.Notice:
 		m.notification = msg.Message
@@ -93,15 +97,22 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 
 func (m model) refreshInitializedAuthorityScreens(exclude ScreenID) tea.Cmd {
 	commands := make([]tea.Cmd, 0, len(m.screens))
-	for id, current := range m.screens {
+	for id := range m.screens {
 		if id == exclude || !m.initialized[id] {
 			continue
 		}
-		if initializable, ok := current.(initializableScreen); ok {
-			commands = append(commands, wrapScreenCmd(id, initializable.Init()))
-		}
+		commands = append(commands, m.refreshScreen(id))
 	}
 	return tea.Batch(commands...)
+}
+
+func (m model) refreshScreen(id ScreenID) tea.Cmd {
+	current := m.screens[id]
+	initializable, ok := current.(initializableScreen)
+	if !ok {
+		return nil
+	}
+	return wrapScreenCmd(id, initializable.Init())
 }
 
 // handleOverviewTarget is the canonical Overview deep-link navigation

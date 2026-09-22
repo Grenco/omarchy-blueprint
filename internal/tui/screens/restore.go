@@ -23,6 +23,7 @@ type Restore struct {
 	styles                  components.Styles
 	confirm                 bool
 	busy                    bool
+	planning                bool
 	err                     error
 	current                 model.RestorePlan
 	options                 policy.RestoreOptions
@@ -66,7 +67,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		if msg.requestID != s.planRequestID {
 			return nil
 		}
-		s.current, s.forcedOverrides, s.err = msg.plan, msg.forcedOverrides, msg.err
+		s.current, s.forcedOverrides, s.err, s.planning = msg.plan, msg.forcedOverrides, msg.err, false
 		s.selected = min(s.selected, max(0, s.currentEntryCount()-1))
 		return nil
 	case restoreAppliedMsg:
@@ -92,7 +93,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	}
-	if s.busy {
+	if s.busy || s.planning {
 		return nil
 	}
 	switch key.String() {
@@ -144,6 +145,9 @@ func (s *Restore) View() string {
 	if s.busy {
 		return "Applying restore..."
 	}
+	if s.planning {
+		return "Refreshing plan..."
+	}
 	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
 		return renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "Nothing to restore yet",
@@ -191,6 +195,7 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	}
 	s.planRequestID++
 	requestID := s.planRequestID
+	s.planning, s.err = true, nil
 	s.ensureOptions()
 	effectiveOptions := s.options
 	var options *policy.RestoreOptions
@@ -293,7 +298,7 @@ func (s *Restore) hasInteractiveOperation() bool {
 	return false
 }
 func (s *Restore) CanApply() bool {
-	return len(s.plan().Operations) > 0 && !s.hasInteractiveOperation()
+	return !s.planning && len(s.plan().Operations) > 0 && !s.hasInteractiveOperation()
 }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }

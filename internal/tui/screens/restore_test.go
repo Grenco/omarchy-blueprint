@@ -140,6 +140,32 @@ func TestRestoreIgnoresOutOfOrderPlanResponses(t *testing.T) {
 	}
 }
 
+func TestRestoreCannotApplyWhileAReplacementPlanIsPending(t *testing.T) {
+	session, _ := newSyncSession(t)
+	screen := NewRestore(session)
+	screen.current = model.RestorePlan{Operations: []model.Operation{{ID: "safe-additive"}}}
+	if !screen.CanApply() {
+		t.Fatal("seeded current plan should be applicable")
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: 'f'}); cmd == nil {
+		t.Fatal("Force toggle did not request a replacement plan")
+	}
+	if !screen.planning || screen.CanApply() {
+		t.Fatalf("replacement plan remains approvable: planning=%t canApply=%t", screen.planning, screen.CanApply())
+	}
+	if view := screen.View(); !strings.Contains(view, "Refreshing plan") {
+		t.Fatalf("pending plan was not visibly marked:\n%s", view)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || screen.confirm {
+		t.Fatalf("pending plan opened confirmation: cmd=%v confirm=%t", cmd != nil, screen.confirm)
+	}
+
+	screen.Update(restorePlanMsg{requestID: screen.planRequestID, plan: model.RestorePlan{Operations: []model.Operation{{ID: "force-additive"}}}})
+	if screen.planning || !screen.CanApply() {
+		t.Fatalf("matching plan response did not restore apply authority: planning=%t canApply=%t", screen.planning, screen.CanApply())
+	}
+}
+
 func TestRestorePlanningErrorsRemainVisible(t *testing.T) {
 	root, state := t.TempDir(), t.TempDir()
 	if err := profile.Save(root, profile.New("test", time.Now())); err != nil {
