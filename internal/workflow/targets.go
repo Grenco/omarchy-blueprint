@@ -65,6 +65,12 @@ type TargetCapabilities struct {
 	// updating or re-adding it, and Capture Disabled still Preserves it as
 	// usual.
 	NoActionableUpdate bool
+	// RecordsNewAbsence reports that Capture records explicit desired
+	// absence for this target even though Blueprint has no desired state for
+	// it yet (Config: a deleted Omarchy default becomes a deletion
+	// tombstone). Without it, a target absent on both sides previews as
+	// Noop, which would hide a real Capture change.
+	RecordsNewAbsence bool
 }
 
 // TargetInspection is one provider-defined policy target's read-only,

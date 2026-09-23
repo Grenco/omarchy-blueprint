@@ -2071,6 +2071,7 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			// value for it (see capture.go), so the present-present
 			// transition must report StopManaging, not the generic Update.
 			NoActionableUpdate: configCaptureInert(candidate.Classification),
+			RecordsNewAbsence:  configRecordsNewAbsence(candidate.Classification),
 		}))
 	}
 
@@ -2134,6 +2135,13 @@ func configTarget(logicalPath string, desired, current workflow.TargetState, eli
 // (see capture.go: only Added, ModifiedBaseline, and DeletedBaseline ever
 // produce a Files or Deletes entry). An inert, untracked path matches
 // Omarchy's default exactly and carries nothing for Blueprint to manage yet.
+// configRecordsNewAbsence reports classifications Capture turns into a
+// desired-absent tombstone even when the path was never tracked: a deleted
+// Omarchy default.
+func configRecordsNewAbsence(classification configprovider.Classification) bool {
+	return classification == configprovider.ConfigDeletedBaseline
+}
+
 func configCaptureInert(classification configprovider.Classification) bool {
 	switch classification {
 	case configprovider.ConfigUnchangedBaseline, configprovider.ConfigHistoricalBaseline:

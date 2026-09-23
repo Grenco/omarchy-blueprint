@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 )
@@ -58,7 +59,7 @@ func (s *Session) Overview(ctx context.Context) (Overview, error) {
 		before := len(overview.Items)
 		differences := s.newDifferenceClassifier(ctx, provider.ID)
 		if provider.ConfigScan != nil {
-			for _, item := range configAttention(*provider.ConfigScan) {
+			for _, item := range configAttention(*provider.ConfigScan, report.Profile.Config) {
 				if item.Severity == AttentionDrift {
 					differences.classify(&item, item.Ref, true)
 				}
@@ -107,14 +108,26 @@ func (s *Session) Overview(ctx context.Context) (Overview, error) {
 	return overview, nil
 }
 
-func configAttention(scan configprovider.ScanSummary) []AttentionItem {
+// configAttention reports the Config scan findings Config's own Diff does
+// not: ambiguous paths needing a decision, and deleted Omarchy defaults
+// Capture would newly record. Added and modified paths are left to the
+// profile-aware Diff, which already omits ones captured and still in sync.
+func configAttention(scan configprovider.ScanSummary, saved profile.Configs) []AttentionItem {
+	tracked := map[string]bool{}
+	for _, file := range saved.Files {
+		tracked[file.Path] = true
+	}
+	for _, del := range saved.Deletes {
+		tracked[del.Path] = true
+	}
 	items := []AttentionItem{}
 	for _, candidate := range scan.Candidates {
 		severity := AttentionDrift
 		if candidate.Classification == configprovider.ConfigAmbiguousBaseline || candidate.Classification == configprovider.ConfigAmbiguousDeletion {
 			severity = AttentionDecision
 		}
-		if severity == AttentionDecision || candidate.Classification == configprovider.ConfigModifiedBaseline || candidate.Classification == configprovider.ConfigDeletedBaseline || candidate.Classification == configprovider.ConfigAdded {
+		newDeletion := candidate.Classification == configprovider.ConfigDeletedBaseline && !tracked[candidate.Path]
+		if severity == AttentionDecision || newDeletion {
 			items = append(items, AttentionItem{Severity: severity, Provider: "config", Kind: string(candidate.Classification), Ref: candidate.Path, Summary: candidate.Path + " " + string(candidate.Classification), Target: "config"})
 		}
 	}

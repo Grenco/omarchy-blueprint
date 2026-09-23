@@ -8,6 +8,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
 )
 
 // firefoxProvider models Firefox saved in the profile but not installed on
@@ -168,4 +169,69 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// configOverviewProvider reports Config's baseline scan alongside its
+// profile-aware Diff, as the real Config provider does.
+type configOverviewProvider struct {
+	scan    configprovider.ScanSummary
+	changes []model.Change
+}
+
+func (configOverviewProvider) ID() string                 { return "config" }
+func (configOverviewProvider) Captured(profile.Data) bool { return true }
+func (configOverviewProvider) InspectTargets(context.Context, profile.Data) ([]TargetInspection, error) {
+	return nil, nil
+}
+func (configOverviewProvider) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
+	return nil, nil, nil
+}
+func (p configOverviewProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
+	return p.changes, nil
+}
+func (p configOverviewProvider) DiffWithScan(context.Context, profile.Data) ([]model.Change, configprovider.ScanSummary, error) {
+	return p.changes, p.scan, nil
+}
+
+func TestOverviewListsConfigDifferencesOnlyWhenCaptureOrRestoreWouldAct(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Config.Files = []profile.ConfigFile{{Path: ".config/captured-in-sync"}}
+	data.Config.Deletes = []profile.ConfigDelete{{Path: ".config/deleted-and-recorded"}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{Runner: &overviewRunner{}, StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SetProviders([]Provider{configOverviewProvider{
+		scan: configprovider.ScanSummary{Candidates: []configprovider.Candidate{
+			{Path: ".config/captured-in-sync", Classification: configprovider.ConfigAdded},
+			{Path: ".config/new-file", Classification: configprovider.ConfigAdded},
+			{Path: ".config/deleted-default", Classification: configprovider.ConfigDeletedBaseline},
+			{Path: ".config/deleted-and-recorded", Classification: configprovider.ConfigDeletedBaseline},
+			{Path: ".config/ambiguous", Classification: configprovider.ConfigAmbiguousBaseline},
+		}},
+		changes: []model.Change{{Type: model.ChangeAdd, Provider: "config", Kind: "config", Name: ".config/new-file", Summary: "+ config .config/new-file added"}},
+	}})
+	overview, err := session.Overview(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, item := range overview.Items {
+		counts[item.Ref]++
+	}
+	for ref, want := range map[string]int{
+		".config/captured-in-sync":     0,
+		".config/new-file":             1,
+		".config/deleted-default":      1,
+		".config/deleted-and-recorded": 0,
+		".config/ambiguous":            1,
+	} {
+		if counts[ref] != want {
+			t.Errorf("%s listed %d times, want %d (items: %#v)", ref, counts[ref], want, overview.Items)
+		}
+	}
 }
