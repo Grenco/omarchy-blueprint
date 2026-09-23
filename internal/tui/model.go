@@ -229,6 +229,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if isKey {
 		if key == "tab" || key == "shift+tab" {
 			if owner, ok := m.activeScreen().(TabOwner); ok && owner.OwnsTab() {
+				// Local tabs belong to the workspace. While Navigation or Details
+				// has focus, Tab must not change the screen behind it, and on a
+				// tabbed screen it has no pane-cycling meaning either.
+				if m.focus != focusWorkspace {
+					return m, nil
+				}
 				if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
 					return m, wrapScreenCmd(m.screenID(), result.Cmd)
 				}

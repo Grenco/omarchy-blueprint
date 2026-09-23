@@ -519,45 +519,47 @@ func TestGroupNavigationBindingsFollowFocusAndStayOutOfFooter(t *testing.T) {
 	assertBindingLabels(t, m.bindings(), "Previous sidebar section", "Next sidebar section")
 }
 
-func TestTabbedScreensOwnTabThroughRootFromDetailsFocus(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		id     ScreenID
-		screen screen
-	}{
-		{name: "Config", id: ScreenConfig, screen: &configScreen{Config: screens.NewConfig(nil)}},
-		{name: "Packages", id: ScreenPackages, screen: &providerScreen{Provider: screens.NewProvider(nil, "packages"), id: ScreenPackages}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
-			m.screens[test.id] = test.screen
-			m.selected = screenIndex(t, test.id)
-			m.focus = focusDetails
-
-			m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-			if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") {
-				t.Fatalf("first Tab did not select Capture: %q", view)
+func TestTabbedScreensIgnoreTabWhileAnotherPaneHasFocus(t *testing.T) {
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 140, Height: 40}} {
+		for _, test := range []struct {
+			name   string
+			id     ScreenID
+			screen func() screen
+		}{
+			{name: "Config", id: ScreenConfig, screen: func() screen { return &configScreen{Config: screens.NewConfig(nil)} }},
+			{name: "Packages", id: ScreenPackages, screen: func() screen {
+				return &providerScreen{Provider: screens.NewProvider(nil, "packages"), id: ScreenPackages}
+			}},
+		} {
+			for _, open := range []struct {
+				name  string
+				key   tea.KeyPressMsg
+				focus focusArea
+			}{
+				{name: "Navigation", key: keyLeft, focus: focusSidebar},
+				{name: "Details", key: keyRight, focus: focusDetails},
+			} {
+				t.Run(fmt.Sprintf("%dx%d/%s/%s", size.Width, size.Height, test.name, open.name), func(t *testing.T) {
+					m := updateModel(t, newModel(ThemeLoader{NoColor: true}), size)
+					m.screens[test.id] = test.screen()
+					m.selected = screenIndex(t, test.id)
+					m.focus = focusWorkspace
+					m = press(t, m, open.key)
+					if m.focus != open.focus {
+						t.Fatalf("setup: focus=%d, want %d", m.focus, open.focus)
+					}
+					for _, key := range []tea.KeyPressMsg{keyTab, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift})} {
+						m = press(t, m, key)
+						if view := m.activeScreen().View(); !strings.Contains(view, "[active] State") {
+							t.Fatalf("%s changed the %s tab behind the focused %s pane: %q", key, test.name, open.name, view)
+						}
+						if m.focus != open.focus {
+							t.Fatalf("%s moved focus off the %s pane to %d", key, open.name, m.focus)
+						}
+					}
+				})
 			}
-			if m.focus != focusDetails {
-				t.Fatalf("first Tab moved root focus to %d", m.focus)
-			}
-
-			m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-			if view := m.activeScreen().View(); !strings.Contains(view, "[active] Restore") {
-				t.Fatalf("second Tab did not select Restore: %q", view)
-			}
-			if m.focus != focusDetails {
-				t.Fatalf("second Tab moved root focus to %d", m.focus)
-			}
-
-			m = updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-			if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") {
-				t.Fatalf("Shift+Tab did not cycle back to Capture: %q", view)
-			}
-			if m.focus != focusDetails {
-				t.Fatalf("Shift+Tab moved root focus to %d", m.focus)
-			}
-		})
+		}
 	}
 }
 
