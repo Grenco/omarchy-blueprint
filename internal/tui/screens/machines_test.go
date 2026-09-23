@@ -416,7 +416,7 @@ func TestMachinesPolicyFocusNeverMutatesResourceMapping(t *testing.T) {
 	if screen.region != machineRegionPolicy {
 		t.Fatalf("Tab should focus Policy overrides, got region %v", screen.region)
 	}
-	for _, key := range []rune{'u', 'm', 'x', 'r', 'c', 'f', 'e'} {
+	for _, key := range []rune{'a', 'u', 'm', 'x', 'r', 'c', 'f', 'e'} {
 		if cmd := screen.Update(tea.KeyPressMsg{Code: key}); cmd != nil {
 			t.Fatalf("%q in Policy overrides produced a command; only the focused region may be mutated", key)
 		}
@@ -430,6 +430,9 @@ func TestMachinesPolicyFocusNeverMutatesResourceMapping(t *testing.T) {
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	if screen.region != machineRegionResources {
 		t.Fatalf("Tab should focus Resource paths, got region %v", screen.region)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: 'a'}); cmd != nil || screen.mode != "" || screen.CanAddMachine() {
+		t.Fatalf("a in Resource paths must not start Add machine (cmd=%v mode=%q)", cmd != nil, screen.mode)
 	}
 	if cmd := screen.Update(tea.KeyPressMsg{Code: 'u'}); cmd == nil {
 		t.Fatal("u with Resource paths focused should unmap the overridden mapping")

@@ -109,6 +109,7 @@ func (s *Machines) BrowserActive() bool   { return s.browser != nil }
 func (s *Machines) HasSelectedMachine() bool {
 	return s.region == machineRegionMachines && s.selectedMachine().Name != ""
 }
+func (s *Machines) CanAddMachine() bool { return s.region == machineRegionMachines }
 func (s *Machines) CanUseMachine() bool {
 	return s.HasSelectedMachine() && s.selectedMachine().Name != s.session.Machine().Name
 }
@@ -247,6 +248,9 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 			s.resource = 0
 		}
 	case "a":
+		if !s.CanAddMachine() {
+			return nil
+		}
 		s.mode = "add"
 		s.name, _ = s.session.SuggestedMachineName()
 		return s.nameModal("Add machine")
