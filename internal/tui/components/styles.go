@@ -27,6 +27,15 @@ func (s Styles) SubtleAccent(value string) string {
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(s.Palette.Accent)).Faint(true).Render(value)
 }
+
+// Heading styles table column titles and similar labels in the same tone as
+// sidebar section headings, so structural text reads as one family.
+func (s Styles) Heading(value string) string {
+	if !s.Palette.ColorEnabled || s.Palette.Accent == "" {
+		return value
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(s.Palette.Accent)).Faint(true).Bold(true).Render(value)
+}
 func (s Styles) Success(value string) string  { return s.color(value, s.Palette.Success) }
 func (s Styles) Warning(value string) string  { return s.color(value, s.Palette.Warning) }
 func (s Styles) Error(value string) string    { return s.color(value, s.Palette.Error) }

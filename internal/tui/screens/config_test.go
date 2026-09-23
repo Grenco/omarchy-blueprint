@@ -154,7 +154,7 @@ func TestConfigPresentationForEveryClassification(t *testing.T) {
 func TestConfigScreenRendersBroadGroupsWithUserFacingStateAndPolicy(t *testing.T) {
 	screen := &Config{width: 120, candidates: []config.Candidate{{Path: ".config/gh/hosts.yml", Classification: config.ConfigSensitive, Reason: "sensitive"}, {Path: ".config/nvim/init.lua", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}}
 	view := screen.View()
-	for _, want := range []string{"Path", "State", "Policy", "Changes", "Not managed by Config", ".config/nvim/init.lua", "Auto"} {
+	for _, want := range []string{"PATH", "STATE", "POLICY", "Changes", "Not managed by Config", ".config/nvim/init.lua", "Auto"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}

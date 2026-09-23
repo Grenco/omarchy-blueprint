@@ -60,7 +60,7 @@ func (t *Table) Render(columns []Column, rows []Row, width, height int, styles S
 	}
 	dataHeight := max(0, height-1)
 	t.Move(0, len(rows), dataHeight)
-	lines := []string{tableLine(columnTitles(columns), widths)}
+	lines := []string{styles.Heading(tableLine(columnTitles(columns), widths))}
 	for _, row := range rows[t.Offset:min(len(rows), t.Offset+dataHeight)] {
 		if row.Selected && !styles.Palette.ColorEnabled && len(row.Cells) > 0 {
 			row.Cells = append([]string(nil), row.Cells...)
@@ -94,9 +94,9 @@ func dividerLine(label string, widths []int, styles Styles) string {
 // grammar as divider rows inside tables.
 func SectionDivider(label string, width int, styles Styles) string {
 	if width <= lipgloss.Width(label) {
-		return truncate(label, max(1, width))
+		return styles.Accent(truncate(label, max(1, width)))
 	}
-	return label + " " + styles.Muted(strings.Repeat("─", width-lipgloss.Width(label)-1))
+	return styles.Accent(label) + " " + styles.Muted(strings.Repeat("─", width-lipgloss.Width(label)-1))
 }
 
 func tableColumns(columns []Column, width int) ([]Column, []int) {

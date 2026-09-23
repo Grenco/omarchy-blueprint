@@ -86,6 +86,7 @@ func (l ThemeLoader) Load() Palette {
 	palette.Error, palette.Removed = palette.Red, palette.Red
 	palette.Success, palette.Added = palette.Green, palette.Green
 	palette.Warning = palette.Yellow
+	palette.Disabled = palette.Muted
 	return palette
 }
 
@@ -114,7 +115,7 @@ func fallbackPalette() Palette {
 		Foreground: "7", DarkForeground: "0", BrightForeground: "15",
 		Muted: "8", Accent: "6", Red: "1", Yellow: "3", Green: "2", Cyan: "6", Blue: "4", Magenta: "5",
 		SelectionBackground: "6", SelectionForeground: "0", Selection: "6",
-		Success: "2", Warning: "3", Error: "1", Added: "2", Removed: "1", Border: "8", BorderFocused: "6", ColorEnabled: true,
+		Success: "2", Warning: "3", Error: "1", Added: "2", Removed: "1", Border: "8", BorderFocused: "6", Disabled: "8", ColorEnabled: true,
 	}
 }
 

@@ -262,31 +262,39 @@ func (s *Provider) renderStateTable(rows []providerRow, width int) string {
 	columns := stateColumns(s.presentationWidth())
 	rendered := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
+		selected := i == s.list.Selected
 		cells := make([]string, len(columns))
 		if row.group != "" {
-			cells = groupCells(row.group, len(columns), !s.collapsed[row.group], s.styles)
+			cells = groupCells(row.group, len(columns), !s.collapsed[row.group], s.styles, selected)
 		} else if row.target.Key != "" {
 			label := row.target.Label
 			if label == "" {
 				label = row.target.Key
 			}
-			desired := styledDecision(s.styles, stateValue(string(row.target.Desired)))
-			status := styledDecision(s.styles, targetStatus(row.target))
+			desired := styledDecision(s.styles, stateValue(string(row.target.Desired)), selected)
+			status := styledDecision(s.styles, targetStatus(row.target), selected)
 			if len(columns) == 3 {
 				cells = []string{components.DisplayText(label), desired, status}
 			} else {
-				cells = []string{components.DisplayText(label), desired, styledDecision(s.styles, currentStateValue(row.target.Current)), status}
+				cells = []string{components.DisplayText(label), desired, styledDecision(s.styles, currentStateValue(row.target.Current), selected), status}
 			}
 		} else {
 			label := components.DisplayText(row.value)
-			if row.state == "included" {
-				label = s.styles.Added("+ " + label)
-			} else if row.state == "not included" {
-				label = s.styles.Removed("- " + label)
+			switch row.state {
+			case "included":
+				label = "+ " + label
+				if !selected {
+					label = s.styles.Added(label)
+				}
+			case "not included":
+				label = "- " + label
+				if !selected {
+					label = s.styles.Removed(label)
+				}
 			}
 			cells[0] = label
 		}
-		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true, Divider: row.group != ""})
+		rendered = append(rendered, components.Row{Cells: cells, Selected: selected, Focused: true, Divider: row.group != ""})
 	}
 	s.table.Ensure(s.list.Selected, len(rows), max(1, s.listHeight()-1))
 	return s.table.Render(columns, rendered, width, s.listHeight()+1, s.styles)
@@ -296,12 +304,13 @@ func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
 	columns := policyColumns(s.tab, s.presentationWidth())
 	rendered := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
+		selected := i == s.list.Selected
 		cells := make([]string, len(columns))
 		if row.group != "" {
-			cells = groupCells(row.group, len(columns), !s.collapsed[row.group], s.styles)
+			cells = groupCells(row.group, len(columns), !s.collapsed[row.group], s.styles, selected)
 		} else {
 			blocked := s.policyBlocked(row.target)
-			decision := styledDecision(s.styles, policyDecision(s.tab, row.effective.Enabled, blocked))
+			decision := styledDecision(s.styles, policyDecision(s.tab, row.effective.Enabled, blocked), selected)
 			state := row.target.Current
 			if s.tab == "Restore" {
 				state = row.target.Desired
@@ -315,16 +324,16 @@ func (s *Provider) renderPolicyTable(rows []providerRow, width int) string {
 				if s.tab == "Capture" {
 					stateLabel = currentStateValue(state)
 				}
-				cells = []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel)}
+				cells = []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel, selected)}
 			} else {
 				stateLabel := stateValue(string(state))
 				if s.tab == "Capture" {
 					stateLabel = currentStateValue(state)
 				}
-				cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel), decision, styledDecision(s.styles, policySourceLabel(row.effective.Source, blocked))}
+				cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel, selected), decision, styledDecision(s.styles, policySourceLabel(row.effective.Source, blocked), selected)}
 			}
 		}
-		rendered = append(rendered, components.Row{Cells: cells, Selected: i == s.list.Selected, Focused: true, Divider: row.group != ""})
+		rendered = append(rendered, components.Row{Cells: cells, Selected: selected, Focused: true, Divider: row.group != ""})
 	}
 	s.table.Ensure(s.list.Selected, len(rows), max(1, s.listHeight()-1))
 	return s.table.Render(columns, rendered, width, s.listHeight()+1, s.styles)

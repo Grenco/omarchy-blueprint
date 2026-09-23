@@ -251,7 +251,7 @@ func (s *Restore) currentPlanView() string {
 			{Cells: []string{"Defaults", defaults, defaultsMeaning}},
 		}, width, 5, s.styles,
 	)
-	sections := []string{"Run settings\n" + settings}
+	sections := []string{components.SectionDivider("Run settings", width, s.styles) + "\n" + settings}
 	if s.options.Convergence == policy.ConvergenceExact {
 		sections = append(sections, s.wrapCurrentPlan([]string{"WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted."}))
 	}
@@ -260,7 +260,7 @@ func (s *Restore) currentPlanView() string {
 		[]components.Row{{Cells: []string{fmt.Sprint(counts.create), fmt.Sprint(counts.modify), fmt.Sprint(counts.replace), fmt.Sprint(counts.delete), fmt.Sprint(counts.commands), fmt.Sprint(policySkipCount(s.current)), fmt.Sprint(s.forcedOverrides)}}},
 		width, 2, s.styles,
 	)
-	sections = append(sections, "Plan summary\n"+summary)
+	sections = append(sections, components.SectionDivider("Plan summary", width, s.styles)+"\n"+summary)
 	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
 		return strings.Join(append(sections, "No restore operations required."), "\n\n")
 	}
@@ -268,22 +268,28 @@ func (s *Restore) currentPlanView() string {
 		columns := restoreOperationColumns(width)
 		rows := make([]components.Row, 0, len(s.current.Operations))
 		for i, op := range s.current.Operations {
+			selected := i == s.selected
 			action := operationAction(op)
 			risk := operationRisk(op)
-			cells := []string{components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), styleRestoreAction(s.styles, action), styleRestoreRisk(s.styles, risk)}
+			cells := []string{components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), styleRestoreAction(s.styles, action, selected), styleRestoreRisk(s.styles, risk, selected)}
 			if len(columns) == 3 {
-				cells = []string{components.DisplayText(op.Resource), styleRestoreAction(s.styles, action), styleRestoreRisk(s.styles, risk)}
+				cells = []string{components.DisplayText(op.Resource), styleRestoreAction(s.styles, action, selected), styleRestoreRisk(s.styles, risk, selected)}
 			}
-			rows = append(rows, components.Row{Cells: cells, Selected: i == s.selected, Focused: true})
+			rows = append(rows, components.Row{Cells: cells, Selected: selected, Focused: true})
 		}
-		sections = append(sections, "Changes", s.changesTable.Render(columns, rows, width, len(rows)+1, s.styles))
+		sections = append(sections, components.SectionDivider("Changes", width, s.styles)+"\n"+s.changesTable.Render(columns, rows, width, len(rows)+1, s.styles))
 	}
 	if len(s.current.Skipped) > 0 {
 		rows := make([]components.Row, 0, len(s.current.Skipped))
 		for i, skipped := range s.current.Skipped {
-			rows = append(rows, components.Row{Cells: []string{components.DisplayText(restoreCategoryLabel(skipped.Provider)), components.DisplayText(skipped.Resource), s.styles.Warning(skipReasonLabel(skipped.Reason))}, Selected: len(s.current.Operations)+i == s.selected, Focused: true})
+			selected := len(s.current.Operations)+i == s.selected
+			reason := skipReasonLabel(skipped.Reason)
+			if !selected {
+				reason = s.styles.Warning(reason)
+			}
+			rows = append(rows, components.Row{Cells: []string{components.DisplayText(restoreCategoryLabel(skipped.Provider)), components.DisplayText(skipped.Resource), reason}, Selected: selected, Focused: true})
 		}
-		sections = append(sections, "Skipped by policy / safety / mode", s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
+		sections = append(sections, components.SectionDivider("Skipped by policy / safety / mode", width, s.styles)+"\n"+s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -348,14 +354,20 @@ func operationRisk(op model.Operation) string {
 	return titleMode(string(op.Risk))
 }
 
-func styleRestoreAction(styles components.Styles, action string) string {
+func styleRestoreAction(styles components.Styles, action string, selected bool) string {
+	if selected {
+		return action
+	}
 	if action == "Remove" {
 		return styles.Removed(action)
 	}
 	return styles.Added(action)
 }
 
-func styleRestoreRisk(styles components.Styles, risk string) string {
+func styleRestoreRisk(styles components.Styles, risk string, selected bool) string {
+	if selected {
+		return risk
+	}
 	switch risk {
 	case "High":
 		return styles.Error(risk)
@@ -500,5 +512,16 @@ func (s *Restore) confirmation() string {
 		}
 	}
 	s.ensureOptions()
-	return fmt.Sprintf("Restore all captured providers? conflicts:%s convergence:%s create:%d modify:%d replace:%d removals:%d commands:%d policy-skips:%d forced-overrides:%d high-risk:%d", s.options.Conflicts, s.options.Convergence, counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.plan()), s.forcedOverrides, high)
+	prompt := fmt.Sprintf(
+		"Apply this restore plan? %d create, %d modify, %d replace, %d removals, %d commands (%s conflicts, %s convergence).",
+		counts.create, counts.modify, counts.replace, counts.delete, counts.commands,
+		titleMode(string(s.options.Conflicts)), titleMode(string(s.options.Convergence)),
+	)
+	if high > 0 {
+		prompt += fmt.Sprintf(" %d high-risk.", high)
+	}
+	if s.forcedOverrides > 0 {
+		prompt += fmt.Sprintf(" %d forced override(s).", s.forcedOverrides)
+	}
+	return prompt
 }

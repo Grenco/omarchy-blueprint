@@ -55,15 +55,31 @@ func TestPresentationUsesConcisePolicySources(t *testing.T) {
 func TestPresentationStylesReinforceButDoNotReplaceMeaning(t *testing.T) {
 	plain := components.NewStyles(components.ThemePalette{ColorEnabled: false})
 	for _, value := range []string{"Include", "Preserve", "Apply", "Skip", "Blocked", "Absent"} {
-		if got := styledDecision(plain, value); got != value {
+		if got := styledDecision(plain, value, false); got != value {
 			t.Errorf("no-colour %q = %q", value, got)
 		}
 	}
 	colour := components.NewStyles(components.ThemePalette{ColorEnabled: true, Added: "#00ff00", Removed: "#ff0000", Muted: "#888888", Warning: "#ffff00"})
 	for _, value := range []string{"Include", "Preserve", "Blocked"} {
-		if got := styledDecision(colour, value); got == value || !strings.Contains(got, "\x1b[") {
+		if got := styledDecision(colour, value, false); got == value || !strings.Contains(got, "\x1b[") {
 			t.Errorf("colour did not style %q: %q", value, got)
 		}
+	}
+}
+
+func TestPresentationStylesSkipSelectedRows(t *testing.T) {
+	// A selected row's cells must stay plain: Styles.Selection wraps the whole
+	// line afterwards, and a foreground style embedded inside that line does
+	// not survive the wrap (its reset code cuts the selection background
+	// short). See presentation.go's styledDecision/groupCells comment.
+	colour := components.NewStyles(components.ThemePalette{ColorEnabled: true, Added: "#00ff00", Removed: "#ff0000", Muted: "#888888", Warning: "#ffff00"})
+	for _, value := range []string{"Include", "Preserve", "Blocked", "Absent"} {
+		if got := styledDecision(colour, value, true); got != value {
+			t.Errorf("selected %q should stay plain, got %q", value, got)
+		}
+	}
+	if got := groupCells("group", 2, true, colour, true); got[0] != components.Icons.Expanded+" group" {
+		t.Errorf("selected group cell should stay plain, got %q", got[0])
 	}
 }
 

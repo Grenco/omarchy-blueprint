@@ -359,26 +359,43 @@ func (s *Config) View() string {
 	}
 	tableRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
+		selected := i == s.selected
 		if row.group != "" {
 			marker := components.Icons.Expanded
 			if s.groupCollapsed(row.group) {
 				marker = components.Icons.Collapsed
 			}
-			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + string(row.group)), "", ""}, Selected: i == s.selected, Focused: true, Divider: true})
+			label := marker + " " + string(row.group)
+			if !selected {
+				label = s.styles.Accent(label)
+			}
+			tableRows = append(tableRows, components.Row{Cells: []string{label, "", ""}, Selected: selected, Focused: true, Divider: true})
 			continue
 		}
 		policy := s.candidatePolicy(row.candidate.Path)
-		switch policy {
-		case "Included":
-			policy = s.styles.Added(policy)
-		case "Excluded":
-			policy = s.styles.Removed(policy)
-		default:
-			policy = s.styles.Muted(policy)
+		if !selected {
+			switch policy {
+			case "Included":
+				policy = s.styles.Added(policy)
+			case "Excluded":
+				policy = s.styles.Removed(policy)
+			default:
+				policy = s.styles.Muted(policy)
+			}
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), configPresentationFor(row.candidate.Classification).Label, policy}, Selected: i == s.selected, Focused: true})
+		presentation := configPresentationFor(row.candidate.Classification)
+		state := presentation.Label
+		if !selected {
+			switch presentation.Group {
+			case configNeedsReview:
+				state = s.styles.Warning(state)
+			case configNoActionNeeded, configNotManaged:
+				state = s.styles.Muted(state)
+			}
+		}
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), state, policy}, Selected: selected, Focused: true})
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 32, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+	lines = append(lines, s.table.Render([]components.Column{{Title: "PATH", Width: 0, MinWidth: 12}, {Title: "STATE", Width: 32, MinWidth: 10}, {Title: "POLICY", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)
 	}
@@ -394,6 +411,7 @@ func (s *Config) policyView() string {
 	columns := configPolicyColumns(s.tab, s.presentationWidth())
 	policyRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
+		selected := i == s.policySelected
 		target, effective := row.target, s.effective[row.target.Key]
 		setting := effective.Capture
 		blocked := !target.CaptureEligible
@@ -412,14 +430,14 @@ func (s *Config) policyView() string {
 		if row.overrides > 0 {
 			label += fmt.Sprintf("  (%d descendant override%s)", row.overrides, map[bool]string{true: "", false: "s"}[row.overrides == 1])
 		}
-		if row.directory {
+		if row.directory && !selected {
 			label = s.styles.Accent(label)
 		}
-		cells := []string{label, styledDecision(s.styles, policyDecision(s.tab, setting.Enabled, blocked))}
+		cells := []string{label, styledDecision(s.styles, policyDecision(s.tab, setting.Enabled, blocked), selected)}
 		if len(columns) == 3 {
-			cells = append(cells, styledDecision(s.styles, policySourceLabel(setting.Source, blocked)))
+			cells = append(cells, styledDecision(s.styles, policySourceLabel(setting.Source, blocked), selected))
 		}
-		policyRows = append(policyRows, components.Row{Cells: cells, Selected: i == s.policySelected, Focused: true})
+		policyRows = append(policyRows, components.Row{Cells: cells, Selected: selected, Focused: true})
 	}
 	if len(policyRows) == 0 {
 		lines = append(lines, "No Config paths available for policy.")

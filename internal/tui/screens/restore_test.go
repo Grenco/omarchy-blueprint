@@ -148,13 +148,13 @@ func TestRestoreCurrentPlanSeparatesSettingsSummaryAndTables(t *testing.T) {
 	}
 	view = strings.Join(lines, "\n")
 	for _, want := range []string{
-		"Run settings\n",
+		"Run settings ─",
 		"Additive",
 		"Keep additional items",
-		"Plan summary\n",
+		"\n\nPlan summary ─",
 		"FORCED OVERRIDES",
-		"0\n\nChanges\n",
-		"Low\n\nSkipped by policy / safety / mode\n",
+		"0\n\nChanges ─",
+		"Low\n\nSkipped by policy / safety / mode ─",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Restore summary lacks readable spacing %q:\n%s", want, view)
@@ -193,7 +193,7 @@ func TestRestoreConfirmationReportsCurrentAuthorityAndDestructiveCounts(t *testi
 		Skipped: []model.Skipped{{Provider: "packages", Resource: "official:git", Reason: "restore disabled"}, {Provider: "config", Resource: "conflict", Reason: "overwrite disabled"}},
 	}
 	confirmation := screen.confirmation()
-	for _, want := range []string{"conflicts:force", "convergence:exact", "removals:2", "policy-skips:1", "forced-overrides:2"} {
+	for _, want := range []string{"Force conflicts", "Exact convergence", "2 removals", "1 high-risk", "2 forced override(s)"} {
 		if !strings.Contains(confirmation, want) {
 			t.Fatalf("confirmation missing %q: %s", want, confirmation)
 		}
