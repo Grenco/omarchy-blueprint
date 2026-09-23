@@ -68,7 +68,7 @@ func (t *Table) Render(columns []Column, rows []Row, width, height int, styles S
 		}
 		line := tableLine(row.Cells, widths)
 		if row.Divider && len(row.Cells) > 0 {
-			line = dividerLine(row.Cells[0], widths)
+			line = dividerLine(row.Cells[0], widths, styles)
 		}
 		if row.Selected {
 			line = styles.Selection(line, row.Focused)
@@ -78,7 +78,7 @@ func (t *Table) Render(columns []Column, rows []Row, width, height int, styles S
 	return strings.Join(lines, "\n")
 }
 
-func dividerLine(label string, widths []int) string {
+func dividerLine(label string, widths []int, styles Styles) string {
 	width := len(widths) - 1
 	for _, columnWidth := range widths {
 		width += columnWidth
@@ -87,7 +87,16 @@ func dividerLine(label string, widths []int) string {
 	if remaining <= 0 {
 		return pad(label, width)
 	}
-	return pad(label+" "+strings.Repeat("─", remaining), width)
+	return pad(label+" "+styles.Muted(strings.Repeat("─", remaining)), width)
+}
+
+// SectionDivider renders a screen-level section heading using the same visual
+// grammar as divider rows inside tables.
+func SectionDivider(label string, width int, styles Styles) string {
+	if width <= lipgloss.Width(label) {
+		return truncate(label, max(1, width))
+	}
+	return label + " " + styles.Muted(strings.Repeat("─", width-lipgloss.Width(label)-1))
 }
 
 func tableColumns(columns []Column, width int) ([]Column, []int) {

@@ -32,6 +32,8 @@ type Restore struct {
 	planRequestID           uint64
 	changesTable            components.Table
 	skipsTable              components.Table
+	settingsTable           components.Table
+	summaryTable            components.Table
 }
 
 const restoreScopeAll = ""
@@ -224,24 +226,44 @@ func (s *Restore) currentPlanView() string {
 	s.ensureOptions()
 	machine := "Profile defaults"
 	if s.session != nil && s.session.Machine().Name != "" {
-		name := s.session.Machine().Name
-		machine = "Machine: " + name
+		machine = s.session.Machine().Name
 	}
 	counts := outcomeCounts(s.current)
-	lines := []string{machine, fmt.Sprintf("Conflicts: %s (f) · Convergence: %s (e)", titleMode(string(s.options.Conflicts)), titleMode(string(s.options.Convergence)))}
-	if s.override {
-		lines = append(lines, "One-run override active; machine defaults are unchanged.")
-	}
-	if s.options.Convergence == policy.ConvergenceExact {
-		lines = append(lines, "WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted.")
-	}
-	lines = append(lines, "", fmt.Sprintf("Current plan: create:%d modify:%d replace:%d removals:%d commands:%d policy-skips:%d forced-overrides:%d", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides))
-	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
-		return s.wrapCurrentPlan(append(lines, "", "No restore operations required."))
-	}
 	width := s.widthOrDefault()
-	wrapped := s.wrapCurrentPlan(lines)
-	sections := []string{wrapped}
+	conflicts, conflictMeaning := titleMode(string(s.options.Conflicts)), "Keep conflicting files"
+	if s.options.Conflicts == policy.ConflictForce {
+		conflictMeaning = "Overwrite conflicting files"
+	}
+	convergence, convergenceMeaning := titleMode(string(s.options.Convergence)), "Keep additional items"
+	if s.options.Convergence == policy.ConvergenceExact {
+		convergenceMeaning = "Remove managed extras"
+	}
+	defaults, defaultsMeaning := "Machine defaults", "Saved defaults are in use"
+	if s.override {
+		defaults, defaultsMeaning = "One-run override", "Machine defaults are unchanged"
+	}
+	settings := s.settingsTable.Render(
+		[]components.Column{{Title: "SETTING", Width: 22, MinWidth: 18}, {Title: "VALUE", Width: 20, MinWidth: 12}, {Title: "MEANING", MinWidth: 22}},
+		[]components.Row{
+			{Cells: []string{"Machine", components.DisplayText(machine), "Target machine for this run"}},
+			{Cells: []string{"Conflict handling (f)", conflicts, conflictMeaning}},
+			{Cells: []string{"Convergence (e)", convergence, convergenceMeaning}},
+			{Cells: []string{"Defaults", defaults, defaultsMeaning}},
+		}, width, 5, s.styles,
+	)
+	sections := []string{"Run settings\n" + settings}
+	if s.options.Convergence == policy.ConvergenceExact {
+		sections = append(sections, s.wrapCurrentPlan([]string{"WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted."}))
+	}
+	summary := s.summaryTable.Render(
+		[]components.Column{{Title: "CREATE", MinWidth: 6}, {Title: "MODIFY", MinWidth: 6}, {Title: "REPLACE", MinWidth: 7}, {Title: "REMOVALS", MinWidth: 8}, {Title: "COMMANDS", MinWidth: 8}, {Title: "POLICY SKIPS", MinWidth: 12}, {Title: "FORCED OVERRIDES", MinWidth: 16}},
+		[]components.Row{{Cells: []string{fmt.Sprint(counts.create), fmt.Sprint(counts.modify), fmt.Sprint(counts.replace), fmt.Sprint(counts.delete), fmt.Sprint(counts.commands), fmt.Sprint(policySkipCount(s.current)), fmt.Sprint(s.forcedOverrides)}}},
+		width, 2, s.styles,
+	)
+	sections = append(sections, "Plan summary\n"+summary)
+	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
+		return strings.Join(append(sections, "No restore operations required."), "\n\n")
+	}
 	if len(s.current.Operations) > 0 {
 		columns := restoreOperationColumns(width)
 		rows := make([]components.Row, 0, len(s.current.Operations))
