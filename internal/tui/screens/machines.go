@@ -110,6 +110,18 @@ func (s *Machines) HasSelectedMachine() bool {
 	return s.region == machineRegionMachines && s.selectedMachine().Name != ""
 }
 func (s *Machines) CanAddMachine() bool { return s.region == machineRegionMachines }
+
+// machineRowCount includes the trailing "+ Add machine" row, which is
+// reachable with j/k like any machine but is never a machine itself.
+func (s *Machines) machineRowCount() int { return len(s.machines()) + 1 }
+func (s *Machines) AddRowSelected() bool {
+	return s.region == machineRegionMachines && s.selected == len(s.machines())
+}
+func (s *Machines) startAdd() tea.Cmd {
+	s.mode = "add"
+	s.name, _ = s.session.SuggestedMachineName()
+	return s.nameModal("Add machine")
+}
 func (s *Machines) CanUseMachine() bool {
 	return s.HasSelectedMachine() && s.selectedMachine().Name != s.session.Machine().Name
 }
@@ -145,7 +157,7 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	}
 	if result, ok := msg.(MachineMutationComplete); ok {
 		s.err, s.busy = result.Err, false
-		s.machineList.SetSelected(s.machineList.Selected, len(s.machines()), s.listHeight())
+		s.machineList.SetSelected(s.machineList.Selected, s.machineRowCount(), s.listHeight())
 		s.selected = s.machineList.Selected
 		s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
 		return nil
@@ -220,7 +232,7 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
 			return nil
 		}
-	} else if s.region == machineRegionMachines && s.machineList.Vim(key.String(), len(s.machines()), s.listHeight()) {
+	} else if s.region == machineRegionMachines && s.machineList.Vim(key.String(), s.machineRowCount(), s.listHeight()) {
 		s.selected = s.machineList.Selected
 		s.resource = 0
 		return nil
@@ -235,7 +247,7 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		if s.region == machineRegionResources {
 			s.resource = min(len(s.mappingRows())-1, s.resource+1)
 			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
-		} else if s.region == machineRegionMachines && s.machineList.Move(1, len(s.machines()), s.listHeight()) {
+		} else if s.region == machineRegionMachines && s.machineList.Move(1, s.machineRowCount(), s.listHeight()) {
 			s.selected = s.machineList.Selected
 			s.resource = 0
 		}
@@ -243,21 +255,20 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		if s.region == machineRegionResources {
 			s.resource = max(0, s.resource-1)
 			s.mappingTable.Ensure(s.resource, len(s.mappingRows()), s.tableHeight())
-		} else if s.region == machineRegionMachines && s.machineList.Move(-1, len(s.machines()), s.listHeight()) {
+		} else if s.region == machineRegionMachines && s.machineList.Move(-1, s.machineRowCount(), s.listHeight()) {
 			s.selected = s.machineList.Selected
 			s.resource = 0
 		}
 	case "a":
-		if !s.CanAddMachine() {
-			return nil
+		if s.CanAddMachine() {
+			return s.startAdd()
 		}
-		s.mode = "add"
-		s.name, _ = s.session.SuggestedMachineName()
-		return s.nameModal("Add machine")
 	case "u":
 		switch s.region {
 		case machineRegionMachines:
-			return s.use()
+			if s.CanUseMachine() {
+				return s.use()
+			}
 		case machineRegionResources:
 			if s.selectedMapping().override {
 				return s.unmapResource()
@@ -300,6 +311,9 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 	case "o":
 		fallthrough
 	case "enter":
+		if s.AddRowSelected() && key.String() == "enter" {
+			return s.startAdd()
+		}
 		categories := machinePolicyCategories(s.selectedMachine().Policy)
 		if s.region == machineRegionPolicy && len(categories) > 0 {
 			category := categories[min(s.policyCategory, len(categories)-1)].category
@@ -354,9 +368,12 @@ func (s *Machines) View() string {
 		}
 		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active, selected), defaults, overrideLabel}, Selected: selected, Focused: s.region == machineRegionMachines})
 	}
-	if len(machineRows) == 0 {
-		machineRows = append(machineRows, components.Row{Cells: []string{"No machine overlays."}})
+	addSelected := s.AddRowSelected()
+	addLabel := "+ Add machine"
+	if !addSelected {
+		addLabel = s.styles.Accent(addLabel)
 	}
+	machineRows = append(machineRows, components.Row{Cells: []string{addLabel}, Selected: addSelected, Focused: s.region == machineRegionMachines})
 	rows := []components.Row{}
 	for i, row := range s.mappingRows() {
 		selected := i == s.resource && s.region == machineRegionResources
@@ -573,6 +590,9 @@ func (s *Machines) DetailView() string {
 		selected := categories[min(s.policyCategory, len(categories)-1)]
 		return "Policy overrides\nCategory: " + components.DisplayText(selected.category) + "\nOverrides: " + fmt.Sprint(selected.count) + "\nThese categories contain explicit Capture or Restore overrides for the selected machine. Open one to review its targets."
 	}
+	if s.AddRowSelected() {
+		return "Add machine\nCreate a machine overlay for a computer whose Resources need different paths.\n\nEnter opens the name prompt."
+	}
 	item := s.selectedMachine()
 	if item.Name == "" {
 		return "Machine overlays\nPortable paths are active."
@@ -646,10 +666,10 @@ func (s *Machines) tableHeight() int {
 func (s *Machines) machineRenderHeight() int {
 	height := s.contentHeight()
 	if height <= 0 {
-		return max(2, len(s.machines())+1)
+		return max(2, s.machineRowCount()+1)
 	}
 	reserved := 3 + s.policyBlockHeight()
-	return max(2, min(len(s.machines())+1, max(2, height-reserved)))
+	return max(2, min(s.machineRowCount()+1, max(2, height-reserved)))
 }
 func (s *Machines) policyBlockHeight() int {
 	categories := machinePolicyCategories(s.selectedMachine().Policy)
