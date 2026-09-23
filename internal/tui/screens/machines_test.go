@@ -13,10 +13,9 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-func TestMachinesWithoutResourcesExplainsWhyScreenIsEmpty(t *testing.T) {
+func TestMachinesFreshProfileStillOffersAddMachine(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
-	data := profile.New("test", time.Now())
-	if err := profile.Save(profileDir, data); err != nil {
+	if err := profile.Save(profileDir, profile.New("test", time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	session, err := workflow.Open(
@@ -30,14 +29,32 @@ func TestMachinesWithoutResourcesExplainsWhyScreenIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view := NewMachines(session).View()
-	for _, want := range []string{
-		"No machine-specific paths needed",
-		"only matters when a Resource needs a different location",
-		"There is nothing to configure on this screen.",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("empty Machines missing %q:\n%s", want, view)
+	for _, size := range []struct{ width, height int }{{0, 0}, {78, 16}} {
+		screen := NewMachines(session)
+		screen.SetSize(size.width, size.height)
+		view := screen.View()
+		for _, want := range []string{"No machine overlays yet", "restore defaults, policy", "+ Add machine"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%dx%d fresh Machines missing %q:\n%s", size.width, size.height, want, view)
+			}
+		}
+		for _, stale := range []string{"nothing to configure", "No resource mappings."} {
+			if strings.Contains(view, stale) {
+				t.Fatalf("%dx%d fresh Machines still says %q:\n%s", size.width, size.height, stale, view)
+			}
+		}
+		if !screen.AddRowSelected() {
+			t.Fatalf("%dx%d: + Add machine should be the selected row on a fresh profile", size.width, size.height)
+		}
+		if detail := screen.DetailView(); !strings.Contains(detail, "Add machine") {
+			t.Fatalf("%dx%d: Details should describe the Add machine row: %q", size.width, size.height, detail)
+		}
+		cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if cmd == nil || screen.mode != "add" {
+			t.Fatalf("%dx%d: Enter should open Add machine (cmd=%v mode=%q)", size.width, size.height, cmd != nil, screen.mode)
+		}
+		if request, ok := cmd().(components.ModalRequest); !ok || request.Title != "Add machine" {
+			t.Fatalf("%dx%d: Enter requested %#v", size.width, size.height, cmd())
 		}
 	}
 }
