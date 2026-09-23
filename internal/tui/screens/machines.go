@@ -334,13 +334,6 @@ func (s *Machines) View() string {
 	if s.mode != "" {
 		return "Machine name: " + components.DisplayText(s.name)
 	}
-	if s.session != nil && len(s.machines()) == 0 && len(s.session.Profile().Resources.Items) == 0 {
-		return renderEmptyState(s.styles, s.width, emptyStateCopy{
-			Heading:     "No machine-specific paths needed",
-			Explanation: "Machines only matters when a Resource needs a different location on one computer. There are no Resources here that need mapping yet.",
-			Guidance:    "There is nothing to configure on this screen.",
-		})
-	}
 	machineRows := make([]components.Row, 0, len(s.machines()))
 	for i, item := range s.machines() {
 		selected := i == s.machineList.Selected && s.region == machineRegionMachines
@@ -404,7 +397,9 @@ func (s *Machines) View() string {
 		parts = append(parts, categories)
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "RESOURCE", Width: 18, MinWidth: 10}, {Title: "PORTABLE", Width: 28, MinWidth: 12}, {Title: "EFFECTIVE", Width: 28, MinWidth: 12}, {Title: "SOURCE", MinWidth: 8}}, rows, width, s.tableHeight()+1, s.styles)
-	parts = append(parts, components.SectionDivider("Resource paths", width, s.styles), right)
+	if len(s.mappingRows()) > 0 {
+		parts = append(parts, components.SectionDivider("Resource paths", width, s.styles), right)
+	}
 	separator := "\n\n"
 	// The portable-path guidance can consume much of the screen even when the
 	// outer height looks generous. Compact the section gaps according to the
@@ -542,18 +537,28 @@ func (s *Machines) portableGuidance() (string, bool) {
 	if s.hasOverrides() {
 		return "", false
 	}
-	full := renderEmptyState(s.styles, s.width, emptyStateCopy{
+	guidance := emptyStateCopy{
 		Heading:     "Portable paths are in use",
 		Explanation: "Resources normally use the same portable path on every machine.",
 		Guidance:    "Add a machine-specific mapping only when one computer needs a different location. If the normal Resource paths work here, there is nothing to configure.",
-	})
+	}
+	if s.session != nil && len(s.session.Profile().Resources.Items) == 0 {
+		if len(s.machines()) > 0 {
+			return "", false
+		}
+		// A fresh profile still has everything else Machines owns, so the
+		// guidance introduces overlays rather than calling the screen empty.
+		guidance = emptyStateCopy{
+			Heading:     "No machine overlays yet",
+			Explanation: "Machine overlays let this computer have its own restore defaults, policy overrides, and Resource paths.",
+			Guidance:    "Select + Add machine and press Enter, or press a, to create one.",
+		}
+	}
+	full := renderEmptyState(s.styles, s.width, guidance)
 	if s.height <= 0 || s.height-machinesGuidanceBlockHeight(full) >= minMachinesPaneHeight {
 		return full, true
 	}
-	compact := renderEmptyState(s.styles, s.width, emptyStateCopy{
-		Heading: "Portable paths are in use",
-	})
-	return compact, true
+	return renderEmptyState(s.styles, s.width, emptyStateCopy{Heading: guidance.Heading}), true
 }
 
 func machinesGuidanceBlockHeight(guidance string) int {
