@@ -165,6 +165,8 @@ func captureOutcomeFor(target TargetInspection, decision CaptureDecision, differ
 		return CaptureOutcomeUpdate
 	case target.Current == TargetPresent && target.Desired != TargetPresent:
 		return CaptureOutcomeAdd
+	case target.Current != TargetPresent && target.Desired == TargetUnknown && target.Capabilities.RecordsNewAbsence:
+		return CaptureOutcomeAbsent
 	case target.Current != TargetPresent && target.Desired == TargetPresent:
 		if target.Capabilities.SupportsDesiredAbsence {
 			return CaptureOutcomeAbsent

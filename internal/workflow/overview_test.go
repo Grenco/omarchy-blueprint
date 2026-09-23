@@ -31,7 +31,10 @@ func (overviewProvider) Capture(context.Context, *profile.Data, CaptureContext) 
 }
 func (overviewProvider) Diff(context.Context, profile.Data) ([]model.Change, error) { return nil, nil }
 func (overviewProvider) DiffWithScan(context.Context, profile.Data) ([]model.Change, configprovider.ScanSummary, error) {
-	return nil, configprovider.ScanSummary{Candidates: []configprovider.Candidate{{Path: ".config/z", Classification: configprovider.ConfigModifiedBaseline}, {Path: ".config/a", Classification: configprovider.ConfigAmbiguousBaseline}}}, nil
+	// Like the real provider, Diff reports the untracked modified path; the
+	// scan contributes only the ambiguous decision.
+	changes := []model.Change{{Type: model.ChangeModify, Provider: "config", Kind: "config", Name: ".config/z", Summary: "~ config .config/z modified from baseline"}}
+	return changes, configprovider.ScanSummary{Candidates: []configprovider.Candidate{{Path: ".config/z", Classification: configprovider.ConfigModifiedBaseline}, {Path: ".config/a", Classification: configprovider.ConfigAmbiguousBaseline}}}, nil
 }
 
 type overviewResources struct{}

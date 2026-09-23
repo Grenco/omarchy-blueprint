@@ -3931,6 +3931,23 @@ func TestConfigEligibilityMarksOnlyOwnershipTransitionsAsDroppingDesiredState(t 
 	}
 }
 
+// Capture records a desired-absent tombstone for a deleted Omarchy default
+// it has never tracked, so the Capture preview must say so rather than
+// reporting no action.
+func TestConfigRecordsNewAbsenceOnlyForDeletedBaseline(t *testing.T) {
+	for _, classification := range []configprovider.Classification{
+		configprovider.ConfigUnchangedBaseline, configprovider.ConfigModifiedBaseline, configprovider.ConfigDeletedBaseline,
+		configprovider.ConfigAdded, configprovider.ConfigDelegated, configprovider.ConfigExcluded, configprovider.ConfigVolatile,
+		configprovider.ConfigSensitive, configprovider.ConfigUnmanagedSymlink, configprovider.ConfigUnsupported,
+		configprovider.ConfigOversized, configprovider.ConfigHistoricalBaseline, configprovider.ConfigAmbiguousBaseline,
+		configprovider.ConfigAmbiguousDeletion,
+	} {
+		if got, want := configRecordsNewAbsence(classification), classification == configprovider.ConfigDeletedBaseline; got != want {
+			t.Fatalf("configRecordsNewAbsence(%s) = %v, want %v", classification, got, want)
+		}
+	}
+}
+
 func TestConfigCaptureInertOnlyMatchesClassificationsCaptureNeverPersists(t *testing.T) {
 	inert := map[configprovider.Classification]bool{
 		configprovider.ConfigUnchangedBaseline:  true,

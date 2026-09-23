@@ -55,6 +55,8 @@ func TestCaptureOutcomeAndReviewGroupTable(t *testing.T) {
 		{"provider keeps a missing target", TargetInspection{CaptureEligible: true, Current: TargetAbsent, Desired: TargetPresent, Capabilities: TargetCapabilities{PreservesMissingDesired: true}}, enabled, true, CaptureOutcomePreserve, CaptureReviewNoAction},
 		{"safety blocks regardless of policy", TargetInspection{CaptureEligible: false, Current: TargetPresent, Desired: TargetUnknown, SafetyReason: "sensitive"}, enabled, true, CaptureOutcomeBlocked, CaptureReviewBlocked},
 		{"nothing on either side", TargetInspection{CaptureEligible: true, Current: TargetAbsent, Desired: TargetUnknown}, enabled, false, CaptureOutcomeNoop, CaptureReviewNoAction},
+		{"newly deleted default is remembered absent", TargetInspection{CaptureEligible: true, Current: TargetAbsent, Desired: TargetUnknown, Capabilities: TargetCapabilities{SupportsDesiredAbsence: true, RecordsNewAbsence: true}}, enabled, false, CaptureOutcomeAbsent, CaptureReviewChanges},
+		{"policy keeps a newly deleted default unrecorded", TargetInspection{CaptureEligible: true, Current: TargetAbsent, Desired: TargetUnknown, Capabilities: TargetCapabilities{SupportsDesiredAbsence: true, RecordsNewAbsence: true}}, disabled, false, CaptureOutcomePreserve, CaptureReviewPreserved},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			target := CaptureTarget{Inspection: test.target, Decision: test.decision, Outcome: captureOutcomeFor(test.target, test.decision, test.differs)}
