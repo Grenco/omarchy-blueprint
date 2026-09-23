@@ -438,3 +438,60 @@ func TestMachinesPolicyFocusNeverMutatesResourceMapping(t *testing.T) {
 		t.Fatal("u with Resource paths focused should unmap the overridden mapping")
 	}
 }
+
+func openMachinesFixture(t *testing.T, machines []profile.Machine) *Machines {
+	t.Helper()
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = machines
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "desktop", nil }}, workflow.Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewMachines(session)
+}
+
+func TestMachinesAddRowIsReachableAndOpensAddMachine(t *testing.T) {
+	screen := openMachinesFixture(t, []profile.Machine{{Name: "desktop"}})
+	if !strings.Contains(screen.View(), "+ Add machine") {
+		t.Fatalf("Machines table has no Add machine row:\n%s", screen.View())
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'j'})
+	if screen.selected != 1 {
+		t.Fatalf("j should move onto the Add machine row, selected=%d", screen.selected)
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "Add machine") {
+		t.Fatalf("Details should explain the Add machine row: %q", detail)
+	}
+	for _, key := range []rune{'u', 'r', 'x', 'f', 'e'} {
+		if cmd := screen.Update(tea.KeyPressMsg{Code: key}); cmd != nil || screen.busy || screen.confirm != "" || screen.mode != "" {
+			t.Fatalf("%q on the Add machine row acted on a machine (cmd=%v busy=%v confirm=%q mode=%q)", key, cmd != nil, screen.busy, screen.confirm, screen.mode)
+		}
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'j'})
+	if screen.selected != 1 {
+		t.Fatalf("Add machine is the last row; j moved past it to %d", screen.selected)
+	}
+	cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || screen.mode != "add" {
+		t.Fatalf("Enter on Add machine should open the name prompt (cmd=%v mode=%q)", cmd != nil, screen.mode)
+	}
+	if request, ok := cmd().(components.ModalRequest); !ok || request.Title != "Add machine" {
+		t.Fatalf("Enter on Add machine requested %#v", cmd())
+	}
+}
+
+func TestMachinesAddRowIsTheOnlyRowWithoutMachines(t *testing.T) {
+	screen := openMachinesFixture(t, nil)
+	view := screen.View()
+	if !strings.Contains(view, "+ Add machine") || strings.Contains(view, "No machine overlays.") {
+		t.Fatalf("with no machines the table should offer only Add machine:\n%s", view)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil || screen.mode != "add" {
+		t.Fatalf("Enter should open Add machine when it is the only row (cmd=%v mode=%q)", cmd != nil, screen.mode)
+	}
+}
