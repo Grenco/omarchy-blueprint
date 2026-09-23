@@ -553,25 +553,38 @@ func captureScopeLabel(session *workflow.Session, scope workflow.PolicyScope) st
 func (s *Capture) reviewView() string {
 	review := s.review
 	counts := s.reviewCounts()
-	lines := []string{
-		s.styles.Accent("Review Capture") + "  " + plural(counts[workflow.CaptureReviewChanges], "change", "changes") +
-			fmt.Sprintf(" · %d preserved · %d blocked · %d no action needed", counts[workflow.CaptureReviewPreserved], counts[workflow.CaptureReviewBlocked], counts[workflow.CaptureReviewNoAction]),
-		s.styles.SubtleAccent(captureScopeLabel(s.session, review.scope)),
+	width := s.width
+	if width <= 0 {
+		width = 100
+	}
+	// Header lines are wrapped here so the table's height budget below
+	// counts the rows they really occupy.
+	summary := "Review Capture  " + plural(counts[workflow.CaptureReviewChanges], "change", "changes") +
+		fmt.Sprintf(" · %d preserved · %d blocked · %d no action needed", counts[workflow.CaptureReviewPreserved], counts[workflow.CaptureReviewBlocked], counts[workflow.CaptureReviewNoAction])
+	lines := []string{}
+	for i, line := range components.WrapText(summary, width) {
+		if i == 0 && strings.HasPrefix(line, "Review Capture") {
+			line = s.styles.Accent("Review Capture") + strings.TrimPrefix(line, "Review Capture")
+		}
+		lines = append(lines, line)
+	}
+	for _, line := range components.WrapText(captureScopeLabel(s.session, review.scope), width) {
+		lines = append(lines, s.styles.SubtleAccent(line))
 	}
 	switch {
 	case review.loading:
 		return strings.Join(append(lines, "", "Inspecting "+strings.Join(review.categories, ", ")+"..."), "\n")
 	case review.err != nil:
-		lines = append(lines, s.styles.Error("Unable to review Capture: "+components.DisplayText(review.err.Error())))
+		for _, line := range components.WrapText("Unable to review Capture: "+components.DisplayText(review.err.Error()), width) {
+			lines = append(lines, s.styles.Error(line))
+		}
 	case review.notice != "":
-		lines = append(lines, s.styles.Warning(review.notice))
+		for _, line := range components.WrapText(review.notice, width) {
+			lines = append(lines, s.styles.Warning(line))
+		}
 	}
 	if len(review.sections) == 0 {
 		return strings.Join(append(lines, "", "Nothing to review: the chosen categories already match this profile."), "\n")
-	}
-	width := s.width
-	if width <= 0 {
-		width = 100
 	}
 	rows, selectedRow, index := []components.Row{}, 0, 0
 	for _, section := range review.sections {

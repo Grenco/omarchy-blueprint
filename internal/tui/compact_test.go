@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/screens"
 )
@@ -309,6 +310,33 @@ func TestDetailsFooterOffersOnlyKeysThatWorkThere(t *testing.T) {
 		}
 		if !strings.Contains(strings.Join(m.helpLines(), "\n"), "View Config diff") {
 			t.Fatalf("%dx%d: help should still list every Config key while Details has focus", size.Width, size.Height)
+		}
+	}
+}
+
+func TestEveryFrameLineFitsTheTerminalAtMinimumSize(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 70, Height: 18})
+	m.notification = "A deliberately long notification that would otherwise run past the edge of the terminal"
+	lines := strings.Split(m.View().Content, "\n")
+	if len(lines) != 18 {
+		t.Fatalf("frame has %d lines for an 18-line terminal:\n%s", len(lines), m.View().Content)
+	}
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width > 70 {
+			t.Fatalf("line %d is %d columns wide at 70 columns: %q", i, width, line)
+		}
+	}
+}
+
+func TestTooSmallMessageWrapsToTheTerminal(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 40, Height: 10})
+	view := m.View().Content
+	if !strings.Contains(strings.ReplaceAll(view, "\n", " "), "Need at least 70 columns and 18 rows.") {
+		t.Fatalf("too-small message lost its requirement: %q", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 40 {
+			t.Fatalf("too-small line exceeds 40 columns: %q", line)
 		}
 	}
 }
