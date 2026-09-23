@@ -8,6 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m model) View() tea.View {
@@ -41,7 +42,13 @@ func (m model) footer() string {
 	if m.modal != modalNone {
 		return m.modalFooter()
 	}
-	return components.Statusbar(statusActions(m.activeScreen(), m.bindings()))
+	bindings := m.bindings()
+	if m.focus == focusDetails {
+		// Workspace keys do not reach the screen while Details has focus, so
+		// the footer offers only pane movement; help still lists every key.
+		bindings = m.paneBindings()
+	}
+	return components.Statusbar(statusActions(m.activeScreen(), bindings))
 }
 
 // styleFooter highlights the key in each "key label" hint so hints scan as
@@ -113,28 +120,92 @@ func (m model) color(value, color string) string {
 }
 
 func (m model) contentView(layout layout) string {
-	workspace := m.workspaceContent(layout.workspaceWidth)
 	styles := components.NewStyles(m.palette)
+	workspace := components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, m.workspaceContent(layout.workspaceWidth), styles)
 	if layout.mode == LayoutCompact {
-		if m.sidebarOpen {
-			sidebar := m.sidebarRender(layout.workspaceWidth - 2)
-			return components.Panel("Navigation", m.focus == focusSidebar, layout.workspaceWidth, layout.contentHeight, m.sidebarScroll.render(sidebar.Lines, layout.workspaceWidth-2, layout.contentHeight-2), styles)
+		// Compact drawers are derived from focus: a focused sidebar or details
+		// pane is always drawn over the dimmed workspace, never kept hidden.
+		switch {
+		case m.focus == focusSidebar:
+			return overlayDrawer(workspace, m.navigationPanel(layout, styles), layout.workspaceWidth, true, m.palette.ColorEnabled)
+		case m.focus == focusDetails && m.hasDetailsPane():
+			return overlayDrawer(workspace, m.detailsPanel(layout, styles), layout.workspaceWidth, false, m.palette.ColorEnabled)
 		}
-		return components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
+		return workspace
 	}
-	sidebarRender := m.sidebarRender(layout.sidebarWidth - 2)
-	sidebar := components.Panel("Navigation", m.focus == focusSidebar, layout.sidebarWidth, layout.contentHeight, m.sidebarScroll.render(sidebarRender.Lines, layout.sidebarWidth-2, layout.contentHeight-2), styles)
-	workspace = components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
-	if layout.mode == LayoutTwoPane {
+	sidebar := m.navigationPanel(layout, styles)
+	if !m.hasDetailsPane() {
 		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace)
 	}
-	_, ok := m.activeScreen().(DetailView)
-	if !ok {
-		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace, " ", m.detailsPanel(layout, styles))
+}
+
+// compactNavigationWidth and compactDetailsWidth size the compact drawers so
+// part of the workspace stays visible behind them for context.
+const compactNavigationWidth = 26
+
+func compactDetailsWidth(workspaceWidth int) int {
+	return min(workspaceWidth, max(40, workspaceWidth*3/5))
+}
+
+func (m model) navigationPanelWidth() int {
+	layout := layoutForSize(m.width, m.height)
+	if layout.mode == LayoutCompact {
+		return min(compactNavigationWidth, layout.workspaceWidth)
 	}
-	innerWidth, innerHeight := components.InteriorSize(layout.detailsWidth, layout.contentHeight)
-	details := components.Panel("Details", m.focus == focusDetails, layout.detailsWidth, layout.contentHeight, m.detailScroll.render(m.detailLines(layout), innerWidth, innerHeight), styles)
-	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace, " ", details)
+	return layout.sidebarWidth
+}
+
+func (m model) detailsPanelWidth() int {
+	layout := layoutForSize(m.width, m.height)
+	if layout.mode == LayoutCompact {
+		return compactDetailsWidth(layout.workspaceWidth)
+	}
+	return layout.detailsWidth
+}
+
+func (m model) detailsInnerWidth() int {
+	width, _ := components.InteriorSize(m.detailsPanelWidth(), 0)
+	return width
+}
+
+func (m model) navigationPanel(layout layout, styles components.Styles) string {
+	width := m.navigationPanelWidth()
+	rendered := m.sidebarRender(width - 2)
+	return components.Panel("Navigation", m.focus == focusSidebar, width, layout.contentHeight, m.sidebarScroll.render(rendered.Lines, width-2, layout.contentHeight-2), styles)
+}
+
+func (m model) detailsPanel(layout layout, styles components.Styles) string {
+	width := m.detailsPanelWidth()
+	innerWidth, innerHeight := components.InteriorSize(width, layout.contentHeight)
+	return components.Panel("Details", m.focus == focusDetails, width, layout.contentHeight, m.detailScroll.render(m.detailLines(innerWidth), innerWidth, innerHeight), styles)
+}
+
+// overlayDrawer draws drawer over the left or right edge of base, dimming the
+// uncovered part of base the same way modal backdrops are dimmed.
+func overlayDrawer(base, drawer string, width int, left, color bool) string {
+	baseLines, drawerLines := strings.Split(base, "\n"), strings.Split(drawer, "\n")
+	for i, line := range baseLines {
+		plain := boundedLine(ansi.Strip(line), width)
+		if i >= len(drawerLines) {
+			baseLines[i] = dimText(plain, color)
+			continue
+		}
+		drawerWidth := lipgloss.Width(drawerLines[i])
+		if left {
+			baseLines[i] = drawerLines[i] + dimText(ansi.Cut(plain, drawerWidth, width), color)
+		} else {
+			baseLines[i] = dimText(ansi.Cut(plain, 0, width-drawerWidth), color) + drawerLines[i]
+		}
+	}
+	return strings.Join(baseLines, "\n")
+}
+
+func dimText(value string, color bool) string {
+	if !color || value == "" {
+		return value
+	}
+	return lipgloss.NewStyle().Faint(true).Render(value)
 }
 
 func (m model) workspaceContent(panelWidth int) string {
@@ -170,21 +241,17 @@ func (m model) sidebarRender(width int) components.SidebarRender {
 
 func (m *model) ensureSidebarSelection() {
 	layout := layoutForSize(m.width, m.height)
-	width := layout.sidebarWidth
-	if layout.mode == LayoutCompact {
-		width = layout.workspaceWidth
-	}
+	width := m.navigationPanelWidth()
 	_, height := components.InteriorSize(width, layout.contentHeight)
 	rendered := m.sidebarRender(width - 2)
 	m.sidebarScroll.ensure(rendered.SelectedLine, len(rendered.Lines), height)
 }
 
-func (m model) detailLines(layout layout) []string {
+func (m model) detailLines(width int) []string {
 	detailed, ok := m.activeScreen().(DetailView)
 	if !ok {
 		return nil
 	}
-	width, _ := components.InteriorSize(layout.detailsWidth, layout.contentHeight)
 	return m.styleDetailLines(components.WrapText(detailed.DetailView(), width))
 }
 

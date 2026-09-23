@@ -391,3 +391,47 @@ func TestMachineScreenKeepsPaneNavigationUntilOuterEdge(t *testing.T) {
 		}
 	}
 }
+
+func TestMachinesPolicyFocusNeverMutatesResourceMapping(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{{
+		Name:          "desktop",
+		ResourcePaths: []profile.MachineResourcePath{{Resource: "projects", Path: "/mnt/projects"}},
+		Policy:        policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}},
+	}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "desktop", nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	if row := screen.selectedMapping(); !row.override {
+		t.Fatalf("fixture needs an overridden mapping under the cursor: %#v", row)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if screen.region != machineRegionPolicy {
+		t.Fatalf("Tab should focus Policy overrides, got region %v", screen.region)
+	}
+	for _, key := range []rune{'u', 'm', 'x', 'r', 'c', 'f', 'e'} {
+		if cmd := screen.Update(tea.KeyPressMsg{Code: key}); cmd != nil {
+			t.Fatalf("%q in Policy overrides produced a command; only the focused region may be mutated", key)
+		}
+		if screen.busy || screen.browser != nil || screen.confirm != "" || screen.mode != "" {
+			t.Fatalf("%q in Policy overrides started a mutation: busy=%v browser=%v confirm=%q mode=%q", key, screen.busy, screen.browser != nil, screen.confirm, screen.mode)
+		}
+	}
+	if !screen.selectedMapping().override {
+		t.Fatal("Resource mapping was changed while Policy overrides owned focus")
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if screen.region != machineRegionResources {
+		t.Fatalf("Tab should focus Resource paths, got region %v", screen.region)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: 'u'}); cmd == nil {
+		t.Fatal("u with Resource paths focused should unmap the overridden mapping")
+	}
+}

@@ -34,6 +34,9 @@ type Restore struct {
 	skipsTable              components.Table
 	settingsTable           components.Table
 	summaryTable            components.Table
+	// entryOffset is the first visible line of the Changes/Skipped region
+	// when the plan is taller than the workspace.
+	entryOffset int
 }
 
 const restoreScopeAll = ""
@@ -104,10 +107,12 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	case "j", "down":
 		if s.selected < s.currentEntryCount()-1 {
 			s.selected++
+			s.layoutPlan()
 		}
 	case "k", "up":
 		if s.selected > 0 {
 			s.selected--
+			s.layoutPlan()
 		}
 	case "f":
 		s.ensureOptions()
@@ -223,25 +228,43 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	}
 }
 func (s *Restore) currentPlanView() string {
+	header, entries := s.layoutPlan()
+	if entries == nil {
+		return strings.Join(append(header, "", "No restore operations required."), "\n")
+	}
+	return strings.Join(append(append(header, ""), entries...), "\n")
+}
+
+// restoreMinEntryLines is the smallest Changes/Skipped viewport worth keeping
+// the full settings and summary tables for; below it the header compacts so
+// the actual operations stay on screen.
+const restoreMinEntryLines = 8
+
+// layoutPlan returns the header and the visible Changes/Skipped lines. When
+// the workspace height is known the result always fits it, and the selected
+// operation or skip is always inside the returned entry lines, so nothing
+// safety-relevant depends on the outer panel clipping.
+func (s *Restore) layoutPlan() (header, entries []string) {
 	s.ensureOptions()
-	machine := "Profile defaults"
-	if s.session != nil && s.session.Machine().Name != "" {
-		machine = s.session.Machine().Name
-	}
-	counts := outcomeCounts(s.current)
 	width := s.widthOrDefault()
-	conflicts, conflictMeaning := titleMode(string(s.options.Conflicts)), "Keep conflicting files"
-	if s.options.Conflicts == policy.ConflictForce {
-		conflictMeaning = "Overwrite conflicting files"
+	header = s.fullPlanHeader(width)
+	if s.currentEntryCount() == 0 {
+		return header, nil
 	}
-	convergence, convergenceMeaning := titleMode(string(s.options.Convergence)), "Keep additional items"
-	if s.options.Convergence == policy.ConvergenceExact {
-		convergenceMeaning = "Remove managed extras"
+	lines := s.entryLines(width)
+	if s.height <= 0 || len(header)+1+len(lines) <= s.height {
+		s.entryOffset = 0
+		return header, restoreLineTexts(lines)
 	}
-	defaults, defaultsMeaning := "Machine defaults", "Saved defaults are in use"
-	if s.override {
-		defaults, defaultsMeaning = "One-run override", "Machine defaults are unchanged"
+	if s.height-len(header)-1 < restoreMinEntryLines {
+		header = s.compactPlanHeader(width)
 	}
+	return header, s.entryWindow(lines, max(3, s.height-len(header)-1), width)
+}
+
+func (s *Restore) fullPlanHeader(width int) []string {
+	counts := outcomeCounts(s.current)
+	machine, conflicts, conflictMeaning, convergence, convergenceMeaning, defaults, defaultsMeaning := s.runSettings()
 	settings := s.settingsTable.Render(
 		[]components.Column{{Title: "SETTING", Width: 22, MinWidth: 18}, {Title: "VALUE", Width: 20, MinWidth: 12}, {Title: "MEANING", MinWidth: 22}},
 		[]components.Row{
@@ -261,8 +284,79 @@ func (s *Restore) currentPlanView() string {
 		width, 2, s.styles,
 	)
 	sections = append(sections, components.SectionDivider("Plan summary", width, s.styles)+"\n"+summary)
-	if len(s.current.Operations) == 0 && len(s.current.Skipped) == 0 {
-		return strings.Join(append(sections, "No restore operations required."), "\n\n")
+	return strings.Split(strings.Join(sections, "\n\n"), "\n")
+}
+
+// compactPlanHeader keeps every run setting, the Exact warning and every
+// count, but as wrapped lines rather than tables.
+func (s *Restore) compactPlanHeader(width int) []string {
+	counts := outcomeCounts(s.current)
+	machine, conflicts, _, convergence, _, defaults, _ := s.runSettings()
+	lines := []string{}
+	for _, line := range components.WrapText(fmt.Sprintf("Run: %s (f) · %s (e) · %s · %s", conflicts, convergence, defaults, machine), width) {
+		lines = append(lines, s.styles.SubtleAccent(line))
+	}
+	if s.options.Convergence == policy.ConvergenceExact {
+		for _, line := range components.WrapText("! Exact removes Blueprint-managed extras; Resource data is never deleted.", width) {
+			lines = append(lines, s.styles.Warning(line))
+		}
+	}
+	summary := fmt.Sprintf("Plan: %d create · %d modify · %d replace · %d removals · %d commands · %d policy skips · %d forced", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides)
+	return append(lines, components.WrapText(summary, width)...)
+}
+
+func (s *Restore) runSettings() (machine, conflicts, conflictMeaning, convergence, convergenceMeaning, defaults, defaultsMeaning string) {
+	machine = "Profile defaults"
+	if s.session != nil && s.session.Machine().Name != "" {
+		machine = s.session.Machine().Name
+	}
+	conflicts, conflictMeaning = titleMode(string(s.options.Conflicts)), "Keep conflicting files"
+	if s.options.Conflicts == policy.ConflictForce {
+		conflictMeaning = "Overwrite conflicting files"
+	}
+	convergence, convergenceMeaning = titleMode(string(s.options.Convergence)), "Keep additional items"
+	if s.options.Convergence == policy.ConvergenceExact {
+		convergenceMeaning = "Remove managed extras"
+	}
+	defaults, defaultsMeaning = "Machine defaults", "Saved defaults are in use"
+	if s.override {
+		defaults, defaultsMeaning = "One-run override", "Machine defaults are unchanged"
+	}
+	return
+}
+
+type restoreLineKind uint8
+
+const (
+	restoreLineBlank restoreLineKind = iota
+	restoreLineDivider
+	restoreLineColumns
+	restoreLineEntry
+)
+
+// restoreLine is one rendered line of the Changes/Skipped region, tagged so
+// the viewport can find the selected entry and re-show its section heading.
+type restoreLine struct {
+	text    string
+	kind    restoreLineKind
+	section int
+	entry   int
+}
+
+func (s *Restore) entryLines(width int) []restoreLine {
+	lines := []restoreLine{}
+	appendSection := func(section int, title, table string, firstEntry int) {
+		if len(lines) > 0 {
+			lines = append(lines, restoreLine{kind: restoreLineBlank, section: section, entry: -1})
+		}
+		lines = append(lines, restoreLine{text: components.SectionDivider(title, width, s.styles), kind: restoreLineDivider, section: section, entry: -1})
+		for i, text := range strings.Split(table, "\n") {
+			if i == 0 {
+				lines = append(lines, restoreLine{text: text, kind: restoreLineColumns, section: section, entry: -1})
+				continue
+			}
+			lines = append(lines, restoreLine{text: text, kind: restoreLineEntry, section: section, entry: firstEntry + i - 1})
+		}
 	}
 	if len(s.current.Operations) > 0 {
 		columns := restoreOperationColumns(width)
@@ -277,7 +371,7 @@ func (s *Restore) currentPlanView() string {
 			}
 			rows = append(rows, components.Row{Cells: cells, Selected: selected, Focused: true})
 		}
-		sections = append(sections, components.SectionDivider("Changes", width, s.styles)+"\n"+s.changesTable.Render(columns, rows, width, len(rows)+1, s.styles))
+		appendSection(0, "Changes", s.changesTable.Render(columns, rows, width, len(rows)+1, s.styles), 0)
 	}
 	if len(s.current.Skipped) > 0 {
 		rows := make([]components.Row, 0, len(s.current.Skipped))
@@ -289,9 +383,62 @@ func (s *Restore) currentPlanView() string {
 			}
 			rows = append(rows, components.Row{Cells: []string{components.DisplayText(restoreCategoryLabel(skipped.Provider)), components.DisplayText(skipped.Resource), reason}, Selected: selected, Focused: true})
 		}
-		sections = append(sections, components.SectionDivider("Skipped by policy / safety / mode", width, s.styles)+"\n"+s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles))
+		appendSection(1, "Skipped by policy / safety / mode", s.skipsTable.Render(restoreSkipColumns(width), rows, width, len(rows)+1, s.styles), len(s.current.Operations))
 	}
-	return strings.Join(sections, "\n\n")
+	return lines
+}
+
+// entryWindow returns at most budget lines of the entry region containing the
+// selected entry. When a section's heading has scrolled above the window it is
+// repeated at the top, so a row is never shown without its Changes/Skipped
+// context.
+func (s *Restore) entryWindow(lines []restoreLine, budget, width int) []string {
+	selected := 0
+	for i, line := range lines {
+		if line.kind == restoreLineEntry && line.entry == s.selected {
+			selected = i
+			break
+		}
+	}
+	sticky := func(offset int) []string {
+		first := lines[offset]
+		if first.kind != restoreLineEntry && first.kind != restoreLineColumns {
+			return nil
+		}
+		heading := []string{}
+		for _, line := range lines[:offset] {
+			if line.section == first.section && (line.kind == restoreLineDivider || (line.kind == restoreLineColumns && first.kind == restoreLineEntry)) {
+				heading = append(heading, line.text)
+			}
+		}
+		return heading
+	}
+	visible := func(offset int) int { return max(1, budget-len(sticky(offset))) }
+	offset := max(0, min(s.entryOffset, len(lines)-1))
+	if selected < offset {
+		offset = selected
+	}
+	for selected >= offset+visible(offset) {
+		offset++
+	}
+	for offset > 0 && offset+visible(offset) > len(lines) && selected < offset-1+visible(offset-1) {
+		offset--
+	}
+	s.entryOffset = offset
+	window := sticky(offset)
+	end := min(len(lines), offset+visible(offset))
+	for _, line := range lines[offset:end] {
+		window = append(window, line.text)
+	}
+	return window
+}
+
+func restoreLineTexts(lines []restoreLine) []string {
+	texts := make([]string, len(lines))
+	for i, line := range lines {
+		texts[i] = line.text
+	}
+	return texts
 }
 
 func (s *Restore) wrapCurrentPlan(lines []string) string {
