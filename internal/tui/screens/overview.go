@@ -16,9 +16,18 @@ type OverviewTarget struct{ Target, Ref string }
 
 type overviewRow struct {
 	section string
+	count   int
 	item    workflow.AttentionItem
 	healthy string
 }
+
+// Overview presentation groups, in display order.
+const (
+	overviewNeedsAttention   = "Needs attention"
+	overviewChangesAvailable = "Changes available"
+	overviewIntentional      = "Intentional differences"
+	overviewNoAction         = "No action needed"
+)
 
 func (r overviewRow) isSection() bool { return r.section != "" }
 func (r overviewRow) isItem() bool    { return r.item.Summary != "" }
@@ -91,7 +100,7 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 			if s.collapsed == nil {
 				s.collapsed = map[string]bool{}
 			}
-			s.collapsed[row.section] = !s.collapsed[row.section]
+			s.collapsed[row.section] = !s.isCollapsed(row.section)
 			s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 			s.selected = s.list.Selected
 			return nil
@@ -123,10 +132,10 @@ func (s *Overview) View() string {
 		switch {
 		case row.isSection():
 			marker := components.Icons.Expanded
-			if s.collapsed[row.section] {
+			if s.isCollapsed(row.section) {
 				marker = components.Icons.Collapsed
 			}
-			line := marker + " " + row.section
+			line := fmt.Sprintf("%s %s (%d)", marker, row.section, row.count)
 			if !selected {
 				line = s.styles.Accent(line)
 			}
@@ -139,11 +148,15 @@ func (s *Overview) View() string {
 			}
 			lines = append(lines, line)
 		case row.isItem():
-			glyph := attentionGlyph(row.item.Severity)
+			glyph, summary := attentionGlyph(row.item.Severity), decisionSummary(row.item)
 			if !selected {
 				glyph = attentionStyle(s.styles, row.item.Severity)(glyph)
+				if row.item.Severity == workflow.AttentionIntentional {
+					// Intentional differences are informative, never a warning.
+					summary = s.styles.Muted(summary)
+				}
 			}
-			line := components.PadLine("  "+glyph+" "+decisionSummary(row.item), width)
+			line := components.PadLine("  "+glyph+" "+summary, width)
 			if selected {
 				if !s.styles.Palette.ColorEnabled {
 					line = components.Icons.Selected + line[1:]
@@ -171,7 +184,8 @@ func (s *Overview) View() string {
 func (s *Overview) DetailView() string {
 	row := s.selectedRow()
 	if row.isSection() {
-		return components.DisplayText(row.section) + "\nPress Enter to " + map[bool]string{true: "expand", false: "collapse"}[s.collapsed[row.section]] + " this section."
+		lines := []string{components.DisplayText(row.section), overviewSectionMeaning[row.section], "", "Press Enter to " + map[bool]string{true: "expand", false: "collapse"}[s.isCollapsed(row.section)] + " this section."}
+		return strings.Join(lines, "\n")
 	}
 	if !row.isItem() {
 		if row.healthy != "" {
@@ -179,7 +193,17 @@ func (s *Overview) DetailView() string {
 		}
 		return "Overview details\nSelect a decision to see what needs attention."
 	}
-	lines := []string{"Needs attention", decisionSummary(row.item), "", "Why: " + components.DisplayText(row.item.Summary)}
+	heading := "Needs attention"
+	switch row.item.Severity {
+	case workflow.AttentionDrift, workflow.AttentionInfo:
+		heading = "Change available"
+	case workflow.AttentionIntentional:
+		heading = "Intentional difference"
+	}
+	lines := []string{heading, decisionSummary(row.item), "", "Why: " + components.DisplayText(row.item.Summary)}
+	if row.item.Reason != "" {
+		lines = append(lines, "Policy: "+components.DisplayText(row.item.Reason), "", "This machine is meant to differ here, so it is not a warning.")
+	}
 	if row.item.Target != "" {
 		lines = append(lines, "", "Enter opens: "+components.DisplayText(row.item.Target))
 	}
@@ -196,8 +220,11 @@ func attentionGlyph(severity workflow.AttentionSeverity) string {
 	return components.Icons.Changed
 }
 func attentionStyle(styles components.Styles, severity workflow.AttentionSeverity) func(string) string {
-	if severity == workflow.AttentionDecision || severity == workflow.AttentionWarning {
+	switch severity {
+	case workflow.AttentionDecision, workflow.AttentionWarning:
 		return styles.Warning
+	case workflow.AttentionIntentional:
+		return styles.Muted
 	}
 	return styles.Accent
 }
@@ -237,33 +264,56 @@ func (s *Overview) rows() []overviewRow {
 		title string
 		show  func(workflow.AttentionItem) bool
 	}{
-		{"Needs review", func(item workflow.AttentionItem) bool {
-			return item.Severity == workflow.AttentionDecision || item.Severity == workflow.AttentionWarning || (item.Severity == workflow.AttentionInfo && item.Provider != "profile-git")
+		{overviewNeedsAttention, func(item workflow.AttentionItem) bool {
+			return item.Severity == workflow.AttentionDecision || item.Severity == workflow.AttentionWarning
 		}},
-		{"Drift", func(item workflow.AttentionItem) bool { return item.Severity == workflow.AttentionDrift }},
-		{"Profile sync", func(item workflow.AttentionItem) bool { return item.Provider == "profile-git" }},
-		{"Healthy", nil},
+		{overviewChangesAvailable, func(item workflow.AttentionItem) bool {
+			return item.Severity == workflow.AttentionDrift || item.Severity == workflow.AttentionInfo
+		}},
+		{overviewIntentional, func(item workflow.AttentionItem) bool { return item.Severity == workflow.AttentionIntentional }},
+		{overviewNoAction, nil},
 	}
 	rows := make([]overviewRow, 0, len(s.data.Items)+len(s.data.Healthy)+4)
 	for _, section := range sections {
-		rows = append(rows, overviewRow{section: section.title})
-		if s.collapsed[section.title] {
-			continue
-		}
+		members := []overviewRow{}
 		if section.show == nil {
 			for _, healthy := range s.data.Healthy {
-				rows = append(rows, overviewRow{healthy: healthy})
+				members = append(members, overviewRow{healthy: healthy})
 			}
+		} else {
+			for _, item := range s.data.Items {
+				if section.show(item) {
+					members = append(members, overviewRow{item: item})
+				}
+			}
+		}
+		if len(members) == 0 && section.title == overviewIntentional {
 			continue
 		}
-		for _, item := range s.data.Items {
-			if section.show(item) {
-				rows = append(rows, overviewRow{item: item})
-			}
+		rows = append(rows, overviewRow{section: section.title, count: len(members)})
+		if !s.isCollapsed(section.title) {
+			rows = append(rows, members...)
 		}
 	}
 	return rows
 }
+
+// isCollapsed defaults Intentional differences to collapsed: they are
+// deliberate and need no action, so they stay out of the way until asked for.
+func (s *Overview) isCollapsed(section string) bool {
+	if collapsed, ok := s.collapsed[section]; ok {
+		return collapsed
+	}
+	return section == overviewIntentional
+}
+
+var overviewSectionMeaning = map[string]string{
+	overviewNeedsAttention:   "Blocked, unsafe, or unresolved items that need a decision.",
+	overviewChangesAvailable: "Differences that Capture or Restore would act on under current policy.",
+	overviewIntentional:      "Differences that policy deliberately leaves alone on this machine.",
+	overviewNoAction:         "Categories with nothing to act on.",
+}
+
 func (s *Overview) HeaderState() string {
 	if s.busy {
 		return "~ overview loading"
@@ -274,8 +324,20 @@ func (s *Overview) HeaderState() string {
 	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
 		return "~ nothing captured"
 	}
-	if len(s.data.Items) > 0 {
-		return fmt.Sprintf("! %d attention", len(s.data.Items))
+	attention, changes := 0, 0
+	for _, item := range s.data.Items {
+		switch item.Severity {
+		case workflow.AttentionDecision, workflow.AttentionWarning:
+			attention++
+		case workflow.AttentionDrift, workflow.AttentionInfo:
+			changes++
+		}
+	}
+	switch {
+	case attention > 0:
+		return fmt.Sprintf("! %d need attention", attention)
+	case changes > 0:
+		return fmt.Sprintf("~ %d changes available", changes)
 	}
 	return "✓ overview clean"
 }
