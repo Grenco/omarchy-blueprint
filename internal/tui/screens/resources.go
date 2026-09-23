@@ -29,6 +29,7 @@ type Resources struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
+	terminalWidth           int
 	tab                     string
 	discover                bool
 	items                   []profile.Resource
@@ -102,11 +103,12 @@ func NewResourcesContext(ctx context.Context, session *workflow.Session) *Resour
 }
 func (s *Resources) Focus(id string) tea.Cmd { s.focusID = id; return s.rescan() }
 func (s *Resources) SetSize(width, height int) {
-	s.width, s.height = width, height
+	s.width, s.height, s.terminalWidth = width, height, width
 	if s.browser != nil {
 		s.browser.SetSize(width, height)
 	}
 }
+func (s *Resources) SetTerminalWidth(width int) { s.terminalWidth = width }
 func (s *Resources) SetStyles(styles components.Styles) {
 	s.styles = styles
 	if s.browser != nil {
@@ -120,6 +122,7 @@ func (s *Resources) ShowPolicy(machine string) {
 func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
+func (s *Resources) BrowserActive() bool { return s.browser != nil }
 func (s *Resources) Actions() []ResourceAction {
 	if s.phase == resourceUntracked {
 		return []ResourceAction{
@@ -135,7 +138,7 @@ func (s *Resources) Actions() []ResourceAction {
 		return nil
 	}
 	actions := []ResourceAction{
-		{ID: "tab", Label: "Switch policy tab", Shortcut: "tab", Enabled: true},
+		{ID: "tab", Label: "Switch tab", Shortcut: "tab", Enabled: true},
 		{ID: "discover", Label: "Discover resource", Shortcut: "d", Enabled: s.tab == "State"},
 	}
 	if s.tab == "Capture" || s.tab == "Restore" {
@@ -283,9 +286,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		return cmd
 	}
-	if s.phase == resourceBrowse && !s.discover && s.list.Vim(key.String(), len(s.items), s.listHeight()) {
+	if s.phase == resourceBrowse && !s.discover && s.list.Vim(key.String(), s.navigableCount(), s.listHeight()) {
 		s.selected = s.list.Selected
-		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		s.table.Ensure(s.selected, s.navigableCount(), s.listHeight()-1)
 		return nil
 	}
 	if !s.discover && (s.tab == "Capture" || s.tab == "Restore") {
@@ -351,24 +354,22 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	switch key.String() {
 	case "tab":
 		s.tab = nextProviderTab(s.tab)
+	case "shift+tab":
+		s.tab = previousProviderTab(s.tab)
 	case "d":
-		s.discover, s.err = true, nil
-		if s.session == nil {
-			return nil
+		return s.openDiscover()
+	case "enter":
+		if s.tab == "State" && s.selected == len(s.items) {
+			return s.openDiscover()
 		}
-		browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
-		browser.SetSize(s.width, s.height)
-		browser.SetStyles(s.styles)
-		s.browser = &browser
-		return s.browser.Init()
 	case "j", "down":
-		s.list.Move(1, len(s.items), s.listHeight())
+		s.list.Move(1, s.navigableCount(), s.listHeight())
 		s.selected = s.list.Selected
-		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		s.table.Ensure(s.selected, s.navigableCount(), s.listHeight()-1)
 	case "k", "up":
-		s.list.Move(-1, len(s.items), s.listHeight())
+		s.list.Move(-1, s.navigableCount(), s.listHeight())
 		s.selected = s.list.Selected
-		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		s.table.Ensure(s.selected, s.navigableCount(), s.listHeight()-1)
 	case "u", "x":
 		if !s.discover && s.selectedResource().ID != "" {
 			s.confirmFrom, s.confirm = s.phase, "untrack"
@@ -452,12 +453,12 @@ func (s *Resources) View() string {
 	if s.tab == "Capture" || s.tab == "Restore" {
 		return s.policyView()
 	}
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d · d: Discover", len(s.items)), "Safety: Exact restore never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), fmt.Sprintf("Tracked %d", len(s.items)), "Safety: Exact never deletes Resource data."}
 	if s.err != nil {
 		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
 	}
 	if s.discover {
-		return strings.Join(lines, "\n")
+		return strings.Join(append(lines, "Discover resource"), "\n")
 	}
 	if len(s.items) == 0 {
 		lines = append(lines, renderEmptyState(s.styles, s.width, emptyStateCopy{
@@ -467,15 +468,36 @@ func (s *Resources) View() string {
 		}))
 		return strings.Join(lines, "\n")
 	}
-	rows := make([]components.Row, 0, len(s.items))
-	for i, item := range s.items {
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.ID), components.DisplayText(item.Strategy), components.DisplayText(item.Path), components.DisplayText(s.effective[item.ID]), components.DisplayText(s.resourceState(item))}, Selected: i == s.selected, Focused: true})
+	width := s.widthOrDefault()
+	targets := s.targets
+	if len(targets) == 0 {
+		targets = make([]workflow.TargetInspection, 0, len(s.items))
+		for _, item := range s.items {
+			targets = append(targets, workflow.TargetInspection{Key: "resource:" + item.ID, Label: item.ID, Desired: workflow.TargetPresent, Current: workflow.TargetUnknown})
+		}
 	}
-	width := s.width
-	if width == 0 {
-		width = 120
+	columns := stateColumns(s.presentationWidth())
+	columns[0].Title = "RESOURCE"
+	rows := make([]components.Row, 0, len(targets)+1)
+	for i, target := range targets {
+		selected := i == s.selected
+		label := target.Label
+		if label == "" {
+			label = strings.TrimPrefix(target.Key, "resource:")
+		}
+		cells := []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired)), selected), styledDecision(s.styles, targetStatus(target), selected)}
+		if len(columns) == 4 {
+			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired)), selected), styledDecision(s.styles, currentStateValue(target.Current), selected), styledDecision(s.styles, targetStatus(target), selected)}
+		}
+		rows = append(rows, components.Row{Cells: cells, Selected: selected, Focused: true})
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "Resource", MinWidth: 10}, {Title: "Strategy", MinWidth: 8}, {Title: "Portable path", MinWidth: 16}, {Title: "Effective path", MinWidth: 16}, {Title: "State", MinWidth: 9}}, rows, width, s.listHeight(), s.styles))
+	addSelected := s.selected == len(targets)
+	addLabel := "+ Add resource"
+	if !addSelected {
+		addLabel = s.styles.Accent(addLabel)
+	}
+	rows = append(rows, components.Row{Cells: []string{addLabel}, Selected: addSelected, Focused: true})
+	lines = append(lines, s.table.Render(columns, rows, width, s.listHeight(), s.styles))
 	return strings.Join(lines, "\n")
 }
 
@@ -485,20 +507,9 @@ func (s *Resources) DetailView() string {
 		if target.Key == "" {
 			return "Resource policy\nNo tracked Resource selected."
 		}
-		effective := s.policies[target.Key].Capture
-		blocked := ""
-		if s.tab == "Restore" {
-			effective = s.policies[target.Key].Restore
-			if !target.RestoreEligible {
-				blocked = target.SafetyReason
-			}
-		} else if !target.CaptureEligible {
-			blocked = target.SafetyReason
-		}
-		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
-			blocked = "not eligible on this machine"
-		}
-		return fmt.Sprintf("Resource policy: %s\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t\nExact restore deletes Resource data: never", components.DisplayText(target.Label), target.Desired, target.Current, components.RenderPolicyStatus(s.tab, effective, blocked), effective.Source.Kind, components.DisplayText(effective.Source.Machine), components.DisplayText(effective.Source.Category), components.DisplayText(effective.Source.Target), target.Capabilities.SupportsCapture, target.Capabilities.SupportsRestore, target.Capabilities.SupportsDesiredAbsence, target.Capabilities.SupportsExactRemoval, target.Capabilities.Hierarchical)
+		lines := policyDetailLines("Resource policy: "+components.DisplayText(target.Label), target.Key, target, s.policies[target.Key])
+		lines = append(lines, "Exact deletes Resource data: never")
+		return strings.Join(lines, "\n")
 	}
 	if s.browser != nil {
 		return s.browser.DetailView()
@@ -514,40 +525,70 @@ func (s *Resources) DetailView() string {
 		}
 		return strings.Join(lines, "\n")
 	}
+	if s.tab == "State" && s.selected == len(s.items) {
+		return "Add resource\nTrack a file, folder, or Git project outside Blueprint's normal categories.\n\nEnter opens the browser to choose a path."
+	}
 	return "Resources details"
 }
 func (s *Resources) policyView() string {
-	scope := "Profile defaults"
-	scope = policyScopeLabel(s.policyScope)
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), scope, "p: toggle policy scope   space: change policy   x: reset override", "Safety: Exact restore never deletes Resource data."}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
+	if scope := policyScopeLabel(s.policyScope, activeMachineName(s.session)); scope != "" {
+		lines = append(lines, scope)
+	}
+	lines = append(lines, "Safety: Exact never deletes Resource data.")
 	if len(s.targets) == 0 {
 		return strings.Join(append(lines, "No tracked Resources."), "\n")
 	}
+	columns := policyColumns(s.tab, s.presentationWidth())
+	columns[0].Title = "RESOURCE"
+	rows := make([]components.Row, 0, len(s.targets))
 	for i, target := range s.targets {
+		selected := i == s.selected
 		effective := s.policies[target.Key].Capture
-		blocked := ""
+		blocked := !target.CaptureEligible
 		if s.tab == "Restore" {
 			effective = s.policies[target.Key].Restore
-			if !target.RestoreEligible {
-				blocked = target.SafetyReason
-			}
-		} else if !target.CaptureEligible {
-			blocked = target.SafetyReason
-		}
-		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
-			blocked = "not eligible on this machine"
+			blocked = !target.RestoreEligible
 		}
 		label := target.Label
 		if label == "" {
 			label = strings.TrimPrefix(target.Key, "resource:")
 		}
-		line := fmt.Sprintf("  %s — %s", components.DisplayText(label), components.RenderPolicyStatus(s.tab, effective, blocked))
-		if i == s.selected {
-			line = components.Icons.Selected + line[1:]
+		state := target.Current
+		if s.tab == "Restore" {
+			state = target.Desired
 		}
-		lines = append(lines, line)
+		decision := styledDecision(s.styles, policyDecision(s.tab, effective.Enabled, blocked), selected)
+		stateLabel := stateValue(string(state))
+		if s.tab == "Capture" {
+			stateLabel = currentStateValue(state)
+		}
+		cells := []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel, selected)}
+		if len(columns) == 4 {
+			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel, selected), decision, styledDecision(s.styles, policySourceLabel(effective.Source, blocked), selected)}
+		}
+		rows = append(rows, components.Row{Cells: cells, Selected: selected, Focused: true})
 	}
+	height := s.listHeight()
+	if s.height == 0 {
+		height = len(rows) + 1
+	}
+	s.table.Ensure(s.selected, len(rows), max(1, height-1))
+	lines = append(lines, s.table.Render(columns, rows, s.widthOrDefault(), height, s.styles))
 	return strings.Join(lines, "\n")
+}
+
+func (s *Resources) widthOrDefault() int {
+	if s.width <= 0 {
+		return 120
+	}
+	return s.width
+}
+func (s *Resources) presentationWidth() int {
+	if s.terminalWidth > 0 {
+		return s.terminalWidth
+	}
+	return s.widthOrDefault()
 }
 
 func (s *Resources) selectedPolicyTarget() workflow.TargetInspection {
@@ -596,6 +637,26 @@ func resourceDetail(path string, inspection workflow.PathInspection) string {
 		lines = append(lines, "Blocked: "+components.DisplayText(inspection.BlockedReason))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// navigableCount includes the trailing "+ Add resource" row on the State tab
+// so it can be reached by j/k like any other row, not only via the "d" key.
+func (s *Resources) navigableCount() int {
+	if s.tab == "State" {
+		return len(s.items) + 1
+	}
+	return len(s.items)
+}
+func (s *Resources) openDiscover() tea.Cmd {
+	s.discover, s.err = true, nil
+	if s.session == nil {
+		return nil
+	}
+	browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
+	browser.SetSize(s.width, s.height)
+	browser.SetStyles(s.styles)
+	s.browser = &browser
+	return s.browser.Init()
 }
 func (s *Resources) selectedResource() profile.Resource {
 	if s.selected >= 0 && s.selected < len(s.items) {

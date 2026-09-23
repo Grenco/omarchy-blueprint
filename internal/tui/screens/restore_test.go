@@ -91,7 +91,7 @@ func TestRestoreUsesOneCurrentPlanAndShowsExactSafetyAt80Columns(t *testing.T) {
 	screen.options = policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact}
 	screen.override = true
 	view := screen.View()
-	for _, want := range []string{"Conflicts: safe", "Convergence: exact", "One-run override active", "WARNING: Exact", "delete"} {
+	for _, want := range []string{"Run settings", "Conflict handling (f)", "Safe", "Keep conflicting files", "Convergence (e)", "Exact", "Remove managed extras", "One-run override", "WARNING: Exact", "Remove"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("current restore plan missing %q:\n%s", want, view)
 		}
@@ -102,6 +102,79 @@ func TestRestoreUsesOneCurrentPlanAndShowsExactSafetyAt80Columns(t *testing.T) {
 	for _, line := range strings.Split(view, "\n") {
 		if width := lipgloss.Width(line); width > 80 {
 			t.Fatalf("current-plan safety line is %d columns wide:\n%s", width, view)
+		}
+	}
+}
+
+func TestRestoreCurrentPlanUsesResponsiveOperationAndSkipTables(t *testing.T) {
+	for _, width := range []int{140, 100, 80} {
+		screen := NewRestore(nil)
+		screen.width = width
+		screen.options = policy.RestoreOptions{Conflicts: policy.ConflictForce, Convergence: policy.ConvergenceExact}
+		screen.override = true
+		screen.forcedOverrides = 1
+		screen.current = model.RestorePlan{
+			Operations: []model.Operation{{Provider: "packages", Resource: "official:spotify", Action: "remove", Command: []string{"pacman", "-R"}, Risk: model.RiskHigh}},
+			Skipped:    []model.Skipped{{Provider: "config", Resource: ".config/example", Reason: "restore disabled by profile policy"}},
+		}
+		view := screen.View()
+		for _, want := range []string{"Run settings", "Force", "Overwrite conflicting files", "Exact", "Remove managed extras", "Plan summary", "REMOVALS", "POLICY SKIPS", "FORCED OVERRIDES", "1", "Changes", "CATEGORY", "TARGET", "ACTION", "RISK", "Packages", "official:spotify", "Remove", "High", "Skipped by policy / safety", "REASON", "Config", ".config/example", "Policy: Skip"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column Restore view missing %q:\n%s", width, want, view)
+			}
+		}
+		if strings.Contains(view, "packages: official:spotify") || strings.Contains(view, "Skip: .config/example —") {
+			t.Fatalf("%d-column Restore view retained prose rows:\n%s", width, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Fatalf("%d-column Restore line is %d columns: %q", width, got, line)
+			}
+		}
+	}
+}
+
+func TestRestoreCurrentPlanSeparatesSettingsSummaryAndTables(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.width = 100
+	screen.current = model.RestorePlan{
+		Operations: []model.Operation{{Provider: "config", Resource: "settings", Action: "write", Risk: model.RiskLow}},
+		Skipped:    []model.Skipped{{Provider: "packages", Resource: "extra", Reason: "additional package left installed; removal disabled"}},
+	}
+	view := screen.currentPlanView()
+	lines := strings.Split(view, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	view = strings.Join(lines, "\n")
+	for _, want := range []string{
+		"Run settings ─",
+		"Additive",
+		"Keep additional items",
+		"\n\nPlan summary ─",
+		"FORCED OVERRIDES",
+		"0\n\nChanges ─",
+		"Low\n\nSkipped by policy / safety / mode ─",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Restore summary lacks readable spacing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestRestoreSkipReasonLabelsDoNotInventSafety(t *testing.T) {
+	for _, test := range []struct {
+		reason string
+		want   string
+	}{
+		{"restore disabled by profile policy", "Policy: Skip"},
+		{"additional package left installed; removal disabled", "Additive"},
+		{"overwrite disabled for existing file", "Safe"},
+		{"hardware target blocked for this machine", "Safety"},
+		{"already satisfied", "Skipped"},
+	} {
+		if got := skipReasonLabel(test.reason); got != test.want {
+			t.Errorf("skipReasonLabel(%q) = %q, want %q", test.reason, got, test.want)
 		}
 	}
 }
@@ -120,7 +193,7 @@ func TestRestoreConfirmationReportsCurrentAuthorityAndDestructiveCounts(t *testi
 		Skipped: []model.Skipped{{Provider: "packages", Resource: "official:git", Reason: "restore disabled"}, {Provider: "config", Resource: "conflict", Reason: "overwrite disabled"}},
 	}
 	confirmation := screen.confirmation()
-	for _, want := range []string{"conflicts:force", "convergence:exact", "removals:2", "policy-skips:1", "forced-overrides:2"} {
+	for _, want := range []string{"Force conflicts", "Exact convergence", "2 removals", "1 high-risk", "2 forced override(s)"} {
 		if !strings.Contains(confirmation, want) {
 			t.Fatalf("confirmation missing %q: %s", want, confirmation)
 		}
@@ -196,11 +269,11 @@ func TestRestoreCurrentPlanSelectionDrivesDetails(t *testing.T) {
 		Operations: []model.Operation{{Provider: "config", Resource: "one", Action: "write", Risk: model.RiskLow}},
 		Skipped:    []model.Skipped{{Provider: "packages", Resource: "two", Reason: "restore disabled"}},
 	}
-	if detail := screen.DetailView(); !strings.Contains(detail, "Restore operation") || !strings.Contains(detail, "Resource: one") {
+	if detail := screen.DetailView(); !strings.Contains(detail, "Restore operation") || !strings.Contains(detail, "Category: Config") || !strings.Contains(detail, "Target: one") {
 		t.Fatalf("first current-plan detail = %q", detail)
 	}
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if detail := screen.DetailView(); !strings.Contains(detail, "Restore skip") || !strings.Contains(detail, "Resource: two") || !strings.Contains(detail, "restore disabled") {
+	if detail := screen.DetailView(); !strings.Contains(detail, "Restore skip") || !strings.Contains(detail, "Category: Packages") || !strings.Contains(detail, "Target: two") || !strings.Contains(detail, "restore disabled") {
 		t.Fatalf("selected current-plan detail = %q", detail)
 	}
 }
@@ -211,7 +284,7 @@ func TestRestoreSanitizesCurrentPlanAndErrors(t *testing.T) {
 	if view := screen.View(); strings.Contains(view, "\x1b") || !strings.Contains(view, "bad?resource?") {
 		t.Fatalf("unsafe restore=%q", view)
 	}
-	if detail := screen.DetailView(); strings.Contains(detail, "\x1b") || !strings.Contains(detail, "bad?provider?") {
+	if detail := screen.DetailView(); strings.Contains(detail, "\x1b") || !strings.Contains(detail, "Bad?provider?") {
 		t.Fatalf("unsafe detail=%q", detail)
 	}
 	screen.err = errors.New("bad\nerror\x1b")

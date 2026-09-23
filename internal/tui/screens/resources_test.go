@@ -28,7 +28,7 @@ func TestResourcesEmptyTrackedViewExplainsOptionalPurpose(t *testing.T) {
 		"No extra resources tracked",
 		"files, folders, or Git projects",
 		"do not fit one of its normal categories",
-		"Exact restore never deletes Resource data.",
+		"Exact never deletes Resource data.",
 		"Press d to Discover one.",
 	} {
 		if !strings.Contains(view, want) {
@@ -40,17 +40,60 @@ func TestResourcesEmptyTrackedViewExplainsOptionalPurpose(t *testing.T) {
 func TestResourcesExposePerIDCaptureAndRestorePolicy(t *testing.T) {
 	screen := &Resources{
 		width: 80, phase: resourceBrowse, tab: "Restore",
-		targets:  []workflow.TargetInspection{{Key: "resource:projects", Label: "projects", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent, CaptureEligible: true, RestoreEligible: true, Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true}}},
-		policies: map[string]policy.Effective{"resource:projects": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget}}}},
+		targets: []workflow.TargetInspection{{Key: "resource:projects", Label: "projects", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent, CaptureEligible: true, RestoreEligible: true, Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true}}},
+		policies: map[string]policy.Effective{"resource:projects": {
+			Capture: policy.EffectiveSetting{Enabled: true, Source: policy.Source{Kind: policy.SourceDefault}},
+			Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget}},
+		}},
 	}
 	view := screen.View()
-	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults", "projects", "Skip (explicit)", "Exact restore never deletes Resource data"} {
+	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults", "projects", "Skip", "Exact never deletes Resource data"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("Resources policy view missing %q:\n%s", want, view)
 		}
 	}
-	if detail := screen.DetailView(); !strings.Contains(detail, "Source: profile-target") || !strings.Contains(detail, "Supports restore: true") {
+	if detail := screen.DetailView(); !strings.Contains(detail, "Capture policy: Include (inherited)") || !strings.Contains(detail, "Capture source: default") || !strings.Contains(detail, "Restore policy: Skip (explicit)") || !strings.Contains(detail, "Restore source: profile-target") || !strings.Contains(detail, "Supports restore: true") {
 		t.Fatalf("Resources policy details incomplete:\n%s", detail)
+	}
+}
+
+func TestResourcesUseStateAndPolicyTablesAtResponsiveWidths(t *testing.T) {
+	for _, width := range []int{140, 100, 80} {
+		state := &Resources{
+			width: width, phase: resourceBrowse, tab: "State",
+			items:   []profile.Resource{{ID: "projects", Path: "~/Projects", Strategy: "copy"}},
+			targets: []workflow.TargetInspection{{Key: "resource:projects", Label: "projects", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent, CaptureEligible: true, RestoreEligible: true}},
+		}
+		view := state.View()
+		if strings.Contains(view, "d: Discover") {
+			t.Fatalf("%d-column Resource State duplicates its footer binding:\n%s", width, view)
+		}
+		for _, want := range []string{"RESOURCE", "DESIRED", "projects", "Absent", "Desired absent", "Exact never deletes Resource data"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column Resource State missing %q:\n%s", width, want, view)
+			}
+		}
+
+		policyScreen := &Resources{
+			width: width, phase: resourceBrowse, tab: "Restore",
+			targets:  []workflow.TargetInspection{{Key: "resource:projects", Label: "projects", Desired: workflow.TargetAbsent, Current: workflow.TargetPresent, RestoreEligible: true}},
+			policies: map[string]policy.Effective{"resource:projects": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceMachineTarget}}}},
+		}
+		view = policyScreen.View()
+		if strings.Contains(view, "toggle policy scope") || strings.Contains(view, "change policy") {
+			t.Fatalf("%d-column Resource policy duplicates footer bindings:\n%s", width, view)
+		}
+		for _, want := range []string{"RESOURCE", "RESTORE", "projects", "Skip", "Exact never deletes Resource data"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column Resource Restore missing %q:\n%s", width, want, view)
+			}
+		}
+		if width >= 90 && (!strings.Contains(view, "SOURCE") || !strings.Contains(view, "This machine")) {
+			t.Fatalf("%d-column Resource Restore lost concise source:\n%s", width, view)
+		}
+		if strings.Contains(view, "projects —") {
+			t.Fatalf("%d-column Resource Restore regressed to prose:\n%s", width, view)
+		}
 	}
 }
 
@@ -167,24 +210,31 @@ func TestResourceScreenTrackedStatusLabels(t *testing.T) {
 		{ID: "copy", Path: "~/Copy", Strategy: "copy"},
 		{ID: "git", Path: "~/Git", Strategy: "git", Dirty: true},
 		{ID: "git-diff", Path: "~/Diff", Strategy: "git+diff"},
+	}, targets: []workflow.TargetInspection{
+		{Key: "resource:copy", Label: "copy", Desired: workflow.TargetPresent, Current: workflow.TargetPresent},
+		{Key: "resource:git", Label: "git", Desired: workflow.TargetPresent, Current: workflow.TargetPresent},
+		{Key: "resource:git-diff", Label: "git-diff", Desired: workflow.TargetPresent, Current: workflow.TargetAbsent},
 	}, git: map[string]resourcesprovider.GitWorkingSummary{"git": {}, "git-diff": {StagedTracked: 1, UnstagedTracked: 2, Untracked: []string{"new.txt", "other.txt"}, SelectedUntracked: []string{"new.txt"}}}, effective: map[string]string{"copy": "/home/user/Copy", "git": "/home/user/Git", "git-diff": "/home/user/Diff"}}
 	view := screen.View()
-	for _, want := range []string{"Resource", "Strategy", "Portable path", "Effective path", "State", "copy", "~/Copy", "/home/user/Copy", "git", "~/Git", "clean", "git-diff", "~/Diff", "/home/user/Diff", "modified, untracked"} {
+	for _, want := range []string{"RESOURCE", "DESIRED", "CURRENT", "STATUS", "copy", "Present", "In sync", "git", "git-diff", "Absent", "Missing"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "Strategy: copy") || !strings.Contains(detail, "Effective path: /home/user/Copy") {
+		t.Fatalf("tracking detail did not remain in Details:\n%s", detail)
 	}
 }
 
 func TestResourceScreenTrackedTableHidesTrailingColumnsResponsively(t *testing.T) {
 	screen := &Resources{width: 40, items: []profile.Resource{{ID: "projects", Path: "~/Projects", Strategy: "copy"}}, effective: map[string]string{"projects": "/home/user/Projects"}}
 	view := screen.View()
-	for _, want := range []string{"Resource", "Strategy", "Portable path"} {
+	for _, want := range []string{"RESOURCE", "DESIRED", "STATUS", "projects", "Present", "Not checked"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("narrow table missing %q:\n%s", want, view)
 		}
 	}
-	for _, unwanted := range []string{"Effective path", "\nState       "} {
+	for _, unwanted := range []string{"CURRENT", "Strategy", "Portable path", "Effective path"} {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("narrow table retained %q:\n%s", unwanted, view)
 		}

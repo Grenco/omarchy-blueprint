@@ -127,7 +127,7 @@ func (s *Capture) View() string {
 		return s.styles.Error("Capture failed: " + components.DisplayText(s.err.Error()))
 	}
 	if s.capturing {
-		return "Capturing selected categories...\n\nThis can take a while while categories inspect the running system."
+		return "Capturing selected categories...\n\nThis can take a while as categories inspect the running system."
 	}
 	if s.busy {
 		return "Loading capture status..."
@@ -138,20 +138,28 @@ func (s *Capture) View() string {
 	}
 	rows := make([]components.Row, 0, len(s.statuses))
 	for i, p := range s.statuses {
-		changes := "not captured"
+		selected := i == s.cursor
+		changes, style := "not captured", s.styles.Muted
 		if p.Captured {
-			changes = "clean"
+			changes, style = "clean", s.styles.Success
 		}
 		if p.Captured && len(p.Changes) > 0 {
-			changes = fmt.Sprintf("%d", len(p.Changes))
+			changes, style = fmt.Sprintf("%d changed", len(p.Changes)), s.styles.Warning
+		}
+		if !selected {
+			changes = style(changes)
 		}
 		check := " "
 		if s.chosen[p.ID] {
 			check = "x"
 		}
-		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: i == s.cursor, Focused: true})
+		rows = append(rows, components.Row{Cells: []string{"[" + check + "]", components.DisplayText(p.ID), changes}, Selected: selected, Focused: true})
 	}
-	table := s.table.Render([]components.Column{{Title: "", MinWidth: 3}, {Title: "Category", MinWidth: 12}, {Title: "Changes", MinWidth: 8}}, rows, 60, s.tableRowHeight(), s.styles)
+	width := s.width
+	if width <= 0 {
+		width = 60
+	}
+	table := s.table.Render([]components.Column{{Title: "", Width: 3, MinWidth: 3}, {Title: "CATEGORY", Width: 24, MinWidth: 12}, {Title: "CHANGES", MinWidth: 8}}, rows, width, s.tableRowHeight(), s.styles)
 	lines = append(lines, table)
 	return strings.Join(lines, "\n")
 }
@@ -233,7 +241,11 @@ func (s *Capture) DetailView() string {
 	if p.ID == "" {
 		return "Select categories to capture."
 	}
-	return "Category: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected: " + fmt.Sprint(s.chosen[p.ID])
+	selected := "No"
+	if s.chosen[p.ID] {
+		selected = "Yes"
+	}
+	return "Category: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected for capture: " + selected
 }
 func (s *Capture) current() workflow.ProviderStatus {
 	if s.cursor >= 0 && s.cursor < len(s.statuses) {

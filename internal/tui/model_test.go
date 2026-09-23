@@ -109,14 +109,52 @@ func TestWelcomeFooterPreservesChooserModes(t *testing.T) {
 		t.Fatalf("chooser footer = %q", got)
 	}
 
-	m.welcomeStep = "open-path"
+	m.welcomeStep = "create-path"
 	if got := m.welcomeFooter(); got != "enter continue   esc back" {
-		t.Fatalf("path footer = %q", got)
+		t.Fatalf("create-path footer = %q", got)
+	}
+
+	m.welcomeStep = "open-path"
+	if got := m.welcomeFooter(); got != "enter open   esc back" {
+		t.Fatalf("open-path footer = %q", got)
+	}
+
+	m.welcomeStep = "create-name"
+	if got := m.welcomeFooter(); got != "enter create   esc back" {
+		t.Fatalf("create-name footer = %q", got)
 	}
 
 	m.welcomeChooser = false
 	if got := m.welcomeFooter(); got != "enter create   esc quit" {
 		t.Fatalf("create footer = %q", got)
+	}
+}
+
+func TestWelcomeEscStepsBackOneScreenAtATime(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	m.welcomeChooser = true
+	m.welcomeStep = "create-path"
+	m.welcomePath = components.NewTextInputModal("/tmp/example-profile", "Profile path")
+
+	updated, _ := m.updateWelcome(tea.KeyPressMsg{Code: tea.KeyEnter}, "enter", true)
+	m = updated.(model)
+	if m.welcomeStep != "create-name" {
+		t.Fatalf("welcomeStep after path entry = %q, want create-name", m.welcomeStep)
+	}
+
+	updated, _ = m.updateWelcome(tea.KeyPressMsg{Code: tea.KeyEsc}, "esc", true)
+	m = updated.(model)
+	if m.welcomeStep != "create-path" {
+		t.Fatalf("esc from create-name = %q, want create-path (one step back)", m.welcomeStep)
+	}
+	if m.welcomePath.Value() != "/tmp/example-profile" {
+		t.Fatalf("esc from create-name lost typed path: %q", m.welcomePath.Value())
+	}
+
+	updated, _ = m.updateWelcome(tea.KeyPressMsg{Code: tea.KeyEsc}, "esc", true)
+	m = updated.(model)
+	if m.welcomeStep != "choose" {
+		t.Fatalf("esc from create-path = %q, want choose", m.welcomeStep)
 	}
 }
 
@@ -270,7 +308,7 @@ func TestMachinePolicyNavigationOpensCategoryPolicyView(t *testing.T) {
 	if m.screenID() != ScreenConfig {
 		t.Fatalf("policy navigation selected %s", m.screenID())
 	}
-	if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") || !strings.Contains(view, "Machine: desktop") || strings.Contains(view, "Machine: laptop") {
+	if view := m.activeScreen().View(); !strings.Contains(view, "[active] Capture") || strings.Contains(view, "Machine: desktop") || strings.Contains(view, "Machine: laptop") {
 		t.Fatalf("policy navigation did not open Capture policy view:\n%s", view)
 	}
 	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
@@ -323,7 +361,7 @@ func TestMachinePolicyNavigationRefreshesAnAlreadyVisitedScope(t *testing.T) {
 	updated, cmd = m.Update(screenMsg{Screen: ScreenMachines, Msg: screens.PolicyNavigation{Category: "config", Machine: "desktop"}})
 	m = updated.(model)
 	consumeScreenCmd(t, &m, cmd)
-	if view := m.activeScreen().View(); !strings.Contains(view, "Ignore (explicit)") {
+	if view := m.activeScreen().View(); !strings.Contains(view, "Preserve") || !strings.Contains(view, "This machine") {
 		t.Fatalf("desktop policy was not refreshed after deep-link:\n%s", view)
 	}
 
@@ -359,18 +397,15 @@ func TestCompactNavigationEnterActivatesSelectedScreenAndClosesOverlay(t *testin
 	if m.screenID() != ScreenOverview {
 		t.Fatalf("starting screen = %s, want %s", m.screenID(), ScreenOverview)
 	}
-	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if !m.sidebarOpen || m.focus != focusSidebar {
-		t.Fatal("Tab did not open compact Navigation with sidebar focus")
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
+	if m.focus != focusSidebar {
+		t.Fatal("Left did not open compact Navigation with sidebar focus")
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
 	if m.screenID() != ScreenCapture {
 		t.Fatalf("j did not move the highlighted destination to %s, got %s", ScreenCapture, m.screenID())
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.sidebarOpen {
-		t.Fatal("enter did not close compact Navigation")
-	}
 	if m.focus != focusWorkspace {
 		t.Fatalf("focus = %d, want focusWorkspace after enter", m.focus)
 	}
@@ -384,18 +419,15 @@ func TestCompactNavigationEnterActivatesSelectedScreenAndClosesOverlay(t *testin
 
 func TestCompactNavigationRightArrowActivatesSelectedScreenAndClosesOverlay(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if !m.sidebarOpen || m.focus != focusSidebar {
-		t.Fatal("Tab did not open compact Navigation with sidebar focus")
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
+	if m.focus != focusSidebar {
+		t.Fatal("Left did not open compact Navigation with sidebar focus")
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: 'j'})
 	if m.screenID() != ScreenCapture {
 		t.Fatalf("j did not move the highlighted destination: %s", m.screenID())
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
-	if m.sidebarOpen {
-		t.Fatal("right arrow did not close compact Navigation")
-	}
 	if m.focus != focusWorkspace {
 		t.Fatalf("focus = %d, want focusWorkspace after right arrow", m.focus)
 	}
@@ -404,18 +436,14 @@ func TestCompactNavigationRightArrowActivatesSelectedScreenAndClosesOverlay(t *t
 	}
 }
 
-func TestCompactNormalWorkspaceDoesNotTreatEnterOrRightAsNavigationClose(t *testing.T) {
+func TestCompactNormalWorkspaceDoesNotTreatEnterAsNavigationClose(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	if m.sidebarOpen || m.focus != focusWorkspace {
+	if m.focus != focusWorkspace {
 		t.Fatal("compact layout should start with the workspace focused and Navigation closed")
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.sidebarOpen || m.focus != focusWorkspace {
-		t.Fatal("enter outside Navigation altered sidebar/focus state")
-	}
-	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
-	if m.sidebarOpen || m.focus != focusWorkspace {
-		t.Fatal("right arrow outside Navigation altered sidebar/focus state")
+	if m.focus != focusWorkspace {
+		t.Fatal("enter outside Navigation altered focus state")
 	}
 }
 
@@ -426,9 +454,6 @@ func TestThreePaneRightArrowStillMovesSidebarFocusToWorkspace(t *testing.T) {
 	if m.focus != focusWorkspace {
 		t.Fatalf("three-pane right arrow focus = %d, want focusWorkspace", m.focus)
 	}
-	if m.sidebarOpen {
-		t.Fatal("three-pane right arrow unexpectedly touched compact sidebarOpen state")
-	}
 }
 
 func TestCompactSidebarIsVisibleWhenToggled(t *testing.T) {
@@ -436,8 +461,8 @@ func TestCompactSidebarIsVisibleWhenToggled(t *testing.T) {
 	if m.focus == focusSidebar {
 		t.Fatal("compact layout retained invisible sidebar focus")
 	}
-	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if !m.sidebarOpen || m.focus != focusSidebar || !strings.Contains(m.View().Content, "Overview") {
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
+	if m.focus != focusSidebar || !strings.Contains(m.View().Content, "┌ Navigation") {
 		t.Fatal("compact sidebar did not open visibly")
 	}
 }
@@ -472,10 +497,10 @@ func TestSidebarSectionNavigation(t *testing.T) {
 	}
 
 	m = updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
 	m = updateModel(t, m, tea.KeyPressMsg{Code: ']'})
-	if !m.sidebarOpen || m.screenID() != ScreenCapture || m.focus != focusSidebar {
-		t.Fatalf("compact sidebar section jump failed: open=%v screen=%s focus=%d", m.sidebarOpen, m.screenID(), m.focus)
+	if m.screenID() != ScreenCapture || m.focus != focusSidebar {
+		t.Fatalf("compact sidebar section jump failed: screen=%s focus=%d", m.screenID(), m.focus)
 	}
 }
 
@@ -493,6 +518,83 @@ func TestGroupNavigationBindingsFollowFocusAndStayOutOfFooter(t *testing.T) {
 	m.focus = focusSidebar
 	assertBindingLabels(t, m.bindings(), "Previous sidebar section", "Next sidebar section")
 }
+
+func TestTabbedScreensIgnoreTabWhileAnotherPaneHasFocus(t *testing.T) {
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 140, Height: 40}} {
+		for _, test := range []struct {
+			name   string
+			id     ScreenID
+			screen func() screen
+		}{
+			{name: "Config", id: ScreenConfig, screen: func() screen { return &configScreen{Config: screens.NewConfig(nil)} }},
+			{name: "Packages", id: ScreenPackages, screen: func() screen {
+				return &providerScreen{Provider: screens.NewProvider(nil, "packages"), id: ScreenPackages}
+			}},
+		} {
+			for _, open := range []struct {
+				name  string
+				key   tea.KeyPressMsg
+				focus focusArea
+			}{
+				{name: "Navigation", key: keyLeft, focus: focusSidebar},
+				{name: "Details", key: keyRight, focus: focusDetails},
+			} {
+				t.Run(fmt.Sprintf("%dx%d/%s/%s", size.Width, size.Height, test.name, open.name), func(t *testing.T) {
+					m := updateModel(t, newModel(ThemeLoader{NoColor: true}), size)
+					m.screens[test.id] = test.screen()
+					m.selected = screenIndex(t, test.id)
+					m.focus = focusWorkspace
+					m = press(t, m, open.key)
+					if m.focus != open.focus {
+						t.Fatalf("setup: focus=%d, want %d", m.focus, open.focus)
+					}
+					for _, key := range []tea.KeyPressMsg{keyTab, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift})} {
+						m = press(t, m, key)
+						if view := m.activeScreen().View(); !strings.Contains(view, "[active] State") {
+							t.Fatalf("%s changed the %s tab behind the focused %s pane: %q", key, test.name, open.name, view)
+						}
+						if m.focus != open.focus {
+							t.Fatalf("%s moved focus off the %s pane to %d", key, open.name, m.focus)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestUntabbedScreenKeepsRootTabFocusNavigation(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 140, Height: 40})
+	m.selected = screenIndex(t, ScreenOverview)
+	m.focus = focusWorkspace
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.focus != focusDetails {
+		t.Fatalf("un-tabbed screen Tab focus = %d, want details", m.focus)
+	}
+}
+
+func TestProviderResponsiveColumnsUseTerminalTierNotPaneWidth(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	probe := &terminalWidthProbe{id: ScreenPackages}
+	m.screens[ScreenPackages] = probe
+	m.selected = screenIndex(t, ScreenPackages)
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 140, Height: 30})
+	if probe.terminalWidth != 140 {
+		t.Fatalf("screen terminal width = %d, want 140 (pane width %d)", probe.terminalWidth, probe.width)
+	}
+}
+
+type terminalWidthProbe struct {
+	id                   ScreenID
+	width, terminalWidth int
+}
+
+func (s *terminalWidthProbe) ID() ScreenID               { return s.id }
+func (s *terminalWidthProbe) SetSize(width, _ int)       { s.width = width }
+func (s *terminalWidthProbe) SetTerminalWidth(width int) { s.terminalWidth = width }
+func (*terminalWidthProbe) Update(tea.Msg) tea.Cmd       { return nil }
+func (*terminalWidthProbe) View() string                 { return "responsive probe" }
+func (*terminalWidthProbe) Actions() []Action            { return nil }
 
 func assertBindingLabels(t *testing.T, bindings []Binding, want ...string) {
 	t.Helper()
@@ -611,7 +713,7 @@ func TestModelIntegrationRouteUsesSharedSessionAcrossRefreshes(t *testing.T) {
 	consumeScreenCmd(t, &m, m.selectScreen(ScreenRestore))
 	restoreScreen := m.activeScreen().(*restoreScreen)
 	consumeScreenCmd(t, &m, restoreScreen.Update(tea.KeyPressMsg{Code: 'f'}))
-	if !strings.Contains(restoreScreen.View(), "Conflicts: force") {
+	if view := restoreScreen.View(); !strings.Contains(view, "Conflict handling (f)") || !strings.Contains(view, "Force") || !strings.Contains(view, "Overwrite conflicting files") {
 		t.Fatalf("restore conflict setting did not toggle: %q", restoreScreen.View())
 	}
 	m.selectScreen(ScreenSync)
@@ -759,7 +861,7 @@ func (s *resultScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 func TestNoColorViewsKeepSemanticMarkers(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "✓ overview clean") {
+	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "~ no profile loaded") {
 		t.Fatalf("overview is not understandable without colour: %q", m.View().Content)
 	}
 }
@@ -787,6 +889,22 @@ func TestRootHeaderSanitizesProfileName(t *testing.T) {
 	header := m.header()
 	if strings.Contains(header, "\x1b") || !strings.Contains(header, "profile?name?") {
 		t.Fatalf("unsafe header=%q", header)
+	}
+}
+
+func TestRootHeaderShowsProfilePathWithoutFooterOpenNotice(t *testing.T) {
+	session := integrationSession(t)
+	dir := session.ProfileDir()
+	m := newModelWithContext(context.Background(), func() {}, ThemeLoader{NoColor: true}, session, dir, nil)
+	m.width, m.height = 140, 30
+
+	if header := m.header(); lipgloss.Width(header) != m.width || !strings.Contains(header, string(filepath.Separator)+"tmp"+string(filepath.Separator)) {
+		t.Fatalf("profile path is not anchored at the top-right: %q", header)
+	}
+	updated, _ := m.handleProfileCreated(profileCreatedMsg{session: session, dir: dir, verb: "opened"})
+	opened := updated.(model)
+	if opened.notification != "" {
+		t.Fatalf("profile-open notice still competes with footer bindings: %q", opened.notification)
 	}
 }
 
@@ -852,6 +970,8 @@ func TestQuitDefersToTransientInput(t *testing.T) {
 	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
 	input := &inputScreen{id: ScreenOverview, active: true}
 	m.screens[ScreenOverview] = input
+	// Text entry is only reachable from a focused workspace.
+	m.focus = focusWorkspace
 	_, command := m.Update(tea.KeyPressMsg{Code: 'q'})
 	if command != nil || input.keys != "q" {
 		t.Fatalf("transient q was not screen-owned: command=%v keys=%q", command != nil, input.keys)

@@ -19,6 +19,7 @@ type screen interface {
 type initializableScreen interface{ Init() tea.Cmd }
 type transientScreen interface{ TransientActive() bool }
 type styleableScreen interface{ SetStyles(components.Styles) }
+type terminalWidthScreen interface{ SetTerminalWidth(int) }
 type headerStateScreen interface{ HeaderState() string }
 type bindingScreen interface{ Bindings() []Binding }
 
@@ -58,14 +59,43 @@ type providerScreen struct {
 	id ScreenID
 }
 
-func (s *resourcesScreen) ID() ScreenID { return ScreenResources }
+func (s *resourcesScreen) ID() ScreenID  { return ScreenResources }
+func (s *resourcesScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *resourcesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "tab" {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "tab" && key.String() != "shift+tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
+
+// browserActions/browserBindings surface the embedded file browser's own
+// keys (see components.Browser) through the same footer/help/palette path as
+// every other screen, instead of leaving them discoverable only inline.
+func browserActions(prefix string, update func(tea.KeyPressMsg) tea.Cmd) []Action {
+	key := func(code rune) func() tea.Cmd { return func() tea.Cmd { return update(tea.KeyPressMsg{Code: code}) } }
+	return []Action{
+		{ID: prefix + "parent", Label: "Parent directory", Group: "Browse", Enabled: true, Visible: true, Run: key('h')},
+		{ID: prefix + "open", Label: "Open / choose", Group: "Browse", Enabled: true, Visible: true, Run: func() tea.Cmd { return update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
+		{ID: prefix + "filter", Label: "Filter", Group: "Browse", Enabled: true, Visible: true, Run: key('/')},
+		{ID: prefix + "bookmarks", Label: "Bookmarks", Group: "Browse", Enabled: true, Visible: true, Run: key('b')},
+		{ID: prefix + "back", Label: "Back", Group: "Browse", Enabled: true, Visible: true, Run: func() tea.Cmd { return update(tea.KeyPressMsg{Code: tea.KeyEsc}) }},
+	}
+}
+func browserBindings(prefix string) []Binding {
+	return []Binding{
+		{ActionID: prefix + "parent", Key: "h"},
+		{ActionID: prefix + "open", Keys: []string{"l", "enter"}},
+		{Label: "Move", Key: "j/k"},
+		{ActionID: prefix + "filter", Key: "/"},
+		{ActionID: prefix + "bookmarks", Key: "b"},
+		{ActionID: prefix + "back", Key: "esc"},
+	}
+}
+
 func (s *resourcesScreen) Actions() []Action {
+	if s.BrowserActive() {
+		return browserActions("resources.browser.", func(key tea.KeyPressMsg) tea.Cmd { return s.Update(key) })
+	}
 	states := s.Resources.Actions()
 	actions := make([]Action, 0, len(states))
 	for _, state := range states {
@@ -86,6 +116,9 @@ func (s *resourcesScreen) Actions() []Action {
 	return actions
 }
 func (s *resourcesScreen) Bindings() []Binding {
+	if s.BrowserActive() {
+		return browserBindings("resources.browser.")
+	}
 	return bindingsFromResourceActions(s.Resources.Actions(), "resources.")
 }
 
@@ -97,25 +130,34 @@ func (s *machinesScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *machinesScreen) Actions() []Action {
+	if s.BrowserActive() {
+		return browserActions("machines.browser.", func(key tea.KeyPressMsg) tea.Cmd { return s.Update(key) })
+	}
 	selectedMachine := s.HasSelectedMachine()
 	primaryLabel, primaryEnabled, primaryReason := "Use machine overlay", s.CanUseMachine(), "selected machine is already active"
 	if s.MappingFocused() {
 		primaryLabel, primaryEnabled, primaryReason = "Remove resource mapping", s.CanUnmapResource(), "selected resource has no override"
 	}
 	return []Action{
-		{ID: "machines.add", Label: "Add machine", Group: "Machines", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
+		{ID: "machines.next-region", Label: "Focus next section", Group: "Machines", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+		{ID: "machines.add", Label: "Add machine", Group: "Machines", Enabled: s.CanAddMachine(), Visible: true, DisabledReason: "focus the Machines list", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
 		{ID: "machines.primary", Label: primaryLabel, Group: "Machines", Enabled: primaryEnabled, Visible: true, DisabledReason: primaryReason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'u'}) }},
 		{ID: "machines.clear", Label: "Clear active machine", Group: "Machines", Enabled: s.CanClearMachine(), Visible: true, DisabledReason: "no active machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 		{ID: "machines.rename", Label: "Rename machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: "machines.restore-conflicts", Label: "Toggle Safe/Force default", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }},
 		{ID: "machines.restore-convergence", Label: "Toggle Additive/Exact default", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
-		{ID: "machines.open-policy", Label: "Open selected policy category", Group: "Machines", Enabled: s.CanOpenPolicy(), Visible: true, DisabledReason: "selected machine has no policy overrides", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
+		{ID: "machines.previous-policy", Label: "Select previous policy category", Group: "Machines", Enabled: s.CanCyclePolicy(), Visible: true, DisabledReason: "selected machine has fewer than two policy categories", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: '['}) }},
+		{ID: "machines.next-policy", Label: "Select next policy category", Group: "Machines", Enabled: s.CanCyclePolicy(), Visible: true, DisabledReason: "selected machine has fewer than two policy categories", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: ']'}) }},
+		{ID: "machines.open-policy", Label: "Review or edit selected policy category", Group: "Machines", Enabled: s.CanOpenPolicy(), Visible: true, DisabledReason: "focus a policy category first", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
 		{ID: "machines.remove", Label: "Remove machine", Group: "Machines", Enabled: selectedMachine, Visible: true, DisabledReason: "select a machine", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
 		{ID: "machines.map", Label: "Map resource directory", Group: "Machines", Enabled: s.CanMapResource(), Visible: true, DisabledReason: "select a resource path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'm'}) }},
 	}
 }
 func (s *machinesScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.open-policy", Key: "o"}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
+	if s.BrowserActive() {
+		return browserBindings("machines.browser.")
+	}
+	return []Binding{{ActionID: "machines.next-region", Key: "tab", FooterPriority: -10}, {ActionID: "machines.add", Key: "a"}, {ActionID: "machines.primary", Key: "u"}, {ActionID: "machines.clear", Key: "c"}, {ActionID: "machines.rename", Key: "r"}, {ActionID: "machines.restore-conflicts", Key: "f"}, {ActionID: "machines.restore-convergence", Key: "e"}, {ActionID: "machines.previous-policy", Key: "["}, {ActionID: "machines.next-policy", Key: "]"}, {ActionID: "machines.open-policy", Key: "enter"}, {Label: "Review policy", Key: "o", HideFromFooter: true}, {ActionID: "machines.remove", Key: "x"}, {ActionID: "machines.map", Key: "m"}}
 }
 
 func (s *restoreScreen) ID() ScreenID { return ScreenRestore }
@@ -152,16 +194,17 @@ func (s *syncScreen) Actions() []Action {
 }
 func (s *syncScreen) Bindings() []Binding { return bindingsFromSyncActions(s.Sync.Actions()) }
 
-func (s *providerScreen) ID() ScreenID { return s.id }
+func (s *providerScreen) ID() ScreenID  { return s.id }
+func (s *providerScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *providerScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !screenKey(key.String()) && key.String() != "tab" {
+	if !screenKey(key.String()) && key.String() != "tab" && key.String() != "shift+tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *providerScreen) Actions() []Action {
 	actions := []Action{
-		{ID: string(s.id) + ".tab", Label: "Switch policy tab", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+		{ID: string(s.id) + ".tab", Label: "Switch tab", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: string(s.id) + ".refresh", Label: "Refresh " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 		{ID: string(s.id) + ".capture", Label: "Capture " + screenLabel(s.id), Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
 	}
@@ -193,9 +236,10 @@ func (s *providerScreen) Bindings() []Binding {
 	return bindings
 }
 
-func (s *configScreen) ID() ScreenID { return ScreenConfig }
+func (s *configScreen) ID() ScreenID  { return ScreenConfig }
+func (s *configScreen) OwnsTab() bool { return !s.TransientActive() }
 func (s *configScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" && key.String() != "tab" {
+	if !s.TransientActive() && !screenKey(key.String()) && key.String() != "/" && key.String() != "tab" && key.String() != "shift+tab" {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
@@ -204,14 +248,14 @@ func (s *configScreen) Actions() []Action {
 	policyEnabled := s.CanPolicy()
 	if s.PolicyTab() {
 		return []Action{
-			{ID: "config.tab", Label: "Switch policy tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+			{ID: "config.tab", Label: "Switch tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 			{ID: "config.policy-scope", Label: "Toggle Profile defaults / active machine", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'p'}) }},
 			{ID: "config.policy-set", Label: "Change selected policy", Group: "Config", Enabled: s.CanPolicyTarget(), Visible: true, DisabledReason: "select a Config policy target", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
 			{ID: "config.policy-reset", Label: "Reset selected policy", Group: "Config", Enabled: s.CanPolicyTarget(), Visible: true, DisabledReason: "select a Config policy target", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'x'}) }},
 		}
 	}
 	return []Action{
-		{ID: "config.tab", Label: "Switch policy tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
+		{ID: "config.tab", Label: "Switch tab", Group: "Config", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyTab}) }},
 		{ID: "config.diff", Label: "View Config diff", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
 		{ID: "config.policy", Label: "Cycle Config policy", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
 		{ID: "config.include", Label: "Include Config path", Group: "Config", Enabled: policyEnabled, Visible: true, DisabledReason: "select a Config path", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'i'}) }},
@@ -256,8 +300,12 @@ func (s *overviewScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *overviewScreen) Actions() []Action {
+	label, enabled, reason := "Open selected decision", s.CanOpen(), "select an attention item"
+	if s.SelectedIsSection() {
+		label, enabled, reason = "Toggle section", true, ""
+	}
 	return []Action{
-		{ID: "overview.open", Label: "Open selected decision", Enabled: s.CanOpen(), Visible: true, DisabledReason: "select an attention item", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
+		{ID: "overview.open", Label: label, Enabled: enabled, Visible: true, DisabledReason: reason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
 		{ID: "overview.refresh", Label: "Refresh Overview", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
 	}
 }

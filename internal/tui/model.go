@@ -57,7 +57,6 @@ type model struct {
 	paletteInput          components.TextInputModal
 	helpQuery             string
 	helpInput             components.TextInputModal
-	sidebarOpen           bool
 	sidebarScroll         verticalViewport
 	paletteScroll         verticalViewport
 	helpScroll            verticalViewport
@@ -171,11 +170,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, cmd
 	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		before := layoutForSize(m.width, m.height).mode
 		m.width, m.height = size.Width, size.Height
-		layout := layoutForSize(m.width, m.height)
-		if layout.mode == LayoutCompact {
-			m.focus, m.sidebarOpen = focusWorkspace, false
+		if after := layoutForSize(m.width, m.height).mode; after != before && after == LayoutCompact {
+			// Entering compact must not surface a drawer the user did not open.
+			m.focus = focusWorkspace
 		}
+		m.normalizeFocus()
 		m.setScreenSizes()
 		return m, nil
 	}
@@ -226,10 +227,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if isKey {
-		transient := m.activeTransient()
-		// Active transients always own their input. Outside a transient, only the
-		// workspace may offer a key to its screen before root fallback.
-		if transient || m.focus == focusWorkspace {
+		if key == "tab" || key == "shift+tab" {
+			if owner, ok := m.activeScreen().(TabOwner); ok && owner.OwnsTab() {
+				// Local tabs belong to the workspace. While Navigation or Details
+				// has focus, Tab must not change the screen behind it, and on a
+				// tabbed screen it has no pane-cycling meaning either.
+				if m.focus != focusWorkspace {
+					return m, nil
+				}
+				if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
+					return m, wrapScreenCmd(m.screenID(), result.Cmd)
+				}
+			}
+		}
+		// Only a focused workspace offers keys to its screen before root
+		// fallback. A transient screen owns every key while it has focus, but a
+		// screen that turns transient on its own (e.g. while loading) must not
+		// swallow keys meant for the focused Navigation or Details pane.
+		if m.focus == focusWorkspace {
 			if result := m.activeKeyResult(msg.(tea.KeyPressMsg)); result.Consumed {
 				return m, wrapScreenCmd(m.screenID(), result.Cmd)
 			}
@@ -250,17 +265,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpInput = components.NewTextInputModal("", "")
 			return m, m.helpInput.Focus()
 		case "tab", "shift+tab":
-			if layoutForSize(m.width, m.height).mode == LayoutCompact {
-				m.sidebarOpen = !m.sidebarOpen
-				if m.sidebarOpen {
-					m.focus = focusSidebar
-				} else {
-					m.focus = focusWorkspace
-				}
+			// Compact drawers are reached with h/l only; Tab there belongs to
+			// local tabs or does nothing.
+			if layoutForSize(m.width, m.height).mode != LayoutCompact {
+				m.cycleFocus(isReverseTab(key))
+			}
+			return m, nil
+		case "esc":
+			if m.drawerOpen() {
+				m.focus = focusWorkspace
 				return m, nil
 			}
-			m.cycleFocus(isReverseTab(key))
-			return m, nil
 		case "[", "]":
 			if m.focus == focusSidebar {
 				destination := moveSidebarSection(m.screenID(), map[string]int{"[": -1, "]": 1}[key])
@@ -279,32 +294,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == focusSidebar {
 				return m, m.moveScreen(1)
 			}
-			if m.focus == focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
-				m.detailScroll.move(1, len(m.detailLines(layoutForSize(m.width, m.height))), layoutForSize(m.width, m.height).contentHeight-2)
+			if m.focus == focusDetails {
+				m.scrollDetails(1)
 				return m, nil
 			}
 		case "k", "up":
 			if m.focus == focusSidebar {
 				return m, m.moveScreen(-1)
 			}
-			if m.focus == focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
-				m.detailScroll.move(-1, len(m.detailLines(layoutForSize(m.width, m.height))), layoutForSize(m.width, m.height).contentHeight-2)
+			if m.focus == focusDetails {
+				m.scrollDetails(-1)
 				return m, nil
 			}
 		case "h", "left":
-			if m.focus > focusSidebar {
-				m.focus--
-				return m, nil
-			}
-		case "l", "right", "enter":
-			if m.focus == focusSidebar && m.sidebarOpen && layoutForSize(m.width, m.height).mode == LayoutCompact {
-				// j/k already moved m.selected to the highlighted screen while
-				// Navigation was open; accept it and return to the workspace.
-				m.sidebarOpen, m.focus = false, focusWorkspace
-				return m, nil
-			}
-			if key != "enter" && m.focus < focusDetails && layoutForSize(m.width, m.height).mode == LayoutThreePane {
-				m.focus++
+			m.moveFocus(-1)
+			return m, nil
+		case "l", "right":
+			m.moveFocus(1)
+			return m, nil
+		case "enter":
+			// j/k already moved m.selected to the highlighted screen while the
+			// Navigation drawer was open; Enter accepts it.
+			if m.drawerOpen() && m.focus == focusSidebar {
+				m.focus = focusWorkspace
 				return m, nil
 			}
 		}
@@ -319,11 +331,6 @@ func (m model) stop() {
 	if m.cancel != nil {
 		m.cancel()
 	}
-}
-
-func (m model) activeTransient() bool {
-	owner, ok := m.activeScreen().(transientScreen)
-	return ok && owner.TransientActive()
 }
 
 func (m model) activeKeyResult(key tea.KeyPressMsg) KeyResult {
@@ -370,16 +377,75 @@ func (m *model) initScreen(id ScreenID) tea.Cmd {
 	m.initialized[id] = true
 	return wrapScreenCmd(id, initializable.Init())
 }
-func (m *model) cycleFocus(reverse bool) {
-	count := 2
-	if layoutForSize(m.width, m.height).mode == LayoutThreePane {
-		count = 3
+
+// panes lists, left to right, the focus areas the current layout can render
+// for the active screen. It is the single source for horizontal movement in
+// every layout: compact mode shows sidebar and details as drawers over the
+// workspace rather than side by side, but the order is the same.
+func (m model) panes() []focusArea {
+	panes := []focusArea{focusSidebar, focusWorkspace}
+	if m.hasDetailsPane() {
+		panes = append(panes, focusDetails)
 	}
+	return panes
+}
+
+func (m model) hasDetailsPane() bool {
+	switch layoutForSize(m.width, m.height).mode {
+	case LayoutThreePane, LayoutCompact:
+		_, ok := m.activeScreen().(DetailView)
+		return ok
+	}
+	return false
+}
+
+// drawerOpen reports whether a compact drawer is showing. In compact mode the
+// drawer is derived from focus, so focus can never name a hidden pane.
+func (m model) drawerOpen() bool {
+	return layoutForSize(m.width, m.height).mode == LayoutCompact && m.focus != focusWorkspace
+}
+
+// moveFocus steps along panes without wrapping, so h/l stop at the edges.
+func (m *model) moveFocus(delta int) {
+	panes := m.panes()
+	for i, pane := range panes {
+		if pane == m.focus {
+			m.focus = panes[max(0, min(len(panes)-1, i+delta))]
+			return
+		}
+	}
+	m.focus = focusWorkspace
+}
+
+func (m *model) cycleFocus(reverse bool) {
+	panes := m.panes()
 	delta := 1
 	if reverse {
 		delta = -1
 	}
-	m.focus = focusArea((int(m.focus) + delta + count) % count)
+	for i, pane := range panes {
+		if pane == m.focus {
+			m.focus = panes[(i+delta+len(panes))%len(panes)]
+			return
+		}
+	}
+	m.focus = focusWorkspace
+}
+
+// normalizeFocus returns focus to the workspace whenever it names a pane the
+// current layout or screen cannot render.
+func (m *model) normalizeFocus() {
+	for _, pane := range m.panes() {
+		if pane == m.focus {
+			return
+		}
+	}
+	m.focus = focusWorkspace
+}
+
+func (m *model) scrollDetails(delta int) {
+	lines := m.detailLines(m.detailsInnerWidth())
+	m.detailScroll.move(delta, len(lines), layoutForSize(m.width, m.height).contentHeight-2)
 }
 
 func (m model) actions() []Action {
@@ -414,7 +480,10 @@ func (m model) paletteActions() []Action {
 }
 
 func (m model) bindings() []Binding {
-	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global"}, {Label: "Commands", Key: ":", Context: "Global"}}
+	// The status bar always leads with "? help   : commands", so the global
+	// bindings stay in help and the palette but not the footer.
+	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global", HideFromFooter: true}, {Label: "Commands", Key: ":", Context: "Global", HideFromFooter: true}}
+	bindings = append(bindings, m.paneBindings()...)
 	if m.focus == focusSidebar {
 		return append(bindings,
 			Binding{Label: "Previous sidebar section", Key: "[", Context: "Sidebar", HideFromFooter: true},
@@ -428,6 +497,29 @@ func (m model) bindings() []Binding {
 			}
 			bindings = append(bindings, binding)
 		}
+	}
+	return bindings
+}
+
+// paneBindings advertises how to move between panes: in compact mode the
+// drawers are otherwise invisible until opened, and a focused Details pane in
+// any layout only accepts scrolling and leaving.
+func (m model) paneBindings() []Binding {
+	if layoutForSize(m.width, m.height).mode != LayoutCompact {
+		if m.focus == focusDetails {
+			return []Binding{{Label: "Scroll", Key: "j/k", Context: "Details", FooterPriority: -5}, {Label: "Back to workspace", Key: "h", Context: "Details", FooterPriority: -5}}
+		}
+		return nil
+	}
+	switch m.focus {
+	case focusSidebar:
+		return []Binding{{Label: "Open screen", Keys: []string{"enter", "l"}, Context: "Navigation", FooterPriority: -5}, {Label: "Close", Key: "esc", Context: "Navigation", FooterPriority: -5}}
+	case focusDetails:
+		return []Binding{{Label: "Scroll", Key: "j/k", Context: "Details", FooterPriority: -5}, {Label: "Close", Keys: []string{"esc", "h"}, Context: "Details", FooterPriority: -5}}
+	}
+	bindings := []Binding{{Label: "Navigation", Key: "h", Context: "Layout", FooterPriority: -5}}
+	if m.hasDetailsPane() {
+		bindings = append(bindings, Binding{Label: "Details", Key: "l", Context: "Layout", FooterPriority: -5})
 	}
 	return bindings
 }

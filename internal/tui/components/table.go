@@ -19,6 +19,7 @@ type Row struct {
 	Cells    []string
 	Selected bool
 	Focused  bool
+	Divider  bool
 }
 
 func (t *Table) Move(delta, count, height int) {
@@ -59,19 +60,43 @@ func (t *Table) Render(columns []Column, rows []Row, width, height int, styles S
 	}
 	dataHeight := max(0, height-1)
 	t.Move(0, len(rows), dataHeight)
-	lines := []string{tableLine(columnTitles(columns), widths)}
+	lines := []string{styles.Heading(tableLine(columnTitles(columns), widths))}
 	for _, row := range rows[t.Offset:min(len(rows), t.Offset+dataHeight)] {
 		if row.Selected && !styles.Palette.ColorEnabled && len(row.Cells) > 0 {
 			row.Cells = append([]string(nil), row.Cells...)
 			row.Cells[0] = Icons.Selected + " " + row.Cells[0]
 		}
 		line := tableLine(row.Cells, widths)
+		if row.Divider && len(row.Cells) > 0 {
+			line = dividerLine(row.Cells[0], widths, styles)
+		}
 		if row.Selected {
 			line = styles.Selection(line, row.Focused)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func dividerLine(label string, widths []int, styles Styles) string {
+	width := len(widths) - 1
+	for _, columnWidth := range widths {
+		width += columnWidth
+	}
+	remaining := width - lipgloss.Width(label) - 1
+	if remaining <= 0 {
+		return pad(label, width)
+	}
+	return pad(label+" "+styles.Muted(strings.Repeat("─", remaining)), width)
+}
+
+// SectionDivider renders a screen-level section heading using the same visual
+// grammar as divider rows inside tables.
+func SectionDivider(label string, width int, styles Styles) string {
+	if width <= lipgloss.Width(label) {
+		return styles.Accent(truncate(label, max(1, width)))
+	}
+	return styles.Accent(label) + " " + styles.Muted(strings.Repeat("─", width-lipgloss.Width(label)-1))
 }
 
 func tableColumns(columns []Column, width int) ([]Column, []int) {
