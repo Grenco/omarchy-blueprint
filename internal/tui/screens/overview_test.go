@@ -100,7 +100,7 @@ func TestOverviewSectionCollapseAndViewportKeepCursorVisible(t *testing.T) {
 		screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	view := screen.View()
-	if !strings.Contains(view, "> decision f") || strings.Contains(view, "decision a") {
+	if !strings.Contains(view, "> ! decision f") || strings.Contains(view, "decision a") {
 		t.Fatalf("cursor or viewport wrong: %q", view)
 	}
 }

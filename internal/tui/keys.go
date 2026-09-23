@@ -13,6 +13,12 @@ type KeyHandler interface {
 	HandleKey(tea.KeyPressMsg) KeyResult
 }
 
+// TabOwner marks a screen whose visible local tabs take precedence over the
+// root pane-focus cycle.
+type TabOwner interface {
+	OwnsTab() bool
+}
+
 func keyName(msg tea.Msg) (string, bool) {
 	key, ok := msg.(tea.KeyPressMsg)
 	return key.String(), ok

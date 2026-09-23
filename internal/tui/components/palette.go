@@ -11,10 +11,6 @@ type PaletteItem struct {
 	Enabled                                    bool
 }
 
-func Palette(query string, items []PaletteItem, selected int) string {
-	return "Command palette: " + query + "\n" + PaletteItems(items, selected)
-}
-
 func PaletteItems(items []PaletteItem, selected int, styles ...Styles) string {
 	style := Styles{}
 	if len(styles) > 0 {

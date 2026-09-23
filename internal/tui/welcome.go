@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -34,7 +35,6 @@ func (m model) handleProfileCreated(created profileCreatedMsg) (tea.Model, tea.C
 	}
 	fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, dir, m.createProfile)
 	fresh.width, fresh.height = m.width, m.height
-	fresh.notification = "Profile " + created.verb + " at " + dir
 	fresh.setScreenSizes()
 	return fresh, fresh.Init()
 }
@@ -83,6 +83,10 @@ func (m model) updateWelcome(msg tea.Msg, key string, isKey bool) (tea.Model, te
 			return m, tea.Quit
 		case "esc":
 			if m.welcomeChooser {
+				if m.welcomeStep == "create-name" {
+					m.welcomeStep, m.welcomeError = "create-path", nil
+					return m, m.welcomePath.Focus()
+				}
 				m.welcomeStep, m.welcomeError = "choose", nil
 				return m, nil
 			}
@@ -161,30 +165,51 @@ func expandWelcomePath(path string) string {
 
 // welcomeFooter is the canonical footer text for the profile Create/Open/Quit flow.
 func (m model) welcomeFooter() string {
-	if m.welcomeChooser && m.welcomeStep == "choose" {
-		return "up/down select   enter continue   esc quit"
-	}
 	if m.welcomeChooser {
-		return "enter continue   esc back"
+		switch m.welcomeStep {
+		case "choose":
+			return "up/down select   enter continue   esc quit"
+		case "open-path":
+			return "enter open   esc back"
+		case "create-name":
+			return "enter create   esc back"
+		default:
+			return "enter continue   esc back"
+		}
 	}
 	return "enter create   esc quit"
 }
 
 // welcomeContent is the canonical modal body for the profile Create/Open/Quit flow.
-func (m model) welcomeContent() string {
+func (m model) welcomeContent(width int) string {
+	styles := components.NewStyles(m.palette)
 	lines := []string{}
 	if m.welcomeChooser && m.welcomeStep == "choose" {
-		lines = append(lines, "No Blueprint profile was found.", "", "Choose what to do:")
-		for i, choice := range []string{
-			"Create a new profile",
-			"Open an existing profile",
-			"Quit",
+		lines = append(lines, "No Blueprint profile was found here.", styles.SubtleAccent("A profile is the folder where Blueprint saves what it captures."), "")
+		for i, choice := range []struct{ label, hint string }{
+			{"Create a new profile", "start fresh from this machine"},
+			{"Open an existing profile", "use a profile folder you already have"},
+			{"Quit", ""},
 		} {
-			marker := "  "
-			if i == m.welcomeChoice {
-				marker = "> "
+			if lipgloss.Width("  "+choice.label+"  "+choice.hint) > width {
+				choice.hint = ""
 			}
-			lines = append(lines, marker+choice)
+			if i != m.welcomeChoice {
+				line := "  " + choice.label
+				if choice.hint != "" {
+					line += "  " + styles.SubtleAccent(choice.hint)
+				}
+				lines = append(lines, line)
+				continue
+			}
+			line := "  " + choice.label
+			if choice.hint != "" {
+				line += "  " + choice.hint
+			}
+			if !m.palette.ColorEnabled {
+				line = components.Icons.Selected + line[1:]
+			}
+			lines = append(lines, styles.Selection(components.PadLine(line, width), true))
 		}
 	} else if m.welcomeStep == "create-path" || m.welcomeStep == "open-path" {
 		action := "Create profile at:"
@@ -201,10 +226,10 @@ func (m model) welcomeContent() string {
 		)
 	}
 	if m.welcomeBusy {
-		lines = append(lines, "", "Working...")
+		lines = append(lines, "", styles.Muted("Working..."))
 	}
 	if m.welcomeError != nil {
-		lines = append(lines, "Error: "+components.DisplayText(m.welcomeError.Error()))
+		lines = append(lines, "", styles.Error("Error: "+components.DisplayText(m.welcomeError.Error())))
 	}
 	return strings.Join(lines, "\n")
 }

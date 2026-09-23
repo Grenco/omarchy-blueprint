@@ -8,6 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ModalRequest lets any screen ask the root to render transient content over
@@ -201,21 +202,25 @@ func composeOverlay(base, overlay string, width, height int, color bool) string 
 		overlayWidth = max(overlayWidth, lipgloss.Width(line))
 	}
 	x, y := max(0, (width-overlayWidth)/2), max(0, (height-overlayHeight)/2)
+	dim := func(value string) string { return dimText(value, color) }
 	for row := 0; row < height; row++ {
-		line := boundedLine(baseLines[row], width)
-		if color {
-			line = lipgloss.NewStyle().Faint(true).Render(line)
-		}
+		// Strip the base row's own styling before dimming it: wrapping an
+		// already-styled string in another style does not survive resets
+		// embedded in the original (see presentation.go's styledDecision for
+		// the same nesting issue applied to table cells). dim is applied last,
+		// and only to plain text, so it is never itself the thing re-wrapped.
+		plain := boundedLine(ansi.Strip(baseLines[row]), width)
 		if row < y || row >= y+overlayHeight {
-			baseLines[row] = line
+			baseLines[row] = dim(plain)
 			continue
 		}
 		// Panels use bounded ASCII/Unicode cells; retain the base margins and
 		// replace the central rectangle without adding rows to the base.
-		prefix := lipgloss.NewStyle().MaxWidth(x).Render(line)
-		suffixWidth := max(0, width-x-lipgloss.Width(overlayLines[row-y]))
-		suffix := strings.Repeat(" ", suffixWidth)
-		baseLines[row] = prefix + overlayLines[row-y] + suffix
+		overlayRow := overlayLines[row-y]
+		right := x + lipgloss.Width(overlayRow)
+		prefix := ansi.Cut(plain, 0, x)
+		suffix := ansi.Cut(plain, right, width)
+		baseLines[row] = dim(prefix) + overlayRow + dim(suffix)
 	}
 	return strings.Join(baseLines[:height], "\n")
 }
@@ -249,7 +254,9 @@ func (m model) modalView(base string, layout layout) string {
 		overlay = m.helpScroll.render(lines, innerWidth, innerHeight)
 	case modalWelcome:
 		title = "Welcome to Omarchy Blueprint"
-		overlay = m.welcomeContent()
+		width = max(40, min(width, 80))
+		innerWidth, _ = components.InteriorSize(width, height)
+		overlay = m.welcomeContent(innerWidth)
 	case modalConfirm:
 		if m.requestedModal != nil {
 			title, overlay = m.requestedModal.Title, m.requestedModal.Content
@@ -258,14 +265,14 @@ func (m model) modalView(base string, layout layout) string {
 			}
 		}
 	}
-	if m.modal == modalConfirm {
+	switch m.modal {
+	case modalConfirm:
 		width = max(40, min(width, 68))
 		height = max(5, min(height, len(strings.Split(overlay, "\n"))+4))
+	case modalWelcome:
+		height = max(5, min(height, len(components.WrapText(overlay, innerWidth))+3))
 	}
 	overlay = components.Panel(title, true, width, height, overlay, styles)
-	if m.modal == modalConfirm {
-		return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
-	}
 	return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
 }
 

@@ -26,7 +26,7 @@ func TestCaptureFreshProfileAddsGuidanceWithoutHidingCategories(t *testing.T) {
 	for _, want := range []string{
 		"Choose what this profile should remember",
 		"you do not need to capture everything",
-		"Category",
+		"CATEGORY",
 		"packages",
 		"themes",
 		"hooks",
@@ -158,7 +158,7 @@ func TestCaptureViewLabelsUncapturedProviders(t *testing.T) {
 
 func TestCaptureUsesCategoryTerminology(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "themes"}}, chosen: map[string]bool{}}
-	if view := screen.View(); !strings.Contains(view, "Category") || strings.Contains(view, "Provider") {
+	if view := screen.View(); !strings.Contains(view, "CATEGORY") || strings.Contains(view, "PROVIDER") {
 		t.Fatalf("capture terminology=%q", view)
 	}
 	if detail := (&Capture{chosen: map[string]bool{}}).DetailView(); detail != "Select categories to capture." {

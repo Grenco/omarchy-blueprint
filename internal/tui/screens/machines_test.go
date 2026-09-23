@@ -13,10 +13,9 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-func TestMachinesWithoutResourcesExplainsWhyScreenIsEmpty(t *testing.T) {
+func TestMachinesFreshProfileStillOffersAddMachine(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
-	data := profile.New("test", time.Now())
-	if err := profile.Save(profileDir, data); err != nil {
+	if err := profile.Save(profileDir, profile.New("test", time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	session, err := workflow.Open(
@@ -30,14 +29,32 @@ func TestMachinesWithoutResourcesExplainsWhyScreenIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view := NewMachines(session).View()
-	for _, want := range []string{
-		"No machine-specific paths needed",
-		"only matters when a Resource needs a different location",
-		"There is nothing to configure on this screen.",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("empty Machines missing %q:\n%s", want, view)
+	for _, size := range []struct{ width, height int }{{0, 0}, {78, 16}} {
+		screen := NewMachines(session)
+		screen.SetSize(size.width, size.height)
+		view := screen.View()
+		for _, want := range []string{"No machine overlays yet", "restore defaults, policy", "+ Add machine"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%dx%d fresh Machines missing %q:\n%s", size.width, size.height, want, view)
+			}
+		}
+		for _, stale := range []string{"nothing to configure", "No resource mappings."} {
+			if strings.Contains(view, stale) {
+				t.Fatalf("%dx%d fresh Machines still says %q:\n%s", size.width, size.height, stale, view)
+			}
+		}
+		if !screen.AddRowSelected() {
+			t.Fatalf("%dx%d: + Add machine should be the selected row on a fresh profile", size.width, size.height)
+		}
+		if detail := screen.DetailView(); !strings.Contains(detail, "Add machine") {
+			t.Fatalf("%dx%d: Details should describe the Add machine row: %q", size.width, size.height, detail)
+		}
+		cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if cmd == nil || screen.mode != "add" {
+			t.Fatalf("%dx%d: Enter should open Add machine (cmd=%v mode=%q)", size.width, size.height, cmd != nil, screen.mode)
+		}
+		if request, ok := cmd().(components.ModalRequest); !ok || request.Title != "Add machine" {
+			t.Fatalf("%dx%d: Enter requested %#v", size.width, size.height, cmd())
 		}
 	}
 }
@@ -59,16 +76,94 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"packages: 2", "config: 1", "open policy"} {
+	for _, want := range []string{"CATEGORY", "OVERRIDES", "config", "packages", "\n\nPolicy overrides ─", "\n\nResource paths ─"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("machine policy summary missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "[/]") || strings.Contains(view, "open policy") {
+		t.Fatalf("machine policy key hints duplicate the footer above the table:\n%s", view)
+	}
+	if got := strings.Count(view, "> "); got != 1 {
+		t.Fatalf("Machines must show exactly one focused selection, got %d:\n%s", got, view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	view = screen.View()
+	if !strings.Contains(view, "> config") || strings.Contains(view, "> desktop") || strings.Contains(view, "> projects") {
+		t.Fatalf("Tab did not focus the policy summary as its own region:\n%s", view)
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "explicit Capture or Restore overrides") {
+		t.Fatalf("policy summary purpose is unclear in Details:\n%s", detail)
 	}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'o'})
 	if cmd == nil {
 		t.Fatal("machine override summary did not offer navigation")
 	}
 	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "config" || msg.Machine != "desktop" {
+		t.Fatalf("policy navigation = %#v", msg)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	view = screen.View()
+	if !strings.Contains(view, "> projects") || strings.Contains(view, "> desktop") || strings.Contains(view, "> config") {
+		t.Fatalf("second Tab did not focus Resource paths:\n%s", view)
+	}
+
+	screen = NewMachines(session)
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	view = screen.View()
+	if !strings.Contains(view, "> desktop") || strings.Contains(view, "> projects") {
+		t.Fatalf("right navigation still jumps between vertically stacked regions:\n%s", view)
+	}
+}
+
+func TestMachinesTableKeepsDefaultsAndOverridesScannable(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{
+		{Name: "desktop", RestoreConflicts: policy.ConflictForce, RestoreConvergence: policy.ConvergenceExact, Policy: policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}}},
+		{Name: "laptop"},
+	}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, width := range []int{140, 100, 80} {
+		screen := NewMachines(session)
+		screen.SetSize(width, 30)
+		view := screen.View()
+		for _, want := range []string{"Machines ─", "MACHINE", "ACTIVE", "RESTORE DEFAULT", "OVERRIDES", "desktop", "Yes", "Force / Exact", "Policy overrides ─", "Select a category and press Enter to review or edit", "packages", "1", "Resource paths ─", "projects"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column Machines view missing %q:\n%s", width, want, view)
+			}
+		}
+		if strings.Contains(view, "Restore defaults for desktop:") {
+			t.Fatalf("%d-column Machines view retained prose summary:\n%s", width, view)
+		}
+	}
+}
+
+func TestMachinesEnterOpensFocusedPolicyCategory(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{{Name: "desktop", Policy: policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}}}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter did not open the focused policy category")
+	}
+	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "packages" || msg.Machine != "desktop" {
 		t.Fatalf("policy navigation = %#v", msg)
 	}
 }
@@ -185,6 +280,34 @@ func TestMachinesPortableGuidanceAtConstrainedHeightKeepsResourceRowsVisible(t *
 	}
 }
 
+func TestMachinesAt80ColumnScreenKeepsAllThreeRegionsVisible(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{{Name: "desktop", Policy: policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}}}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	screen.SetSize(78, 21)
+	view := screen.View()
+	for _, want := range []string{"Machines", "Policy overrides", "Resource paths", "projects"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("80-column Machines lost %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "\n\nPolicy overrides") || strings.Contains(view, "\n\nResource paths") {
+		t.Fatalf("80-column Machines kept spacious region separators despite its reduced content budget:\n%s", view)
+	}
+	if lines := strings.Count(view, "\n") + 1; lines > 21 {
+		t.Fatalf("80-column Machines emitted %d lines for a 21-line budget:\n%s", lines, view)
+	}
+}
+
 func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	profileDir, stateHome := t.TempDir(), t.TempDir()
 	data := profile.New("test", time.Now())
@@ -199,10 +322,18 @@ func TestMachineScreenShowsSelectedMappingsAndDormantState(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"desktop [active]", "Resource", "Portable", "> projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
+	for _, want := range []string{"MACHINE", "ACTIVE", "> desktop", "Yes", "Resource paths", "PORTABLE", "projects", "~/Projects", "~/Code", "override", "retired", "/mnt/retired", "dormant"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "> projects") {
+		t.Fatalf("unfocused Resource paths table shows a competing selection:\n%s", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	view = screen.View()
+	if !strings.Contains(view, "> projects") || strings.Contains(view, "> desktop") {
+		t.Fatalf("Tab did not move the sole visible selection to Resource paths:\n%s", view)
 	}
 }
 
@@ -231,7 +362,7 @@ func TestMachineScreenUnmapIsOnlyAvailableForOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen := NewMachines(session)
-	screen.focusMappings = true
+	screen.region = machineRegionResources
 	if row := screen.selectedMapping(); row.override {
 		t.Fatalf("portable mapping reported as override: %#v", row)
 	}
@@ -257,7 +388,7 @@ func TestMachineScreenDownSelectsMachineAndMapping(t *testing.T) {
 	if machine := screen.selectedMachine(); machine.Name != "laptop" {
 		t.Fatalf("selected machine=%#v", machine)
 	}
-	screen.focusMappings = true
+	screen.region = machineRegionResources
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if mapping := screen.selectedMapping(); mapping.id != "projects" {
 		t.Fatalf("selected mapping=%#v", mapping)
@@ -266,16 +397,118 @@ func TestMachineScreenDownSelectsMachineAndMapping(t *testing.T) {
 
 func TestMachineScreenKeepsPaneNavigationUntilOuterEdge(t *testing.T) {
 	screen := &Machines{}
-	for _, key := range []string{"tab", "l", "right", "j", "down", "k", "up"} {
+	for _, key := range []string{"tab", "j", "down", "k", "up"} {
 		if !screen.OwnsWorkspaceKey(key) {
 			t.Errorf("Machines must own %q in its workspace", key)
 		}
 	}
-	if screen.OwnsWorkspaceKey("h") || screen.OwnsWorkspaceKey("left") || screen.OwnsWorkspaceKey(":") {
-		t.Fatal("root command palette key must remain root-owned")
+	for _, key := range []string{"h", "left", "l", "right", ":"} {
+		if screen.OwnsWorkspaceKey(key) {
+			t.Fatalf("stacked Machines regions must not own horizontal key %q", key)
+		}
 	}
-	screen.focusMappings = true
-	if !screen.OwnsWorkspaceKey("h") || !screen.OwnsWorkspaceKey("left") || screen.OwnsWorkspaceKey("l") || screen.OwnsWorkspaceKey("right") {
-		t.Fatal("machine pane boundaries do not escape to root")
+}
+
+func TestMachinesPolicyFocusNeverMutatesResourceMapping(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = []profile.Machine{{
+		Name:          "desktop",
+		ResourcePaths: []profile.MachineResourcePath{{Resource: "projects", Path: "/mnt/projects"}},
+		Policy:        policy.Rules{Capture: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}},
+	}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "desktop", nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	if row := screen.selectedMapping(); !row.override {
+		t.Fatalf("fixture needs an overridden mapping under the cursor: %#v", row)
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if screen.region != machineRegionPolicy {
+		t.Fatalf("Tab should focus Policy overrides, got region %v", screen.region)
+	}
+	for _, key := range []rune{'a', 'u', 'm', 'x', 'r', 'c', 'f', 'e'} {
+		if cmd := screen.Update(tea.KeyPressMsg{Code: key}); cmd != nil {
+			t.Fatalf("%q in Policy overrides produced a command; only the focused region may be mutated", key)
+		}
+		if screen.busy || screen.browser != nil || screen.confirm != "" || screen.mode != "" {
+			t.Fatalf("%q in Policy overrides started a mutation: busy=%v browser=%v confirm=%q mode=%q", key, screen.busy, screen.browser != nil, screen.confirm, screen.mode)
+		}
+	}
+	if !screen.selectedMapping().override {
+		t.Fatal("Resource mapping was changed while Policy overrides owned focus")
+	}
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if screen.region != machineRegionResources {
+		t.Fatalf("Tab should focus Resource paths, got region %v", screen.region)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: 'a'}); cmd != nil || screen.mode != "" || screen.CanAddMachine() {
+		t.Fatalf("a in Resource paths must not start Add machine (cmd=%v mode=%q)", cmd != nil, screen.mode)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: 'u'}); cmd == nil {
+		t.Fatal("u with Resource paths focused should unmap the overridden mapping")
+	}
+}
+
+func openMachinesFixture(t *testing.T, machines []profile.Machine) *Machines {
+	t.Helper()
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Resources.Items = []profile.Resource{{ID: "projects", Path: "~/Projects"}}
+	data.Machines.Items = machines
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }, Hostname: func() (string, error) { return "desktop", nil }}, workflow.Options{ProfileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewMachines(session)
+}
+
+func TestMachinesAddRowIsReachableAndOpensAddMachine(t *testing.T) {
+	screen := openMachinesFixture(t, []profile.Machine{{Name: "desktop"}})
+	if !strings.Contains(screen.View(), "+ Add machine") {
+		t.Fatalf("Machines table has no Add machine row:\n%s", screen.View())
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'j'})
+	if screen.selected != 1 {
+		t.Fatalf("j should move onto the Add machine row, selected=%d", screen.selected)
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "Add machine") {
+		t.Fatalf("Details should explain the Add machine row: %q", detail)
+	}
+	for _, key := range []rune{'u', 'r', 'x', 'f', 'e'} {
+		if cmd := screen.Update(tea.KeyPressMsg{Code: key}); cmd != nil || screen.busy || screen.confirm != "" || screen.mode != "" {
+			t.Fatalf("%q on the Add machine row acted on a machine (cmd=%v busy=%v confirm=%q mode=%q)", key, cmd != nil, screen.busy, screen.confirm, screen.mode)
+		}
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'j'})
+	if screen.selected != 1 {
+		t.Fatalf("Add machine is the last row; j moved past it to %d", screen.selected)
+	}
+	cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || screen.mode != "add" {
+		t.Fatalf("Enter on Add machine should open the name prompt (cmd=%v mode=%q)", cmd != nil, screen.mode)
+	}
+	if request, ok := cmd().(components.ModalRequest); !ok || request.Title != "Add machine" {
+		t.Fatalf("Enter on Add machine requested %#v", cmd())
+	}
+}
+
+func TestMachinesAddRowIsTheOnlyRowWithoutMachines(t *testing.T) {
+	screen := openMachinesFixture(t, nil)
+	view := screen.View()
+	if !strings.Contains(view, "+ Add machine") || strings.Contains(view, "No machine overlays.") {
+		t.Fatalf("with no machines the table should offer only Add machine:\n%s", view)
+	}
+	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil || screen.mode != "add" {
+		t.Fatalf("Enter should open Add machine when it is the only row (cmd=%v mode=%q)", cmd != nil, screen.mode)
 	}
 }

@@ -26,6 +26,7 @@ type Config struct {
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
+	terminalWidth           int
 	tab                     string
 	policySelected          int
 	policyExpanded          map[string]bool
@@ -85,11 +86,12 @@ func (s *Config) Focus(path string) tea.Cmd {
 	return s.rescan()
 }
 func (s *Config) SetSize(width, height int) {
-	s.width, s.height = width, height
+	s.width, s.height, s.terminalWidth = width, height, width
 	if s.diff != nil {
 		s.diff.SetSize(width, height)
 	}
 }
+func (s *Config) SetTerminalWidth(width int)         { s.terminalWidth = width }
 func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Config) ShowPolicy(machine string) {
 	s.policyScope, s.tab, s.policySelected = workflow.PolicyScope{Machine: machine}, "Capture", 0
@@ -178,7 +180,11 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 	if s.busy {
 		return nil
 	}
-	if key.String() == "tab" {
+	if key.String() == "tab" || key.String() == "shift+tab" {
+		if key.String() == "shift+tab" {
+			s.tab = previousProviderTab(s.tab)
+			return nil
+		}
 		switch s.tab {
 		case "State", "":
 			s.tab = "Capture"
@@ -353,26 +359,43 @@ func (s *Config) View() string {
 	}
 	tableRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
+		selected := i == s.selected
 		if row.group != "" {
 			marker := components.Icons.Expanded
-			if s.collapsed[row.group] {
+			if s.groupCollapsed(row.group) {
 				marker = components.Icons.Collapsed
 			}
-			tableRows = append(tableRows, components.Row{Cells: []string{s.styles.Accent(marker + " " + string(row.group)), "", ""}, Selected: i == s.selected, Focused: true})
+			label := marker + " " + string(row.group)
+			if !selected {
+				label = s.styles.Accent(label)
+			}
+			tableRows = append(tableRows, components.Row{Cells: []string{label, "", ""}, Selected: selected, Focused: true, Divider: true})
 			continue
 		}
 		policy := s.candidatePolicy(row.candidate.Path)
-		switch policy {
-		case "Included":
-			policy = s.styles.Added(policy)
-		case "Excluded":
-			policy = s.styles.Removed(policy)
-		default:
-			policy = s.styles.Muted(policy)
+		if !selected {
+			switch policy {
+			case "Included":
+				policy = s.styles.Added(policy)
+			case "Excluded":
+				policy = s.styles.Removed(policy)
+			default:
+				policy = s.styles.Muted(policy)
+			}
 		}
-		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), configPresentationFor(row.candidate.Classification).Label, policy}, Selected: i == s.selected, Focused: true})
+		presentation := configPresentationFor(row.candidate.Classification)
+		state := presentation.Label
+		if !selected {
+			switch presentation.Group {
+			case configNeedsReview:
+				state = s.styles.Warning(state)
+			case configNoActionNeeded, configNotManaged:
+				state = s.styles.Muted(state)
+			}
+		}
+		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), state, policy}, Selected: selected, Focused: true})
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "Path", Width: 0, MinWidth: 12}, {Title: "State", Width: 32, MinWidth: 10}, {Title: "Policy", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+	lines = append(lines, s.table.Render([]components.Column{{Title: "PATH", Width: 0, MinWidth: 12}, {Title: "STATE", Width: 32, MinWidth: 10}, {Title: "POLICY", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
 	if s.filtering || s.filter != "" {
 		lines = append(lines, "Filter: "+s.filter)
 	}
@@ -380,23 +403,21 @@ func (s *Config) View() string {
 }
 
 func (s *Config) policyView() string {
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles), s.policyScopeLabel(), "p: toggle policy scope   space: change policy   x: reset override"}
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
+	if scope := s.policyScopeLabel(); scope != "" {
+		lines = append(lines, scope)
+	}
 	rows := s.configPolicyRows()
-	policyRows := make([]string, 0, len(rows))
+	columns := configPolicyColumns(s.tab, s.presentationWidth())
+	policyRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
+		selected := i == s.policySelected
 		target, effective := row.target, s.effective[row.target.Key]
 		setting := effective.Capture
-		blocked := ""
+		blocked := !target.CaptureEligible
 		if s.tab == "Restore" {
 			setting = effective.Restore
-			if !target.RestoreEligible {
-				blocked = target.SafetyReason
-			}
-		} else if !target.CaptureEligible {
-			blocked = target.SafetyReason
-		}
-		if blocked == "" && ((s.tab == "Capture" && !target.CaptureEligible) || (s.tab == "Restore" && !target.RestoreEligible)) {
-			blocked = "not eligible on this machine"
+			blocked = !target.RestoreEligible
 		}
 		marker := "  "
 		if row.directory {
@@ -409,18 +430,34 @@ func (s *Config) policyView() string {
 		if row.overrides > 0 {
 			label += fmt.Sprintf("  (%d descendant override%s)", row.overrides, map[bool]string{true: "", false: "s"}[row.overrides == 1])
 		}
-		line := label + "\n" + strings.Repeat("  ", row.depth+2) + components.RenderPolicyStatus(s.tab, setting, blocked)
-		if i == s.policySelected {
-			line = components.Icons.Selected + line
+		if row.directory && !selected {
+			label = s.styles.Accent(label)
 		}
-		policyRows = append(policyRows, line)
+		cells := []string{label, styledDecision(s.styles, policyDecision(s.tab, setting.Enabled, blocked), selected)}
+		if len(columns) == 3 {
+			cells = append(cells, styledDecision(s.styles, policySourceLabel(setting.Source, blocked), selected))
+		}
+		policyRows = append(policyRows, components.Row{Cells: cells, Selected: selected, Focused: true})
 	}
 	if len(policyRows) == 0 {
 		lines = append(lines, "No Config paths available for policy.")
 		return strings.Join(lines, "\n")
 	}
-	lines = append(lines, policyRows...)
+	height := s.listHeight()
+	if s.height == 0 {
+		height = len(rows) + 1
+	}
+	s.table.Ensure(s.policySelected, len(rows), max(1, height-1))
+	lines = append(lines, s.table.Render(columns, policyRows, s.widthOrDefault(), height, s.styles))
 	return strings.Join(lines, "\n")
+}
+
+func configPolicyColumns(tab string, width int) []components.Column {
+	decision := strings.ToUpper(tab)
+	if width > 0 && width < 90 {
+		return []components.Column{{Title: "PATH", Width: 52, MinWidth: 18}, {Title: decision, MinWidth: 8}}
+	}
+	return []components.Column{{Title: "PATH", Width: 64, MinWidth: 18}, {Title: decision, Width: 14, MinWidth: 8}, {Title: "SOURCE", MinWidth: 8}}
 }
 
 type configPolicyRow struct {
@@ -542,7 +579,7 @@ func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 func (s *Config) policyScopeLabel() string {
-	return policyScopeLabel(s.policyScope)
+	return policyScopeLabel(s.policyScope, activeMachineName(s.session))
 }
 func (s *Config) targetPolicy(path string) (workflow.TargetInspection, policy.Effective) {
 	for _, target := range s.targets {
@@ -646,6 +683,12 @@ func (s *Config) widthOrDefault() int {
 		return 120
 	}
 	return s.width
+}
+func (s *Config) presentationWidth() int {
+	if s.terminalWidth > 0 {
+		return s.terminalWidth
+	}
+	return s.widthOrDefault()
 }
 func (s *Config) confirmModal() tea.Cmd {
 	prompt := fmt.Sprintf("Set %s policy for %s?", s.confirm, components.DisplayText(s.selectedCandidate().Path))
@@ -782,20 +825,9 @@ func (s *Config) DetailView() string {
 			return "Config policy\nNo target selected."
 		}
 		row := rows[min(s.policySelected, len(rows)-1)]
-		effective := s.effective[row.target.Key].Capture
-		blocked := ""
-		if s.tab == "Restore" {
-			effective = s.effective[row.target.Key].Restore
-			if !row.target.RestoreEligible {
-				blocked = row.target.SafetyReason
-			}
-		} else if !row.target.CaptureEligible {
-			blocked = row.target.SafetyReason
-		}
-		if blocked == "" && ((s.tab == "Capture" && !row.target.CaptureEligible) || (s.tab == "Restore" && !row.target.RestoreEligible)) {
-			blocked = "not eligible on this machine"
-		}
-		return fmt.Sprintf("Config policy: %s\nDesired: %s\nCurrent: %s\nEffective: %s\nSource: %s\nSource machine: %s\nSource category: %s\nSource target: %s\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t\nDescendant overrides: %d", components.DisplayText(row.target.Key), row.target.Desired, row.target.Current, components.RenderPolicyStatus(s.tab, effective, blocked), effective.Source.Kind, components.DisplayText(effective.Source.Machine), components.DisplayText(effective.Source.Category), components.DisplayText(effective.Source.Target), row.target.Capabilities.SupportsCapture, row.target.Capabilities.SupportsRestore, row.target.Capabilities.SupportsDesiredAbsence, row.target.Capabilities.SupportsExactRemoval, row.target.Capabilities.Hierarchical, row.overrides)
+		lines := policyDetailLines("Config policy: "+components.DisplayText(row.target.Key), row.target.Key, row.target, s.effective[row.target.Key])
+		lines = append(lines, fmt.Sprintf("Descendant overrides: %d", row.overrides))
+		return strings.Join(lines, "\n")
 	}
 	candidate := s.selectedCandidate()
 	if candidate.Path == "" {

@@ -53,17 +53,26 @@ func TestConfigPolicyTabsKeepBlockedRestoreDistinctAt80Columns(t *testing.T) {
 		width:      80,
 		tab:        "Restore",
 		candidates: []config.Candidate{{Path: ".config/example", Classification: config.ConfigAdded}},
-		targets:    []workflow.TargetInspection{{Key: ".config/example", RestoreEligible: false, SafetyReason: "owned by a stronger provider"}},
-		effective:  map[string]policy.Effective{".config/example": {Restore: policy.EffectiveSetting{Enabled: false, Explicit: true}}},
+		targets:    []workflow.TargetInspection{{Key: ".config/example", CaptureEligible: true, RestoreEligible: false, SafetyReason: "owned by a stronger provider"}},
+		effective: map[string]policy.Effective{".config/example": {
+			Capture: policy.EffectiveSetting{Enabled: true, Source: policy.Source{Kind: policy.SourceDefault}},
+			Restore: policy.EffectiveSetting{Enabled: false, Explicit: true, Source: policy.Source{Kind: policy.SourceProfileTarget}},
+		}},
 	}
 	view := screen.View()
-	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults", "Blocked: owned by a stronger provider"} {
+	for _, want := range []string{"State", "Capture", "Restore", "Profile defaults", "PATH", "RESTORE", "Blocked"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("policy view missing %q:\n%s", want, view)
 		}
 	}
 	if strings.Contains(view, "Skip (explicit)") {
 		t.Fatalf("blocked Config target was rendered as an intentional Skip:\n%s", view)
+	}
+	if strings.Contains(view, "owned by a stronger provider") {
+		t.Fatalf("Config main table included verbose safety reason:\n%s", view)
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "Capture policy: Include (inherited)") || !strings.Contains(detail, "Restore policy: Blocked: owned by a stronger provider") || !strings.Contains(detail, "Restore source: profile-target") {
+		t.Fatalf("Config Details lost complete policy context:\n%s", detail)
 	}
 }
 
@@ -80,6 +89,9 @@ func TestConfigPolicyTreeDefaultsCollapsedAndShowsDescendantOverrides(t *testing
 		},
 	}
 	view := screen.View()
+	if strings.Contains(view, "toggle policy scope") || strings.Contains(view, "change policy") {
+		t.Fatalf("Config policy key hints duplicate the footer above the table:\n%s", view)
+	}
 	if !strings.Contains(view, ".config/nvim") || !strings.Contains(view, "1 descendant override") || strings.Contains(view, "init.lua") {
 		t.Fatalf("collapsed Config policy tree is wrong:\n%s", view)
 	}
@@ -87,6 +99,31 @@ func TestConfigPolicyTreeDefaultsCollapsedAndShowsDescendantOverrides(t *testing
 	view = screen.View()
 	if !strings.Contains(view, "init.lua") || !strings.Contains(view, "lua") {
 		t.Fatalf("expanded Config policy tree omitted children:\n%s", view)
+	}
+}
+
+func TestConfigPolicyTablesRemainHierarchicalAndResponsive(t *testing.T) {
+	for _, width := range []int{140, 100, 80} {
+		screen := &Config{
+			width: width, tab: "Capture",
+			targets: []workflow.TargetInspection{{Key: ".config/nvim/init.lua", Parent: ".config/nvim", Ancestors: []string{".config/nvim", ".config"}, Desired: workflow.TargetPresent, Current: workflow.TargetPresent, CaptureEligible: true}},
+			effective: map[string]policy.Effective{
+				".config/nvim":          {Capture: policy.EffectiveSetting{Enabled: false, Source: policy.Source{Kind: policy.SourceProfileTarget}}},
+				".config/nvim/init.lua": {Capture: policy.EffectiveSetting{Enabled: true, Source: policy.Source{Kind: policy.SourceMachineTarget}}},
+			},
+		}
+		view := screen.View()
+		for _, want := range []string{"PATH", "CAPTURE", ".config/nvim", "Preserve"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%d-column policy view missing %q:\n%s", width, want, view)
+			}
+		}
+		if width >= 90 && !strings.Contains(view, "SOURCE") {
+			t.Fatalf("%d-column policy view missing source column:\n%s", width, view)
+		}
+		if strings.Contains(view, "\n  Preserve") {
+			t.Fatalf("%d-column decision fell back to multiline prose:\n%s", width, view)
+		}
 	}
 }
 
@@ -117,7 +154,7 @@ func TestConfigPresentationForEveryClassification(t *testing.T) {
 func TestConfigScreenRendersBroadGroupsWithUserFacingStateAndPolicy(t *testing.T) {
 	screen := &Config{width: 120, candidates: []config.Candidate{{Path: ".config/gh/hosts.yml", Classification: config.ConfigSensitive, Reason: "sensitive"}, {Path: ".config/nvim/init.lua", Classification: config.ConfigModifiedBaseline, Reason: "modified-baseline"}}}
 	view := screen.View()
-	for _, want := range []string{"Path", "State", "Policy", "Changes", "Not managed by Config", ".config/nvim/init.lua", "Auto"} {
+	for _, want := range []string{"PATH", "STATE", "POLICY", "Changes", "Not managed by Config", ".config/nvim/init.lua", "Auto"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -130,7 +167,7 @@ func TestConfigScreenRendersBroadGroupsWithUserFacingStateAndPolicy(t *testing.T
 func TestConfigScreenGroupsAndDefaultCollapse(t *testing.T) {
 	screen := &Config{width: 80, candidates: []config.Candidate{{Path: ".config/review", Classification: config.ConfigAmbiguousBaseline}, {Path: ".config/a", Classification: config.ConfigAdded, Reason: "added"}, {Path: ".config/b", Classification: config.ConfigAdded, Reason: "added"}, {Path: ".config/unchanged", Classification: config.ConfigUnchangedBaseline}, {Path: ".config/c", Classification: config.ConfigSensitive, Reason: "sensitive"}}}
 	view := screen.View()
-	for _, want := range []string{"Needs review", "Changes", "No action needed", "Not managed by Config"} {
+	for _, want := range []string{"Needs review", "Changes", "▶ No action needed", "▶ Not managed by Config"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing group %q:\n%s", want, view)
 		}
