@@ -54,29 +54,10 @@ func RenderSidebar(sections []NavSection, selectedID string, width int, styles S
 	return rendered
 }
 
-func Sidebar(items []NavItem, selected int, width int) string {
-	return SidebarWithStyles(items, selected, width, Styles{})
-}
-
-func SidebarWithStyles(items []NavItem, selected int, width int, styles Styles, focused ...bool) string {
-	isFocused := true
-	if len(focused) > 0 {
-		isFocused = focused[0]
-	}
-	lines := make([]string, 0, len(items))
-	for index, item := range items {
-		marker := " "
-		if index == selected && !styles.Palette.ColorEnabled {
-			marker = Icons.Selected
-		}
-		line := pad(marker+" "+item.Label, width)
-		if index == selected && styles.Palette.ColorEnabled {
-			line = styles.Selection(line, isFocused)
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
+// PadLine right-pads value to width (ANSI-width aware) so a caller can wrap
+// it in Styles.Selection and get a highlight bar spanning the full row
+// instead of stopping at the visible text.
+func PadLine(value string, width int) string { return pad(value, width) }
 
 func pad(value string, width int) string {
 	if width <= 0 {

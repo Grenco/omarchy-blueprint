@@ -23,15 +23,16 @@ func (m model) View() tea.View {
 		return view
 	}
 	header := m.header()
-	footer := m.footer()
+	footer := m.styleFooter(m.footer())
 	if m.notification != "" {
-		footer += "  " + components.DisplayText(m.notification)
+		footer += "   " + m.color(components.DisplayText(m.notification), m.palette.Success)
 	}
 	content := m.contentView(layout)
 	if m.modal != modalNone {
 		content = m.modalView(content, layout)
 	}
-	view := tea.NewView(strings.Join([]string{boundedLine(header, m.width), strings.Repeat("─", max(1, m.width)), content, strings.Repeat("─", max(1, m.width)), boundedLine(footer, m.width)}, "\n"))
+	rule := m.muted(strings.Repeat("─", max(1, m.width)))
+	view := tea.NewView(strings.Join([]string{boundedLine(header, m.width), rule, content, rule, boundedLine(footer, m.width)}, "\n"))
 	view.AltScreen = true
 	return view
 }
@@ -41,6 +42,20 @@ func (m model) footer() string {
 		return m.modalFooter()
 	}
 	return components.Statusbar(statusActions(m.activeScreen(), m.bindings()))
+}
+
+// styleFooter highlights the key in each "key label" hint so hints scan as
+// keys first. Footers are built as hints joined by three spaces.
+func (m model) styleFooter(footer string) string {
+	hints := strings.Split(footer, "   ")
+	for i, hint := range hints {
+		key, label, ok := strings.Cut(hint, " ")
+		if !ok {
+			continue
+		}
+		hints[i] = m.accent(key) + " " + label
+	}
+	return strings.Join(hints, m.muted(" · "))
 }
 
 func (m model) header() string {
@@ -55,6 +70,9 @@ func (m model) header() string {
 	if overview, ok := m.screens[ScreenOverview].(headerStateScreen); ok {
 		state = overview.HeaderState()
 	}
+	if m.session == nil {
+		profileName, state = "none", "~ no profile loaded"
+	}
 	if strings.HasPrefix(state, "!") {
 		state = m.warning(state)
 	} else if strings.HasPrefix(state, "x") {
@@ -62,8 +80,13 @@ func (m model) header() string {
 	} else if strings.HasPrefix(state, "~") {
 		state = m.muted(state)
 	}
-	left := m.accent("Blueprint") + "  profile: " + profileName + "  machine: " + machine + "  " + state
-	return alignHeader(left, components.DisplayText(m.profileDir), m.width)
+	sep := m.muted("  │  ")
+	brand := "Blueprint"
+	if m.palette.ColorEnabled && m.palette.Accent != "" {
+		brand = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(m.palette.Accent)).Render(brand)
+	}
+	left := brand + sep + m.muted("profile ") + profileName + sep + m.muted("machine ") + machine + sep + state
+	return alignHeader(left, m.muted(components.DisplayText(m.profileDir)), m.width)
 }
 
 func alignHeader(left, right string, width int) string {
@@ -103,15 +126,15 @@ func (m model) contentView(layout layout) string {
 	sidebar := components.Panel("Navigation", m.focus == focusSidebar, layout.sidebarWidth, layout.contentHeight, m.sidebarScroll.render(sidebarRender.Lines, layout.sidebarWidth-2, layout.contentHeight-2), styles)
 	workspace = components.Panel(screenLabel(m.screenID()), m.focus == focusWorkspace, layout.workspaceWidth, layout.contentHeight, workspace, styles)
 	if layout.mode == LayoutTwoPane {
-		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace)
+		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace)
 	}
 	_, ok := m.activeScreen().(DetailView)
 	if !ok {
-		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace)
+		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace)
 	}
 	innerWidth, innerHeight := components.InteriorSize(layout.detailsWidth, layout.contentHeight)
 	details := components.Panel("Details", m.focus == focusDetails, layout.detailsWidth, layout.contentHeight, m.detailScroll.render(m.detailLines(layout), innerWidth, innerHeight), styles)
-	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "│", workspace, "│", details)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", workspace, " ", details)
 }
 
 func (m model) workspaceContent(panelWidth int) string {
@@ -162,7 +185,26 @@ func (m model) detailLines(layout layout) []string {
 		return nil
 	}
 	width, _ := components.InteriorSize(layout.detailsWidth, layout.contentHeight)
-	return components.WrapText(detailed.DetailView(), width)
+	return m.styleDetailLines(components.WrapText(detailed.DetailView(), width))
+}
+
+// styleDetailLines gives every screen's Details pane the same hierarchy
+// without each DetailView carrying styling: the first line is the heading and
+// "Label: value" lines get a muted label.
+func (m model) styleDetailLines(lines []string) []string {
+	if !m.palette.ColorEnabled {
+		return lines
+	}
+	for i, line := range lines {
+		if i == 0 {
+			lines[i] = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(m.palette.Accent)).Render(line)
+			continue
+		}
+		if label, value, ok := strings.Cut(line, ": "); ok && label != "" && len(label) <= 32 && !strings.ContainsAny(label, ".,;") {
+			lines[i] = components.NewStyles(m.palette).SubtleAccent(label+":") + " " + value
+		}
+	}
+	return lines
 }
 
 func boundedBox(content string, width, height int) string {

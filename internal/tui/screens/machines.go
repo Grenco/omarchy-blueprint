@@ -105,6 +105,7 @@ func (s *Machines) SetSize(width, height int) {
 }
 func (s *Machines) Init() tea.Cmd         { return nil }
 func (s *Machines) TransientActive() bool { return s.browser != nil || s.confirm != "" || s.mode != "" }
+func (s *Machines) BrowserActive() bool   { return s.browser != nil }
 func (s *Machines) HasSelectedMachine() bool {
 	return s.region == machineRegionMachines && s.selectedMachine().Name != ""
 }
@@ -322,40 +323,48 @@ func (s *Machines) View() string {
 	}
 	machineRows := make([]components.Row, 0, len(s.machines()))
 	for i, item := range s.machines() {
+		selected := i == s.machineList.Selected && s.region == machineRegionMachines
 		active := "No"
 		if item.Name == s.session.Machine().Name {
 			active = "Yes"
 		}
 		options := item.EffectiveRestoreDefaults()
 		defaults := restoreDefaultsLabel(options)
-		if options.Conflicts == policy.ConflictForce || options.Convergence == policy.ConvergenceExact {
-			defaults = s.styles.Warning(defaults)
-		} else {
-			defaults = s.styles.Muted(defaults)
+		if !selected {
+			if options.Conflicts == policy.ConflictForce || options.Convergence == policy.ConvergenceExact {
+				defaults = s.styles.Warning(defaults)
+			} else {
+				defaults = s.styles.Muted(defaults)
+			}
 		}
 		overrides := len(item.Policy.Capture) + len(item.Policy.Restore)
 		overrideLabel := fmt.Sprint(overrides)
-		if overrides > 0 {
-			overrideLabel = s.styles.Accent(overrideLabel)
-		} else {
-			overrideLabel = s.styles.Muted(overrideLabel)
+		if !selected {
+			if overrides > 0 {
+				overrideLabel = s.styles.Accent(overrideLabel)
+			} else {
+				overrideLabel = s.styles.Muted(overrideLabel)
+			}
 		}
-		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active), defaults, overrideLabel}, Selected: i == s.machineList.Selected && s.region == machineRegionMachines, Focused: s.region == machineRegionMachines})
+		machineRows = append(machineRows, components.Row{Cells: []string{components.DisplayText(item.Name), styledDecision(s.styles, active, selected), defaults, overrideLabel}, Selected: selected, Focused: s.region == machineRegionMachines})
 	}
 	if len(machineRows) == 0 {
 		machineRows = append(machineRows, components.Row{Cells: []string{"No machine overlays."}})
 	}
 	rows := []components.Row{}
 	for i, row := range s.mappingRows() {
+		selected := i == s.resource && s.region == machineRegionResources
 		source := components.DisplayText(row.source)
-		if row.source == "dormant" {
-			source = s.styles.Warning(source)
-		} else if row.source == "override" {
-			source = s.styles.Accent(source)
-		} else {
-			source = s.styles.Muted(source)
+		if !selected {
+			if row.source == "dormant" {
+				source = s.styles.Warning(source)
+			} else if row.source == "override" {
+				source = s.styles.Accent(source)
+			} else {
+				source = s.styles.Muted(source)
+			}
 		}
-		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: i == s.resource && s.region == machineRegionResources, Focused: s.region == machineRegionResources})
+		rows = append(rows, components.Row{Cells: []string{components.DisplayText(row.id), components.DisplayText(row.portable), components.DisplayText(row.effective), source}, Selected: selected, Focused: s.region == machineRegionResources})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"No resource mappings."}})
@@ -601,7 +610,12 @@ func (s *Machines) selectedMapping() mappingRow {
 	}
 	return mappingRow{}
 }
-func (s *Machines) machines() []profile.Machine { return s.session.Profile().Machines.Items }
+func (s *Machines) machines() []profile.Machine {
+	if s.session == nil {
+		return nil
+	}
+	return s.session.Profile().Machines.Items
+}
 func (s *Machines) selectedMachine() profile.Machine {
 	items := s.machines()
 	if s.selected >= 0 && s.selected < len(items) {
@@ -646,7 +660,7 @@ func (s *Machines) mappingRenderHeight() int {
 	return max(2, height-2-s.machineRenderHeight()-s.policyBlockHeight())
 }
 func (s *Machines) confirmModal() tea.Cmd {
-	prompt := "Rename machine to " + components.DisplayText(s.name) + "?"
+	prompt := "Rename \"" + components.DisplayText(s.selectedMachine().Name) + "\" to \"" + components.DisplayText(s.name) + "\"?"
 	if s.confirm == "remove" {
 		prompt = "Remove machine \"" + components.DisplayText(s.selectedMachine().Name) + "\"?\n\nThis removes the machine overlay and its path mappings.\nLive Resource files will not be moved or deleted."
 	}

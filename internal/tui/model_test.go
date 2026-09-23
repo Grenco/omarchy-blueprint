@@ -109,14 +109,52 @@ func TestWelcomeFooterPreservesChooserModes(t *testing.T) {
 		t.Fatalf("chooser footer = %q", got)
 	}
 
-	m.welcomeStep = "open-path"
+	m.welcomeStep = "create-path"
 	if got := m.welcomeFooter(); got != "enter continue   esc back" {
-		t.Fatalf("path footer = %q", got)
+		t.Fatalf("create-path footer = %q", got)
+	}
+
+	m.welcomeStep = "open-path"
+	if got := m.welcomeFooter(); got != "enter open   esc back" {
+		t.Fatalf("open-path footer = %q", got)
+	}
+
+	m.welcomeStep = "create-name"
+	if got := m.welcomeFooter(); got != "enter create   esc back" {
+		t.Fatalf("create-name footer = %q", got)
 	}
 
 	m.welcomeChooser = false
 	if got := m.welcomeFooter(); got != "enter create   esc quit" {
 		t.Fatalf("create footer = %q", got)
+	}
+}
+
+func TestWelcomeEscStepsBackOneScreenAtATime(t *testing.T) {
+	m := newModel(ThemeLoader{NoColor: true})
+	m.welcomeChooser = true
+	m.welcomeStep = "create-path"
+	m.welcomePath = components.NewTextInputModal("/tmp/example-profile", "Profile path")
+
+	updated, _ := m.updateWelcome(tea.KeyPressMsg{Code: tea.KeyEnter}, "enter", true)
+	m = updated.(model)
+	if m.welcomeStep != "create-name" {
+		t.Fatalf("welcomeStep after path entry = %q, want create-name", m.welcomeStep)
+	}
+
+	updated, _ = m.updateWelcome(tea.KeyPressMsg{Code: tea.KeyEsc}, "esc", true)
+	m = updated.(model)
+	if m.welcomeStep != "create-path" {
+		t.Fatalf("esc from create-name = %q, want create-path (one step back)", m.welcomeStep)
+	}
+	if m.welcomePath.Value() != "/tmp/example-profile" {
+		t.Fatalf("esc from create-name lost typed path: %q", m.welcomePath.Value())
+	}
+
+	updated, _ = m.updateWelcome(tea.KeyPressMsg{Code: tea.KeyEsc}, "esc", true)
+	m = updated.(model)
+	if m.welcomeStep != "choose" {
+		t.Fatalf("esc from create-path = %q, want choose", m.welcomeStep)
 	}
 }
 
@@ -834,7 +872,7 @@ func (s *resultScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 func TestNoColorViewsKeepSemanticMarkers(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "✓ overview clean") {
+	if strings.Contains(m.View().Content, "\x1b[") || !strings.Contains(m.View().Content, "~ no profile loaded") {
 		t.Fatalf("overview is not understandable without colour: %q", m.View().Content)
 	}
 }

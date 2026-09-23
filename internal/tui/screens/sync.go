@@ -276,7 +276,7 @@ func (s *Sync) View() string {
 	if tableWidth == 0 {
 		tableWidth = 80
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "State", Width: 6, MinWidth: 6}, {Title: "Scope", Width: 11, MinWidth: 9}, {Title: "Path", MinWidth: 12}}, rows, tableWidth, s.tableHeight()+1, s.styles))
+	lines = append(lines, s.table.Render([]components.Column{{Title: "STATE", Width: 6, MinWidth: 6}, {Title: "SCOPE", Width: 11, MinWidth: 9}, {Title: "PATH", MinWidth: 12}}, rows, tableWidth, s.tableHeight()+1, s.styles))
 	if s.complex() {
 		lines = append(lines, "Complex Git state. Use the available handoff actions.")
 	}
@@ -531,6 +531,9 @@ func (s *Sync) DetailView() string {
 	}
 	change := s.selectedChange()
 	if change.Path == "" {
+		if !s.status.Repository {
+			return "Profile sync\nNo repository yet. Press i to initialize one."
+		}
 		return "Profile sync\nSelect a change to inspect its Git state."
 	}
 	scope := "unmanaged (Blueprint will not commit it)"

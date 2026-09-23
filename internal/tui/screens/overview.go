@@ -113,16 +113,25 @@ func (s *Overview) View() string {
 			Guidance:    "Next: open Capture when you're ready to save something.",
 		})
 	}
+	width := s.width
+	if width == 0 {
+		width = 120
+	}
 	lines := make([]string, 0, len(s.rows()))
 	for i, row := range s.rows() {
+		selected := i == s.list.Selected
 		switch {
 		case row.isSection():
 			marker := components.Icons.Expanded
 			if s.collapsed[row.section] {
 				marker = components.Icons.Collapsed
 			}
-			line := s.styles.Accent(marker + " " + row.section)
-			if i == s.list.Selected {
+			line := marker + " " + row.section
+			if !selected {
+				line = s.styles.Accent(line)
+			}
+			line = components.PadLine(line, width)
+			if selected {
 				if !s.styles.Palette.ColorEnabled {
 					line = components.Icons.Selected + line
 				}
@@ -130,8 +139,12 @@ func (s *Overview) View() string {
 			}
 			lines = append(lines, line)
 		case row.isItem():
-			line := "  " + decisionSummary(row.item)
-			if i == s.list.Selected {
+			glyph := attentionGlyph(row.item.Severity)
+			if !selected {
+				glyph = attentionStyle(s.styles, row.item.Severity)(glyph)
+			}
+			line := components.PadLine("  "+glyph+" "+decisionSummary(row.item), width)
+			if selected {
 				if !s.styles.Palette.ColorEnabled {
 					line = components.Icons.Selected + line[1:]
 				}
@@ -139,8 +152,12 @@ func (s *Overview) View() string {
 			}
 			lines = append(lines, line)
 		default:
-			line := "  " + components.Icons.Ready + " " + row.healthy
-			if i == s.list.Selected {
+			glyph := components.Icons.Ready
+			if !selected {
+				glyph = s.styles.Success(glyph)
+			}
+			line := components.PadLine("  "+glyph+" "+row.healthy, width)
+			if selected {
 				line = s.styles.Selection(line, true)
 			}
 			lines = append(lines, line)
@@ -148,10 +165,6 @@ func (s *Overview) View() string {
 	}
 	if len(lines) == 0 {
 		lines = append(lines, "✓ Nothing needs review.")
-	}
-	width := s.width
-	if width == 0 {
-		width = 120
 	}
 	return s.list.View(lines, width, s.listHeight())
 }
@@ -171,6 +184,22 @@ func (s *Overview) DetailView() string {
 		lines = append(lines, "", "Enter opens: "+components.DisplayText(row.item.Target))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// attentionGlyph and attentionStyle give each attention item a scannable
+// icon and colour by urgency: Decision/Warning need a choice, Drift/Info are
+// informational only.
+func attentionGlyph(severity workflow.AttentionSeverity) string {
+	if severity == workflow.AttentionDecision || severity == workflow.AttentionWarning {
+		return components.Icons.Attention
+	}
+	return components.Icons.Changed
+}
+func attentionStyle(styles components.Styles, severity workflow.AttentionSeverity) func(string) string {
+	if severity == workflow.AttentionDecision || severity == workflow.AttentionWarning {
+		return styles.Warning
+	}
+	return styles.Accent
 }
 func decisionSummary(item workflow.AttentionItem) string {
 	if item.Provider == "" {
@@ -193,6 +222,7 @@ func (s *Overview) selectedRow() overviewRow {
 }
 func (s *Overview) selectedItem() workflow.AttentionItem { return s.selectedRow().item }
 func (s *Overview) CanOpen() bool                        { return s.selectedItem().Target != "" }
+func (s *Overview) SelectedIsSection() bool              { return s.selectedRow().isSection() }
 func (s *Overview) groupAnchors() []int {
 	anchors := []int{}
 	for i, row := range s.rows() {

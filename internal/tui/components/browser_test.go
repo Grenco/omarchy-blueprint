@@ -261,7 +261,7 @@ func TestBrowserViewUsesIconsWithoutTypeSuffixes(t *testing.T) {
 	browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
 	deliverBrowser(t, &browser, browser.Init())
 	view := browser.View()
-	for _, want := range []string{"Parent: ", "Current: ", Icons.Folder + " directory", Icons.File + " file"} {
+	for _, want := range []string{"Current: ", Icons.Folder + " directory", Icons.File + " file"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}

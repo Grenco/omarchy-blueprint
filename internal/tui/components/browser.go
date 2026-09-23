@@ -251,7 +251,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			b.path, b.filter = entry.Path, ""
 			return b.readDir()
 		}
-	case "g":
+	case "b":
 		b.bookmarksOpen = !b.bookmarksOpen
 		b.bookmark = 0
 	case "/":
@@ -267,7 +267,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (b Browser) View() string {
-	lines := []string{"Parent: " + DisplayText(filepath.Dir(b.path)), "Current: " + DisplayText(b.path)}
+	lines := []string{"Current: " + DisplayText(b.path)}
 	if b.readErr != nil {
 		lines = append(lines, "Unable to read directory: "+DisplayText(b.readErr.Error()))
 	}

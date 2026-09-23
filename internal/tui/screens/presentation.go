@@ -82,7 +82,14 @@ func policySourceLabel(source policy.Source, blocked bool) string {
 	return policySource(source)
 }
 
-func styledDecision(styles components.Styles, value string) string {
+// styledDecision colours a status/decision cell by its meaning. Selected rows
+// own their appearance entirely through Styles.Selection, so styling is
+// skipped there: nesting a foreground-only style inside a line that is later
+// wrapped by Selection's background does not survive across the reset codes.
+func styledDecision(styles components.Styles, value string, selected bool) string {
+	if selected {
+		return value
+	}
 	switch value {
 	case "Include", "Apply", "Present", "In sync":
 		return styles.Added(value)
@@ -136,13 +143,17 @@ func policyColumns(tab string, width int) []components.Column {
 	}
 }
 
-func groupCells(label string, columnCount int, expanded bool, styles components.Styles) []string {
+func groupCells(label string, columnCount int, expanded bool, styles components.Styles, selected bool) []string {
 	icon := components.Icons.Collapsed
 	if expanded {
 		icon = components.Icons.Expanded
 	}
+	text := icon + " " + components.DisplayText(label)
+	if !selected {
+		text = styles.Accent(text)
+	}
 	cells := make([]string, max(1, columnCount))
-	cells[0] = styles.Accent(icon + " " + components.DisplayText(label))
+	cells[0] = text
 	return cells
 }
 

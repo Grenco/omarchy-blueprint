@@ -18,7 +18,7 @@ var Icons = IconSet{
 	File:      "󰈔",
 	Symlink:   "󰌹",
 	Git:       "󰊢",
-	Blocked:   "!",
+	Blocked:   "◆",
 	Expanded:  "▼",
 	Collapsed: "▶",
 }

@@ -421,7 +421,9 @@ func (m model) paletteActions() []Action {
 }
 
 func (m model) bindings() []Binding {
-	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global"}, {Label: "Commands", Key: ":", Context: "Global"}}
+	// The status bar always leads with "? help   : commands", so the global
+	// bindings stay in help and the palette but not the footer.
+	bindings := []Binding{{ActionID: "help", Label: "Show help", Key: "?", Context: "Global", HideFromFooter: true}, {Label: "Commands", Key: ":", Context: "Global", HideFromFooter: true}}
 	if m.focus == focusSidebar {
 		return append(bindings,
 			Binding{Label: "Previous sidebar section", Key: "[", Context: "Sidebar", HideFromFooter: true},

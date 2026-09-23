@@ -9,6 +9,9 @@ type ModalRequest struct {
 // TextInputSubmitted returns a root-owned modal value to its requesting screen.
 type TextInputSubmitted struct{ Value string }
 
+// Confirm returns a confirmation dialog's body text. The enter/esc hint is
+// owned by the modal footer (see modals.go's modalFooter), so it is not
+// repeated here.
 func Confirm(prompt string) string {
-	return prompt + " [Enter confirm, Esc cancel]"
+	return prompt
 }

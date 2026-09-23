@@ -122,6 +122,7 @@ func (s *Resources) ShowPolicy(machine string) {
 func (s *Resources) TransientActive() bool {
 	return s.browser != nil || s.phase != resourceBrowse || s.confirm != ""
 }
+func (s *Resources) BrowserActive() bool { return s.browser != nil }
 func (s *Resources) Actions() []ResourceAction {
 	if s.phase == resourceUntracked {
 		return []ResourceAction{
@@ -137,7 +138,7 @@ func (s *Resources) Actions() []ResourceAction {
 		return nil
 	}
 	actions := []ResourceAction{
-		{ID: "tab", Label: "Switch policy tab", Shortcut: "tab", Enabled: true},
+		{ID: "tab", Label: "Switch tab", Shortcut: "tab", Enabled: true},
 		{ID: "discover", Label: "Discover resource", Shortcut: "d", Enabled: s.tab == "State"},
 	}
 	if s.tab == "Capture" || s.tab == "Restore" {
@@ -285,9 +286,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 		}
 		return cmd
 	}
-	if s.phase == resourceBrowse && !s.discover && s.list.Vim(key.String(), len(s.items), s.listHeight()) {
+	if s.phase == resourceBrowse && !s.discover && s.list.Vim(key.String(), s.navigableCount(), s.listHeight()) {
 		s.selected = s.list.Selected
-		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		s.table.Ensure(s.selected, s.navigableCount(), s.listHeight()-1)
 		return nil
 	}
 	if !s.discover && (s.tab == "Capture" || s.tab == "Restore") {
@@ -356,23 +357,19 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 	case "shift+tab":
 		s.tab = previousProviderTab(s.tab)
 	case "d":
-		s.discover, s.err = true, nil
-		if s.session == nil {
-			return nil
+		return s.openDiscover()
+	case "enter":
+		if s.tab == "State" && s.selected == len(s.items) {
+			return s.openDiscover()
 		}
-		browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
-		browser.SetSize(s.width, s.height)
-		browser.SetStyles(s.styles)
-		s.browser = &browser
-		return s.browser.Init()
 	case "j", "down":
-		s.list.Move(1, len(s.items), s.listHeight())
+		s.list.Move(1, s.navigableCount(), s.listHeight())
 		s.selected = s.list.Selected
-		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		s.table.Ensure(s.selected, s.navigableCount(), s.listHeight()-1)
 	case "k", "up":
-		s.list.Move(-1, len(s.items), s.listHeight())
+		s.list.Move(-1, s.navigableCount(), s.listHeight())
 		s.selected = s.list.Selected
-		s.table.Ensure(s.selected, len(s.items), s.listHeight()-1)
+		s.table.Ensure(s.selected, s.navigableCount(), s.listHeight()-1)
 	case "u", "x":
 		if !s.discover && s.selectedResource().ID != "" {
 			s.confirmFrom, s.confirm = s.phase, "untrack"
@@ -481,18 +478,25 @@ func (s *Resources) View() string {
 	}
 	columns := stateColumns(s.presentationWidth())
 	columns[0].Title = "RESOURCE"
-	rows := make([]components.Row, 0, len(targets))
+	rows := make([]components.Row, 0, len(targets)+1)
 	for i, target := range targets {
+		selected := i == s.selected
 		label := target.Label
 		if label == "" {
 			label = strings.TrimPrefix(target.Key, "resource:")
 		}
-		cells := []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired))), styledDecision(s.styles, targetStatus(target))}
+		cells := []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired)), selected), styledDecision(s.styles, targetStatus(target), selected)}
 		if len(columns) == 4 {
-			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired))), styledDecision(s.styles, currentStateValue(target.Current)), styledDecision(s.styles, targetStatus(target))}
+			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateValue(string(target.Desired)), selected), styledDecision(s.styles, currentStateValue(target.Current), selected), styledDecision(s.styles, targetStatus(target), selected)}
 		}
-		rows = append(rows, components.Row{Cells: cells, Selected: i == s.selected, Focused: true})
+		rows = append(rows, components.Row{Cells: cells, Selected: selected, Focused: true})
 	}
+	addSelected := s.selected == len(targets)
+	addLabel := "+ Add resource"
+	if !addSelected {
+		addLabel = s.styles.Accent(addLabel)
+	}
+	rows = append(rows, components.Row{Cells: []string{addLabel}, Selected: addSelected, Focused: true})
 	lines = append(lines, s.table.Render(columns, rows, width, s.listHeight(), s.styles))
 	return strings.Join(lines, "\n")
 }
@@ -521,6 +525,9 @@ func (s *Resources) DetailView() string {
 		}
 		return strings.Join(lines, "\n")
 	}
+	if s.tab == "State" && s.selected == len(s.items) {
+		return "Add resource\nTrack a file, folder, or Git project outside Blueprint's normal categories.\n\nEnter opens the browser to choose a path."
+	}
 	return "Resources details"
 }
 func (s *Resources) policyView() string {
@@ -536,6 +543,7 @@ func (s *Resources) policyView() string {
 	columns[0].Title = "RESOURCE"
 	rows := make([]components.Row, 0, len(s.targets))
 	for i, target := range s.targets {
+		selected := i == s.selected
 		effective := s.policies[target.Key].Capture
 		blocked := !target.CaptureEligible
 		if s.tab == "Restore" {
@@ -550,16 +558,16 @@ func (s *Resources) policyView() string {
 		if s.tab == "Restore" {
 			state = target.Desired
 		}
-		decision := styledDecision(s.styles, policyDecision(s.tab, effective.Enabled, blocked))
+		decision := styledDecision(s.styles, policyDecision(s.tab, effective.Enabled, blocked), selected)
 		stateLabel := stateValue(string(state))
 		if s.tab == "Capture" {
 			stateLabel = currentStateValue(state)
 		}
-		cells := []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel)}
+		cells := []string{components.DisplayText(label), decision, styledDecision(s.styles, stateLabel, selected)}
 		if len(columns) == 4 {
-			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel), decision, styledDecision(s.styles, policySourceLabel(effective.Source, blocked))}
+			cells = []string{components.DisplayText(label), styledDecision(s.styles, stateLabel, selected), decision, styledDecision(s.styles, policySourceLabel(effective.Source, blocked), selected)}
 		}
-		rows = append(rows, components.Row{Cells: cells, Selected: i == s.selected, Focused: true})
+		rows = append(rows, components.Row{Cells: cells, Selected: selected, Focused: true})
 	}
 	height := s.listHeight()
 	if s.height == 0 {
@@ -629,6 +637,26 @@ func resourceDetail(path string, inspection workflow.PathInspection) string {
 		lines = append(lines, "Blocked: "+components.DisplayText(inspection.BlockedReason))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// navigableCount includes the trailing "+ Add resource" row on the State tab
+// so it can be reached by j/k like any other row, not only via the "d" key.
+func (s *Resources) navigableCount() int {
+	if s.tab == "State" {
+		return len(s.items) + 1
+	}
+	return len(s.items)
+}
+func (s *Resources) openDiscover() tea.Cmd {
+	s.discover, s.err = true, nil
+	if s.session == nil {
+		return nil
+	}
+	browser := components.NewBrowser(components.BrowseResource, s.browserConfig())
+	browser.SetSize(s.width, s.height)
+	browser.SetStyles(s.styles)
+	s.browser = &browser
+	return s.browser.Init()
 }
 func (s *Resources) selectedResource() profile.Resource {
 	if s.selected >= 0 && s.selected < len(s.items) {

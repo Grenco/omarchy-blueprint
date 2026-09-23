@@ -81,7 +81,7 @@ func (r ActionRegistry) Key(actionID string) string {
 
 func (b Binding) DisplayKeys() string {
 	if len(b.Keys) > 0 {
-		return strings.Join(b.Keys, " / ")
+		return strings.Join(b.Keys, "/")
 	}
 	return b.Key
 }
