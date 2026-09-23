@@ -251,11 +251,13 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 		s.name, _ = s.session.SuggestedMachineName()
 		return s.nameModal("Add machine")
 	case "u":
-		if s.region == machineRegionMachines {
+		switch s.region {
+		case machineRegionMachines:
 			return s.use()
-		}
-		if s.selectedMapping().override {
-			return s.unmapResource()
+		case machineRegionResources:
+			if s.selectedMapping().override {
+				return s.unmapResource()
+			}
 		}
 	case "c":
 		if s.region == machineRegionMachines {

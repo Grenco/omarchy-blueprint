@@ -202,12 +202,7 @@ func composeOverlay(base, overlay string, width, height int, color bool) string 
 		overlayWidth = max(overlayWidth, lipgloss.Width(line))
 	}
 	x, y := max(0, (width-overlayWidth)/2), max(0, (height-overlayHeight)/2)
-	dim := func(value string) string {
-		if !color || value == "" {
-			return value
-		}
-		return lipgloss.NewStyle().Faint(true).Render(value)
-	}
+	dim := func(value string) string { return dimText(value, color) }
 	for row := 0; row < height; row++ {
 		// Strip the base row's own styling before dimming it: wrapping an
 		// already-styled string in another style does not survive resets
