@@ -76,13 +76,12 @@ one captures application state on its own.
 
 ## Portable and machine-specific state
 
-Not everything belongs on every machine. Blueprint separates state it
-expects to work anywhere (a portable package, a theme, a shell
-customisation) from state that is tied to one computer, such as a
-hardware-specific driver package or a Resource placed at a different path on
-a particular machine. Portable state is what restore reproduces by default;
-machine-specific state is remembered without being forced onto machines it
-does not belong on.
+Not everything belongs on every machine. By default, what one machine
+captures becomes portable desired state that every machine restores. When a
+computer should differ, give it a machine overlay: its own Capture and Restore
+policy overrides, restore defaults, and Resource paths. A laptop can
+contribute an application to the profile while a desktop neither captures its
+absence nor restores it, without either machine changing the other.
 
 ## State, policy, and restore intent
 
@@ -90,13 +89,20 @@ These three ideas are related but distinct, and Blueprint keeps them
 separate rather than collapsing them into a single "managed" flag:
 
 - **State** is what Blueprint observed on this machine.
-- **Policy** is whether Blueprint should manage a given item or path at all.
-- **Restore intent** is what a selected restore plan would actually do.
+- **Policy** is set per item, for the portable profile or a single machine.
+  **Capture policy** decides whether Capture updates the profile from this
+  machine (Include) or keeps what the profile already has (Preserve).
+  **Restore policy** decides whether Restore applies an item here (Apply) or
+  leaves it alone (Skip). Config additionally keeps its own Auto, Included,
+  and Excluded management setting.
+- **Restore intent** is what a selected restore plan would actually do, given
+  Safe or Force conflict handling and Additive or Exact convergence.
 
-A path can differ from your profile (state), be included, excluded, or left
-to Blueprint's judgement (policy), and still result in no change, a
+An item can differ from your profile (state), be deliberately preserved or
+skipped on this machine (policy), and still result in no change, a
 conflict, or a safe update once a specific restore plan is calculated
-(restore intent).
+(restore intent). When policy deliberately leaves a difference alone,
+Overview shows it as an intentional difference rather than a warning.
 
 ## Profiles are readable and Git-friendly
 

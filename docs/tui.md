@@ -30,7 +30,11 @@ directory unless you explicitly select it. An explicitly supplied invalid
 A few navigation primitives stay the same across every screen:
 
 - `j` / `k` move through lists and navigation.
-- `Tab` moves focus where a screen has more than one focusable area.
+- `h` / `l` (or Left / Right) move between Navigation, the workspace, and
+  Details.
+- `Tab` switches a screen's State / Capture / Restore tabs, or moves between
+  a screen's regions, while the workspace has focus. On screens without tabs
+  in wider terminals it moves between the visible panes.
 - `:` opens the command palette.
 - `?` opens searchable, contextual help.
 - `[` / `]` jump between sidebar sections or screen groups where supported.
@@ -38,6 +42,11 @@ A few navigation primitives stay the same across every screen:
 
 Screen-specific actions vary, so `?` is the canonical place to find them for
 whatever screen you're on.
+
+In narrow terminals, Navigation and Details become drawers over the
+workspace: `h` opens Navigation, `l` opens Details, and `Esc` closes either.
+A drawer only has focus while it is visible, and keys go to the focused pane,
+so nothing changes behind an open drawer.
 
 ## Command palette and help
 
@@ -50,36 +59,64 @@ overlay for contextual help. `Esc` closes either overlay.
 
 ### Overview
 
-Overview is your starting point. It summarizes differences between this
-machine and your Blueprint profile, warnings, blocked work, and profile sync
-state. Open an item to jump to the screen where you can review or act on it.
+Overview is your starting point. It groups what differs between this machine
+and your Blueprint profile:
+
+- **Needs attention** — blocked, unsafe, or unresolved items that need a
+  decision.
+- **Changes available** — differences Capture or Restore would act on under
+  current policy, plus profile changes waiting in Sync.
+- **Intentional differences** — differences your Capture and Restore policy
+  deliberately leaves alone on this machine. These are not warnings, stay
+  collapsed until you open them, and explain which policy is responsible.
+- **No action needed** — categories with nothing to act on.
+
+Open an item to jump to the screen where you can review or act on it.
 
 ### Capture
 
 Capture reads the current system and saves selected categories into your
 profile. Use it after you intentionally change your setup and want Blueprint
 to remember those changes. `Space` toggles the highlighted category, `a`
-selects changed categories, `c` captures the selection, and `C` runs
-aggregate Capture All. Both capture actions require confirmation: `Enter`
-confirms and `Esc` cancels. A successful capture refreshes Overview, category
-status, and local profile Sync status, but never commits or pushes on its
-own.
+selects changed categories, `c` reviews the selection, and `C` reviews every
+category.
+
+The review lists the proposed profile changes before anything is written,
+grouped as **Changes** (Add, Update, Remember absent, Stop managing),
+**Preserved by policy**, and **Blocked**; targets needing no action are only
+counted. A fresh profile therefore shows its first-capture candidates here.
+The review names the policy scope it edits, Profile defaults or a machine,
+and `p` switches it. `Space` switches the selected target between Include and
+Preserve and `x` resets it to the inherited setting; either recalculates the
+review. Safety blocks cannot be overridden from here.
+
+`Enter` asks for approval with a summary, and `Esc` returns to the category
+list. Approved Capture re-checks the system and your policy before writing,
+so it never trusts a stale preview. A successful capture refreshes Overview,
+category status, and local profile Sync status, but never commits or pushes
+on its own.
 
 ### Restore
 
-Restore compares your profile with this machine and shows what would change
-before anything is applied. Normal mode avoids supported conflicts; Forced
-mode can resolve some conflicts in favour of the profile. Review the
-consequences of a plan before approving it.
+Restore compares your profile with this machine and shows one current plan
+before anything is applied. Two independent settings shape it: conflict
+handling (`f`) is **Safe**, which preserves supported conflicts, or **Force**,
+which can resolve them in favour of the profile; convergence (`e`) is
+**Additive**, which creates or updates desired state, or **Exact**, which can
+also remove Blueprint-managed extras. Exact never deletes Resource data. These
+toggles are one-run overrides and do not change the machine's saved defaults.
+Review the consequences of a plan before approving it; approval replans
+before applying.
 
 ## Software
 
 ### Packages
 
 Packages shows captured system packages, AUR packages, and global Mise
-tools, plus differences on this machine. Included items are part of
-portable restore; excluded or machine-specific items are remembered without
-being restored everywhere.
+tools, plus differences on this machine. Capture and Restore policy decide,
+for the profile or a single machine, which packages Blueprint records and
+which it reinstalls, so a package can stay on one computer without being
+restored everywhere.
 
 ### Themes
 
@@ -142,10 +179,13 @@ for the full strategy and safety picture.
 
 ### Machines
 
-Machines lets a portable Resource use a different path on a particular
-computer without changing its shared definition or contents. Select a
-machine to use its mappings, or leave the portable defaults active when no
-override is needed.
+Machines lets one computer differ from the portable profile without changing
+it: its own Safe/Force and Additive/Exact restore defaults, Capture and
+Restore policy overrides, and Resource paths for Resources that cannot use
+one shared location. Select a machine to use its overlay, or leave the
+portable defaults active when no override is needed. Mutations apply only to
+the focused region, and `+ Add machine` at the bottom of the table creates a
+new overlay.
 
 ### Sync
 
