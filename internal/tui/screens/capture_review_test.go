@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -243,5 +244,24 @@ func TestCaptureReviewSummarisesUnchangedTargetsInsteadOfListingThem(t *testing.
 	}
 	if strings.Contains(view, "gone") {
 		t.Fatalf("unchanged targets should not be listed as rows:\n%s", view)
+	}
+}
+
+func TestCaptureReviewFitsItsWorkspaceWhenTheSummaryWraps(t *testing.T) {
+	targets := []workflow.TargetInspection{}
+	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"} {
+		targets = append(targets, workflow.TargetInspection{Key: "official:" + name, Label: name, CaptureEligible: true, Current: workflow.TargetPresent, Desired: workflow.TargetUnknown})
+	}
+	f := newReviewFixture(t, targets...)
+	f.screen.SetSize(40, 10)
+	f.openReview(t)
+	lines := strings.Split(f.screen.View(), "\n")
+	if len(lines) > 10 {
+		t.Fatalf("review emitted %d lines for a 10-line workspace:\n%s", len(lines), f.screen.View())
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width > 40 {
+			t.Fatalf("review line is %d columns in a 40-column workspace: %q", width, line)
+		}
 	}
 }
