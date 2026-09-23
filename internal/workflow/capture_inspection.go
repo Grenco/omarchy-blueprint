@@ -3,8 +3,11 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"sort"
 
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
 // CaptureOutcome is the read-only, descriptive result InspectCapture reports
@@ -71,6 +74,10 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 		if len(targets) == 0 {
 			continue
 		}
+		differs, err := targetDifferences(ctx, provider, s.profile)
+		if err != nil {
+			return CaptureInspection{}, fmt.Errorf("compare %s targets: %w", provider.ID(), err)
+		}
 		items := make([]CaptureTarget, 0, len(targets))
 		for _, target := range targets {
 			effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
@@ -82,7 +89,7 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 				Inspection: target,
 				Policy:     effective,
 				Decision:   decision,
-				Outcome:    captureOutcome(target, decision),
+				Outcome:    captureOutcomeFor(target, decision, differs(target.Key)),
 			})
 		}
 		categories[provider.ID()] = items
@@ -120,6 +127,13 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 // full replacement, so an empty/vanished value carries no desired state
 // afterward, not a remembered absence).
 func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOutcome {
+	return captureOutcomeFor(target, decision, true)
+}
+
+// captureOutcomeFor is captureOutcome with knowledge of whether a target
+// present on both sides actually differs from its saved desired state. An
+// unchanged tracked target is Noop: Capture would rewrite it identically.
+func captureOutcomeFor(target TargetInspection, decision CaptureDecision, differs bool) CaptureOutcome {
 	if !target.CaptureEligible {
 		if target.Capabilities.DropsDesiredWhenIneligible && target.Desired != TargetUnknown {
 			return CaptureOutcomeStopManaging
@@ -145,6 +159,9 @@ func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOu
 	}
 	switch {
 	case target.Current == TargetPresent && target.Desired == TargetPresent:
+		if !differs {
+			return CaptureOutcomeNoop
+		}
 		return CaptureOutcomeUpdate
 	case target.Current == TargetPresent && target.Desired != TargetPresent:
 		return CaptureOutcomeAdd
@@ -159,4 +176,105 @@ func captureOutcome(target TargetInspection, decision CaptureDecision) CaptureOu
 	default:
 		return CaptureOutcomeNoop
 	}
+}
+
+// ChangeTargetResolver is implemented by providers that can attribute each
+// of their Diff changes to the policy target key it describes. It lets
+// workflow relate factual differences to Capture/Restore policy without
+// knowing any provider's target identity format. ok=false means the change
+// cannot be attributed; ok=true with an empty key means the change concerns
+// no policy target at all (e.g. Config's management settings).
+type ChangeTargetResolver interface {
+	ChangeTargetKey(change model.Change) (key string, ok bool)
+}
+
+// targetDifferences reports, per target key, whether the provider's current
+// state differs from saved desired state. Without a resolver, or when any
+// change cannot be attributed, every target is conservatively treated as
+// differing so a real change is never presented as "no action needed".
+func targetDifferences(ctx context.Context, provider Provider, data profile.Data) (func(string) bool, error) {
+	resolver, ok := provider.(ChangeTargetResolver)
+	if !ok {
+		return func(string) bool { return true }, nil
+	}
+	changes, err := provider.Diff(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	changed := make(map[string]bool, len(changes))
+	for _, change := range changes {
+		key, ok := resolver.ChangeTargetKey(change)
+		if !ok {
+			return func(string) bool { return true }, nil
+		}
+		if key != "" {
+			changed[key] = true
+		}
+	}
+	return func(key string) bool { return changed[key] }, nil
+}
+
+// CaptureReviewGroup is how a Capture preview is presented for approval.
+type CaptureReviewGroup string
+
+const (
+	CaptureReviewChanges   CaptureReviewGroup = "Changes"
+	CaptureReviewPreserved CaptureReviewGroup = "Preserved by policy"
+	CaptureReviewBlocked   CaptureReviewGroup = "Blocked"
+	CaptureReviewNoAction  CaptureReviewGroup = "No action needed"
+)
+
+var captureReviewOrder = []CaptureReviewGroup{CaptureReviewChanges, CaptureReviewPreserved, CaptureReviewBlocked, CaptureReviewNoAction}
+
+// ReviewGroup places a target in the review. Preserve is only "by policy"
+// when Capture policy disabled it; a provider keeping missing desired state
+// on its own (Resources) needs no action rather than a policy explanation.
+func (t CaptureTarget) ReviewGroup() CaptureReviewGroup {
+	switch t.Outcome {
+	case CaptureOutcomeAdd, CaptureOutcomeUpdate, CaptureOutcomeAbsent, CaptureOutcomeStopManaging:
+		return CaptureReviewChanges
+	case CaptureOutcomePreserve:
+		if !t.Decision.Capture {
+			return CaptureReviewPreserved
+		}
+		return CaptureReviewNoAction
+	case CaptureOutcomeBlocked:
+		return CaptureReviewBlocked
+	default:
+		return CaptureReviewNoAction
+	}
+}
+
+// CaptureReviewSection is one non-empty review group, targets ordered by
+// category and then target key.
+type CaptureReviewSection struct {
+	Group   CaptureReviewGroup
+	Targets []CaptureTarget
+}
+
+// Review groups the inspection for approval in a fixed group order with a
+// deterministic target order, omitting empty groups.
+func (i CaptureInspection) Review() []CaptureReviewSection {
+	buckets := map[CaptureReviewGroup][]CaptureTarget{}
+	for _, targets := range i.Categories {
+		for _, target := range targets {
+			group := target.ReviewGroup()
+			buckets[group] = append(buckets[group], target)
+		}
+	}
+	sections := make([]CaptureReviewSection, 0, len(captureReviewOrder))
+	for _, group := range captureReviewOrder {
+		targets := buckets[group]
+		if len(targets) == 0 {
+			continue
+		}
+		sort.SliceStable(targets, func(a, b int) bool {
+			if targets[a].Category != targets[b].Category {
+				return targets[a].Category < targets[b].Category
+			}
+			return targets[a].Inspection.Key < targets[b].Inspection.Key
+		})
+		sections = append(sections, CaptureReviewSection{Group: group, Targets: targets})
+	}
+	return sections
 }
