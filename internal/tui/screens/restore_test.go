@@ -91,7 +91,7 @@ func TestRestoreUsesOneCurrentPlanAndShowsExactSafetyAt80Columns(t *testing.T) {
 	screen.options = policy.RestoreOptions{Conflicts: policy.ConflictSafe, Convergence: policy.ConvergenceExact}
 	screen.override = true
 	view := screen.View()
-	for _, want := range []string{"Conflicts: Safe", "Convergence: Exact", "One-run override active", "WARNING: Exact", "Remove"} {
+	for _, want := range []string{"Run settings", "Conflict handling (f)", "Safe", "Keep conflicting files", "Convergence (e)", "Exact", "Remove managed extras", "One-run override", "WARNING: Exact", "Remove"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("current restore plan missing %q:\n%s", want, view)
 		}
@@ -118,7 +118,7 @@ func TestRestoreCurrentPlanUsesResponsiveOperationAndSkipTables(t *testing.T) {
 			Skipped:    []model.Skipped{{Provider: "config", Resource: ".config/example", Reason: "restore disabled by profile policy"}},
 		}
 		view := screen.View()
-		for _, want := range []string{"Conflicts: Force", "Convergence: Exact", "removals:1", "policy-skips:1", "forced-overrides:1", "Changes", "CATEGORY", "TARGET", "ACTION", "RISK", "Packages", "official:spotify", "Remove", "High", "Skipped by policy / safety", "REASON", "Config", ".config/example", "Policy: Skip"} {
+		for _, want := range []string{"Run settings", "Force", "Overwrite conflicting files", "Exact", "Remove managed extras", "Plan summary", "REMOVALS", "POLICY SKIPS", "FORCED OVERRIDES", "1", "Changes", "CATEGORY", "TARGET", "ACTION", "RISK", "Packages", "official:spotify", "Remove", "High", "Skipped by policy / safety", "REASON", "Config", ".config/example", "Policy: Skip"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%d-column Restore view missing %q:\n%s", width, want, view)
 			}
@@ -148,8 +148,12 @@ func TestRestoreCurrentPlanSeparatesSettingsSummaryAndTables(t *testing.T) {
 	}
 	view = strings.Join(lines, "\n")
 	for _, want := range []string{
-		"Convergence: Additive (e)\n\nCurrent plan:",
-		"forced-overrides:0\n\nChanges\n",
+		"Run settings\n",
+		"Additive",
+		"Keep additional items",
+		"Plan summary\n",
+		"FORCED OVERRIDES",
+		"0\n\nChanges\n",
 		"Low\n\nSkipped by policy / safety / mode\n",
 	} {
 		if !strings.Contains(view, want) {

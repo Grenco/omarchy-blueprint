@@ -291,6 +291,8 @@ func (s *Machines) Update(msg tea.Msg) tea.Cmd {
 			s.movePolicyCategory(key.String() == "]")
 		}
 	case "o":
+		fallthrough
+	case "enter":
 		categories := machinePolicyCategories(s.selectedMachine().Policy)
 		if s.region == machineRegionPolicy && len(categories) > 0 {
 			category := categories[min(s.policyCategory, len(categories)-1)].category
@@ -365,12 +367,12 @@ func (s *Machines) View() string {
 	machineHeight := s.machineRenderHeight()
 	s.machineTable.Ensure(s.machineList.Selected, len(machineRows), max(1, machineHeight-1))
 	machines := s.machineTable.Render([]components.Column{{Title: "MACHINE", Width: 30, MinWidth: 12}, {Title: "ACTIVE", Width: 9, MinWidth: 6}, {Title: "RESTORE DEFAULT", Width: 22, MinWidth: 15}, {Title: "OVERRIDES", MinWidth: 9}}, machineRows, width, machineHeight, s.styles)
-	parts := []string{"Machines", machines}
+	parts := []string{components.SectionDivider("Machines", width, s.styles), machines}
 	if categories := s.policyCategoriesView(width); categories != "" {
 		parts = append(parts, categories)
 	}
 	right := s.mappingTable.Render([]components.Column{{Title: "RESOURCE", Width: 18, MinWidth: 10}, {Title: "PORTABLE", Width: 28, MinWidth: 12}, {Title: "EFFECTIVE", Width: 28, MinWidth: 12}, {Title: "SOURCE", MinWidth: 8}}, rows, width, s.tableHeight()+1, s.styles)
-	parts = append(parts, "Resource paths", right)
+	parts = append(parts, components.SectionDivider("Resource paths", width, s.styles), right)
 	separator := "\n\n"
 	// The portable-path guidance can consume much of the screen even when the
 	// outer height looks generous. Compact the section gaps according to the
@@ -397,7 +399,9 @@ func (s *Machines) policyCategoriesView(width int) string {
 		rows = append(rows, components.Row{Cells: []string{components.DisplayText(item.category), fmt.Sprint(item.count)}, Selected: i == min(s.policyCategory, len(categories)-1) && s.region == machineRegionPolicy, Focused: s.region == machineRegionPolicy})
 	}
 	height := len(rows) + 1
-	return "Policy overrides\n" + s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", MinWidth: 9}}, rows, width, height, s.styles)
+	return components.SectionDivider("Policy overrides", width, s.styles) + "\n" +
+		s.styles.SubtleAccent("Select a category and press Enter to review or edit.") + "\n" +
+		s.policyTable.Render([]components.Column{{Title: "CATEGORY", Width: 32, MinWidth: 12}, {Title: "OVERRIDES", MinWidth: 9}}, rows, width, height, s.styles)
 }
 
 func (s *Machines) movePolicyCategory(forward bool) {
@@ -632,7 +636,7 @@ func (s *Machines) policyBlockHeight() int {
 	if len(categories) == 0 {
 		return 0
 	}
-	return len(categories) + 2
+	return len(categories) + 3
 }
 func (s *Machines) mappingRenderHeight() int {
 	height := s.contentHeight()

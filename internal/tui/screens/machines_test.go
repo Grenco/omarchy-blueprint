@@ -59,7 +59,7 @@ func TestMachinesSummarizesOverridesByCategoryAndNavigates(t *testing.T) {
 	}
 	screen := NewMachines(session)
 	view := screen.View()
-	for _, want := range []string{"CATEGORY", "OVERRIDES", "config", "packages", "\n\nPolicy overrides\n", "\n\nResource paths\n"} {
+	for _, want := range []string{"CATEGORY", "OVERRIDES", "config", "packages", "\n\nPolicy overrides ─", "\n\nResource paths ─"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("machine policy summary missing %q:\n%s", want, view)
 		}
@@ -118,7 +118,7 @@ func TestMachinesTableKeepsDefaultsAndOverridesScannable(t *testing.T) {
 		screen := NewMachines(session)
 		screen.SetSize(width, 30)
 		view := screen.View()
-		for _, want := range []string{"MACHINE", "ACTIVE", "RESTORE DEFAULT", "OVERRIDES", "desktop", "Yes", "Force / Exact", "packages", "1", "Resource paths", "projects"} {
+		for _, want := range []string{"Machines ─", "MACHINE", "ACTIVE", "RESTORE DEFAULT", "OVERRIDES", "desktop", "Yes", "Force / Exact", "Policy overrides ─", "Select a category and press Enter to review or edit", "packages", "1", "Resource paths ─", "projects"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%d-column Machines view missing %q:\n%s", width, want, view)
 			}
@@ -126,6 +126,28 @@ func TestMachinesTableKeepsDefaultsAndOverridesScannable(t *testing.T) {
 		if strings.Contains(view, "Restore defaults for desktop:") {
 			t.Fatalf("%d-column Machines view retained prose summary:\n%s", width, view)
 		}
+	}
+}
+
+func TestMachinesEnterOpensFocusedPolicyCategory(t *testing.T) {
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{{Name: "desktop", Policy: policy.Rules{Restore: []policy.Rule{{Category: "packages", Target: "official:git", Setting: policy.SettingDisabled}}}}}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := workflow.Open(workflow.Dependencies{StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: "desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := NewMachines(session)
+	screen.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter did not open the focused policy category")
+	}
+	if msg, ok := cmd().(PolicyNavigation); !ok || msg.Category != "packages" || msg.Machine != "desktop" {
+		t.Fatalf("policy navigation = %#v", msg)
 	}
 }
 
