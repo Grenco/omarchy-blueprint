@@ -45,6 +45,22 @@ func (s *Session) Capture(ctx context.Context, onlyProvider string) (CaptureResu
 // CaptureMany captures the requested providers in configured order and saves
 // their combined state as one profile update.
 func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult, error) {
+	return s.captureMany(ctx, ids, nil)
+}
+
+// CaptureApproved is CaptureMany bound to a review the user approved. The
+// approval is a precondition of the transaction itself, not a separate
+// check: one fresh inspection is both compared with the approved review and
+// handed to providers as their Capture decisions, and a second inspection
+// after staging but before saving confirms nothing Capture read live has
+// changed either. Any material difference (an outcome, or a written
+// value's Fingerprint) rolls back with zero profile mutation and returns a
+// CaptureReviewChangedError carrying the recalculated review.
+func (s *Session) CaptureApproved(ctx context.Context, ids []string, approved CaptureInspection) (CaptureResult, error) {
+	return s.captureMany(ctx, ids, &approved)
+}
+
+func (s *Session) captureMany(ctx context.Context, ids []string, approved *CaptureInspection) (CaptureResult, error) {
 	requested := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		if _, ok := ProviderByID(s.providers, id); !ok {
@@ -57,6 +73,18 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 		if requested[provider.ID()] {
 			selected = append(selected, provider)
 		}
+	}
+	var authority CaptureInspection
+	var contexts map[string]CaptureContext
+	if approved != nil {
+		fresh, err := s.InspectCaptureMany(ctx, ids)
+		if err != nil {
+			return CaptureResult{}, err
+		}
+		if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
+			return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
+		}
+		authority, contexts = fresh, fresh.captureContexts(s.machine.Name, ids)
 	}
 	info, err := omarchy.Detect(ctx, s.deps.Runner)
 	if err != nil {
@@ -73,9 +101,12 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 		return rollbackErr
 	}
 	for _, provider := range selected {
-		capCtx, err := s.resolveCaptureContext(ctx, provider, data)
-		if err != nil {
-			return CaptureResult{}, errors.Join(fmt.Errorf("inspect %s targets: %w", provider.ID(), err), rollback())
+		capCtx, ok := contexts[provider.ID()]
+		if !ok {
+			capCtx, err = s.resolveCaptureContext(ctx, provider, data)
+			if err != nil {
+				return CaptureResult{}, errors.Join(fmt.Errorf("inspect %s targets: %w", provider.ID(), err), rollback())
+			}
 		}
 		state, changes, err := provider.Capture(ctx, &data, capCtx)
 		if err != nil {
@@ -93,6 +124,20 @@ func (s *Session) CaptureMany(ctx context.Context, ids []string) (CaptureResult,
 			result.ConfigScan = &scan
 		}
 		result.Changes = append(result.Changes, changes...)
+	}
+	if approved != nil {
+		// Providers read live values while capturing; confirm they still
+		// match what was approved before anything is saved.
+		after, err := s.recheckCapture(ctx, ids, authority)
+		if err != nil {
+			return CaptureResult{}, errors.Join(fmt.Errorf("re-check capture: %w", err), rollback())
+		}
+		if changes := approved.ChangesFrom(after); len(changes) > 0 {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return CaptureResult{}, errors.Join(&CaptureReviewChangedError{Fresh: after, Changes: changes}, rollbackErr)
+			}
+			return CaptureResult{}, &CaptureReviewChangedError{Fresh: after, Changes: changes}
+		}
 	}
 	if len(result.Providers) > 0 {
 		data.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()

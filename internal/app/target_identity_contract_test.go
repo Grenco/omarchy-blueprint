@@ -148,6 +148,22 @@ func TestProviderTargetIdentityContract(t *testing.T) {
 		}
 	}
 
+	// Approving an unchanged review of these real categories must capture:
+	// the in-transaction re-checks must not report false changes.
+	ids := []string{"packages", "config", "hooks"}
+	review, err := session.InspectCaptureMany(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.CaptureApproved(ctx, ids, review); err != nil {
+		t.Fatalf("approved Capture of an unchanged review: %v", err)
+	}
+	if after, err := session.InspectCaptureMany(ctx, ids); err != nil {
+		t.Fatal(err)
+	} else if changes := after.ChangesFrom(review); len(changes) == 0 {
+		t.Fatal("approved Capture changed nothing")
+	}
+
 	if planned["packages"] < 2 {
 		t.Errorf("fixture planned %d package targets, want the batched reinstall of both", planned["packages"])
 	}

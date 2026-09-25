@@ -97,11 +97,13 @@ inherited setting; either recalculates the review. Safety blocks cannot be
 overridden from here.
 
 `Enter` asks for approval with a summary, and `Esc` returns to the category
-list. Approved Capture re-checks the system and your policy before writing.
-If any outcome changed since the review, nothing is written: the review is
-recalculated, says what changed, and needs approving again. A successful capture refreshes Overview,
-category status, and local profile Sync status, but never commits or pushes
-on its own.
+list. Approval is part of Capture itself: Capture re-checks the system and
+your policy, runs with exactly the decisions it checked, and checks again
+after staging, before anything is saved. If any outcome changed, or a value
+Capture would write changed (for example a config file edited again), nothing
+is written: the review is recalculated, says what changed, and needs
+approving again. A successful capture refreshes Overview, category status,
+and local profile Sync status, but never commits or pushes on its own.
 
 ### Restore
 

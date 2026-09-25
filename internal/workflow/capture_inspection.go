@@ -60,6 +60,9 @@ type CaptureTarget struct {
 	Policy     policy.EffectiveSetting
 	Decision   CaptureDecision
 	Outcome    CaptureOutcome
+	// differs is whether Diff attributed a difference from saved state to
+	// this target when it was inspected.
+	differs bool
 }
 
 // CaptureInspection is a whole-session, read-only Capture preview grouped by
@@ -88,34 +91,93 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 				continue
 			}
 		}
+		items, err := s.inspectProviderCapture(ctx, provider)
+		if err != nil {
+			return CaptureInspection{}, err
+		}
+		if len(items) > 0 {
+			categories[provider.ID()] = items
+		}
+	}
+	return CaptureInspection{Categories: categories}, nil
+}
+
+func (s *Session) inspectProviderCapture(ctx context.Context, provider Provider) ([]CaptureTarget, error) {
+	targets, err := provider.InspectTargets(ctx, s.profile)
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	differs, err := targetDifferences(ctx, provider, s.profile, targets)
+	if err != nil {
+		return nil, fmt.Errorf("compare %s targets: %w", provider.ID(), err)
+	}
+	items := make([]CaptureTarget, 0, len(targets))
+	for _, target := range targets {
+		effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+		}
+		items = append(items, CaptureTarget{
+			Category:   provider.ID(),
+			Inspection: target,
+			Policy:     effective,
+			Decision:   decision,
+			Outcome:    captureOutcomeFor(target, decision, differs(target.Key)),
+			differs:    differs(target.Key),
+		})
+	}
+	return items, nil
+}
+
+// recheckCapture re-reads the live inventory of ids after Capture staged
+// its changes, recalculating outcomes against authority. It deliberately
+// does not re-run Diff: staging may already have replaced saved copies in
+// the profile directory. authority's decisions and saved-state comparison
+// still apply to any target whose live value (presence and Fingerprint) is
+// unchanged; anything new or changed is treated as differing, so a live
+// change after the approval comparison still surfaces.
+func (s *Session) recheckCapture(ctx context.Context, ids []string, authority CaptureInspection) (CaptureInspection, error) {
+	categories := make(map[string][]CaptureTarget, len(ids))
+	for _, id := range ids {
+		provider, ok := ProviderByID(s.providers, id)
+		if !ok {
+			return CaptureInspection{}, fmt.Errorf("unknown category %s", id)
+		}
 		targets, err := provider.InspectTargets(ctx, s.profile)
 		if err != nil {
-			return CaptureInspection{}, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
+			return CaptureInspection{}, fmt.Errorf("inspect %s targets: %w", id, err)
 		}
-		if len(targets) == 0 {
-			continue
-		}
-		differs, err := targetDifferences(ctx, provider, s.profile, targets)
-		if err != nil {
-			return CaptureInspection{}, fmt.Errorf("compare %s targets: %w", provider.ID(), err)
+		before := make(map[string]CaptureTarget, len(authority.Categories[id]))
+		for _, target := range authority.Categories[id] {
+			before[target.Inspection.Key] = target
 		}
 		items := make([]CaptureTarget, 0, len(targets))
 		for _, target := range targets {
-			effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+			effective, decision, err := s.resolveCaptureTarget(ctx, id, target)
 			if err != nil {
-				return CaptureInspection{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
+				return CaptureInspection{}, fmt.Errorf("resolve %s policy for %s: %w", id, target.Key, err)
+			}
+			differs := true
+			if prior, ok := before[target.Key]; ok && sameLiveValue(prior.Inspection, target) {
+				differs = prior.differs
 			}
 			items = append(items, CaptureTarget{
-				Category:   provider.ID(),
-				Inspection: target,
-				Policy:     effective,
-				Decision:   decision,
-				Outcome:    captureOutcomeFor(target, decision, differs(target.Key)),
+				Category: id, Inspection: target, Policy: effective, Decision: decision,
+				Outcome: captureOutcomeFor(target, decision, differs), differs: differs,
 			})
 		}
-		categories[provider.ID()] = items
+		if len(items) > 0 {
+			categories[id] = items
+		}
 	}
 	return CaptureInspection{Categories: categories}, nil
+}
+
+func sameLiveValue(a, b TargetInspection) bool {
+	return a.Current == b.Current && a.Desired == b.Desired && a.CaptureEligible == b.CaptureEligible && a.Fingerprint == b.Fingerprint
 }
 
 // captureOutcome mirrors the Capture merge transitions PR 3 implements
@@ -346,30 +408,32 @@ func (e *CaptureReviewChangedError) Error() string {
 	return fmt.Sprintf("Capture review changed since it was approved (%d %s)", len(e.Changes), map[bool]string{true: "difference", false: "differences"}[len(e.Changes) == 1])
 }
 
-// CaptureApproved captures ids only when a fresh inspection still matches
-// the approved review. The fresh re-inspection stays the write authority;
-// approval binds it to what the user saw, so a policy or system change in
-// between yields a CaptureReviewChangedError and zero mutation instead of
-// silently capturing something different.
-func (s *Session) CaptureApproved(ctx context.Context, ids []string, approved CaptureInspection) (CaptureResult, error) {
-	fresh, err := s.InspectCaptureMany(ctx, ids)
-	if err != nil {
-		return CaptureResult{}, err
+// captureContexts turns an inspection into the Capture decisions each
+// requested category runs with. A category with no inspected targets gets
+// an empty context, so nothing outside the approved review is captured.
+func (i CaptureInspection) captureContexts(machine string, ids []string) map[string]CaptureContext {
+	contexts := make(map[string]CaptureContext, len(ids))
+	for _, id := range ids {
+		decisions := map[string]CaptureDecision{}
+		for _, target := range i.Categories[id] {
+			decisions[target.Inspection.Key] = target.Decision
+		}
+		contexts[id] = CaptureContext{Machine: machine, Targets: decisions}
 	}
-	if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
-		return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
-	}
-	return s.CaptureMany(ctx, ids)
+	return contexts
 }
 
 // ChangesFrom describes, in stable order, every target whose Capture
-// outcome differs between i and fresh. A target missing from one side
-// counts as needing no action there, so only differences that change what
-// Capture would write are material.
+// outcome differs between i and fresh, or whose value changed while Capture
+// would still write it (Update(A) → Update(B), via
+// TargetInspection.Fingerprint). A target missing from one side counts as
+// needing no action there, so only differences that change what Capture
+// would write are material.
 func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 	type entry struct {
-		label   string
-		outcome CaptureOutcome
+		label       string
+		outcome     CaptureOutcome
+		fingerprint string
 	}
 	index := func(inspection CaptureInspection) map[string]entry {
 		entries := map[string]entry{}
@@ -379,7 +443,11 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 				if label == "" {
 					label = target.Inspection.Key
 				}
-				entries[category+"\x00"+target.Inspection.Key] = entry{label: strings.ToUpper(category[:1]) + category[1:] + " " + label, outcome: target.Outcome}
+				entries[category+"\x00"+target.Inspection.Key] = entry{
+					label:       strings.ToUpper(category[:1]) + category[1:] + " " + label,
+					outcome:     target.Outcome,
+					fingerprint: target.Inspection.Fingerprint,
+				}
 			}
 		}
 		return entries
@@ -408,14 +476,21 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 		was, hadBefore := before[key]
 		now, hasNow := after[key]
 		from, to := outcome(was, hadBefore), outcome(now, hasNow)
-		if from == to {
-			continue
-		}
 		label := now.label
 		if !hasNow {
 			label = was.label
 		}
-		changes = append(changes, fmt.Sprintf("%s: %s → %s", label, from.Label(), to.Label()))
+		switch {
+		case from != to:
+			changes = append(changes, fmt.Sprintf("%s: %s → %s", label, from.Label(), to.Label()))
+		case writesValue(to) && was.fingerprint != now.fingerprint:
+			changes = append(changes, fmt.Sprintf("%s: changed since the review (%s)", label, to.Label()))
+		}
 	}
 	return changes
+}
+
+// writesValue reports whether an outcome records the target's current value.
+func writesValue(outcome CaptureOutcome) bool {
+	return outcome == CaptureOutcomeAdd || outcome == CaptureOutcomeUpdate
 }

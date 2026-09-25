@@ -245,18 +245,23 @@ func newPolicyReviewSession(t *testing.T) *Session {
 	return session
 }
 
-func TestCaptureInspectionChangesFromOnlyReportsOutcomeChanges(t *testing.T) {
-	target := func(key string, outcome CaptureOutcome) CaptureTarget {
-		return CaptureTarget{Category: "packages", Inspection: TargetInspection{Key: key, Label: key}, Outcome: outcome}
+func TestCaptureInspectionChangesFromReportsOutcomeAndWrittenValueChanges(t *testing.T) {
+	target := func(key string, outcome CaptureOutcome, fingerprint string) CaptureTarget {
+		return CaptureTarget{Category: "packages", Inspection: TargetInspection{Key: key, Label: key, Fingerprint: fingerprint}, Outcome: outcome}
 	}
 	approved := CaptureInspection{Categories: map[string][]CaptureTarget{"packages": {
-		target("firefox", CaptureOutcomeAdd), target("git", CaptureOutcomeNoop), target("gone", CaptureOutcomeUpdate),
+		target("firefox", CaptureOutcomeAdd, ""), target("git", CaptureOutcomeNoop, ""), target("gone", CaptureOutcomeUpdate, ""),
+		target("node", CaptureOutcomeUpdate, "20"), target("kept", CaptureOutcomePreserve, "1"),
 	}}}
 	fresh := CaptureInspection{Categories: map[string][]CaptureTarget{"packages": {
-		target("firefox", CaptureOutcomePreserve), target("git", CaptureOutcomeNoop), target("quiet", CaptureOutcomeNoop), target("vlc", CaptureOutcomeAdd),
+		target("firefox", CaptureOutcomePreserve, ""), target("git", CaptureOutcomeNoop, ""), target("quiet", CaptureOutcomeNoop, ""), target("vlc", CaptureOutcomeAdd, ""),
+		// Same Update outcome, different value to write.
+		target("node", CaptureOutcomeUpdate, "22"),
+		// Preserve writes nothing, so its value changing is immaterial.
+		target("kept", CaptureOutcomePreserve, "2"),
 	}}}
 	got := approved.ChangesFrom(fresh)
-	want := []string{"Packages firefox: Add → Preserve", "Packages gone: Update → No change", "Packages vlc: No change → Add"}
+	want := []string{"Packages firefox: Add → Preserve", "Packages gone: Update → No change", "Packages node: changed since the review (Update)", "Packages vlc: No change → Add"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("ChangesFrom = %q, want %q", got, want)
 	}
