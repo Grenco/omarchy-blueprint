@@ -68,7 +68,7 @@ ra_guest_health() {
     command -v pacman && command -v git && command -v omarchy
     omarchy commands --json >/dev/null
     omarchy theme current >/dev/null
-    omarchy plugin list --json >/dev/null
+    command -v omarchy-shell
     test -d "$HOME"
     kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase")
     pacman -Q "$kernel" "$kernel-headers"
