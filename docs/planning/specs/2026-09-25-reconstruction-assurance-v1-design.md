@@ -232,6 +232,15 @@ Guest health must prove at minimum:
 - Omarchy tooling is present;
 - kernel/header state is internally consistent enough for the installed system.
 
+The unencrypted unattended base boots to SDDM, before a user desktop session
+starts. The base/overlay boot health probe may use headless Omarchy commands
+(`omarchy commands --json`, `omarchy theme current`) and check that
+`omarchy-shell` is installed, but must not require Shell IPC such as
+`omarchy plugin list --json`: upstream returns `omarchy-shell is not running`
+before login. The later plugin acceptance scenario must establish a real Omarchy
+user session before testing session-dependent plugin discovery; a fake Shell
+service or bypass is not an acceptable substitute.
+
 The builder must not force Omarchy internal defaults that the supported unattended install path can choose itself.
 
 The base contains no initialized Blueprint profile and no canonical-scenario customization.

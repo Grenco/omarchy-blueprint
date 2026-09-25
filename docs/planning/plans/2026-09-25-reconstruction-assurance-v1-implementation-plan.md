@@ -488,12 +488,19 @@ command -v git
 command -v omarchy
 omarchy commands --json >/dev/null
 omarchy theme current >/dev/null
-omarchy plugin list --json >/dev/null
+command -v omarchy-shell
 test -d "$HOME"
 kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase")
 pacman -Q "$kernel" "$kernel-headers"
 test "$(cat "/usr/lib/modules/$(uname -r)/build/include/config/kernel.release")" = "$(uname -r)"
 ```
+
+The unattended unencrypted base boots to SDDM. Before a user desktop session,
+`omarchy plugin list --json` returns `omarchy-shell is not running`; do not
+misclassify that expected pre-login state as an installer failure. PR 2's
+plugin scenario must establish a real Omarchy session before checking plugin
+discovery over Shell IPC. This is a documented design correction from hosted
+PR 1 run `36166325222`, not permission to simulate Shell.
 
 Poll for at most 8 minutes. If QEMU exits, fail immediately. If readiness times out, fail `OMARCHY_INSTALL`; do not restart the installer.
 
