@@ -1,0 +1,209 @@
+# Temporary feasibility spike: manually dispatched, not a PR gate.
+name: Spike - real Omarchy VM
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Runner and KVM diagnostics
+        id: host
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "START=$(date +%s)" >> "$GITHUB_ENV"
+          uname -a
+          lscpu
+          free -h
+          df -h / /mnt
+          echo "disk_before=$(df -B1 --output=avail /mnt | tail -1)" >> "$GITHUB_ENV"
+          if [[ -e /dev/kvm ]]; then ls -l /dev/kvm; else echo '/dev/kvm missing'; fi
+          if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+            echo 'KVM=yes' >> "$GITHUB_ENV"
+          else
+            echo 'KVM=no' >> "$GITHUB_ENV"
+            echo 'No usable /dev/kvm (missing or permission denied)' >&2
+            exit 1
+          fi
+          grep -m1 -E '(^flags|^Features)' /proc/cpuinfo || true
+          command -v qemu-system-x86_64 && qemu-system-x86_64 --version || true
+
+      - name: Install minimum VM tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf genisoimage openssh-client sshpass
+          qemu-system-x86_64 --version
+          kvm-ok || true
+          df -h /mnt
+          echo "disk_after_deps=$(df -B1 --output=avail /mnt | tail -1)" >> "$GITHUB_ENV"
+
+      - name: Prove nested Linux boot (Ubuntu cloud image)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /mnt/spike
+          cd /mnt/spike
+          curl -fL --retry 3 -o smoke.img https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+          qemu-img create -f qcow2 -F qcow2 -b smoke.img smoke-overlay.qcow2
+          printf 'instance-id: spike\nlocal-hostname: spike\n' > meta-data
+          printf '#cloud-config\nusers:\n  - name: spike\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    shell: /bin/bash\n    lock_passwd: false\n    plain_text_passwd: spike\nssh_pwauth: true\n' > user-data
+          genisoimage -quiet -output smoke-seed.iso -volid cidata -joliet -rock user-data meta-data
+          timeout 240 qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 2 -m 2048 \
+            -nographic -serial file:smoke.log -monitor none \
+            -drive file=smoke-overlay.qcow2,if=virtio \
+            -drive file=smoke-seed.iso,media=cdrom \
+            -netdev user,id=n0,hostfwd=tcp::2223-:22 -device virtio-net-pci,netdev=n0 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..90}; do
+            if sshpass -p spike ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 spike@127.0.0.1 'test "$(cat /proc/1/comm)" = systemd && uname -a'; then
+              echo 'NESTED_BOOT=yes' >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'Ubuntu nested boot/SSH timed out; see smoke.log' >&2
+          exit 1
+
+      - name: Download verified official Omarchy ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /mnt/spike
+          rm -f smoke.img smoke-overlay.qcow2 smoke-seed.iso
+          curl -fL --retry 3 -o omarchy.iso https://iso.omarchy.org/omarchy-4.0.4.iso
+          curl -fL --retry 3 -o omarchy.iso.sha256 https://iso.omarchy.org/omarchy-4.0.4.iso.sha256
+          sha256sum omarchy.iso
+          # The official sidecar may name the versioned ISO; compare the hashes directly.
+          test "$(sha256sum omarchy.iso | cut -d' ' -f1)" = "$(cut -d' ' -f1 omarchy.iso.sha256)"
+          du -h omarchy.iso
+          df -h /mnt
+
+      - name: Prepare official cidata unattended install
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /mnt/spike
+          ssh-keygen -q -t ed25519 -N '' -f guest_key
+          cp guest_key.pub authorized_keys
+          # Match the current official ISO configurator's unencrypted default layout.
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          gib = 1024 ** 3
+          mib = 1024 ** 2
+          password = subprocess.check_output(['openssl', 'passwd', '-6', 'spike'], text=True).strip()
+          Path('user_credentials.json').write_text(json.dumps({
+              'root_enc_password': password,
+              'users': [{'enc_password': password, 'groups': [], 'sudo': True, 'username': 'spike'}]
+          }))
+          def size(value):
+              return {'sector_size': {'unit': 'B', 'value': 512}, 'unit': 'B', 'value': value}
+          partitions = [
+              {'btrfs': [], 'dev_path': None, 'flags': ['boot', 'esp'], 'fs_type': 'fat32',
+               'mount_options': [], 'mountpoint': '/boot', 'obj_id': 'ea21d3f2-82bb-49cc-ab5d-6f81ae94e18d',
+               'size': size(2*gib), 'start': size(mib), 'status': 'create', 'type': 'primary'},
+              {'btrfs': [{'mountpoint': path, 'name': name} for path, name in
+                         [('/', '@'), ('/home', '@home'), ('/var/log', '@log'), ('/var/cache/pacman/pkg', '@pkg')]],
+               'dev_path': None, 'flags': [], 'fs_type': 'btrfs', 'mount_options': ['compress=zstd'],
+               'mountpoint': None, 'obj_id': '8c2c2b92-1070-455d-b76a-56263bab24aa',
+               'size': size(38*gib-2*mib), 'start': size(2*gib+mib), 'status': 'create', 'type': 'primary'}]
+          config = {
+              'app_config': None, 'archinstall-language': 'English', 'auth_config': {},
+              'audio_config': {'audio': 'pipewire'}, 'bootloader': 'Limine', 'custom_commands': [],
+              'disk_config': {'btrfs_options': {'snapshot_config': {'type': 'Snapper'}},
+                              'config_type': 'default_layout', 'device_modifications': [
+                                  {'device': '/dev/vda', 'partitions': partitions, 'wipe': True}]},
+              'hostname': 'blueprint-spike', 'kernels': ['linux'], 'network_config': {'type': 'iso'},
+              'ntp': True, 'parallel_downloads': 8, 'script': None, 'services': [], 'swap': True,
+              'timezone': 'UTC', 'locale_config': {'kb_layout': 'us', 'sys_enc': 'UTF-8', 'sys_lang': 'en_US.UTF-8'},
+              'mirror_config': {'custom_repositories': [], 'custom_servers': [
+                  {'url': 'https://mirror.omarchy.org/$repo/os/$arch'},
+                  {'url': 'https://mirror.rackspace.com/archlinux/$repo/os/$arch'},
+                  {'url': 'https://geo.mirror.pkgbuild.com/$repo/os/$arch'}],
+                  'mirror_regions': {}, 'optional_repositories': []},
+              'packages': ['base-devel', 'git', 'omarchy-keyring', 'snapper'],
+              'profile_config': {'gfx_driver': None, 'greeter': None, 'profile': {}}, 'version': '3.0.9'}
+          Path('user_configuration.json').write_text(json.dumps(config, indent=2))
+          PY
+          printf 'false\n' > user_encrypt_installation.txt
+          genisoimage -quiet -output cidata.iso -volid cidata -joliet -rock \
+            user_configuration.json user_credentials.json user_encrypt_installation.txt authorized_keys
+          qemu-img create -f qcow2 omarchy.qcow2 40G
+          cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+          echo "install_start=$(date +%s)" >> "$GITHUB_ENV"
+          df -h /mnt
+
+      - name: Install and inspect real Omarchy guest
+        shell: bash
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          cd /mnt/spike
+          # Keep a VGA console: the official installer only runs on guest tty1.
+          qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m 8192 \
+            -display none -vga std -serial file:omarchy-serial.log -monitor none \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -drive if=pflash,format=raw,file=vars.fd \
+            -drive file=omarchy.qcow2,format=qcow2,if=none,id=disk \
+            -device virtio-blk-pci,drive=disk,bootindex=1 \
+            -drive file=omarchy.iso,format=raw,media=cdrom,if=none,id=installer \
+            -device ide-cd,drive=installer,bootindex=2 \
+            -drive file=cidata.iso,format=raw,media=cdrom,if=none,id=seed \
+            -device ide-cd,drive=seed \
+            -netdev user,id=n0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=n0 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in {1..900}; do
+            if ssh -p 2222 -i guest_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=2 -o BatchMode=yes spike@127.0.0.1 \
+                'test "$(cat /proc/1/comm)" = systemd && systemctl show -p Version && command -v pacman && command -v git && test -d "$HOME" && command -v omarchy && pacman -Q omarchy-keyring' \
+                >guest-checks.log 2>&1; then
+              echo "GUEST_BOOT=yes" >> "$GITHUB_ENV"
+              echo "install_and_boot_seconds=$(($(date +%s)-install_start))" >> "$GITHUB_ENV"
+              ssh -p 2222 -i guest_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                spike@127.0.0.1 'systemctl --version; pacman --version; git --version; command -v omarchy; ls -ld "$HOME"; ls ~/.local/share/omarchy; systemctl is-active sshd' >>guest-checks.log 2>&1
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then echo 'QEMU exited during install/boot' >&2; exit 1; fi
+            sleep 3
+          done
+          echo 'Guest did not pass real system checks within 45 minutes; check serial and disk' >&2
+          exit 1
+
+      - name: Report and preserve small diagnostics
+        if: always()
+        shell: bash
+        run: |
+          echo "## Omarchy VM feasibility spike" >> "$GITHUB_STEP_SUMMARY"
+          for name in KVM NESTED_BOOT GUEST_BOOT disk_before disk_after_deps install_and_boot_seconds; do
+            value="${!name:-unknown}"
+            echo "$name=$value" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          echo "total_seconds=$(($(date +%s)-${START:-$(date +%s)}))" | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h /mnt | tee -a "$GITHUB_STEP_SUMMARY"
+          free -h | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ -f /mnt/spike/omarchy.qcow2 ]]; then
+            qemu-img info /mnt/spike/omarchy.qcow2 | tee -a "$GITHUB_STEP_SUMMARY"
+            du -h /mnt/spike/omarchy.qcow2 | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -d /mnt/spike ]]; then
+            du -sh /mnt/spike
+            df -h /mnt
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vm-spike-logs
+          path: |
+            /mnt/spike/smoke.log
+            /mnt/spike/omarchy-serial.log
+            /mnt/spike/guest-checks.log
+          if-no-files-found: ignore
