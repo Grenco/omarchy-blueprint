@@ -282,15 +282,30 @@ func (s *captureScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
 }
 func (s *captureScreen) Actions() []Action {
+	key := func(code rune) func() tea.Cmd { return func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: code}) } }
+	if s.Reviewing() {
+		editable := s.ReviewTargetSelected()
+		return []Action{
+			{ID: "capture.review.policy", Label: "Include or preserve selected target", Group: "Capture review", Enabled: editable, Visible: true, DisabledReason: "select a target Capture policy can change", Run: key(tea.KeySpace)},
+			{ID: "capture.review.reset", Label: "Reset Capture policy to inherited", Group: "Capture review", Enabled: editable, Visible: true, DisabledReason: "select a target Capture policy can change", Run: key('x')},
+			{ID: "capture.review.scope", Label: "Toggle Profile defaults / this machine", Group: "Capture review", Enabled: true, Visible: true, Run: key('p')},
+			{ID: "capture.review.approve", Label: "Approve Capture", Group: "Capture review", Enabled: true, Visible: true, Run: key(tea.KeyEnter)},
+			{ID: "capture.review.back", Label: "Back to categories", Group: "Capture review", Enabled: true, Visible: true, Run: key(tea.KeyEsc)},
+			{ID: "capture.review.refresh", Label: "Recalculate review", Group: "Capture review", Enabled: true, Visible: true, Run: key('r')},
+		}
+	}
 	return []Action{
-		{ID: "capture.select", Label: "Toggle category selection", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeySpace}) }},
-		{ID: "capture.select-all", Label: "Select changed categories", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
-		{ID: "capture.run", Label: "Capture selected categories", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'c'}) }},
-		{ID: "capture.capture-all", Label: "Capture all categories", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'C'}) }},
-		{ID: "capture.refresh", Label: "Refresh capture status", Group: "Capture", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
+		{ID: "capture.select", Label: "Toggle category selection", Group: "Capture", Enabled: true, Visible: true, Run: key(tea.KeySpace)},
+		{ID: "capture.select-all", Label: "Select changed categories", Group: "Capture", Enabled: true, Visible: true, Run: key('a')},
+		{ID: "capture.run", Label: "Review selected categories", Group: "Capture", Enabled: true, Visible: true, Run: key('c')},
+		{ID: "capture.capture-all", Label: "Review all categories", Group: "Capture", Enabled: true, Visible: true, Run: key('C')},
+		{ID: "capture.refresh", Label: "Refresh capture status", Group: "Capture", Enabled: true, Visible: true, Run: key('r')},
 	}
 }
 func (s *captureScreen) Bindings() []Binding {
+	if s.Reviewing() {
+		return []Binding{{ActionID: "capture.review.approve", Key: "enter"}, {ActionID: "capture.review.policy", Key: "space"}, {ActionID: "capture.review.reset", Key: "x"}, {ActionID: "capture.review.scope", Key: "p"}, {ActionID: "capture.review.back", Key: "esc"}, {ActionID: "capture.review.refresh", Key: "r"}}
+	}
 	return []Binding{{ActionID: "capture.select", Key: "space"}, {ActionID: "capture.select-all", Key: "a"}, {ActionID: "capture.run", Key: "c"}, {ActionID: "capture.capture-all", Key: "shift+c"}, {ActionID: "capture.refresh", Key: "r"}}
 }
 func (s *overviewScreen) HandleKey(key tea.KeyPressMsg) KeyResult {

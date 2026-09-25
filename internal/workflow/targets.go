@@ -65,6 +65,12 @@ type TargetCapabilities struct {
 	// updating or re-adding it, and Capture Disabled still Preserves it as
 	// usual.
 	NoActionableUpdate bool
+	// RecordsNewAbsence reports that Capture records explicit desired
+	// absence for this target even though Blueprint has no desired state for
+	// it yet (Config: a deleted Omarchy default becomes a deletion
+	// tombstone). Without it, a target absent on both sides previews as
+	// Noop, which would hide a real Capture change.
+	RecordsNewAbsence bool
 }
 
 // TargetInspection is one provider-defined policy target's read-only,
@@ -86,6 +92,13 @@ type TargetInspection struct {
 	RestoreEligible bool
 	Capabilities    TargetCapabilities
 	SafetyReason    string
+	// Fingerprint is an opaque, canonical digest of the complete value
+	// Capture would persist for this target, derived from the same
+	// detection object Capture consumes, so an approved Capture can tell
+	// that what it would write changed even when the outcome (e.g. Update
+	// or Remember absent) did not. Empty when key and presence alone
+	// determine what Capture records.
+	Fingerprint string
 }
 
 // CaptureDecision is the resolved, immutable Capture outcome for one

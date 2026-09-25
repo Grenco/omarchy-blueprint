@@ -1048,6 +1048,24 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := session.SetProviders(workflowProviders(deps, opt)); err != nil {
+		return nil, err
+	}
+	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, options policy.RestoreOptions) error {
+		state := make([]stateProvider, 0, len(selected))
+		for _, provider := range selected {
+			if adapter, ok := provider.(interface{ StateProvider() stateProvider }); ok {
+				state = append(state, adapter.StateProvider())
+			}
+		}
+		return finalizeRestorePlan(ctx, deps, opt, data, state, plan, restorePlanOptionsFromPolicy(options))
+	})
+	return session, nil
+}
+
+// workflowProviders is the exact provider set workflow sessions see,
+// including the category-specific adapter wrappers.
+func workflowProviders(deps Dependencies, opt *options) []workflow.Provider {
 	providers := stateProviders(deps, opt)
 	adapters := make([]workflow.Provider, len(providers))
 	for i, provider := range providers {
@@ -1061,19 +1079,7 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 			adapters[i] = adapter
 		}
 	}
-	if err := session.SetProviders(adapters); err != nil {
-		return nil, err
-	}
-	session.SetRestoreFinalizer(func(ctx context.Context, data profile.Data, selected []workflow.Provider, plan *model.RestorePlan, options policy.RestoreOptions) error {
-		state := make([]stateProvider, 0, len(selected))
-		for _, provider := range selected {
-			if adapter, ok := provider.(interface{ StateProvider() stateProvider }); ok {
-				state = append(state, adapter.StateProvider())
-			}
-		}
-		return finalizeRestorePlan(ctx, deps, opt, data, state, plan, restorePlanOptionsFromPolicy(options))
-	})
-	return session, nil
+	return adapters
 }
 
 func openWorkflowOptions(deps Dependencies, base *options, selected workflow.Options) (*workflow.Session, error) {

@@ -19,7 +19,8 @@ func (m model) View() tea.View {
 	}
 	layout := layoutForSize(m.width, m.height)
 	if layout.mode == LayoutTooSmall {
-		view := tea.NewView(fmt.Sprintf("Terminal too small (%dx%d). Need at least 70 columns and 18 rows.", m.width, m.height))
+		message := fmt.Sprintf("Terminal too small (%dx%d). Need at least 70 columns and 18 rows.", m.width, m.height)
+		view := tea.NewView(strings.Join(components.WrapText(message, m.width), "\n"))
 		view.AltScreen = true
 		return view
 	}
@@ -278,6 +279,10 @@ func boundedBox(content string, width, height int) string {
 	return lipgloss.NewStyle().Width(max(0, width)).Height(max(0, height)).MaxWidth(max(0, width)).MaxHeight(max(0, height)).Render(content)
 }
 
+// boundedLine renders content as exactly one line of width cells,
+// truncating rather than wrapping so a long header or footer can never add
+// rows to the frame.
 func boundedLine(content string, width int) string {
-	return lipgloss.NewStyle().Width(max(0, width)).MaxWidth(max(0, width)).Render(content)
+	width = max(0, width)
+	return lipgloss.NewStyle().Width(width).Render(ansi.Truncate(strings.ReplaceAll(content, "\n", " "), width, "…"))
 }

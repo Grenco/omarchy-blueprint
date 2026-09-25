@@ -71,3 +71,36 @@ func TestSidebarSectionMovement(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalogueDescribesPolicyAwareWorkflow(t *testing.T) {
+	for _, test := range []struct {
+		id   ScreenID
+		want []string
+	}{
+		{ScreenOverview, []string{"Needs attention", "Changes available", "Intentional differences"}},
+		{ScreenCapture, []string{"review", "Preserved by policy", "Include", "Preserve", "re-checks"}},
+		{ScreenPackages, []string{"Capture", "Restore", "policy"}},
+	} {
+		long := screenInfo(test.id).Long
+		for _, want := range test.want {
+			if !strings.Contains(long, want) {
+				t.Errorf("%s help omits %q: %s", test.id, want, long)
+			}
+		}
+	}
+}
+
+// Displayed catalogue copy must use current vocabulary. Keywords are search
+// aids and may keep older synonyms such as "drift".
+func TestCatalogueCopyAvoidsStaleTerms(t *testing.T) {
+	stale := []string{"Normal mode", "Forced mode", "excluded package", "machine-specific items", "drift", "provider", "git theme", "Git plugins"}
+	for _, info := range screenCatalog {
+		for _, text := range []string{info.Short, info.Long} {
+			for _, term := range stale {
+				if strings.Contains(strings.ToLower(text), strings.ToLower(term)) {
+					t.Errorf("%s copy uses stale term %q: %s", info.ID, term, text)
+				}
+			}
+		}
+	}
+}

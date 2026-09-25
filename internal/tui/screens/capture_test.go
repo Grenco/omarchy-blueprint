@@ -7,7 +7,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
-	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -111,15 +110,17 @@ func TestCaptureConstrainedHeightAtWiderWidthsAlsoKeepsSelectionVisible(t *testi
 	}
 }
 
-func TestCaptureAllRequestsConfirmation(t *testing.T) {
+func TestCaptureAllOpensReviewBeforeApproval(t *testing.T) {
 	screen := &Capture{statuses: []workflow.ProviderStatus{{ID: "packages"}, {ID: "themes"}}, chosen: map[string]bool{}}
 	cmd := screen.Update(tea.KeyPressMsg{Code: 'C'})
-	request, ok := cmd().(components.ModalRequest)
-	if !ok || request.Title != "Capture selected categories" || !screen.chosen["packages"] || !screen.chosen["themes"] || !screen.captureAll {
-		t.Fatalf("request=%#v chosen=%#v", request, screen.chosen)
+	if cmd == nil || !screen.Reviewing() || !screen.chosen["packages"] || !screen.chosen["themes"] || !screen.captureAll {
+		t.Fatalf("Shift+C should choose every category and open the review: reviewing=%v chosen=%#v", screen.Reviewing(), screen.chosen)
 	}
-	if view := screen.View(); view == "" || view == "Capture selected providers?\n\nEnter confirms. Escape cancels." {
-		t.Fatalf("confirmation replaced Capture background: %q", view)
+	if screen.confirm {
+		t.Fatal("Shift+C must not ask for approval before the review is shown")
+	}
+	if view := screen.View(); !strings.Contains(view, "Review Capture") {
+		t.Fatalf("review is not shown while it loads: %q", view)
 	}
 }
 
