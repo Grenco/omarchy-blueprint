@@ -11,6 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HarnessLifecycleTests(unittest.TestCase):
+    def test_insufficient_host_disk_stops_before_iso_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", str(ROOT / "run.sh")],
+                env={**os.environ, "RA_WORK": directory,
+                     "RA_MIN_FREE_BYTES": "999999999999999"},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("INFRASTRUCTURE FAIL", (Path(directory) / "artifacts/summary.txt").read_text())
+            self.assertFalse((Path(directory) / "omarchy.iso").exists())
+
     def test_first_failure_survives_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(
