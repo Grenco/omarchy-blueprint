@@ -53,7 +53,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /mnt/spike
+          sudo mkdir -p /mnt/spike
+          sudo chown "$(id -u):$(id -g)" /mnt/spike
           cd /mnt/spike
           curl -fL --retry 3 -o smoke.img https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
           qemu-img create -f qcow2 -F qcow2 -b smoke.img smoke-overlay.qcow2
