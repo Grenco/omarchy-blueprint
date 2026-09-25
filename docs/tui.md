@@ -65,10 +65,13 @@ and your Blueprint profile:
 - **Needs attention** — blocked, unsafe, or unresolved items that need a
   decision.
 - **Changes available** — differences Capture or Restore would act on under
-  current policy, plus profile changes waiting in Sync.
-- **Intentional differences** — differences your Capture and Restore policy
-  deliberately leaves alone on this machine. These are not warnings, stay
-  collapsed until you open them, and explain which policy is responsible.
+  current policy, plus profile changes waiting in Sync. Restore counts only
+  when its real plan, under this machine's Restore options (Safe or Force,
+  Additive or Exact), would change the item.
+- **Intentional differences** — differences your Capture policy and Restore
+  policy or options deliberately leave alone on this machine, such as an
+  extra package Additive Restore keeps. These are not warnings, stay
+  collapsed until you open them, and explain why.
 - **No action needed** — categories with nothing to act on.
 
 Open an item to jump to the screen where you can review or act on it.
@@ -85,14 +88,18 @@ The review lists the proposed profile changes before anything is written,
 grouped as **Changes** (Add, Update, Remember absent, Stop managing),
 **Preserved by policy**, and **Blocked**; targets needing no action are only
 counted. A fresh profile therefore shows its first-capture candidates here.
-The review names the policy scope it edits, Profile defaults or a machine,
-and `p` switches it. `Space` switches the selected target between Include and
-Preserve and `x` resets it to the inherited setting; either recalculates the
-review. Safety blocks cannot be overridden from here.
+Outcomes are always for this machine. The review names the policy scope it
+edits, Profile defaults or a machine, and `p` switches it; the CAPTURE column
+and Details show the setting at that scope, alongside the setting this
+machine actually applies when they differ. `Space` switches the selected
+target between Include and Preserve at that scope and `x` resets it to the
+inherited setting; either recalculates the review. Safety blocks cannot be
+overridden from here.
 
 `Enter` asks for approval with a summary, and `Esc` returns to the category
-list. Approved Capture re-checks the system and your policy before writing,
-so it never trusts a stale preview. A successful capture refreshes Overview,
+list. Approved Capture re-checks the system and your policy before writing.
+If any outcome changed since the review, nothing is written: the review is
+recalculated, says what changed, and needs approving again. A successful capture refreshes Overview,
 category status, and local profile Sync status, but never commits or pushes
 on its own.
 
