@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -111,44 +114,47 @@ func TestCaptureFingerprintCoversCopyResourceMode(t *testing.T) {
 }
 
 func TestCaptureFingerprintCoversGitDiffWorkingStateAtTheSameRevision(t *testing.T) {
-	profileDir, deps, home := resourceSandbox(t)
-	root := filepath.Join(home, "dotfiles")
-	ctx := context.Background()
-	git := func(args ...string) {
-		t.Helper()
-		if _, err := deps.Runner.Run(ctx, "git", append([]string{"-C", root}, args...)...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	git("init")
-	git("config", "user.email", "test@example.invalid")
-	git("config", "user.name", "Blueprint Test")
-	writeAppFile(t, filepath.Join(root, "tracked.txt"), "base\n")
-	git("add", "tracked.txt")
-	git("commit", "-m", "initial")
-	git("remote", "add", "origin", "https://github.com/example/dotfiles.git")
-	writeAppFile(t, filepath.Join(root, "notes.md"), "notes\n")
-	if code, out := configRun(t, deps, profileDir, "track", root, "--strategy", "git+diff", "--include-untracked", "notes.md"); code != 0 {
-		t.Fatalf("track code=%d out=%s", code, out)
-	}
-	if code, out := configRun(t, deps, profileDir, "capture", "resources"); code != 0 {
-		t.Fatalf("capture code=%d out=%s", code, out)
-	}
-	writeAppFile(t, filepath.Join(root, "tracked.txt"), "edited once\n")
-	session := fingerprintSession(t, deps, profileDir)
-	approved, before := reviewTarget(t, session, "resources", "resource:dotfiles")
-
-	for name, change := range map[string]func(){
-		"worktree patch": func() { writeAppFile(t, filepath.Join(root, "tracked.txt"), "edited twice\n") },
-		"selected untracked file": func() {
-			writeAppFile(t, filepath.Join(root, "notes.md"), "different notes\n")
-		},
+	for _, test := range []struct {
+		name   string
+		change func(t *testing.T, root string)
+	}{
+		{"worktree patch", func(t *testing.T, root string) { writeAppFile(t, filepath.Join(root, "tracked.txt"), "edited twice\n") }},
+		{"selected untracked file", func(t *testing.T, root string) { writeAppFile(t, filepath.Join(root, "notes.md"), "different notes\n") }},
 	} {
-		t.Run(name, func(t *testing.T) {
-			change()
+		// Each case gets its own sandbox so it cannot pass on the other's
+		// mutation.
+		t.Run(test.name, func(t *testing.T) {
+			profileDir, deps, home := resourceSandbox(t)
+			root := filepath.Join(home, "dotfiles")
+			ctx := context.Background()
+			git := func(args ...string) {
+				t.Helper()
+				if _, err := deps.Runner.Run(ctx, "git", append([]string{"-C", root}, args...)...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git("init")
+			git("config", "user.email", "test@example.invalid")
+			git("config", "user.name", "Blueprint Test")
+			writeAppFile(t, filepath.Join(root, "tracked.txt"), "base\n")
+			git("add", "tracked.txt")
+			git("commit", "-m", "initial")
+			git("remote", "add", "origin", "https://github.com/example/dotfiles.git")
+			writeAppFile(t, filepath.Join(root, "notes.md"), "notes\n")
+			if code, out := configRun(t, deps, profileDir, "track", root, "--strategy", "git+diff", "--include-untracked", "notes.md"); code != 0 {
+				t.Fatalf("track code=%d out=%s", code, out)
+			}
+			if code, out := configRun(t, deps, profileDir, "capture", "resources"); code != 0 {
+				t.Fatalf("capture code=%d out=%s", code, out)
+			}
+			writeAppFile(t, filepath.Join(root, "tracked.txt"), "edited once\n")
+			session := fingerprintSession(t, deps, profileDir)
+			approved, before := reviewTarget(t, session, "resources", "resource:dotfiles")
+
+			test.change(t, root)
 			assertMaterialChange(t, session, "resources", "resource:dotfiles", approved, before, workflow.CaptureOutcomeUpdate)
 		})
 	}
@@ -192,4 +198,100 @@ func TestCaptureFingerprintCoversTheShellBaseline(t *testing.T) {
 	// Omarchy changes its default; the user's document is untouched.
 	writeAppFile(t, baseline, strings.Replace(defaultShellJSON, `"lock": 300`, `"lock": 900`, 1))
 	assertMaterialChange(t, session, "shell", "state", approved, before, workflow.CaptureOutcomeAdd)
+}
+
+// inboundLinkSandbox tracks a copy resource with a captured inbound
+// symlink ~/.current → dotfiles/a.txt.
+func inboundLinkSandbox(t *testing.T) (profileDir string, deps Dependencies, retarget func(string), savedTarget func() string) {
+	t.Helper()
+	profileDir, deps, home := resourceSandbox(t)
+	deps.ResourceLinkRoots = func(home string) []resourcesprovider.LinkSearchRoot {
+		return []resourcesprovider.LinkSearchRoot{{Path: home}}
+	}
+	root := filepath.Join(home, "dotfiles")
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		writeAppFile(t, filepath.Join(root, name), name+"\n")
+	}
+	link := filepath.Join(home, ".current")
+	retarget = func(name string) {
+		t.Helper()
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, name), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retarget("a.txt")
+	if code, out := configRun(t, deps, profileDir, "track", root); code != 0 {
+		t.Fatalf("track code=%d out=%s", code, out)
+	}
+	if code, out := configRun(t, deps, profileDir, "capture", "resources"); code != 0 {
+		t.Fatalf("capture code=%d out=%s", code, out)
+	}
+	savedTarget = func() string {
+		t.Helper()
+		saved, err := profile.Load(profileDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range saved.Resources.Links {
+			if item.Origin == "inbound" {
+				return item.Target
+			}
+		}
+		t.Fatalf("no inbound link saved: %#v", saved.Resources.Links)
+		return ""
+	}
+	if got := savedTarget(); got != "a.txt" {
+		t.Fatalf("captured inbound link targets %q, want a.txt", got)
+	}
+	return profileDir, deps, retarget, savedTarget
+}
+
+// An inbound link retargeted after approval changes what Capture would
+// persist for its resource, so the approval no longer holds.
+func TestCaptureApprovalRefusesAnInboundLinkRetargetedAfterReview(t *testing.T) {
+	profileDir, deps, retarget, savedTarget := inboundLinkSandbox(t)
+	retarget("b.txt")
+	session := fingerprintSession(t, deps, profileDir)
+	approved, before := reviewTarget(t, session, "resources", "resource:dotfiles")
+	if before.Outcome != workflow.CaptureOutcomeUpdate {
+		t.Fatalf("review outcome = %s, want update", before.Outcome)
+	}
+
+	retarget("c.txt")
+	_, err := session.CaptureApproved(context.Background(), []string{"resources"}, approved)
+	var changed *workflow.CaptureReviewChangedError
+	if !errors.As(err, &changed) {
+		t.Fatalf("CaptureApproved error = %v, want CaptureReviewChangedError", err)
+	}
+	if got := savedTarget(); got != "a.txt" {
+		t.Fatalf("a refused approval saved the inbound link as %q", got)
+	}
+
+	// Approving the recalculated review captures what it showed.
+	if _, err := session.CaptureApproved(context.Background(), []string{"resources"}, changed.Fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got := savedTarget(); got != "c.txt" {
+		t.Fatalf("re-approved Capture saved the inbound link as %q, want c.txt", got)
+	}
+}
+
+// Capture Preserve freezes a resource's desired state, including the
+// inbound links into it.
+func TestCapturePreserveKeepsAResourcesSavedInboundLinks(t *testing.T) {
+	profileDir, deps, retarget, savedTarget := inboundLinkSandbox(t)
+	session := fingerprintSession(t, deps, profileDir)
+	if err := session.SetPolicy(workflow.PolicyScope{}, policy.AxisCapture, "resources", "resource:dotfiles", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+	retarget("b.txt")
+	if _, err := session.CaptureMany(context.Background(), []string{"resources"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := savedTarget(); got != "a.txt" {
+		t.Fatalf("Capture Preserve rewrote the inbound link to %q, want the saved a.txt", got)
+	}
 }
