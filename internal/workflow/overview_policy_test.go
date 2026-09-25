@@ -2,10 +2,13 @@ package workflow
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
@@ -233,5 +236,151 @@ func TestOverviewListsConfigDifferencesOnlyWhenCaptureOrRestoreWouldAct(t *testi
 		if counts[ref] != want {
 			t.Errorf("%s listed %d times, want %d (items: %#v)", ref, counts[ref], want, overview.Items)
 		}
+	}
+}
+
+// restoringFirefoxProvider plans Restore like the real Packages provider:
+// Restore acts only when the machine's effective options allow it.
+type restoringFirefoxProvider struct {
+	firefoxProvider
+	plan func(RestoreContext) model.RestorePlan
+}
+
+func (p restoringFirefoxProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, rc RestoreContext) (model.RestorePlan, error) {
+	return p.plan(rc), nil
+}
+func (restoringFirefoxProvider) Verify(context.Context, profile.Data, RestoreContext) (model.VerificationResult, error) {
+	return model.VerificationResult{OK: true}, nil
+}
+func (restoringFirefoxProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
+	if op.Resource != "official:firefox" {
+		return nil, false
+	}
+	return []string{op.Resource}, true
+}
+
+// planRunner answers Omarchy detection so Restore can plan.
+type planRunner struct{}
+
+func (planRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	if name == "omarchy" && len(args) == 1 {
+		return "4.0.0", nil
+	}
+	if name == "omarchy" {
+		return "stable", nil
+	}
+	return "", errors.New("not a repository")
+}
+
+func restoreOverviewSession(t *testing.T, machine profile.Machine, provider Provider) *Session {
+	t.Helper()
+	profileDir, stateHome := t.TempDir(), t.TempDir()
+	data := profile.New("test", time.Now())
+	data.Machines.Items = []profile.Machine{machine}
+	if err := profile.Save(profileDir, data); err != nil {
+		t.Fatal(err)
+	}
+	session, err := Open(Dependencies{Runner: planRunner{}, Now: func() time.Time { return time.Unix(1, 0) }, StateHome: func() (string, error) { return stateHome, nil }}, Options{ProfileDir: profileDir, ExplicitMachine: machine.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetProviders([]Provider{provider}); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+// Restore candidacy must come from the Restore plan under the machine's
+// effective options, not from Restore policy alone: with Capture preserving
+// the profile and Restore set to Apply, a difference Restore would leave
+// alone is intentional, not a change available.
+func TestOverviewRestoreCandidacyFollowsTheMachinesRestoreOptions(t *testing.T) {
+	remove := model.Operation{ID: "packages.remove.official.firefox", Provider: "packages", Action: "remove", Resource: "official:firefox", Items: []string{"firefox"}}
+	overwrite := model.Operation{ID: "packages.install.official", Provider: "packages", Action: "install", Resource: "official:firefox", Items: []string{"firefox"}}
+	skipped := model.Skipped{Provider: "packages", Resource: "official:firefox", Reason: "existing state differs; overwrite disabled"}
+	// Desired absent in the profile, but installed on this machine.
+	desiredAbsent := firefoxTarget()
+	desiredAbsent.Desired, desiredAbsent.Current = TargetAbsent, TargetPresent
+	added := model.Change{Type: model.ChangeAdd, Provider: "packages", Kind: "official", Name: "firefox", Summary: "+ official package firefox"}
+	for _, test := range []struct {
+		name    string
+		options profile.Machine
+		plan    func(RestoreContext) model.RestorePlan
+		want    AttentionSeverity
+		reason  string
+	}{
+		{
+			name: "Additive keeps a desired-absent package installed",
+			plan: func(rc RestoreContext) model.RestorePlan {
+				if rc.Options.Convergence == policy.ConvergenceExact {
+					return model.RestorePlan{Operations: []model.Operation{remove}}
+				}
+				return model.RestorePlan{}
+			},
+			want: AttentionIntentional, reason: "Safe + Additive",
+		},
+		{
+			name:    "Exact removes it",
+			options: profile.Machine{RestoreConvergence: policy.ConvergenceExact},
+			plan: func(rc RestoreContext) model.RestorePlan {
+				if rc.Options.Convergence == policy.ConvergenceExact {
+					return model.RestorePlan{Operations: []model.Operation{remove}}
+				}
+				return model.RestorePlan{}
+			},
+			want: AttentionDrift,
+		},
+		{
+			name: "Safe skips a conflicting overwrite",
+			plan: func(rc RestoreContext) model.RestorePlan {
+				if rc.Options.Conflicts == policy.ConflictForce {
+					return model.RestorePlan{Operations: []model.Operation{overwrite}}
+				}
+				return model.RestorePlan{Skipped: []model.Skipped{skipped}}
+			},
+			want: AttentionIntentional, reason: "Safe + Additive",
+		},
+		{
+			name:    "Force overwrites it",
+			options: profile.Machine{RestoreConflicts: policy.ConflictForce},
+			plan: func(rc RestoreContext) model.RestorePlan {
+				if rc.Options.Conflicts == policy.ConflictForce {
+					return model.RestorePlan{Operations: []model.Operation{overwrite}}
+				}
+				return model.RestorePlan{Skipped: []model.Skipped{skipped}}
+			},
+			want: AttentionDrift,
+		},
+		{
+			name: "an operation the provider cannot attribute stays actionable",
+			plan: func(RestoreContext) model.RestorePlan {
+				return model.RestorePlan{Operations: []model.Operation{{ID: "packages.mystery", Provider: "packages", Action: "run", Resource: "mystery"}}}
+			},
+			want: AttentionDrift,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			machine := test.options
+			machine.Name = "desktop"
+			provider := restoringFirefoxProvider{firefoxProvider: firefoxProvider{target: desiredAbsent, changes: []model.Change{added}}, plan: test.plan}
+			session := restoreOverviewSession(t, machine, provider)
+			if err := session.SetPolicy(PolicyScope{Machine: "desktop"}, policy.AxisCapture, "packages", "official:firefox", policy.SettingDisabled); err != nil {
+				t.Fatal(err)
+			}
+			overview, err := session.Overview(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := firefoxItem(t, overview)
+			if item.Severity != test.want {
+				t.Fatalf("severity = %s, want %s (reason %q)", item.Severity, test.want, item.Reason)
+			}
+			if test.reason != "" && !strings.Contains(item.Reason, test.reason) {
+				t.Fatalf("reason %q should name the Restore options %q", item.Reason, test.reason)
+			}
+			if got := containsString(overview.Healthy, "packages"); got != (test.want == AttentionIntentional) {
+				t.Fatalf("packages healthy = %v for a %s difference", got, test.want)
+			}
+		})
 	}
 }

@@ -89,81 +89,100 @@ func (resourcesStateProvider) ChangeTargetKey(change model.Change) (string, bool
 	return "", false
 }
 
-// Each RestoreOperationTargetKey below maps one provider's Restore plan
+// Each RestoreOperationTargetKeys below maps one provider's Restore plan
 // operations onto its InspectTargets keys (see
 // workflow.RestoreTargetResolver). Unrecognised operations return ok=false,
 // so workflow treats them conservatively.
 
-func (p restoreProviderAdapter) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+func (p restoreProviderAdapter) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
 	resolver, ok := p.stateProvider.(workflow.RestoreTargetResolver)
 	if !ok {
-		return "", false
+		return nil, false
 	}
-	return resolver.RestoreOperationTargetKey(op)
+	return resolver.RestoreOperationTargetKeys(op)
 }
 
-func (packagesStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
-	for _, prefix := range []string{"official:", "aur:", "mise:", "preinstall:"} {
-		if strings.HasPrefix(op.Resource, prefix) {
-			return op.Resource, true
-		}
-	}
+// Package installs are batched per kind ("official:a,b"), so each listed
+// item is its own target. The Mise guard only protects the declaration,
+// and the declaration write changes every listed tool.
+func (packagesStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
 	if op.Resource == "preinstalls" {
-		return "preinstalls", true
+		return []string{"preinstalls"}, true
 	}
-	return "", false
+	if op.Resource == "mise:global-tools" {
+		if op.Action == "verify" {
+			return nil, true
+		}
+		return prefixed("mise:", op.Items), op.Action == "configure"
+	}
+	for _, kind := range []string{"official", "aur", "mise", "preinstall"} {
+		if !strings.HasPrefix(op.Resource, kind+":") {
+			continue
+		}
+		if len(op.Items) == 0 {
+			return []string{op.Resource}, true
+		}
+		return prefixed(kind+":", op.Items), true
+	}
+	return nil, false
 }
 
-func (themesStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+func prefixed(prefix string, items []string) []string {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		keys = append(keys, prefix+item)
+	}
+	return keys
+}
+
+func singleKey(key string, ok bool) ([]string, bool) {
+	if !ok {
+		return nil, false
+	}
+	return []string{key}, true
+}
+
+func (themesStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
 	if op.Action == "activate" {
-		return "active", true
+		return []string{"active"}, true
 	}
-	if strings.HasPrefix(op.Resource, "theme:") {
-		return op.Resource, true
-	}
-	return "", false
+	return singleKey(op.Resource, strings.HasPrefix(op.Resource, "theme:"))
 }
 
-func (pluginsStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
-	if strings.HasPrefix(op.Resource, "plugin:") {
-		return op.Resource, true
-	}
-	return "", false
+func (pluginsStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
+	return singleKey(op.Resource, strings.HasPrefix(op.Resource, "plugin:"))
 }
 
 // Reloading Hyprland supports other Config operations; it targets no path.
-func (configStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+func (configStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
 	if op.Action == "reload" {
-		return "", true
+		return nil, true
 	}
-	return strings.CutPrefix(op.Resource, "config:")
+	return singleKey(strings.CutPrefix(op.Resource, "config:"))
 }
 
-func (defaultsStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
-	return strings.CutPrefix(op.Resource, "default:")
+func (defaultsStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
+	return singleKey(strings.CutPrefix(op.Resource, "default:"))
 }
 
 // Shell has a single whole-category target; restarting the shell only
 // supports writing it.
-func (shellStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+func (shellStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
 	switch {
 	case op.Action == "restart":
-		return "", true
+		return nil, true
 	case strings.HasPrefix(op.Resource, "shell:"):
-		return "state", true
+		return []string{"state"}, true
 	}
-	return "", false
+	return nil, false
 }
 
-func (hooksStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
-	return strings.CutPrefix(op.Resource, "hook:")
+func (hooksStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
+	return singleKey(strings.CutPrefix(op.Resource, "hook:"))
 }
 
 // Resource links are not policy targets, so a link operation stays
 // unattributed.
-func (resourcesStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
-	if strings.HasPrefix(op.Resource, "resource:") {
-		return op.Resource, true
-	}
-	return "", false
+func (resourcesStateProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
+	return singleKey(op.Resource, strings.HasPrefix(op.Resource, "resource:"))
 }

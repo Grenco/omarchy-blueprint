@@ -212,13 +212,14 @@ type ChangeTargetResolver interface {
 }
 
 // RestoreTargetResolver is implemented by providers that can attribute each
-// operation in their Restore plan to the policy target key it acts on, so
-// workflow can tell whether a difference is really a Restore candidate
-// under the machine's effective Restore intent. ok=false means the
-// operation cannot be attributed; ok=true with an empty key means it only
-// supports other operations (e.g. reloading Hyprland) and targets nothing.
+// operation in their Restore plan to the policy target keys it acts on (a
+// batched package install acts on several), so workflow can tell whether a
+// difference is really a Restore candidate under the machine's effective
+// Restore intent. ok=false means the operation cannot be attributed; ok=true
+// with no keys means it only supports other operations (e.g. reloading
+// Hyprland) and targets nothing.
 type RestoreTargetResolver interface {
-	RestoreOperationTargetKey(op model.Operation) (key string, ok bool)
+	RestoreOperationTargetKeys(op model.Operation) (keys []string, ok bool)
 }
 
 // targetDifferences reports, per target key, whether the provider's current

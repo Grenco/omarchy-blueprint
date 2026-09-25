@@ -1,6 +1,7 @@
 package app
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -67,28 +68,34 @@ func TestProvidersAttributeRestoreOperationsToTargetKeys(t *testing.T) {
 		name     string
 		provider stateProvider
 		op       model.Operation
-		key      string
+		keys     []string
 		ok       bool
 	}{
-		{"theme install", &themesStateProvider{}, model.Operation{Action: "install", Resource: "theme:nord"}, "theme:nord", true},
-		{"theme activation", &themesStateProvider{}, model.Operation{Action: "activate", Resource: "theme:nord"}, "active", true},
-		{"plugin", &pluginsStateProvider{}, model.Operation{Resource: "plugin:weather"}, "plugin:weather", true},
-		{"default application", defaultsStateProvider{}, model.Operation{Resource: "default:browser"}, "browser", true},
-		{"shell write", shellStateProvider{}, model.Operation{Action: "write", Resource: "shell:state"}, "state", true},
-		{"shell restart supports the write", shellStateProvider{}, model.Operation{Action: "restart", Resource: "shell:runtime"}, "", true},
-		{"config reload supports the writes", configStateProvider{}, model.Operation{Action: "reload", Resource: "config:hyprctl"}, "", true},
-		{"resource", &resourcesStateProvider{}, model.Operation{Resource: "resource:projects"}, "resource:projects", true},
-		{"resource link has no policy target", &resourcesStateProvider{}, model.Operation{Resource: "link:x"}, "", false},
-		{"package removal by absence ref", packagesStateProvider{}, model.Operation{Action: "remove", Resource: "mise:node"}, "mise:node", true},
+		{"batched official install", packagesStateProvider{}, model.Operation{Action: "install", Resource: "official:bat,ripgrep", Items: []string{"bat", "ripgrep"}}, []string{"official:bat", "official:ripgrep"}, true},
+		{"batched mise install", packagesStateProvider{}, model.Operation{Action: "install", Resource: "mise:node,go", Items: []string{"node", "go"}}, []string{"mise:node", "mise:go"}, true},
+		{"mise declaration write", packagesStateProvider{}, model.Operation{Action: "configure", Resource: "mise:global-tools", Items: []string{"node"}}, []string{"mise:node"}, true},
+		{"mise declaration guard", packagesStateProvider{}, model.Operation{Action: "verify", Resource: "mise:global-tools"}, nil, true},
+		{"package removal by absence ref", packagesStateProvider{}, model.Operation{Action: "remove", Resource: "mise:node", Items: []string{"node"}}, []string{"mise:node"}, true},
+		{"preinstall group", packagesStateProvider{}, model.Operation{Action: "install", Resource: "preinstalls"}, []string{"preinstalls"}, true},
+		{"preinstall item", packagesStateProvider{}, model.Operation{Action: "remove", Resource: "preinstall:obsidian", Items: []string{"obsidian"}}, []string{"preinstall:obsidian"}, true},
+		{"theme install", &themesStateProvider{}, model.Operation{Action: "install", Resource: "theme:nord"}, []string{"theme:nord"}, true},
+		{"theme activation", &themesStateProvider{}, model.Operation{Action: "activate", Resource: "theme:nord"}, []string{"active"}, true},
+		{"plugin", &pluginsStateProvider{}, model.Operation{Resource: "plugin:weather"}, []string{"plugin:weather"}, true},
+		{"default application", defaultsStateProvider{}, model.Operation{Resource: "default:browser"}, []string{"browser"}, true},
+		{"shell write", shellStateProvider{}, model.Operation{Action: "write", Resource: "shell:config"}, []string{"state"}, true},
+		{"shell restart supports the write", shellStateProvider{}, model.Operation{Action: "restart", Resource: "shell:runtime"}, nil, true},
+		{"config reload supports the writes", configStateProvider{}, model.Operation{Action: "reload", Resource: "config:hyprctl"}, nil, true},
+		{"resource", &resourcesStateProvider{}, model.Operation{Resource: "resource:projects"}, []string{"resource:projects"}, true},
+		{"resource link has no policy target", &resourcesStateProvider{}, model.Operation{Resource: "link:x"}, nil, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resolver, ok := test.provider.(workflow.RestoreTargetResolver)
 			if !ok {
 				t.Fatalf("%T does not attribute Restore operations", test.provider)
 			}
-			key, attributed := resolver.RestoreOperationTargetKey(test.op)
-			if key != test.key || attributed != test.ok {
-				t.Fatalf("RestoreOperationTargetKey(%+v) = (%q, %v), want (%q, %v)", test.op, key, attributed, test.key, test.ok)
+			keys, attributed := resolver.RestoreOperationTargetKeys(test.op)
+			if !reflect.DeepEqual(keys, test.keys) || attributed != test.ok {
+				t.Fatalf("RestoreOperationTargetKeys(%+v) = (%q, %v), want (%q, %v)", test.op, keys, attributed, test.keys, test.ok)
 			}
 		})
 	}

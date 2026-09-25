@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	configprovider "github.com/Grenco/omarchy-blueprint/internal/providers/config"
@@ -160,10 +162,13 @@ func hasActionable(items []AttentionItem) bool {
 
 // differenceClassifier decides whether a factual difference is an
 // intentional machine difference: neither Capture nor Restore would act on
-// it for the active machine, and policy (not merely a safety block) is why.
-// Anything it cannot attribute or resolve stays actionable, so a real
-// difference is never hidden by accident. Targets are inspected lazily,
-// only for categories that actually report differences.
+// it for the active machine, and intent (policy, or the machine's Restore
+// options) rather than merely a safety block is why. Capture candidacy
+// follows the same outcome the Capture review shows; Restore candidacy
+// comes from the real Restore plan under the machine's effective options.
+// Anything it cannot attribute, resolve, or plan stays actionable, so a
+// real difference is never hidden by accident. Targets are inspected, and
+// Restore planned, lazily and only for categories that need it.
 type differenceClassifier struct {
 	ctx      context.Context
 	session  *Session
@@ -171,6 +176,13 @@ type differenceClassifier struct {
 	provider Provider
 	targets  map[string]TargetInspection
 	loaded   bool
+
+	planned bool
+	// restoreAll is set when the plan cannot be attributed target by
+	// target, so every difference is conservatively a Restore candidate.
+	restoreAll     bool
+	restoreKeys    map[string]bool
+	restoreOptions policy.RestoreOptions
 }
 
 func (s *Session) newDifferenceClassifier(ctx context.Context, category string) *differenceClassifier {
@@ -206,6 +218,35 @@ func (c *differenceClassifier) target(key string) (TargetInspection, bool) {
 	return target, ok
 }
 
+// restoreCandidate reports whether this category's Restore plan, under the
+// machine's effective Restore options, has an operation acting on key.
+func (c *differenceClassifier) restoreCandidate(key string) bool {
+	if !c.planned {
+		c.planned = true
+		resolver, ok := c.provider.(RestoreTargetResolver)
+		plan, _, _, options, err := c.session.restorePlan(c.ctx, c.category, nil)
+		if !ok || err != nil {
+			c.restoreAll = true
+			return true
+		}
+		c.restoreOptions, c.restoreKeys = options, map[string]bool{}
+		for _, op := range plan.Operations {
+			if op.Provider != c.category {
+				continue
+			}
+			keys, ok := resolver.RestoreOperationTargetKeys(op)
+			if !ok {
+				c.restoreAll = true
+				break
+			}
+			for _, key := range keys {
+				c.restoreKeys[key] = true
+			}
+		}
+	}
+	return c.restoreAll || c.restoreKeys[key]
+}
+
 func (c *differenceClassifier) classify(item *AttentionItem, key string, attributed bool) {
 	if !attributed {
 		return
@@ -222,20 +263,32 @@ func (c *differenceClassifier) classify(item *AttentionItem, key string, attribu
 	if err != nil {
 		return
 	}
-	if (target.CaptureEligible && capture.Capture) || (target.RestoreEligible && restore.Restore) {
+	// The change itself says this target differs from saved state.
+	if (CaptureTarget{Outcome: captureOutcomeFor(target, capture, true), Decision: capture}).ReviewGroup() == CaptureReviewChanges {
+		return
+	}
+	restoreWanted := target.RestoreEligible && restore.Restore
+	if restoreWanted && c.restoreCandidate(key) {
 		return
 	}
 	captureByPolicy := target.CaptureEligible && !capture.Capture
 	restoreByPolicy := target.RestoreEligible && !restore.Restore
-	if !captureByPolicy && !restoreByPolicy {
+	if !captureByPolicy && !restoreByPolicy && !restoreWanted {
 		return
 	}
-	captureReason, restoreReason := "Capture cannot change it for safety reasons", "Restore cannot apply it for safety reasons"
-	if captureByPolicy {
+	captureReason := "Capture has nothing to record"
+	switch {
+	case !target.CaptureEligible:
+		captureReason = "Capture cannot change it for safety reasons"
+	case captureByPolicy:
 		captureReason = "Capture preserves the profile's saved state"
 	}
-	if restoreByPolicy {
+	restoreReason := "Restore cannot apply it for safety reasons"
+	switch {
+	case restoreByPolicy:
 		restoreReason = "Restore skips it"
+	case restoreWanted:
+		restoreReason = "Restore leaves it as is with " + restoreOptionsLabel(c.restoreOptions) + " options"
 	}
 	where := "under Profile defaults"
 	if machine := c.session.machine.Name; machine != "" {
@@ -243,6 +296,16 @@ func (c *differenceClassifier) classify(item *AttentionItem, key string, attribu
 	}
 	item.Severity = AttentionIntentional
 	item.Reason = captureReason + " and " + restoreReason + " " + where + "."
+}
+
+func restoreOptionsLabel(options policy.RestoreOptions) string {
+	title := func(value string) string {
+		if value == "" {
+			return value
+		}
+		return strings.ToUpper(value[:1]) + value[1:]
+	}
+	return title(string(options.Conflicts)) + " + " + title(string(options.Convergence))
 }
 
 func managedProfileChanges(status profilegit.Status) int {

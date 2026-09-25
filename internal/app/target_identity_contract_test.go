@@ -47,7 +47,9 @@ func TestProviderTargetIdentityContract(t *testing.T) {
 	write(filepath.Join(userRoot, "hypr", "kept.lua"), "kept", 0o644)
 	write(filepath.Join(userRoot, "hypr", "removed.lua"), "removed", 0o644)
 	runner := deps.Runner.(*machineRunner)
-	runner.official["ripgrep"] = true
+	// Two saved packages so Restore batches their reinstall into one
+	// operation ("official:bat,ripgrep").
+	runner.official["ripgrep"], runner.official["bat"] = true, true
 	for _, category := range []string{"packages", "config", "hooks"} {
 		if code, out := configRun(t, deps, profileDir, "capture", category); code != 0 {
 			t.Fatalf("capture %s code=%d out=%s", category, code, out)
@@ -66,6 +68,7 @@ func TestProviderTargetIdentityContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(runner.official, "ripgrep")
+	delete(runner.official, "bat")
 	runner.official["fzf"] = true
 
 	opt := &options{profileDir: profileDir}
@@ -130,17 +133,24 @@ func TestProviderTargetIdentityContract(t *testing.T) {
 			t.Errorf("%s does not attribute Restore operations", op.Provider)
 			continue
 		}
-		key, ok := resolver.RestoreOperationTargetKey(op)
-		if ok && key == "" {
-			continue // a supporting operation such as a reload targets nothing
-		}
-		if !ok || !inventories[op.Provider][key] {
-			t.Errorf("%s Restore operation %s (%s) maps to %q (ok=%v), which InspectTargets does not report", op.Provider, op.ID, op.Resource, key, ok)
+		keys, ok := resolver.RestoreOperationTargetKeys(op)
+		if !ok {
+			t.Errorf("%s cannot attribute Restore operation %s (%s)", op.Provider, op.ID, op.Resource)
 			continue
 		}
-		planned[op.Provider]++
+		// A supporting operation such as a reload targets nothing.
+		for _, key := range keys {
+			if !inventories[op.Provider][key] {
+				t.Errorf("%s Restore operation %s (%s) maps to %q, which InspectTargets does not report", op.Provider, op.ID, op.Resource, key)
+				continue
+			}
+			planned[op.Provider]++
+		}
 	}
 
+	if planned["packages"] < 2 {
+		t.Errorf("fixture planned %d package targets, want the batched reinstall of both", planned["packages"])
+	}
 	for _, category := range []string{"packages", "config", "hooks"} {
 		if attributed[category] == 0 {
 			t.Errorf("fixture produced no attributable %s Diff changes; the contract was not exercised", category)
