@@ -2,8 +2,6 @@ name: Reconstruction Harness
 
 on:
   workflow_dispatch:
-  push:
-    branches: [test/reconstruction-harness] # Temporary: exercise an unregistered branch-only workflow.
 
 permissions:
   contents: read
