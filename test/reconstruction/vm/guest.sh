@@ -26,7 +26,7 @@ ra_guest_start() {
     -drive if=pflash,format=raw,file="$RA_WORK/guests/$role.vars.fd" \
     -drive file="$RA_WORK/guests/$role.qcow2",format=qcow2,if=none,id=disk \
     -device virtio-blk-pci,drive=disk,bootindex=1 \
-    -netdev "user,id=n0,hostfwd=tcp::${RA_SSH_PORT}-:22" -device virtio-net-pci,netdev=n0 &
+    -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${RA_SSH_PORT}-:22" -device virtio-net-pci,netdev=n0 &
   RA_GUEST_PID=$!
   RA_ACTIVE_GUEST=$role
   ra_cleanup_add ra_kill_if_running "$RA_GUEST_PID"
