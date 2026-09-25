@@ -156,7 +156,8 @@ jobs:
           cd /mnt/spike
           # Keep a VGA console: the official installer only runs on guest tty1.
           qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m 8192 \
-            -display none -vga std -serial file:omarchy-serial.log -monitor none \
+            -display none -vga std -serial file:omarchy-serial.log \
+            -monitor unix:monitor.sock,server,nowait \
             -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -drive if=pflash,format=raw,file=vars.fd \
             -drive file=omarchy.qcow2,format=qcow2,if=none,id=disk \
@@ -164,25 +165,40 @@ jobs:
             -drive file=omarchy.iso,format=raw,media=cdrom,if=none,id=installer \
             -device ide-cd,drive=installer,bootindex=2 \
             -drive file=cidata.iso,format=raw,media=cdrom,if=none,id=seed \
-            -device ide-cd,drive=seed \
+            -device ide-cd,drive=seed,bus=ide.1 \
             -netdev user,id=n0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=n0 &
           pid=$!
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
-          for i in {1..900}; do
+          cleanup() {
+            python3 - <<'PY' || true
+          import socket
+          with socket.socket(socket.AF_UNIX) as monitor:
+              monitor.settimeout(2)
+              monitor.connect('monitor.sock')
+              monitor.sendall(b'screendump /mnt/spike/guest-screen.ppm\n')
+          PY
+            kill "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          min_free=$(df -B1 --output=avail /mnt | tail -1)
+          for i in {1..300}; do
+            free_now=$(df -B1 --output=avail /mnt | tail -1)
+            (( free_now < min_free )) && min_free=$free_now
             if ssh -p 2222 -i guest_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 -o ConnectTimeout=2 -o BatchMode=yes spike@127.0.0.1 \
                 'test "$(cat /proc/1/comm)" = systemd && systemctl show -p Version && command -v pacman && command -v git && test -d "$HOME" && command -v omarchy && pacman -Q omarchy-keyring' \
                 >guest-checks.log 2>&1; then
               echo "GUEST_BOOT=yes" >> "$GITHUB_ENV"
               echo "install_and_boot_seconds=$(($(date +%s)-install_start))" >> "$GITHUB_ENV"
+              echo "minimum_host_free_bytes=$min_free" >> "$GITHUB_ENV"
               ssh -p 2222 -i guest_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                spike@127.0.0.1 'systemctl --version; pacman --version; git --version; command -v omarchy; ls -ld "$HOME"; ls ~/.local/share/omarchy; systemctl is-active sshd' >>guest-checks.log 2>&1
+                spike@127.0.0.1 'systemd-analyze; systemctl --version; pacman --version; git --version; command -v omarchy; ls -ld "$HOME"; ls ~/.local/share/omarchy; systemctl is-active sshd' >>guest-checks.log 2>&1
               exit 0
             fi
             if ! kill -0 "$pid" 2>/dev/null; then echo 'QEMU exited during install/boot' >&2; exit 1; fi
             sleep 3
           done
-          echo 'Guest did not pass real system checks within 45 minutes; check serial and disk' >&2
+          echo "minimum_host_free_bytes=$min_free" >> "$GITHUB_ENV"
+          echo 'Guest did not pass real system checks within 15 minutes; check screenshot and serial' >&2
           exit 1
 
       - name: Report and preserve small diagnostics
@@ -190,7 +206,7 @@ jobs:
         shell: bash
         run: |
           echo "## Omarchy VM feasibility spike" >> "$GITHUB_STEP_SUMMARY"
-          for name in KVM NESTED_BOOT GUEST_BOOT disk_before disk_after_deps install_and_boot_seconds; do
+          for name in KVM NESTED_BOOT GUEST_BOOT disk_before disk_after_deps minimum_host_free_bytes install_and_boot_seconds; do
             value="${!name:-unknown}"
             echo "$name=$value" | tee -a "$GITHUB_STEP_SUMMARY"
           done
@@ -213,4 +229,5 @@ jobs:
             /mnt/spike/smoke.log
             /mnt/spike/omarchy-serial.log
             /mnt/spike/guest-checks.log
+            /mnt/spike/guest-screen.ppm
           if-no-files-found: ignore
