@@ -31,4 +31,18 @@ ra_pass INFRASTRUCTURE
 source "$RA_ROOT/vm/install-omarchy.sh"
 ra_phase OMARCHY_INSTALL
 ra_install_base "$RA_WORK"
+
+source "$RA_ROOT/vm/guest.sh"
+for role in source target; do
+  ra_guest_create "$role"
+  ra_guest_start "$role" "blueprint-ra-$role"
+  ra_guest_freshen_identity "$role" "blueprint-ra-$role"
+  if [[ $role == target ]]; then
+    source_id=$(<"$RA_ARTIFACTS/source/machine-id.txt")
+    target_id=$(<"$RA_ARTIFACTS/target/machine-id.txt")
+    [[ $source_id != "$target_id" ]] || ra_fail OMARCHY_INSTALL "source and target share machine identity"
+  fi
+  ra_guest_stop "$role"
+  rm -f "$RA_WORK/guests/$role.qcow2" "$RA_WORK/guests/$role.vars.fd"
+done
 ra_pass OMARCHY_INSTALL

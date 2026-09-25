@@ -11,6 +11,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HarnessLifecycleTests(unittest.TestCase):
+    def test_guest_start_requires_created_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", "-c", f"source '{ROOT}/lib/common.sh'; "
+                 f"source '{ROOT}/vm/guest.sh'; ra_guest_start source blueprint-ra-source"],
+                env={**os.environ, "RA_WORK": directory},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("overlay missing", result.stderr)
+
+    def test_guest_start_refuses_second_active_guest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", "-c", f"source '{ROOT}/lib/common.sh'; "
+                 f"source '{ROOT}/vm/guest.sh'; RA_ACTIVE_GUEST=source; "
+                 "ra_guest_start target blueprint-ra-target"],
+                env={**os.environ, "RA_WORK": directory},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("guest source is still active", result.stderr)
+
     def test_insufficient_host_disk_stops_before_iso_download(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(
