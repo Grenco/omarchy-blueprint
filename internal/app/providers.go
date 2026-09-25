@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -245,12 +248,25 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 	for _, item := range current.Items {
 		currentByID[item.ID] = item
 	}
+	// Capture also rebuilds each copy resource's internal links.
+	linksBySource := map[string][]profile.ResourceLink{}
+	for _, link := range current.Links {
+		if link.Origin == "resource" {
+			linksBySource[link.SourceResource] = append(linksBySource[link.SourceResource], link)
+		}
+	}
 	targets := make([]workflow.TargetInspection, 0, len(d.Resources.Items))
 	for _, item := range d.Resources.Items {
 		present, fingerprint := false, ""
 		if live, ok := currentByID[item.ID]; ok {
 			present = !resourceMissing(live)
-			fingerprint = targetFingerprint(live.Hash, live.Revision)
+			// The whole detected entry, as Capture would persist it: content
+			// hash and mode, Git remote/branch/revision, patch hashes, and
+			// selected untracked files.
+			fingerprint = canonicalFingerprint(struct {
+				Resource profile.Resource
+				Links    []profile.ResourceLink
+			}{live, linksBySource[item.ID]})
 		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "resource:" + item.ID,
@@ -272,10 +288,18 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 	return targets, nil
 }
 
-// targetFingerprint joins the parts of a target's current value that
-// Capture records into workflow.TargetInspection's opaque Fingerprint.
-func targetFingerprint(parts ...string) string {
-	return strings.Join(parts, "\x1f")
+// canonicalFingerprint digests the detected value a provider's Capture
+// consumes for one target, for workflow.TargetInspection.Fingerprint.
+// Fingerprinting the whole detection object, rather than chosen fields,
+// keeps newly persisted fields inside the approval contract.
+func canonicalFingerprint(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		// Never collapse distinct values onto one fingerprint.
+		return "unencodable:" + err.Error() + ":" + fmt.Sprintf("%#v", value)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 // resourceMissing mirrors how Detect itself recognizes a resource whose
@@ -714,7 +738,7 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 		fingerprint := ""
 		if id, ok := strings.CutPrefix(key, "mise:"); ok {
 			if tool, found := current.Mise[id]; found {
-				fingerprint = fmt.Sprintf("%+v", tool)
+				fingerprint = canonicalFingerprint(tool)
 			}
 		}
 		targets = append(targets, workflow.TargetInspection{
@@ -1228,7 +1252,7 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	for _, theme := range current.Items {
 		if theme.Type != "builtin" {
 			currentThemes[theme.ID] = true
-			themeFingerprints[theme.ID] = targetFingerprint(theme.Type, theme.URL, theme.Revision, theme.Hash, fmt.Sprint(theme.Enabled))
+			themeFingerprints[theme.ID] = canonicalFingerprint(theme)
 		}
 	}
 	absentThemes := map[string]bool{}
@@ -1633,7 +1657,7 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	for _, plugin := range current.Items {
 		if plugin.Source != "builtin" {
 			currentThirdParty[plugin.ID] = true
-			pluginFingerprints[plugin.ID] = targetFingerprint(plugin.Source, plugin.URL, plugin.Revision, plugin.Hash, plugin.ClonedFrom, fmt.Sprint(plugin.Enabled))
+			pluginFingerprints[plugin.ID] = canonicalFingerprint(plugin)
 		}
 	}
 	absentThirdParty := map[string]bool{}
@@ -2095,7 +2119,9 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			NoActionableUpdate: configCaptureInert(candidate.Classification),
 			RecordsNewAbsence:  configRecordsNewAbsence(candidate.Classification),
 		})
-		target.Fingerprint = targetFingerprint(candidate.UserHash, candidate.UserMode)
+		// The whole candidate: Capture persists the Omarchy baseline
+		// hash/mode alongside the user's, including in deletion tombstones.
+		target.Fingerprint = canonicalFingerprint(candidate)
 		targets = append(targets, target)
 	}
 
@@ -2652,11 +2678,13 @@ func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 		eligible, reason = false, "Shell version is unsupported"
 	}
 	return []workflow.TargetInspection{{
-		Key:             "state",
-		Label:           "state",
-		Desired:         desiredPresence(d.Shell.Hash != ""),
-		Current:         currentPresence(current.Status == shellprovider.StatusCustomized),
-		Fingerprint:     current.Hash,
+		Key:     "state",
+		Label:   "state",
+		Desired: desiredPresence(d.Shell.Hash != ""),
+		Current: currentPresence(current.Status == shellprovider.StatusCustomized),
+		// Capture persists the version and Omarchy baseline as well as the
+		// user document.
+		Fingerprint:     canonicalFingerprint(current),
 		CaptureEligible: eligible,
 		RestoreEligible: eligible,
 		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
@@ -2847,7 +2875,7 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	hookFingerprints := map[string]string{}
 	for _, hook := range current.Items {
 		currentManaged[hook.Path] = true
-		hookFingerprints[hook.Path] = targetFingerprint(hook.Hash, hook.Mode)
+		hookFingerprints[hook.Path] = canonicalFingerprint(profile.Hook{Path: hook.Path, Hash: hook.Hash, Mode: hook.Mode})
 	}
 	for _, hook := range d.Hooks.Absent {
 		absent[hook.Path] = true
