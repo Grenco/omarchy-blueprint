@@ -26,6 +26,10 @@ jobs:
           df -h / /mnt
           echo "disk_before=$(df -B1 --output=avail /mnt | tail -1)" >> "$GITHUB_ENV"
           if [[ -e /dev/kvm ]]; then ls -l /dev/kvm; else echo '/dev/kvm missing'; fi
+          if [[ -e /dev/kvm && ! -w /dev/kvm ]]; then
+            sudo chgrp "$(id -gn)" /dev/kvm
+            ls -l /dev/kvm
+          fi
           if [[ -r /dev/kvm && -w /dev/kvm ]]; then
             echo 'KVM=yes' >> "$GITHUB_ENV"
           else
