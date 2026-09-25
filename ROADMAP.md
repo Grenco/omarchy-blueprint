@@ -220,6 +220,24 @@ Omarchy Blueprint should complement Omarchy rather than create a parallel config
 
 ---
 
+## 4.7 Automation never bypasses the safety model
+
+Blueprint's core promise remains: safely reconstruct selected meaningful state.
+Automation must not weaken `inspect → calculate → preview → approve → apply →
+verify`; unattended execution is only permitted where policy and safety
+explicitly allow it.
+
+Capture policy, Restore policy, automation permission, and safety are
+independent concepts. `Restore Apply` means Restore may act on a target when
+run; it does not mean the change is safe to apply unattended.
+
+Multi-machine sync operates on semantic desired state, not blind filesystem
+synchronization. Machine-specific policy remains meaningful during sync: a state
+change published by one machine may apply, be preserved, or require review on
+another.
+
+---
+
 # 5. Core concepts
 
 ## 5.1 Profile
@@ -2335,6 +2353,10 @@ history
 
 # 58. Implementation phases
 
+Phases 0–6 describe the foundation already built; the Release roadmap records
+what each delivered. From Phase 7 onward the phases are a dependency sequence:
+each tranche relies on the previous one being trustworthy.
+
 ## Phase 0 — Research / prototype
 
 Goal:
@@ -2459,7 +2481,7 @@ Overview decision inbox
 Config review and policy
 Resource discovery and inspection
 machine selection and resource mapping
-restore planner and Normal/Forced consequence comparison
+restore planner with Safe/Force and Additive/Exact consequence comparison
 profile Git Sync
 ```
 
@@ -2515,6 +2537,10 @@ semantic commit generation
 
 Do not attempt to replace Git itself.
 
+Profile Git Sync v1 delivered the explicit, reviewed part of this phase.
+Automatic profile commits and unattended push/pull belong to Auto Sync, after
+the Sync Engine, rather than being Git conveniences on their own.
+
 ---
 
 # 64. Phase 6 — Machine overlays
@@ -2534,25 +2560,164 @@ Avoid creating a configuration programming language.
 
 ---
 
-# 65. Phase 7 — Migration engine
+# 65. Phase 7 — Reconstruction assurance
+
+The immediate next piece of work.
+
+Establish an automated, repeatable end-to-end acceptance harness around
+Blueprint's core promise:
+
+```text
+capture
+→ profile
+→ fresh compatible Omarchy environment
+→ restore
+→ verify
+```
+
+Cover:
+
+```text
+representative portable state (packages, themes, plugins, shell, config,
+  hooks, defaults, Resources including Git-backed ones)
+machine-aware behaviour (Resource path mappings, per-machine Capture/Restore
+  policy, Safe/Force and Additive/Exact restore options)
+important failure and safety behaviour where practical (conflict skips,
+  preserved local work, desired absence, verification failures)
+```
+
+Keep it intentionally focused. It is a trust and acceptance foundation built
+from the Initial and Broader reconstruction acceptance tests, not a large
+test-infrastructure project.
+
+It precedes Migration Safety because migrations, and later sync, change how
+profiles evolve. That work needs a trustworthy reconstruction gate to prove
+reconstruction still holds before and after each change.
+
+---
+
+# 66. Phase 8 — Migration safety and compatibility
+
+Formalize profile-schema migrations and Omarchy-version compatibility.
 
 Implement:
 
 ```text id="s9vhen"
 profile schema migrations
 Omarchy version migrations
+explicit compatibility assessment
+deterministic migration planning
 three-way configuration merge
 conflict representation
+transactional migration where appropriate
+safe handoff into Restore
 migration test fixtures
 ```
 
 Create a migration registry.
 
-Not every Omarchy release needs explicit migration logic.
+Not every Omarchy release needs explicit migration logic; compatibility
+assessment should say so when none applies.
+
+Deterministic migrations come before agent assistance. Agents may later propose
+migrations, but never replace the deterministic path.
 
 ---
 
-# 66. Phase 8 — Agent descriptions
+# 67. Phase 9 — Services
+
+Add semantic support for custom systemd services as a coverage-expansion
+tranche.
+
+Start with **custom user services** (`systemd --user`). They fit Blueprint's
+portable reconstruction model with a much smaller privilege and safety surface.
+
+Record persistent intent, not transient runtime state:
+
+```text
+unit definitions
+drop-ins
+enablement
+```
+
+"Currently running" is not intent.
+
+Package-, distro-, and Omarchy-owned service units must not be blindly copied
+or treated as Blueprint-owned. Exact must never mean deleting arbitrary
+services Blueprint does not explicitly own or manage.
+
+System/root services remain a later, explicitly high-risk extension, not part
+of Services v1.
+
+Services are semantic state, not an excuse to snapshot `/etc/systemd/system`.
+
+---
+
+# 68. Phase 10 — Sync engine
+
+Architecture for semantic multi-machine reconciliation. It is not merely a timer
+that runs capture, pull, push, and restore, and it is distinct from Profile Git
+Sync v1, which moves the profile repository.
+
+Each machine keeps a machine-local **last reconciled profile revision** (a
+cursor). Against it, Blueprint classifies each target:
+
+```text
+local changed,   remote unchanged        → Capture candidate
+local unchanged, remote changed          → Restore candidate
+both changed identically                 → converged
+both changed differently                 → sync conflict
+```
+
+The Sync Engine reuses Blueprint's target identity, Capture policy, Restore
+policy, semantic planning, and machine-aware intent rather than inventing a
+parallel sync model. It operates on semantic desired state, not blind
+filesystem synchronization. Machine-specific policy stays meaningful, so a
+change published by one machine may apply, be preserved, or require review on
+another.
+
+Initial Sync Engine work is inspect, plan, and review oriented. No unattended
+mutation is required yet.
+
+---
+
+# 69. Phase 11 — Auto sync
+
+Build unattended behaviour only after the Sync Engine is trustworthy.
+
+Automation permission is separate from Capture policy, Restore policy, and
+safety. `Restore Apply` must not automatically mean "safe to mutate
+unattended". Automation must not weaken `inspect → calculate → preview →
+approve → apply → verify`; unattended execution is only permitted where policy
+and safety explicitly allow it.
+
+Phase automation conceptually:
+
+```text
+Auto Follow      safely apply eligible remote desired-state changes locally
+Auto Publish     safely capture, commit, and push eligible local changes
+Auto Reconcile   later: automatically combine disjoint local/remote changes
+```
+
+Conflicting intent, high-risk operations, interactive operations, migration
+conflicts, Git divergence, or other unsafe situations stop for review rather
+than being forced.
+
+A Blueprint-owned systemd user timer/service may eventually drive scheduled
+sync. That is an implementation detail, not the architecture.
+
+---
+
+# 70. Phase 12 — Bidirectional semantic reconciliation
+
+A later capability building on Auto Sync.
+
+Automatically merge non-overlapping intent from different machines. Overlapping
+semantic changes remain explicit conflicts that require resolution.
+
+---
+
+# 71. Phase 13 — Agent descriptions
 
 Add optional:
 
@@ -2566,7 +2731,7 @@ Agent initially receives structured/redacted information only.
 
 ---
 
-# 67. Phase 9 — Agent-assisted migrations
+# 72. Phase 14 — Agent-assisted migrations
 
 Add constrained patch-generation flow.
 
@@ -2597,7 +2762,7 @@ validate
 
 ---
 
-# 68. Phase 10 — Shell plugin
+# 73. Phase 15 — Shell plugin
 
 Build status widget and panel.
 
@@ -2615,7 +2780,7 @@ Restore UI can follow once the underlying workflow is mature.
 
 ---
 
-# 69. Testing strategy
+# 74. Testing strategy
 
 Testing should happen at multiple levels.
 
@@ -2690,9 +2855,17 @@ plugin-heavy
 
 The developer profile could include several tracked Git repositories and local scripts.
 
+Reconstruction Assurance v1 (Phase 7) is the first delivery of this layer. It
+stays focused: a repeatable harness and a small set of representative scenarios
+covering portable state, machine-aware policy and restore options, and key
+safety and failure behaviour. Later work must keep passing it as a
+reconstruction gate. Migration Safety adds fixture profiles across schema and
+Omarchy versions. The Sync Engine and Auto Sync add multi-machine scenarios,
+with two environments sharing one profile.
+
 ---
 
-# 70. Repository layout
+# 75. Repository layout
 
 Suggested:
 
@@ -2738,7 +2911,7 @@ plugin/
 
 ---
 
-# 71. Important design decision: do not invent a configuration language
+# 76. Important design decision: do not invent a configuration language
 
 Avoid gradually turning Omarchy Blueprint into Nix.
 
@@ -2766,7 +2939,7 @@ If profile authoring becomes programming, the project's central simplicity advan
 
 ---
 
-# 72. Profiles are inspectable but generated
+# 77. Profiles are inspectable but generated
 
 Users may edit:
 
@@ -2788,7 +2961,7 @@ Manual profile editing is an escape hatch, not the primary interface.
 
 ---
 
-# 73. Core MVP
+# 78. Core MVP
 
 The first usable release should support:
 
@@ -2835,7 +3008,7 @@ AI is not required.
 
 ---
 
-# 74. Initial acceptance test
+# 79. Initial acceptance test
 
 Given Machine A with:
 
@@ -2880,7 +3053,7 @@ with machine-specific configuration excluded.
 
 ---
 
-# 75. Broader reconstruction acceptance test
+# 80. Broader reconstruction acceptance test
 
 Once directory support lands, extend the test with:
 
@@ -2917,7 +3090,7 @@ Restore should reproduce functionally equivalent selected state without needless
 
 ---
 
-# 76. Recommended implementation order
+# 81. Recommended implementation order
 
 Build in this order:
 
@@ -2936,11 +3109,16 @@ Build in this order:
 12. TUI
 13. Additional config providers
 14. Directory provider
-15. Machine overlays
-16. Migration engine
-17. Agent-generated descriptions
-18. Agent-assisted migrations/conflicts
-19. Shell plugin
+15. Machine overlays and machine-aware Capture/Restore policy
+16. Reconstruction assurance harness
+17. Migration safety / compatibility
+18. Services (custom user services first)
+19. Sync engine (inspect, plan, review)
+20. Auto sync
+21. Bidirectional semantic reconciliation
+22. Agent-generated descriptions
+23. Agent-assisted migrations/conflicts
+24. Shell plugin
 ```
 
 The first milestone should remain deliberately boring:
@@ -2952,11 +3130,13 @@ capture
 → works
 ```
 
-Everything clever depends on that loop being trustworthy.
+Everything clever depends on that loop being trustworthy. The reconstruction
+assurance harness (16) turns it into a repeatable gate before migrations and
+sync change how profiles evolve.
 
 ---
 
-# 77. Release roadmap
+# 82. Release roadmap
 
 ## v0.1 — Core
 
@@ -3035,17 +3215,45 @@ backup, conflict resolution, history editing, and general Git workflows; those
 remain Git/LazyGit work. TUI v1 presents this same safe workflow under
 [ADR 0017](docs/adr/0017-tui-interactive-client-architecture.md).
 
+**Machine-aware Capture/Restore policy** is delivered. Capture policy
+(Include/Preserve) and Restore policy (Apply/Skip) resolve per target from
+Profile defaults and per-machine overrides. Restore runs with Safe/Force and
+Additive/Exact options, and Capture is reviewed before approval. See the
+[design](docs/planning/specs/2026-09-18-machine-aware-capture-restore-policy-design.md).
+
 ---
 
-## v0.4 — Migration safety
+## Next milestones
+
+From here, milestones are listed by capability in dependency order. Version
+numbers will be assigned when each ships rather than fixed in advance.
+
+---
+
+## Reconstruction Assurance v1
+
+The immediate next milestone: a repeatable end-to-end reconstruction gate.
+
+```text
+capture → profile → fresh compatible Omarchy environment → restore → verify
+representative portable state
+machine-aware policy and restore options
+key safety and failure behaviour
+```
+
+---
+
+## Migration Safety / Compatibility v1
 
 Make profiles resilient across Omarchy releases.
 
 ```text id="l4fuq6"
 schema migrations
 Omarchy migrations
-additional migration rules
-assisted conflict review
+compatibility assessment
+deterministic migration planning
+conflict review
+transactional migration and safe handoff into Restore
 ```
 
 Account login-shell state is a separate future semantic feature. It must detect
@@ -3056,7 +3264,56 @@ directly or infer login-shell intent merely from `.zshrc` or Fish configuration.
 
 ---
 
-## v0.5 — Agent assistance
+## Services v1
+
+Semantic custom user services (`systemd --user`).
+
+```text
+unit definitions and drop-ins
+enablement intent
+no copying of package-, distro-, or Omarchy-owned units
+Exact never removes services Blueprint does not own
+```
+
+System/root services are a later, explicitly high-risk extension.
+
+---
+
+## Sync Engine v1
+
+Semantic multi-machine reconciliation against a machine-local last reconciled
+profile revision.
+
+```text
+Capture candidates, Restore candidates, converged, sync conflicts
+reuses target identity, Capture/Restore policy, and semantic planning
+inspect, plan, and review; no unattended mutation
+```
+
+---
+
+## Auto Sync v1
+
+Unattended behaviour gated by explicit automation permission, independent of
+Capture policy, Restore policy, and safety.
+
+```text
+Auto Follow
+Auto Publish
+stop for review on conflicts, high-risk or interactive operations,
+  migration conflicts, and Git divergence
+```
+
+---
+
+## Bidirectional semantic reconciliation
+
+Automatically merge non-overlapping intent from different machines; overlapping
+semantic changes remain explicit conflicts.
+
+---
+
+## Agent assistance
 
 Opt-in intelligence.
 
@@ -3070,7 +3327,7 @@ conflict-resolution proposals
 
 ---
 
-## v0.6 — Shell integration
+## Shell integration
 
 Omarchy Shell plugin.
 
@@ -3092,25 +3349,27 @@ The v1 promise:
 
 ---
 
-# 78. Potential future features
+# 83. Potential future features
 
 Once the core system is trustworthy:
 
 ```text id="2ot1bv"
 encrypted secret references
-scheduled captures
 automatic drift notification
-remote profile sync
+system/root services (explicitly high-risk)
 profile sharing
 work/personal profiles
 profile inheritance
 plugin/theme provenance auditing
 package replacement suggestions
-pre-upgrade compatibility checks
 restore compatibility scoring
 ```
 
-A potentially useful future command:
+Earlier ideas that are now planned milestones: scheduled captures and remote
+profile sync became the Sync Engine and Auto Sync, and pre-upgrade compatibility
+checks are part of Migration Safety.
+
+Migration Safety's compatibility assessment could surface as:
 
 ```bash id="6z4kbs"
 omarchy-blueprint upgrade-check
@@ -3131,11 +3390,12 @@ Profile impact:
 2 changes need review.
 ```
 
-Agent assistance could be particularly valuable here.
+Agent assistance could be particularly valuable here, after the deterministic
+assessment.
 
 ---
 
-# 79. Longer-term vision
+# 84. Longer-term vision
 
 The eventual experience:
 
@@ -3181,7 +3441,7 @@ Omarchy Blueprint continuously derives a reproducible representation from that s
 
 ---
 
-# 80. Core product definition
+# 85. Core product definition
 
 Omarchy Blueprint should remain focused on one problem:
 
@@ -3215,7 +3475,7 @@ It deliberately leaves large-scale personal-data backup to dedicated backup syst
 
 ---
 
-# 81. One-line pitch
+# 86. One-line pitch
 
 **Use your system normally. Omarchy Blueprint remembers how to rebuild it.**
 
