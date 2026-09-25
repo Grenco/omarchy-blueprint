@@ -100,6 +100,9 @@ func TestInspectCaptureTreatsUnattributedChangesConservatively(t *testing.T) {
 	}{
 		{"change with no target leaves unchanged targets alone", model.Change{Kind: "settings", Name: "exclusions"}, CaptureOutcomeNoop},
 		{"unattributable change makes every tracked target an update", model.Change{Summary: "something changed"}, CaptureOutcomeUpdate},
+		// A resolver key missing from the inspected inventory is an identity
+		// mismatch; trusting it would silently turn a real difference into Noop.
+		{"key outside the inventory fails closed", model.Change{Kind: "official", Name: "typo"}, CaptureOutcomeUpdate},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			session := newInspectionSession(t)

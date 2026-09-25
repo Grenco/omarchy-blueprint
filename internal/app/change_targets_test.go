@@ -59,3 +59,37 @@ func TestRestoreProviderAdapterForwardsChangeAttribution(t *testing.T) {
 		t.Fatalf("adapter attribution = (%q, %v)", key, attributed)
 	}
 }
+
+// Categories the identity contract sandbox cannot drive into Restore
+// operations are pinned here against their operation formats.
+func TestProvidersAttributeRestoreOperationsToTargetKeys(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		provider stateProvider
+		op       model.Operation
+		key      string
+		ok       bool
+	}{
+		{"theme install", &themesStateProvider{}, model.Operation{Action: "install", Resource: "theme:nord"}, "theme:nord", true},
+		{"theme activation", &themesStateProvider{}, model.Operation{Action: "activate", Resource: "theme:nord"}, "active", true},
+		{"plugin", &pluginsStateProvider{}, model.Operation{Resource: "plugin:weather"}, "plugin:weather", true},
+		{"default application", defaultsStateProvider{}, model.Operation{Resource: "default:browser"}, "browser", true},
+		{"shell write", shellStateProvider{}, model.Operation{Action: "write", Resource: "shell:state"}, "state", true},
+		{"shell restart supports the write", shellStateProvider{}, model.Operation{Action: "restart", Resource: "shell:runtime"}, "", true},
+		{"config reload supports the writes", configStateProvider{}, model.Operation{Action: "reload", Resource: "config:hyprctl"}, "", true},
+		{"resource", &resourcesStateProvider{}, model.Operation{Resource: "resource:projects"}, "resource:projects", true},
+		{"resource link has no policy target", &resourcesStateProvider{}, model.Operation{Resource: "link:x"}, "", false},
+		{"package removal by absence ref", packagesStateProvider{}, model.Operation{Action: "remove", Resource: "mise:node"}, "mise:node", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver, ok := test.provider.(workflow.RestoreTargetResolver)
+			if !ok {
+				t.Fatalf("%T does not attribute Restore operations", test.provider)
+			}
+			key, attributed := resolver.RestoreOperationTargetKey(test.op)
+			if key != test.key || attributed != test.ok {
+				t.Fatalf("RestoreOperationTargetKey(%+v) = (%q, %v), want (%q, %v)", test.op, key, attributed, test.key, test.ok)
+			}
+		})
+	}
+}

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -83,6 +85,85 @@ func (hooksStateProvider) ChangeTargetKey(change model.Change) (string, bool) {
 func (resourcesStateProvider) ChangeTargetKey(change model.Change) (string, bool) {
 	if change.Kind == "resource" {
 		return "resource:" + change.Name, true
+	}
+	return "", false
+}
+
+// Each RestoreOperationTargetKey below maps one provider's Restore plan
+// operations onto its InspectTargets keys (see
+// workflow.RestoreTargetResolver). Unrecognised operations return ok=false,
+// so workflow treats them conservatively.
+
+func (p restoreProviderAdapter) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	resolver, ok := p.stateProvider.(workflow.RestoreTargetResolver)
+	if !ok {
+		return "", false
+	}
+	return resolver.RestoreOperationTargetKey(op)
+}
+
+func (packagesStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	for _, prefix := range []string{"official:", "aur:", "mise:", "preinstall:"} {
+		if strings.HasPrefix(op.Resource, prefix) {
+			return op.Resource, true
+		}
+	}
+	if op.Resource == "preinstalls" {
+		return "preinstalls", true
+	}
+	return "", false
+}
+
+func (themesStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	if op.Action == "activate" {
+		return "active", true
+	}
+	if strings.HasPrefix(op.Resource, "theme:") {
+		return op.Resource, true
+	}
+	return "", false
+}
+
+func (pluginsStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	if strings.HasPrefix(op.Resource, "plugin:") {
+		return op.Resource, true
+	}
+	return "", false
+}
+
+// Reloading Hyprland supports other Config operations; it targets no path.
+func (configStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	if op.Action == "reload" {
+		return "", true
+	}
+	return strings.CutPrefix(op.Resource, "config:")
+}
+
+func (defaultsStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	return strings.CutPrefix(op.Resource, "default:")
+}
+
+// Shell has a single whole-category target; restarting the shell only
+// supports writing it.
+func (shellStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	switch {
+	case op.Action == "restart":
+		return "", true
+	case strings.HasPrefix(op.Resource, "shell:"):
+		return "state", true
+	}
+	return "", false
+}
+
+func (hooksStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	return strings.CutPrefix(op.Resource, "hook:")
+}
+
+// Resource links are not policy targets, so a link operation stays
+// unattributed.
+func (resourcesStateProvider) RestoreOperationTargetKey(op model.Operation) (string, bool) {
+	if strings.HasPrefix(op.Resource, "resource:") {
+		return op.Resource, true
 	}
 	return "", false
 }
