@@ -11,6 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HarnessLifecycleTests(unittest.TestCase):
+    def test_guest_sudo_uses_disposable_account_password(self):
+        result = subprocess.run(
+            ["bash", "-c", f"source '{ROOT}/lib/common.sh'; "
+             "ra_ssh() { read -r password; test \"$password\" = spike; "
+             "[[ $1 == *'sudo -S'* && $1 == *systemctl* && $1 == *poweroff* ]]; }; "
+             "ra_ssh_sudo 'systemctl poweroff'"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_guest_start_requires_created_overlay(self):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(
