@@ -3,8 +3,6 @@ name: Spike - real Omarchy VM
 
 on:
   workflow_dispatch:
-  push:
-    branches: [spike/omarchy-vm-feasibility] # Temporary trigger for branch-only measurement.
 
 permissions:
   contents: read
