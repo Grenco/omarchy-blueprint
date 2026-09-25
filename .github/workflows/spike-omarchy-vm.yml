@@ -171,16 +171,20 @@ jobs:
           cleanup() {
             python3 - <<'PY' || true
           import socket
+          import time
           with socket.socket(socket.AF_UNIX) as monitor:
-              monitor.settimeout(2)
+              monitor.settimeout(5)
               monitor.connect('monitor.sock')
+              monitor.recv(4096)
               monitor.sendall(b'screendump /mnt/spike/guest-screen.ppm\n')
+              time.sleep(2)
+              print(monitor.recv(4096).decode(errors='replace'))
           PY
             kill "$pid" 2>/dev/null || true
           }
           trap cleanup EXIT
           min_free=$(df -B1 --output=avail /mnt | tail -1)
-          for i in {1..300}; do
+          for i in {1..160}; do
             free_now=$(df -B1 --output=avail /mnt | tail -1)
             (( free_now < min_free )) && min_free=$free_now
             if ssh -p 2222 -i guest_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -198,7 +202,7 @@ jobs:
             sleep 3
           done
           echo "minimum_host_free_bytes=$min_free" >> "$GITHUB_ENV"
-          echo 'Guest did not pass real system checks within 15 minutes; check screenshot and serial' >&2
+          echo 'Guest did not pass real system checks within 8 minutes; check screenshot and serial' >&2
           exit 1
 
       - name: Report and preserve small diagnostics
