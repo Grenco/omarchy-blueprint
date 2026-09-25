@@ -20,7 +20,7 @@ type capturePreviewTarget struct {
 	Current         workflow.TargetState    `json:"current"`
 	CaptureEligible bool                    `json:"capture_eligible"`
 	SafetyReason    string                  `json:"safety_reason,omitempty"`
-	Policy          policy.EffectiveSetting `json:"policy"`
+	Policy          cliEffectiveSetting     `json:"policy"`
 	Outcome         workflow.CaptureOutcome `json:"outcome"`
 }
 
@@ -56,7 +56,7 @@ func capturePreviewCommand(ctx context.Context, deps Dependencies, opt *options,
 		output := capturePreviewSection{Group: section.Group, Targets: make([]capturePreviewTarget, 0, len(section.Targets))}
 		fmt.Fprintf(&human, "\n%s\n", section.Group)
 		for _, target := range section.Targets {
-			item := capturePreviewTarget{Category: target.Category, Key: target.Inspection.Key, Label: target.Inspection.Label, Desired: target.Inspection.Desired, Current: target.Inspection.Current, CaptureEligible: target.Inspection.CaptureEligible, SafetyReason: target.Inspection.SafetyReason, Policy: target.Policy, Outcome: target.Outcome}
+			item := capturePreviewTarget{Category: target.Category, Key: target.Inspection.Key, Label: target.Inspection.Label, Desired: target.Inspection.Desired, Current: target.Inspection.Current, CaptureEligible: target.Inspection.CaptureEligible, SafetyReason: target.Inspection.SafetyReason, Policy: effectivePolicyValue(policy.AxisCapture, target.Policy), Outcome: target.Outcome}
 			output.Targets = append(output.Targets, item)
 			fmt.Fprintf(&human, "  %s/%s: %s", item.Category, item.Key, target.Outcome.Label())
 			if item.SafetyReason != "" {
