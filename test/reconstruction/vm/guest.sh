@@ -12,6 +12,7 @@ ra_guest_create() {
   qemu-img create -f qcow2 -F qcow2 -b "$RA_WORK/base/omarchy-base.qcow2" \
     "$RA_WORK/guests/$role.qcow2"
   cp "$RA_WORK/base/OVMF_VARS.base.fd" "$RA_WORK/guests/$role.vars.fd"
+  chmod 0644 "$RA_WORK/guests/$role.vars.fd"
 }
 
 ra_guest_start() {
