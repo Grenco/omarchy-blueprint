@@ -424,9 +424,9 @@ func (i CaptureInspection) captureContexts(machine string, ids []string) map[str
 }
 
 // ChangesFrom describes, in stable order, every target whose Capture
-// outcome differs between i and fresh, or whose value changed while Capture
-// would still write it (Update(A) → Update(B), via
-// TargetInspection.Fingerprint). A target missing from one side counts as
+// outcome differs between i and fresh, or whose live value
+// (TargetInspection.Fingerprint) changed under an outcome that depends on
+// it, such as Update(A) → Update(B) or a tombstone's recorded baseline. A target missing from one side counts as
 // needing no action there, so only differences that change what Capture
 // would write are material.
 func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
@@ -483,14 +483,18 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 		switch {
 		case from != to:
 			changes = append(changes, fmt.Sprintf("%s: %s → %s", label, from.Label(), to.Label()))
-		case writesValue(to) && was.fingerprint != now.fingerprint:
+		case dependsOnLiveValue(to) && was.fingerprint != now.fingerprint:
 			changes = append(changes, fmt.Sprintf("%s: changed since the review (%s)", label, to.Label()))
 		}
 	}
 	return changes
 }
 
-// writesValue reports whether an outcome records the target's current value.
-func writesValue(outcome CaptureOutcome) bool {
-	return outcome == CaptureOutcomeAdd || outcome == CaptureOutcomeUpdate
+// dependsOnLiveValue reports whether what Capture persists for an outcome
+// can depend on the target's live value. Only Preserve and Blocked leave
+// saved state exactly as it was; everything else, including Remember
+// absent (Config tombstones record the Omarchy baseline) and No change
+// (whose "unchanged" judgement is itself about the live value), does not.
+func dependsOnLiveValue(outcome CaptureOutcome) bool {
+	return outcome != CaptureOutcomePreserve && outcome != CaptureOutcomeBlocked
 }

@@ -252,6 +252,7 @@ func TestCaptureInspectionChangesFromReportsOutcomeAndWrittenValueChanges(t *tes
 	approved := CaptureInspection{Categories: map[string][]CaptureTarget{"packages": {
 		target("firefox", CaptureOutcomeAdd, ""), target("git", CaptureOutcomeNoop, ""), target("gone", CaptureOutcomeUpdate, ""),
 		target("node", CaptureOutcomeUpdate, "20"), target("kept", CaptureOutcomePreserve, "1"),
+		target("tombstone", CaptureOutcomeAbsent, "baseline-1"),
 	}}}
 	fresh := CaptureInspection{Categories: map[string][]CaptureTarget{"packages": {
 		target("firefox", CaptureOutcomePreserve, ""), target("git", CaptureOutcomeNoop, ""), target("quiet", CaptureOutcomeNoop, ""), target("vlc", CaptureOutcomeAdd, ""),
@@ -259,9 +260,11 @@ func TestCaptureInspectionChangesFromReportsOutcomeAndWrittenValueChanges(t *tes
 		target("node", CaptureOutcomeUpdate, "22"),
 		// Preserve writes nothing, so its value changing is immaterial.
 		target("kept", CaptureOutcomePreserve, "2"),
+		// A tombstone records the live baseline it replaces.
+		target("tombstone", CaptureOutcomeAbsent, "baseline-2"),
 	}}}
 	got := approved.ChangesFrom(fresh)
-	want := []string{"Packages firefox: Add → Preserve", "Packages gone: Update → No change", "Packages node: changed since the review (Update)", "Packages vlc: No change → Add"}
+	want := []string{"Packages firefox: Add → Preserve", "Packages gone: Update → No change", "Packages node: changed since the review (Update)", "Packages tombstone: changed since the review (Remember absent)", "Packages vlc: No change → Add"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("ChangesFrom = %q, want %q", got, want)
 	}
