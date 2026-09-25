@@ -1271,8 +1271,8 @@ func TestCaptureActionLabelsUseCategories(t *testing.T) {
 	want := map[string]string{
 		"capture.select":      "Toggle category selection",
 		"capture.select-all":  "Select changed categories",
-		"capture.run":         "Capture selected categories",
-		"capture.capture-all": "Capture all categories",
+		"capture.run":         "Review selected categories",
+		"capture.capture-all": "Review all categories",
 		"capture.refresh":     "Refresh capture status",
 	}
 	for _, action := range m.actions() {

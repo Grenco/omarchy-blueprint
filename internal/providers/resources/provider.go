@@ -408,10 +408,14 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	}
 	// A preserved item was not re-scanned live, so its resource-internal
 	// links were never rediscovered above; carry its prior links forward
-	// unchanged instead of silently dropping them.
+	// unchanged instead of silently dropping them. Inbound links into a
+	// preserved item are part of its frozen desired state too, and they
+	// reserve their source: another resource cannot claim it below.
+	reserved := make(map[string]profile.ResourceLink)
 	for _, link := range saved.Links {
-		if link.Origin == "resource" && preserved[link.SourceResource] {
+		if (link.Origin == "resource" && preserved[link.SourceResource]) || (link.Origin == "inbound" && preserved[link.TargetResource]) {
 			next.Links = append(next.Links, link)
+			reserved[linkKey(link)] = link
 		}
 	}
 	roots, err := p.resourceRoots(next.Items)
@@ -422,12 +426,28 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	if err != nil {
 		return fail(err)
 	}
+	var warnings []model.Change
 	for _, link := range links {
-		if link.Classification == LinkManagedInbound {
-			next.Links = append(next.Links, resourceLink(link, "inbound"))
+		if link.Classification != LinkManagedInbound || preserved[link.TargetResource] {
+			continue
 		}
+		found := resourceLink(link, "inbound")
+		if kept, ok := reserved[linkKey(found)]; ok {
+			// The preserved resource's saved intent wins; retargeting the
+			// source into another resource is not captured.
+			warnings = append(warnings, model.Change{
+				Type: model.ChangeWarn, Provider: "resources", Kind: "link", Name: found.Source,
+				Summary: fmt.Sprintf("! link %s stays with preserved resource %s; its retarget into %s was not captured", found.Source, kept.TargetResource, found.TargetResource),
+			})
+			continue
+		}
+		next.Links = append(next.Links, found)
 	}
 	sortResources(&next)
+	// Never stage a generation Resources itself would reject.
+	if err := p.validateMetadata(next); err != nil {
+		return fail(err)
+	}
 	resourcesTOML, err := profile.MarshalResources(next)
 	if err != nil {
 		return fail(err)
@@ -435,7 +455,7 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	if err := os.WriteFile(prepared.stagePath("resources.toml"), resourcesTOML, 0o644); err != nil {
 		return fail(err)
 	}
-	prepared.State, prepared.Changes = next, Diff(saved, next)
+	prepared.State, prepared.Changes = next, append(Diff(saved, next), warnings...)
 	return prepared, nil
 }
 
