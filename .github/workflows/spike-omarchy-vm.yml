@@ -3,6 +3,8 @@ name: Spike - real Omarchy VM
 
 on:
   workflow_dispatch:
+  push:
+    branches: [spike/omarchy-vm-feasibility] # Temporary: register a branch-only workflow for its first run.
 
 permissions:
   contents: read
