@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,4 +243,50 @@ func newPolicyReviewSession(t *testing.T) *Session {
 		t.Fatal(err)
 	}
 	return session
+}
+
+func TestCaptureInspectionChangesFromOnlyReportsOutcomeChanges(t *testing.T) {
+	target := func(key string, outcome CaptureOutcome) CaptureTarget {
+		return CaptureTarget{Category: "packages", Inspection: TargetInspection{Key: key, Label: key}, Outcome: outcome}
+	}
+	approved := CaptureInspection{Categories: map[string][]CaptureTarget{"packages": {
+		target("firefox", CaptureOutcomeAdd), target("git", CaptureOutcomeNoop), target("gone", CaptureOutcomeUpdate),
+	}}}
+	fresh := CaptureInspection{Categories: map[string][]CaptureTarget{"packages": {
+		target("firefox", CaptureOutcomePreserve), target("git", CaptureOutcomeNoop), target("quiet", CaptureOutcomeNoop), target("vlc", CaptureOutcomeAdd),
+	}}}
+	got := approved.ChangesFrom(fresh)
+	want := []string{"Packages firefox: Add → Preserve", "Packages gone: Update → No change", "Packages vlc: No change → Add"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ChangesFrom = %q, want %q", got, want)
+	}
+	if changes := approved.ChangesFrom(approved); len(changes) != 0 {
+		t.Fatalf("an identical inspection changed: %q", changes)
+	}
+}
+
+func TestCaptureApprovedRefusesAChangedReviewWithoutWriting(t *testing.T) {
+	session := newPolicyReviewSession(t)
+	session.SetProviders([]Provider{captureInspectionTestProvider{id: "packages", targets: []TargetInspection{
+		{Key: "official:firefox", Label: "firefox", CaptureEligible: true, Current: TargetPresent, Desired: TargetUnknown},
+	}}})
+	approved, err := session.InspectCaptureMany(context.Background(), []string{"packages"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPolicy(PolicyScope{}, policy.AxisCapture, "packages", "official:firefox", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+	before := session.Profile()
+	_, err = session.CaptureApproved(context.Background(), []string{"packages"}, approved)
+	var changed *CaptureReviewChangedError
+	if !errors.As(err, &changed) {
+		t.Fatalf("CaptureApproved error = %v, want CaptureReviewChangedError", err)
+	}
+	if got := singleCaptureTarget(t, changed.Fresh, "packages"); got.Outcome != CaptureOutcomePreserve {
+		t.Fatalf("fresh review outcome = %s, want preserve", got.Outcome)
+	}
+	if !reflect.DeepEqual(session.Profile(), before) {
+		t.Fatal("a changed review must not mutate the profile")
+	}
 }

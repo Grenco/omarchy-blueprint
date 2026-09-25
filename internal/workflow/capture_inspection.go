@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
@@ -30,6 +31,26 @@ const (
 	// unmanaged).
 	CaptureOutcomeStopManaging CaptureOutcome = "stop-managing"
 )
+
+// Label names the outcome for people.
+func (o CaptureOutcome) Label() string {
+	switch o {
+	case CaptureOutcomeAdd:
+		return "Add"
+	case CaptureOutcomeUpdate:
+		return "Update"
+	case CaptureOutcomeAbsent:
+		return "Remember absent"
+	case CaptureOutcomePreserve:
+		return "Preserve"
+	case CaptureOutcomeBlocked:
+		return "Blocked"
+	case CaptureOutcomeStopManaging:
+		return "Stop managing"
+	default:
+		return "No change"
+	}
+}
 
 // CaptureTarget is one provider-defined target's read-only Capture preview:
 // what a Capture run would do to it, and why.
@@ -294,4 +315,106 @@ func (i CaptureInspection) Review() []CaptureReviewSection {
 		sections = append(sections, CaptureReviewSection{Group: group, Targets: targets})
 	}
 	return sections
+}
+
+// InspectCaptureMany is InspectCapture for an explicit category choice, the
+// same set CaptureMany would write, merged into one preview.
+func (s *Session) InspectCaptureMany(ctx context.Context, ids []string) (CaptureInspection, error) {
+	merged := CaptureInspection{Categories: map[string][]CaptureTarget{}}
+	for _, id := range ids {
+		inspection, err := s.InspectCapture(ctx, id)
+		if err != nil {
+			return CaptureInspection{}, err
+		}
+		for category, targets := range inspection.Categories {
+			merged.Categories[category] = targets
+		}
+	}
+	return merged, nil
+}
+
+// CaptureReviewChangedError reports that a fresh inspection no longer
+// matches the review a user approved. Nothing was written; Fresh is the
+// recalculated review that needs approving instead.
+type CaptureReviewChangedError struct {
+	Fresh   CaptureInspection
+	Changes []string
+}
+
+func (e *CaptureReviewChangedError) Error() string {
+	return fmt.Sprintf("Capture review changed since it was approved (%d %s)", len(e.Changes), map[bool]string{true: "difference", false: "differences"}[len(e.Changes) == 1])
+}
+
+// CaptureApproved captures ids only when a fresh inspection still matches
+// the approved review. The fresh re-inspection stays the write authority;
+// approval binds it to what the user saw, so a policy or system change in
+// between yields a CaptureReviewChangedError and zero mutation instead of
+// silently capturing something different.
+func (s *Session) CaptureApproved(ctx context.Context, ids []string, approved CaptureInspection) (CaptureResult, error) {
+	fresh, err := s.InspectCaptureMany(ctx, ids)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
+		return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
+	}
+	return s.CaptureMany(ctx, ids)
+}
+
+// ChangesFrom describes, in stable order, every target whose Capture
+// outcome differs between i and fresh. A target missing from one side
+// counts as needing no action there, so only differences that change what
+// Capture would write are material.
+func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
+	type entry struct {
+		label   string
+		outcome CaptureOutcome
+	}
+	index := func(inspection CaptureInspection) map[string]entry {
+		entries := map[string]entry{}
+		for category, targets := range inspection.Categories {
+			for _, target := range targets {
+				label := target.Inspection.Label
+				if label == "" {
+					label = target.Inspection.Key
+				}
+				entries[category+"\x00"+target.Inspection.Key] = entry{label: strings.ToUpper(category[:1]) + category[1:] + " " + label, outcome: target.Outcome}
+			}
+		}
+		return entries
+	}
+	before, after := index(i), index(fresh)
+	keys := map[string]bool{}
+	for key := range before {
+		keys[key] = true
+	}
+	for key := range after {
+		keys[key] = true
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	outcome := func(e entry, ok bool) CaptureOutcome {
+		if !ok {
+			return CaptureOutcomeNoop
+		}
+		return e.outcome
+	}
+	var changes []string
+	for _, key := range ordered {
+		was, hadBefore := before[key]
+		now, hasNow := after[key]
+		from, to := outcome(was, hadBefore), outcome(now, hasNow)
+		if from == to {
+			continue
+		}
+		label := now.label
+		if !hasNow {
+			label = was.label
+		}
+		changes = append(changes, fmt.Sprintf("%s: %s → %s", label, from.Label(), to.Label()))
+	}
+	return changes
 }

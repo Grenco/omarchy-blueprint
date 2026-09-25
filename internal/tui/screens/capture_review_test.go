@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -43,11 +44,21 @@ type reviewFixture struct {
 
 func newReviewFixture(t *testing.T, targets ...workflow.TargetInspection) *reviewFixture {
 	t.Helper()
+	return newReviewFixtureOn(t, "", targets...)
+}
+
+// newReviewFixtureOn opens the fixture on machine, when one is named.
+func newReviewFixtureOn(t *testing.T, machine string, targets ...workflow.TargetInspection) *reviewFixture {
+	t.Helper()
 	profileDir, stateHome := t.TempDir(), t.TempDir()
-	if err := profile.Save(profileDir, profile.New("test", time.Now())); err != nil {
+	data := profile.New("test", time.Now())
+	if machine != "" {
+		data.Machines.Items = []profile.Machine{{Name: machine}}
+	}
+	if err := profile.Save(profileDir, data); err != nil {
 		t.Fatal(err)
 	}
-	session, err := workflow.Open(workflow.Dependencies{Runner: restoreErrorRunner{}, Now: func() time.Time { return time.Unix(1, 0) }, StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir})
+	session, err := workflow.Open(workflow.Dependencies{Runner: restoreErrorRunner{}, Now: func() time.Time { return time.Unix(1, 0) }, StateHome: func() (string, error) { return stateHome, nil }}, workflow.Options{ProfileDir: profileDir, ExplicitMachine: machine})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +131,7 @@ func sectionOf(view, needle string) string {
 				section = group
 			}
 		}
-		if strings.Contains(line, needle) {
+		if section != "" && strings.Contains(line, needle) {
 			return section
 		}
 	}
@@ -194,29 +205,160 @@ func TestCaptureReviewBlockedSafetyCannotBeOverridden(t *testing.T) {
 	}
 }
 
-func TestCaptureApprovalRecalculatesInsteadOfTrustingPreview(t *testing.T) {
+// approve presses Enter for the summary and Enter again to approve it.
+func (f *reviewFixture) approve(t *testing.T) tea.Msg {
+	t.Helper()
+	request, ok := f.press(t, tea.KeyPressMsg{Code: tea.KeyEnter}).(components.ModalRequest)
+	if !ok || !strings.Contains(request.Content, "nothing is written") {
+		t.Fatalf("Enter should ask for approval and say what happens if the review changed: %#v", request)
+	}
+	return f.press(t, tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+// A change between review and approval must not be captured on the strength
+// of the old approval: nothing is written, the review is recalculated, and
+// the user approves the new one.
+func TestCaptureApprovalRefusesAReviewThatChangedBeforeApproval(t *testing.T) {
+	firefox := workflow.TargetInspection{Key: "official:firefox", Label: "firefox", CaptureEligible: true, Current: workflow.TargetPresent, Desired: workflow.TargetUnknown}
+	for _, test := range []struct {
+		name    string
+		change  func(t *testing.T, f *reviewFixture)
+		row     string
+		section string
+	}{
+		{
+			name: "policy changed elsewhere",
+			change: func(t *testing.T, f *reviewFixture) {
+				if err := f.session.SetPolicy(workflow.PolicyScope{}, policy.AxisCapture, "packages", "official:firefox", policy.SettingDisabled); err != nil {
+					t.Fatal(err)
+				}
+			},
+			row: "firefox", section: "Preserved by policy",
+		},
+		{
+			name: "system changed: a new package was installed",
+			change: func(t *testing.T, f *reviewFixture) {
+				f.targets = append(f.targets, workflow.TargetInspection{Key: "official:vlc", Label: "vlc", CaptureEligible: true, Current: workflow.TargetPresent, Desired: workflow.TargetUnknown})
+			},
+			row: "vlc", section: "Changes",
+		},
+		{
+			name: "system changed: the reviewed package was removed",
+			change: func(t *testing.T, f *reviewFixture) {
+				f.targets = []workflow.TargetInspection{{Key: "official:firefox", Label: "firefox", CaptureEligible: true, Current: workflow.TargetAbsent, Desired: workflow.TargetUnknown}}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newReviewFixture(t, firefox)
+			f.openReview(t)
+			test.change(t, f)
+			before := f.session.Profile()
+
+			if msg := f.approve(t); msg != nil {
+				if _, done := msg.(CaptureComplete); done {
+					t.Fatal("a changed review must not complete Capture")
+				}
+			}
+			if len(f.captured) != 0 {
+				t.Fatalf("Capture ran %d times against a changed review, want zero mutation", len(f.captured))
+			}
+			if after := f.session.Profile(); !reflect.DeepEqual(after, before) {
+				t.Fatal("a changed review must leave the profile untouched")
+			}
+			if !f.screen.Reviewing() {
+				t.Fatal("a changed review must stay open for re-approval")
+			}
+			view := f.screen.View()
+			if !strings.Contains(view, "Nothing was captured") || !strings.Contains(view, "changed") {
+				t.Fatalf("the review must explain that it changed:\n%s", view)
+			}
+			if test.row != "" {
+				if section := sectionOf(view, test.row); section != test.section {
+					t.Fatalf("recalculated review put %s in %q, want %q:\n%s", test.row, section, test.section, view)
+				}
+			}
+
+			// Approving the recalculated review now captures it.
+			if _, ok := f.approve(t).(CaptureComplete); !ok {
+				t.Fatal("approving the recalculated review did not complete Capture")
+			}
+			if len(f.captured) != 1 {
+				t.Fatalf("Capture ran %d times, want 1", len(f.captured))
+			}
+		})
+	}
+}
+
+func TestCaptureApprovalCapturesAnUnchangedReview(t *testing.T) {
 	f := newReviewFixture(t, workflow.TargetInspection{Key: "official:firefox", Label: "firefox", CaptureEligible: true, Current: workflow.TargetPresent, Desired: workflow.TargetUnknown})
 	f.openReview(t)
-	// Policy changes elsewhere after the preview was taken.
-	if err := f.session.SetPolicy(workflow.PolicyScope{}, policy.AxisCapture, "packages", "official:firefox", policy.SettingDisabled); err != nil {
-		t.Fatal(err)
-	}
-	request, ok := f.press(t, tea.KeyPressMsg{Code: tea.KeyEnter}).(components.ModalRequest)
-	if !ok || !strings.Contains(request.Content, "re-check") {
-		t.Fatalf("Enter should ask for approval and say Capture re-checks: %#v", request)
-	}
-	if _, ok := f.press(t, tea.KeyPressMsg{Code: tea.KeyEnter}).(CaptureComplete); !ok {
-		t.Fatal("approving did not complete Capture")
-	}
-	if len(f.captured) != 1 {
-		t.Fatalf("Capture ran %d times, want 1", len(f.captured))
+	if _, ok := f.approve(t).(CaptureComplete); !ok {
+		t.Fatal("approving an unchanged review did not complete Capture")
 	}
 	decision, ok := f.captured[0].Lookup("official:firefox")
-	if !ok || decision.Capture {
-		t.Fatalf("Capture used stale preview authority: %#v", decision)
+	if len(f.captured) != 1 || !ok || !decision.Capture {
+		t.Fatalf("Capture did not run with the approved Include decision: %#v", f.captured)
 	}
 	if f.screen.Reviewing() {
 		t.Fatal("a completed Capture should leave the review")
+	}
+}
+
+// The review shows outcomes for the machine running Capture, but space and
+// x edit policy at the review's scope, so the CAPTURE setting shown and
+// toggled must be the one at that scope.
+func TestCaptureReviewEditsThePolicyAtItsScopeNotTheActiveMachine(t *testing.T) {
+	f := newReviewFixtureOn(t, "desktop", workflow.TargetInspection{Key: "official:firefox", Label: "firefox", CaptureEligible: true, Current: workflow.TargetPresent, Desired: workflow.TargetUnknown})
+	profileScope, desktop := workflow.PolicyScope{}, workflow.PolicyScope{Machine: "desktop"}
+	if err := f.session.SetPolicy(profileScope, policy.AxisCapture, "packages", "official:firefox", policy.SettingEnabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.session.SetPolicy(desktop, policy.AxisCapture, "packages", "official:firefox", policy.SettingDisabled); err != nil {
+		t.Fatal(err)
+	}
+	f.openReview(t)
+	if row := rowContaining(t, f.screen.View(), "firefox"); !strings.Contains(row, "Preserve") || strings.Contains(row, "↳") {
+		t.Fatalf("at desktop scope the row should show desktop's explicit Preserve: %q", row)
+	}
+
+	f.press(t, tea.KeyPressMsg{Code: 'p'})
+	view := f.screen.View()
+	if !strings.Contains(view, "Profile defaults") || !strings.Contains(view, "outcomes are for this machine (desktop)") {
+		t.Fatalf("the profile scope must say outcomes stay those of this machine:\n%s", view)
+	}
+	row := rowContaining(t, view, "firefox")
+	if sectionOf(view, "firefox") != "Preserved by policy" || !strings.Contains(row, "Preserve") {
+		t.Fatalf("the outcome must stay desktop's Preserve: %q", row)
+	}
+	if !strings.Contains(row, "Include") || strings.Contains(row, "↳") {
+		t.Fatalf("CAPTURE must show the profile's own explicit Include rule: %q", row)
+	}
+	detail := f.screen.DetailView()
+	for _, want := range []string{"Capture policy at Profile defaults: Include (explicit, Profile)", "Applied on this machine (desktop): Preserve (explicit, This machine)"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("details missing %q:\n%s", want, detail)
+		}
+	}
+
+	// space flips the profile's Include, not desktop's Preserve.
+	f.press(t, tea.KeyPressMsg{Code: tea.KeySpace})
+	atProfile, err := f.session.EffectivePolicy(context.Background(), profileScope, "packages", workflow.TargetInspection{Key: "official:firefox", CaptureEligible: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if atProfile.Capture.Enabled || !atProfile.Capture.Explicit {
+		t.Fatalf("space should have switched the profile rule to Preserve: %#v", atProfile.Capture)
+	}
+	atDesktop, err := f.session.EffectivePolicy(context.Background(), desktop, "packages", workflow.TargetInspection{Key: "official:firefox", CaptureEligible: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if atDesktop.Capture.Enabled || atDesktop.Capture.Source.Kind != policy.SourceMachineTarget {
+		t.Fatalf("desktop's own rule must be untouched: %#v", atDesktop.Capture)
+	}
+	if row := rowContaining(t, f.screen.View(), "firefox"); !strings.Contains(row, "Preserve") {
+		t.Fatalf("after space the row should show the profile's new Preserve: %q", row)
 	}
 }
 
