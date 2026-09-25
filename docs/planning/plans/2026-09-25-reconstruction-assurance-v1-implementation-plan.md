@@ -10,7 +10,7 @@
 
 **Spec:** `docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md`
 
-**ADR:** `docs/adr/0020-real-omarchy-reconstruction-assurance.md`
+**ADR:** `docs/adr/0021-real-omarchy-reconstruction-assurance.md`
 
 ## Global Constraints
 
@@ -26,7 +26,7 @@
 - Only the portable Blueprint profile archive crosses from source to target. Never copy Blueprint local state, machine bindings, journals, package cache, source home, or source disk state.
 - Blueprint logical machine IDs are exactly `source` and `target`.
 - Guest hostnames are exactly `blueprint-ra-source` and `blueprint-ra-target`.
-- Canonical Restore intent is Safe + Additive. Do not pass `--force`, `--exact`, `--conflicts force`, or `--convergence exact`.
+- Canonical Restore intent is Safe + Additive, persisted as the `target` machine's Restore defaults through the public CLI and verified through public JSON inspection. Do not pass one-run `--force`, `--exact`, `--conflicts force`, or `--convergence exact` overrides.
 - The real Restore invocation must not pass `--yes` or `--json`; the harness waits for `Apply this restore? [y/N] ` and only then sends `yes` on stdin.
 - The structured preflight invocation is `restore --dry-run --json`; it is inspection only, never mutation authority.
 - An unexpected interactive Restore operation is a hard failure. Do not switch to TUI automation or preapproval.
@@ -45,7 +45,9 @@
   - Git Resource ID: `git-fixture`, path `~/Projects/blueprint-ra-fixture`;
   - Restore-disabled Resource ID: `target-only-skip`, path `~/.local/share/blueprint-ra/skip.txt`.
 - The deterministic Git fixture commit is `e161ca52ec7604e6fb335ef15fc212bba03a2994`; the worker must preserve the exact fixture file, commit message, author, email, and timestamps that produce that revision.
-- Machine-specific Restore Disabled policy is seeded as canonical human-readable profile TOML because the current public CLI exposes Resource mapping but not generic target policy editing. Do not add a CI-only Blueprint command for this harness.
+- Configure the `target` machine's Restore Skip for `target-only-skip` through the public policy CLI from PR #39, and assert the effective value, explicit machine-scope source, and Resource target through its public JSON inspection. Do not edit policy TOML or add a CI-only Blueprint command.
+- Machine A Capture uses the public non-mutating preview and normal reviewed CLI approval from PR #39; changed approval authority fails `CAPTURE` with no retry or reapproval. Do not use plain scripted Capture to bypass review.
+- PR 2 starts from the latest merged `main` after PR #39. The command examples below reflect PR #39's currently reviewed surface; re-check the merged CLI syntax and JSON envelope before implementation, and adjust examples to the shipped commands rather than inventing a CI-only variant.
 - The acceptance workflow must require no repository secrets and use `permissions: contents: read`.
 - The workflow name and job name in the production PR are both `Reconstruction Assurance` so the required status context is stable.
 - No `continue-on-error` on the canonical job.
@@ -73,7 +75,8 @@ The implementation should converge on these files and responsibilities:
 - `test/reconstruction/lib/common.sh` — shared constants, logging, phase/status recording, retry/readiness helpers, SSH/scp wrappers.
 - `test/reconstruction/lib/contract.py` — pure JSON/profile-plan contract checks; no VM/process orchestration.
 - `test/reconstruction/tests/test_contract.py` — standard-library unit tests for plan/final-convergence checks.
-- `test/reconstruction/tests/test_approve_restore.py` — standard-library subprocess tests proving approval is sent only after the prompt and failures are preserved.
+- `test/reconstruction/tests/test_approve_capture.py` — standard-library subprocess tests proving reviewed Capture approval waits for the real prompt and never retries changed authority.
+- `test/reconstruction/tests/test_approve_restore.py` — standard-library subprocess tests proving Restore approval is sent only after the prompt and failures are preserved.
 - `test/reconstruction/vm/make-cidata.py` — generate supported Omarchy unattended cidata JSON/ISO inputs; deliberately omit `kernels`.
 - `test/reconstruction/vm/install-omarchy.sh` — download/check ISO, create pristine disk/NVRAM, install, validate, power off.
 - `test/reconstruction/vm/guest.sh` — create overlay/NVRAM copy, boot/stop guest, freshen identity, readiness polling.
@@ -86,12 +89,13 @@ The implementation should converge on these files and responsibilities:
 - `test/reconstruction/fixtures/expected.env` — immutable expected IDs, paths, hashes/revision, theme/default values.
 - `test/reconstruction/scenario/build-fixtures.sh` — construct deterministic bare Git remote and start/stop host Git daemon.
 - `test/reconstruction/scenario/customize-source.sh` — configure Machine A and independently assert source state before Capture.
-- `test/reconstruction/scenario/capture-source.sh` — initialize profile/machines, track Resources, seed target policy, Capture, check, archive/digest profile.
+- `test/reconstruction/scenario/capture-source.sh` — initialize profile/machines, track Resources, configure target policy through public CLI, preview/review/approve Capture, check, archive/digest profile.
+- `test/reconstruction/scenario/approve_capture.py` — drive the real TTY-required Capture review prompt once and preserve its transcript/exit status.
 - `test/reconstruction/scenario/preflight-target.sh` — prove Machine B is fresh and profile binding is target-local.
 - `test/reconstruction/scenario/approve_restore.py` — execute real remote Restore, wait for prompt, send `yes`, preserve transcript/exit status.
 - `test/reconstruction/scenario/restore-target.sh` — dry-run, plan contract, approval/apply, journal and Blueprint Verify evidence.
 - `test/reconstruction/verify/verify-target.sh` — native independent target assertions plus final no-actionable-work dry-run.
-- `docs/adr/0020-real-omarchy-reconstruction-assurance.md` — approved ADR copied unchanged at execution preflight.
+- `docs/adr/0021-real-omarchy-reconstruction-assurance.md` — approved ADR, renumbered to avoid PR #39's ADR 0020.
 - `docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md` — approved design copied unchanged at execution preflight.
 - `docs/planning/plans/2026-09-25-reconstruction-assurance-v1-implementation-plan.md` — this plan copied unchanged at execution preflight.
 
@@ -102,7 +106,7 @@ Keep scripts focused. If a shell file exceeds roughly 250-300 lines because it o
 The approved ADR/design/plan currently exist outside the repository working tree. Before Task 1, copy them into the repository unchanged:
 
 ```text
-docs/adr/0020-real-omarchy-reconstruction-assurance.md
+docs/adr/0021-real-omarchy-reconstruction-assurance.md
 docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md
 docs/planning/plans/2026-09-25-reconstruction-assurance-v1-implementation-plan.md
 ```
@@ -110,7 +114,7 @@ docs/planning/plans/2026-09-25-reconstruction-assurance-v1-implementation-plan.m
 Commit them first on the PR 1 branch:
 
 ```bash
-git add docs/adr/0020-real-omarchy-reconstruction-assurance.md \
+git add docs/adr/0021-real-omarchy-reconstruction-assurance.md \
         docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md \
         docs/planning/plans/2026-09-25-reconstruction-assurance-v1-implementation-plan.md
 git commit -m "docs: define reconstruction assurance v1"
@@ -129,7 +133,7 @@ Implement and merge in this order. Do not begin PR N+1 until PR N is reviewed, C
    - Success means: official pinned Omarchy installs once, pristine base is validated and shut down, source/target overlays can boot independently with fresh identity.
 
 2. **PR 2 — `test: capture canonical reconstruction profile`**
-   - Add deterministic fixtures, source customization, machine overlays/policy, Resource tracking, Capture/check, profile-only handoff, and target-freshness preflight.
+   - Add deterministic fixtures, source customization, machine overlays/policy through public CLI, Resource tracking, reviewed Capture/check, profile-only handoff, and target-freshness preflight.
    - Extend the workflow to run automatically on pull requests while still ending before Restore.
    - Success means: Machine A produces a valid captured profile; A is destroyed; Machine B starts clean and receives exactly the archive digest produced by A.
 
@@ -931,6 +935,8 @@ git commit -m "test: create canonical reconstruction source state"
 
 **Files:**
 - Create: `test/reconstruction/scenario/capture-source.sh`
+- Create: `test/reconstruction/scenario/approve_capture.py`
+- Create: `test/reconstruction/tests/test_approve_capture.py`
 - Modify: `test/reconstruction/run.sh`
 
 **Interfaces:**
@@ -976,36 +982,39 @@ omarchy-blueprint --profile "$PROFILE" machine use source
 
 Assert `tracked --json` under `--machine target` reports helper effective path `/home/spike/bin/blueprint-ra-helper` while its portable path remains `~/.local/bin/blueprint-ra-helper`.
 
-- [ ] **Step 5: Seed only the missing generic target Restore policy in canonical TOML**
+- [ ] **Step 5: Set and inspect the target Restore Skip through the public policy CLI**
 
-Append exactly this to `machines/target.toml`:
-
-```toml
-[[policy.restore]]
-category = "resources"
-target = "target-only-skip"
-setting = "disabled"
-```
-
-Do not edit any desired Resource state or Capture result manually.
-
-Immediately prove Blueprint accepts/canonicalizes the human-edited policy:
+With PR #39's currently reviewed syntax (verify against its **merged** CLI before implementing):
 
 ```bash
-omarchy-blueprint --profile "$PROFILE" --machine target check
+omarchy-blueprint --profile "$PROFILE" policy set restore resources skip resource:target-only-skip --scope machine:target
+omarchy-blueprint --profile "$PROFILE" --json policy show resources resource:target-only-skip --scope machine:target > /tmp/target-policy.json
 ```
 
-If it rejects the target key, stop and amend the design rather than inventing an alternate hidden API.
+Require a successful public `policy show` envelope with scope `machine:target` and the canonical `resources` target `resource:target-only-skip`. Its effective Restore value must be `skip`, `explicit` must be true, and the source must identify the target machine's explicit target rule (currently `kind: machine-target`, `machine: target`). Also require the explicit Restore rule in the reported scope for that same Resource. Do not edit `machines/target.toml`, desired Resource state, or Capture output to manufacture the result. Keep the Resource path mapping through `machine map` in Step 4.
 
-- [ ] **Step 6: Capture through the shipped CLI with source selected**
+- [ ] **Step 6: Preview Capture and assert candidate outcomes without mutation**
+
+With PR #39's reviewed inspection surface (verify merged syntax and JSON fields):
 
 ```bash
-omarchy-blueprint --profile "$PROFILE" --machine source --json capture > /tmp/capture.json
+omarchy-blueprint --profile "$PROFILE" --machine source --json capture --dry-run > /tmp/capture-preview.json
 ```
 
-Assert JSON envelope `api_version=1`, `command=capture`, `ok=true`, and captured provider data includes packages/themes/plugins/config/defaults/shell/hooks/resources.
+Require a successful public Capture preview envelope for machine `source`; inspect its semantic sections/targets for the canonical package, theme, plugin, Shell, Config, Hook, Default, and Resource candidates. Each intended captured customization must have an actionable `add` or `update` outcome, not `blocked` or `preserve`. Keep the preview in `artifacts/source/` and assert the profile has not been mutated by the dry-run. Do not treat this preview as later approval authority.
 
-- [ ] **Step 7: Run Blueprint check after Capture**
+- [ ] **Step 7: Execute a normal reviewed Capture with explicit prompt-bound approval**
+
+Add focused standard-library subprocess tests for a small Capture-specific `approve_capture.py`: a child must not receive `yes` before the exact `Apply this Capture? [y/N] ` prompt; a missing prompt must fail; a changed-review/authority error after approval must remain in the transcript and fail without rerunning or reapproving. PR #39 currently requires a TTY for `capture --review`, so provide a real local PTY and SSH `-tt` to the shipped CLI (not TUI automation):
+
+```text
+approve_capture.py --transcript <artifacts/source/capture-transcript.txt> -- \
+  ssh -tt ... spike@127.0.0.1 omarchy-blueprint --profile /home/spike/omarchy-profile --machine source capture --review
+```
+
+Use the final merged PR #39 command. Do not pass `--json` or `--yes` to the mutating invocation: `--json capture --review` is inspection-only in the currently reviewed CLI. Wait for the rendered prompt, send `yes` once, and let Blueprint re-inspect/recalculate before it applies. A changed-approved-outcome/value failure is a hard `CAPTURE` failure, never an automatic retry. Persist the transcript and exit status; do not use internal APIs or edit the resulting profile to imitate Capture.
+
+- [ ] **Step 8: Run Blueprint check after approved Capture**
 
 ```bash
 omarchy-blueprint --profile "$PROFILE" --machine source --json check > /tmp/check.json
@@ -1013,7 +1022,7 @@ omarchy-blueprint --profile "$PROFILE" --machine source --json check > /tmp/chec
 
 Require exit 0.
 
-- [ ] **Step 8: Assert focused profile semantics before export**
+- [ ] **Step 9: Assert focused profile semantics before export**
 
 Use small Python/TOML/text assertions rather than snapshotting the whole profile:
 
@@ -1028,7 +1037,7 @@ Use small Python/TOML/text assertions rather than snapshotting the whole profile
 - Git Resource revision is `e161ca52ec7604e6fb335ef15fc212bba03a2994`;
 - target machine mapping and Restore Disabled rule remain present.
 
-- [ ] **Step 9: Create deterministic profile handoff archive and digest**
+- [ ] **Step 10: Create deterministic profile handoff archive and digest**
 
 On Machine A:
 
@@ -1038,16 +1047,19 @@ tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
 sha256sum /tmp/blueprint-ra-profile.tar > /tmp/blueprint-ra-profile.sha256
 ```
 
-Copy only these two files out to the host plus Capture/check logs for artifacts.
+Copy only these two profile-handoff files out to the host plus the Capture preview, reviewed transcript and check logs as focused diagnostics (not as reconstruction state).
 
-- [ ] **Step 10: Stop and delete Machine A before target creation**
+- [ ] **Step 11: Stop and delete Machine A before target creation**
 
 `run.sh` must call `ra_guest_stop source`, remove the source overlay/NVRAM, and assert no source QEMU PID before `ra_guest_create target`.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add test/reconstruction/scenario/capture-source.sh test/reconstruction/run.sh
+git add test/reconstruction/scenario/capture-source.sh \
+        test/reconstruction/scenario/approve_capture.py \
+        test/reconstruction/tests/test_approve_capture.py \
+        test/reconstruction/run.sh
 git commit -m "test: capture canonical portable profile"
 ```
 
@@ -1108,7 +1120,18 @@ omarchy-blueprint --profile "$HOME/omarchy-profile" machine use target
 
 Recompute the deterministic profile archive SHA and require equality. Then require `machine current --json` reports target with local binding.
 
-- [ ] **Step 5: Run Blueprint check on target profile**
+- [ ] **Step 5: Persist and inspect the target machine's Safe + Additive Restore defaults**
+
+First verify the imported archive digest and unchanged portable profile bytes through Step 4. Then, through the public PR #39 CLI on Machine B, explicitly persist the canonical `target` Restore defaults and inspect them using public JSON (examples reflect the currently reviewed PR #39 syntax; verify against its merged CLI before implementation):
+
+```bash
+omarchy-blueprint --profile "$HOME/omarchy-profile" machine restore-defaults set target --conflicts safe --convergence additive
+omarchy-blueprint --profile "$HOME/omarchy-profile" --json machine restore-defaults target > /tmp/target-restore-defaults.json
+```
+
+Require the inspection envelope to identify machine `target` with `conflicts: safe` and `convergence: additive`, and preserve it in `artifacts/target/`. This intentional, public CLI machine-policy change occurs **after** the captured profile's transfer/binding digest checks; it is not a changed Capture result or a shortcut through Restore. Do not pass a one-run Force/Exact (or redundant Safe/Additive) override when later invoking Restore. PR 3 must prove the normal Restore consumes these persisted values.
+
+- [ ] **Step 6: Run Blueprint check on target profile**
 
 ```bash
 omarchy-blueprint --profile "$HOME/omarchy-profile" --machine target --json check > /tmp/target-check.json
@@ -1116,7 +1139,7 @@ omarchy-blueprint --profile "$HOME/omarchy-profile" --machine target --json chec
 
 Require exit 0.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add test/reconstruction/scenario/preflight-target.sh test/reconstruction/run.sh
@@ -1164,7 +1187,7 @@ git add .github/workflows/reconstruction-assurance.yml
 git commit -m "ci: exercise profile handoff on pull requests"
 ```
 
-**PR 2 acceptance:** exact head has ordinary Go CI green plus `Reconstruction Harness` green; source Capture includes all canonical providers; profile digest is preserved; target preflight proves no source-state leakage.
+**PR 2 acceptance:** exact head has ordinary Go CI green plus `Reconstruction Harness` green; reviewed source Capture includes all canonical providers; the transferred profile digest is verified before target-side CLI policy setup; target preflight proves no source-state leakage, and public JSON reports persisted Safe + Additive defaults for `target`.
 
 ---
 
@@ -1214,6 +1237,8 @@ assert_skip(plan, "resources", "target-only-skip", "restore disabled")
 Do not require exact operation IDs/order.
 
 - [ ] **Step 3: Add target dry-run to `restore-target.sh`**
+
+Before planning, re-inspect `target`'s persisted Restore defaults through the public JSON CLI and require `conflicts: safe` and `convergence: additive`, as set through public CLI on Machine B in PR 2. The normal Restore must use those defaults rather than one-run override flags. Then run the structured dry-run without `--force`, `--exact`, `--conflicts`, or `--convergence`:
 
 ```bash
 set +e
@@ -1288,6 +1313,8 @@ From the host, run the SSH command through `approve_restore.py` without allocati
 ```text
 ssh ... spike@127.0.0.1 omarchy-blueprint --profile /home/spike/omarchy-profile --machine target restore
 ```
+
+Do not pass any one-run Restore intent override here. The reviewed CLI invocation consumes the `target` machine's previously persisted Safe + Additive defaults; its plan/transcript must remain consistent with the preflight inspection.
 
 Save transcript to `artifacts/target/restore-transcript.txt`.
 

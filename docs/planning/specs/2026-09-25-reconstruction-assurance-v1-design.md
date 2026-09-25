@@ -656,7 +656,13 @@ If source customization cannot be proven, Capture does not run.
 
 Capture is invoked through the shipped Blueprint CLI.
 
-The canonical scenario may use non-interactive CLI options intended for scripting, but it must not invoke internal Go APIs.
+The canonical scenario first runs a non-mutating public CLI Capture preview and
+asserts the expected candidate outcomes. It then invokes the normal reviewed
+Capture CLI with a real approval prompt, sends explicit approval once, and
+requires Blueprint's re-inspection/recalculation to accept the approved
+authority before Capture writes the profile. Changed authority fails `CAPTURE`;
+the harness does not retry or reapprove. The harness must not invoke internal
+Go APIs or use plain scripted Capture to bypass review.
 
 Capture must:
 
@@ -697,6 +703,14 @@ Convergence: Additive
 ```
 
 with no one-run Force or Exact override.
+
+After verifying the captured profile's transfer and local machine binding,
+Machine B explicitly persists Safe + Additive as `target`'s Restore defaults
+through the public Blueprint CLI and verifies the effective settings through
+public JSON inspection. The ordinary Restore invocation consumes those saved
+defaults without one-run intent flags. The target-side policy setting is a
+deliberate public CLI mutation after the profile-only handoff, not a change to
+Machine A's captured desired state.
 
 Machine-specific Restore Skip remains authoritative and cannot be broadened by Restore intent.
 
@@ -1197,7 +1211,7 @@ Reconstruction Assurance v1 is complete when:
 ## References
 
 - `ROADMAP.md`
-- `docs/adr/0020-real-omarchy-reconstruction-assurance.md`
+- `docs/adr/0021-real-omarchy-reconstruction-assurance.md`
 - `docs/adr/0016-machine-overlay-resource-path-mappings.md`
 - `docs/planning/specs/2026-09-18-machine-aware-capture-restore-policy-design.md`
 - `docs/manual-test-checklist.md`
