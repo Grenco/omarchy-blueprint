@@ -6,6 +6,10 @@ Capture, profile handoff, Restore and independent verification. Run `run.sh` fro
 the repository checkout on a KVM-capable Ubuntu host with QEMU, OVMF, genisoimage,
 Python 3 and OpenSSH. The workflow sets up those tools on `ubuntu-24.04`.
 
+The disposable `spike` account uses a fixture password for its unattended
+configuration and authenticated guest reboot/poweroff; it is passed to real
+`sudo` on stdin. No external credentials are required.
+
 Phases (the first failure is retained; later phases remain `NOT RUN`):
 
 ```text

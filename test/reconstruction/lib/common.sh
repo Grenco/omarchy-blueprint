@@ -17,6 +17,8 @@ RA_CURRENT_PHASE=""
 RA_FIRST_FAILURE_PHASE=""
 RA_FIRST_FAILURE_MESSAGE=""
 RA_CLEANUP_CMDS=()
+RA_MIN_OBSERVED_DISK=-1
+RA_MIN_OBSERVED_MEMORY=-1
 
 ra_note() { printf '[reconstruction] %s\n' "$*" >&2; }
 
@@ -66,6 +68,18 @@ ra_ssh_sudo() {
   printf '%s\n' "$RA_USER" | ra_ssh "sudo -S -p '' bash -c $quoted"
 }
 
+ra_measure_host() {
+  local disk memory
+  disk=$(df -B1 --output=avail /mnt | tail -1 | tr -d ' ')
+  memory=$(free -b | awk '$1 == "Mem:" {print $7}')
+  if (( RA_MIN_OBSERVED_DISK < 0 || disk < RA_MIN_OBSERVED_DISK )); then
+    RA_MIN_OBSERVED_DISK=$disk
+  fi
+  if (( RA_MIN_OBSERVED_MEMORY < 0 || memory < RA_MIN_OBSERVED_MEMORY )); then
+    RA_MIN_OBSERVED_MEMORY=$memory
+  fi
+}
+
 ra_guest_health() {
   ra_ssh 'set -e
     source /usr/share/omarchy/default/bash/env-bootstrap
@@ -86,6 +100,7 @@ ra_guest_health() {
 ra_wait_ready() {
   local pid=$1 log=$2 deadline=$3 i
   for (( i=0; i<deadline; i+=3 )); do
+    ra_measure_host
     if ra_guest_health > "$log" 2>&1; then
       return 0
     fi
@@ -118,7 +133,7 @@ ra_finish() {
   if (( status != 0 )) && [[ -z $RA_FIRST_FAILURE_PHASE ]]; then
     ra_fail "${RA_CURRENT_PHASE:-INFRASTRUCTURE}" "command exited with status $status" || true
   fi
-  mkdir -p "$RA_ARTIFACTS"
+  mkdir -p "$RA_ARTIFACTS/host"
   {
     printf 'Reconstruction Assurance\n'
     for phase in "${RA_PHASES[@]}"; do
@@ -128,6 +143,10 @@ ra_finish() {
       printf 'phase: %s\nmessage: %s\n' "$RA_FIRST_FAILURE_PHASE" "$RA_FIRST_FAILURE_MESSAGE"
     fi
   } > "$RA_ARTIFACTS/summary.txt"
+  printf 'minimum_host_free_bytes=%s\nminimum_host_available_memory_bytes=%s\n' \
+    "$RA_MIN_OBSERVED_DISK" "$RA_MIN_OBSERVED_MEMORY" > "$RA_ARTIFACTS/host/metrics.txt"
+  while IFS= read -r phase; do ra_note "$phase"; done < "$RA_ARTIFACTS/summary.txt"
+  while IFS= read -r phase; do ra_note "$phase"; done < "$RA_ARTIFACTS/host/metrics.txt"
   for (( i=${#RA_CLEANUP_CMDS[@]}-1; i>=0; i-- )); do
     eval "${RA_CLEANUP_CMDS[i]}" || ra_note "cleanup warning: ${RA_CLEANUP_CMDS[i]}"
   done

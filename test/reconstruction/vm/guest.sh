@@ -58,8 +58,9 @@ ra_guest_copy_from() {
 }
 
 ra_guest_freshen_identity() {
-  local role=$1 hostname=$2 before after="" i
+  local role=$1 hostname=$2 before after="" prior_id current_id i
   before=$(ra_guest_exec "$role" 'cat /proc/sys/kernel/random/boot_id')
+  prior_id=$(ra_guest_exec "$role" 'cat /etc/machine-id')
   ra_ssh_sudo "hostnamectl hostname '$hostname' && rm -f /etc/machine-id /var/lib/dbus/machine-id && systemd-machine-id-setup && ln -sf /etc/machine-id /var/lib/dbus/machine-id && systemctl reboot" \
     > "$RA_ARTIFACTS/$role/identity-reboot.log" 2>&1 || true # SSH disconnects when reboot starts.
   for (( i=0; i<120; i+=3 )); do
@@ -79,11 +80,15 @@ ra_guest_freshen_identity() {
   [[ $(ra_guest_exec "$role" hostname) == "$hostname" ]] || { ra_note "$role hostname did not change"; return 1; }
   ra_guest_exec "$role" 'cat /etc/machine-id' > "$RA_ARTIFACTS/$role/machine-id.txt"
   [[ -s $RA_ARTIFACTS/$role/machine-id.txt ]] || { ra_note "$role has no machine ID"; return 1; }
+  current_id=$(<"$RA_ARTIFACTS/$role/machine-id.txt")
+  [[ $current_id != "$prior_id" ]] || { ra_note "$role retained pristine base machine ID"; return 1; }
+  ra_note "$role identity: $current_id (fresh boot $after)"
 }
 
 ra_guest_stop() {
   local role=$1
   [[ $role == "$RA_ACTIVE_GUEST" ]] || { ra_note "guest $role is not active"; return 1; }
+  ra_measure_host
   ra_ssh_sudo 'systemctl poweroff' > "$RA_ARTIFACTS/$role/shutdown.log" 2>&1 || true
   ra_wait_exit "$RA_GUEST_PID" 90 || { ra_note "$role did not power off; see shutdown.log"; return 1; }
   qemu-img info "$RA_WORK/guests/$role.qcow2" > "$RA_ARTIFACTS/$role/disk.txt"
