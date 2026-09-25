@@ -159,7 +159,7 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
 	root.PersistentFlags().StringVar(&opt.machine, "machine", "", "use machine overlay for this invocation")
-	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), inspectCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), configAutoCommand(deps, opt), machineCommand(deps, opt), profileCommand(deps, opt), tuiCommand(deps, opt))
+	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), inspectCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), configAutoCommand(deps, opt), policyCommand(deps, opt), machineCommand(deps, opt), profileCommand(deps, opt), tuiCommand(deps, opt))
 	root.SetOut(deps.Out)
 	return root
 }
@@ -212,8 +212,8 @@ type machineContext struct {
 }
 
 func machineCommand(deps Dependencies, opt *options) *cobra.Command {
-	command := &cobra.Command{Use: "machine", Short: "Manage machine resource path overlays"}
-	command.AddCommand(machineAddCommand(deps, opt), machineListCommand(deps, opt), machineCurrentCommand(deps, opt), machineUseCommand(deps, opt), machineClearCommand(deps, opt), machineRenameCommand(deps, opt), machineRemoveCommand(deps, opt), machineMapCommand(deps, opt), machineUnmapCommand(deps, opt))
+	command := &cobra.Command{Use: "machine", Short: "Manage machine overlays"}
+	command.AddCommand(machineAddCommand(deps, opt), machineListCommand(deps, opt), machineCurrentCommand(deps, opt), machineUseCommand(deps, opt), machineClearCommand(deps, opt), machineRenameCommand(deps, opt), machineRemoveCommand(deps, opt), machineMapCommand(deps, opt), machineUnmapCommand(deps, opt), machineRestoreDefaultsCommand(deps, opt))
 	return command
 }
 
@@ -671,8 +671,15 @@ func initCommand(deps Dependencies, opt *options) *cobra.Command {
 }
 
 func captureCommand(deps Dependencies, opt *options) *cobra.Command {
+	var dryRun, review bool
 	providers := stateProviders(deps, opt)
-	return &cobra.Command{Use: "capture [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "capture [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Capture system state", RunE: func(cmd *cobra.Command, args []string) error {
+		if dryRun && review {
+			return fmt.Errorf("--dry-run and --review cannot be combined")
+		}
+		if dryRun || review {
+			return capturePreviewCommand(cmd.Context(), deps, opt, args, dryRun, review)
+		}
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)
@@ -686,6 +693,9 @@ func captureCommand(deps Dependencies, opt *options) *cobra.Command {
 		}
 		return captureProviders(cmd.Context(), deps, opt, d, []stateProvider{provider})
 	}}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview Capture outcomes without writing the profile")
+	command.Flags().BoolVar(&review, "review", false, "review and approve Capture interactively (JSON emits preview only)")
+	return command
 }
 
 func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
