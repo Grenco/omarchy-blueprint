@@ -1,4 +1,4 @@
-# ADR 0020: Real-Omarchy Reconstruction Assurance in Required CI
+# ADR 0021: Real-Omarchy Reconstruction Assurance in Required CI
 
 ## Status
 
