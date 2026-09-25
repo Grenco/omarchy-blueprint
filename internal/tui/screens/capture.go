@@ -27,14 +27,19 @@ type Capture struct {
 	err                                  error
 	requestID                            uint64
 	// review is non-nil while the chosen categories' proposed profile
-	// changes are shown for approval. It is a preview only: approval runs
-	// CaptureMany, which re-inspects and resolves policy afresh.
+	// changes are shown for approval. Approval re-inspects afresh and only
+	// writes when that still matches the reviewed outcomes.
 	review *captureReview
 }
 
 type captureReview struct {
 	categories []string
 	scope      workflow.PolicyScope
+	// inspection is what the user approves. Outcomes are for the active
+	// machine; settings are the Capture policy at scope, which is what
+	// space and x edit.
+	inspection workflow.CaptureInspection
+	settings   map[string]policy.EffectiveSetting
 	sections   []workflow.CaptureReviewSection
 	noAction   int
 	cursor     int
@@ -43,11 +48,14 @@ type captureReview struct {
 	requestID  uint64
 	err        error
 	notice     string
+	// pendingNotice survives the recalculation that follows it.
+	pendingNotice string
 }
 
 type captureReviewMsg struct {
 	requestID     uint64
 	inspection    workflow.CaptureInspection
+	settings      map[string]policy.EffectiveSetting
 	err           error
 	focus         string
 	policyChanged bool
@@ -63,6 +71,7 @@ type captureDoneMsg struct {
 	providers []string
 	err       error
 	warning   error
+	changed   *workflow.CaptureReviewChangedError
 }
 
 func NewCaptureContext(ctx context.Context, session *workflow.Session) *Capture {
@@ -90,6 +99,10 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 	case captureDoneMsg:
 		if msg.requestID != s.requestID {
 			return nil
+		}
+		if msg.changed != nil && s.review != nil {
+			s.busy, s.confirm, s.capturing = false, false, false
+			return s.replaceReview(msg.changed)
 		}
 		s.err, s.busy, s.confirm, s.capturing, s.captureAll = msg.err, false, false, false, false
 		s.review = nil
@@ -305,11 +318,19 @@ func (s *Capture) capture() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
 	ids := s.chosenIDs()
+	approved := workflow.CaptureInspection{}
+	if s.review != nil {
+		approved = s.review.inspection
+	}
 	return func() tea.Msg {
-		result, err := s.session.CaptureMany(s.ctx, ids)
+		result, err := s.session.CaptureApproved(s.ctx, ids, approved)
 		var warning workflow.PostCommitWarning
 		if errors.As(err, &warning) {
 			return captureDoneMsg{requestID: requestID, providers: result.Providers, warning: warning.Err}
+		}
+		var changed *workflow.CaptureReviewChangedError
+		if errors.As(err, &changed) {
+			return captureDoneMsg{requestID: requestID, changed: changed}
 		}
 		return captureDoneMsg{requestID: requestID, providers: result.Providers, err: err}
 	}
@@ -350,25 +371,60 @@ func (s *Capture) inspectReview(focus string, policyChanged bool, mutate func() 
 	review := s.review
 	review.requestID++
 	review.loading, review.err, review.notice = true, nil, ""
-	requestID, ids, session, ctx := review.requestID, append([]string(nil), review.categories...), s.session, s.ctx
+	requestID, ids, scope, session, ctx := review.requestID, append([]string(nil), review.categories...), review.scope, s.session, s.ctx
 	return func() tea.Msg {
 		if mutate != nil {
 			if err := mutate(); err != nil {
 				return captureReviewMsg{requestID: requestID, err: err, focus: focus}
 			}
 		}
-		merged := workflow.CaptureInspection{Categories: map[string][]workflow.CaptureTarget{}}
-		for _, id := range ids {
-			inspection, err := session.InspectCapture(ctx, id)
-			if err != nil {
-				return captureReviewMsg{requestID: requestID, err: err, focus: focus, policyChanged: policyChanged}
-			}
-			for category, targets := range inspection.Categories {
-				merged.Categories[category] = targets
-			}
+		inspection, err := session.InspectCaptureMany(ctx, ids)
+		if err != nil {
+			return captureReviewMsg{requestID: requestID, err: err, focus: focus, policyChanged: policyChanged}
 		}
-		return captureReviewMsg{requestID: requestID, inspection: merged, focus: focus, policyChanged: policyChanged}
+		settings, err := scopeCaptureSettings(ctx, session, scope, inspection)
+		return captureReviewMsg{requestID: requestID, inspection: inspection, settings: settings, err: err, focus: focus, policyChanged: policyChanged}
 	}
+}
+
+// scopeCaptureSettings resolves each listed target's Capture policy at the
+// scope the review edits, which may differ from the active machine whose
+// outcomes the review shows.
+func scopeCaptureSettings(ctx context.Context, session *workflow.Session, scope workflow.PolicyScope, inspection workflow.CaptureInspection) (map[string]policy.EffectiveSetting, error) {
+	settings := map[string]policy.EffectiveSetting{}
+	for _, section := range inspection.Review() {
+		if section.Group == workflow.CaptureReviewNoAction {
+			continue
+		}
+		for _, target := range section.Targets {
+			effective, err := session.EffectivePolicy(ctx, scope, target.Category, target.Inspection)
+			if err != nil {
+				return nil, err
+			}
+			settings[reviewKey(target)] = effective.Capture
+		}
+	}
+	return settings, nil
+}
+
+// replaceReview swaps in the recalculated review Capture found at approval
+// time, explains what changed, and requires approving it again.
+func (s *Capture) replaceReview(changed *workflow.CaptureReviewChangedError) tea.Cmd {
+	focus := ""
+	if target, ok := s.selectedReviewTarget(); ok {
+		focus = reviewKey(target)
+	}
+	cmd := s.inspectReview(focus, false, nil)
+	notice := "Nothing was captured: this review changed since you approved it"
+	if len(changed.Changes) > 0 {
+		notice += " (" + components.DisplayText(changed.Changes[0])
+		if more := len(changed.Changes) - 1; more > 0 {
+			notice += fmt.Sprintf(", and %d more", more)
+		}
+		notice += ")"
+	}
+	s.review.pendingNotice = notice + ". Review it again and press enter to approve."
+	return cmd
 }
 
 func (s *Capture) applyReview(msg captureReviewMsg) tea.Cmd {
@@ -377,7 +433,9 @@ func (s *Capture) applyReview(msg captureReviewMsg) tea.Cmd {
 		return nil
 	}
 	review.loading, review.err = false, msg.err
+	review.notice, review.pendingNotice = review.pendingNotice, ""
 	if msg.err == nil {
+		review.inspection, review.settings = msg.inspection, msg.settings
 		review.sections, review.noAction = nil, 0
 		for _, section := range msg.inspection.Review() {
 			if section.Group == workflow.CaptureReviewNoAction {
@@ -449,6 +507,8 @@ func (s *Capture) updateReview(key tea.KeyPressMsg) tea.Cmd {
 		return s.inspectReview(reviewKey(target), false, nil)
 	case "p":
 		review.scope = togglePolicyScope(s.session, review.scope)
+		target, _ := s.selectedReviewTarget()
+		return s.inspectReview(reviewKey(target), false, nil)
 	case "space", " ", "x":
 		target, ok := s.selectedReviewTarget()
 		if !ok {
@@ -465,7 +525,7 @@ func (s *Capture) updateReview(key tea.KeyPressMsg) tea.Cmd {
 			})
 		}
 		setting := policy.SettingEnabled
-		if target.Decision.Capture {
+		if s.scopeSetting(target).Enabled {
 			setting = policy.SettingDisabled
 		}
 		return s.inspectReview(reviewKey(target), true, func() error {
@@ -475,6 +535,14 @@ func (s *Capture) updateReview(key tea.KeyPressMsg) tea.Cmd {
 		return s.confirmCapture()
 	}
 	return nil
+}
+
+// scopeSetting is target's Capture policy at the review's editing scope.
+func (s *Capture) scopeSetting(target workflow.CaptureTarget) policy.EffectiveSetting {
+	if setting, ok := s.review.settings[reviewKey(target)]; ok {
+		return setting
+	}
+	return target.Policy
 }
 
 func (s *Capture) reviewCounts() map[workflow.CaptureReviewGroup]int {
@@ -515,7 +583,7 @@ func (s *Capture) confirmCapture() tea.Cmd {
 	}
 	s.confirm = true
 	return func() tea.Msg {
-		return components.ModalRequest{Title: "Capture selected categories", Content: components.Confirm("Capture into this profile? " + summary + "\n\nCapture re-checks this machine and your policy before writing, so the result may differ if anything changed since this review.")}
+		return components.ModalRequest{Title: "Capture selected categories", Content: components.Confirm("Capture into this profile? " + summary + "\n\nCapture re-checks this machine and your policy first. If anything changed since this review, nothing is written and the updated review is shown for approval.")}
 	}
 }
 
@@ -568,7 +636,11 @@ func (s *Capture) reviewView() string {
 		}
 		lines = append(lines, line)
 	}
-	for _, line := range components.WrapText(captureScopeLabel(s.session, review.scope), width) {
+	scopeLine := captureScopeLabel(s.session, review.scope)
+	if review.scope.Machine != activeMachineName(s.session) {
+		scopeLine += " · outcomes are for " + machineLabel(activeMachineName(s.session))
+	}
+	for _, line := range components.WrapText(scopeLine, width) {
 		lines = append(lines, s.styles.SubtleAccent(line))
 	}
 	switch {
@@ -615,12 +687,13 @@ func (s *Capture) reviewCells(target workflow.CaptureTarget, selected bool) []st
 	}
 	outcome := captureOutcomeLabels[target.Outcome]
 	blocked := target.Outcome == workflow.CaptureOutcomeBlocked
-	decision := policyDecision("Capture", target.Decision.Capture, blocked)
+	scoped := s.scopeSetting(target)
+	decision := policyDecision("Capture", scoped.Enabled, blocked)
 	if blocked {
 		decision = policySourceLabel(target.Policy.Source, true)
 	}
 	setting := styledDecision(s.styles, decision, selected)
-	if !target.Policy.Explicit && !blocked {
+	if !scoped.Explicit && !blocked {
 		setting = "↳ " + setting
 	}
 	if !selected {
@@ -650,26 +723,41 @@ func (s *Capture) reviewDetail() string {
 		label = target.Inspection.Key
 	}
 	blocked := target.Outcome == workflow.CaptureOutcomeBlocked
-	source := policySource(target.Policy.Source)
-	explicit := "inherited"
-	if target.Policy.Explicit {
-		explicit = "explicit"
-	}
+	scopeName := strings.TrimPrefix(captureScopeLabel(s.session, s.review.scope), "Policy scope: ")
+	scoped := s.scopeSetting(target)
 	lines := []string{
 		components.DisplayText(label),
 		"Category: " + title(target.Category),
 		"Target: " + components.DisplayText(target.Inspection.Key),
 		"Outcome: " + strings.TrimLeft(captureOutcomeLabels[target.Outcome], "+~−! "),
 		captureOutcomeMeaning[target.Outcome],
-		"Capture policy: " + policyDecision("Capture", target.Decision.Capture, blocked) + " (" + explicit + ", " + source + ")",
+		"Capture policy at " + scopeName + ": " + policySettingSummary(scoped, blocked),
+	}
+	if s.review.scope.Machine != activeMachineName(s.session) {
+		lines = append(lines, "Applied on "+machineLabel(activeMachineName(s.session))+": "+policySettingSummary(target.Policy, blocked))
 	}
 	if target.Inspection.SafetyReason != "" {
 		lines = append(lines, "Safety: "+components.DisplayText(target.Inspection.SafetyReason))
 	}
 	if !blocked {
-		lines = append(lines, "", "space switches Include/Preserve at "+strings.TrimPrefix(captureScopeLabel(s.session, s.review.scope), "Policy scope: ")+"; x resets it to inherited.")
+		lines = append(lines, "", "space switches Include/Preserve at "+scopeName+"; x resets it to inherited.")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func policySettingSummary(setting policy.EffectiveSetting, blocked bool) string {
+	explicit := "inherited"
+	if setting.Explicit {
+		explicit = "explicit"
+	}
+	return policyDecision("Capture", setting.Enabled && !blocked, blocked) + " (" + explicit + ", " + policySource(setting.Source) + ")"
+}
+
+func machineLabel(name string) string {
+	if name == "" {
+		return "this machine"
+	}
+	return "this machine (" + components.DisplayText(name) + ")"
 }
 
 // Reviewing reports whether the Capture review is open.
