@@ -47,6 +47,62 @@ ra_cleanup_add() {
   RA_CLEANUP_CMDS+=("$command")
 }
 
+ra_kill_if_running() {
+  if kill -0 "$1" 2>/dev/null; then
+    kill "$1"
+  fi
+}
+
+ra_ssh() {
+  ssh -p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=2 "$RA_USER@127.0.0.1" "$@"
+}
+
+ra_guest_health() {
+  ra_ssh 'set -e
+    test "$(cat /proc/1/comm)" = systemd
+    test ! -e /run/archiso/bootmnt
+    findmnt -no SOURCE / | grep -q "^/dev/vda"
+    command -v pacman && command -v git && command -v omarchy
+    omarchy commands --json >/dev/null
+    omarchy theme current >/dev/null
+    omarchy plugin list --json >/dev/null
+    test -d "$HOME"
+    kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase")
+    pacman -Q "$kernel" "$kernel-headers"
+    test "$(cat "/usr/lib/modules/$(uname -r)/build/include/config/kernel.release")" = "$(uname -r)"
+    uname -r'
+}
+
+ra_wait_ready() {
+  local pid=$1 log=$2 deadline=$3 i
+  for (( i=0; i<deadline; i+=3 )); do
+    if ra_guest_health > "$log" 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      ra_note "QEMU exited before guest readiness"
+      return 1
+    fi
+    sleep 3
+  done
+  ra_note "guest readiness timed out after ${deadline}s; last SSH attempt: $log"
+  return 1
+}
+
+ra_wait_exit() {
+  local pid=$1 deadline=$2 i
+  for (( i=0; i<deadline; i++ )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      return $?
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 ra_finish() {
   local status=${1:-0} i phase
   trap - EXIT
