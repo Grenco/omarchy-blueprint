@@ -52,7 +52,7 @@ ra_install_base() {
     ra_base_screen
     ra_fail OMARCHY_INSTALL "official Omarchy installer did not boot a healthy disk guest"
   fi
-  ra_ssh 'findmnt -no SOURCE /; uname -r; kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase"); pacman -Q "$kernel" "$kernel-headers"; systemd-analyze; omarchy theme current; omarchy plugin list --json' \
+  ra_ssh 'source /usr/share/omarchy/default/bash/env-bootstrap; findmnt -no SOURCE /; uname -r; kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase"); pacman -Q "$kernel" "$kernel-headers"; systemd-analyze; omarchy theme current; omarchy plugin list --json' \
     >> "$RA_ARTIFACTS/base/guest-checks.log" 2>&1
   ra_note "Omarchy installed and ready in $(($(date +%s)-start))s"
   ra_ssh 'sudo systemctl poweroff' >/dev/null 2>&1 || true

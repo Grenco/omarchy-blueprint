@@ -61,6 +61,7 @@ ra_ssh() {
 
 ra_guest_health() {
   ra_ssh 'set -e
+    source /usr/share/omarchy/default/bash/env-bootstrap
     test "$(cat /proc/1/comm)" = systemd
     test ! -e /run/archiso/bootmnt
     findmnt -no SOURCE / | grep -q "^/dev/vda"
