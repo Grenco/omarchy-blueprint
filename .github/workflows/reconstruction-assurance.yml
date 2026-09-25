@@ -13,6 +13,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Test reconstruction host helpers
+        run: python3 -m unittest discover -s test/reconstruction/tests -p 'test_*.py'
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
