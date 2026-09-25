@@ -24,6 +24,20 @@ Capture reads the current system and updates the profile. A category-less
 own capture rules. Config saves meaningful customisations relative to
 Omarchy defaults rather than copying unchanged defaults.
 
+Preview candidates (including targets that have never been captured), policy
+preserves, and safety blocks without writing the profile:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile capture --dry-run
+omarchy-blueprint --profile ~/omarchy-profile capture packages --review
+```
+
+`--review` asks for approval in a terminal, then re-inspects before and after
+staging. If the approved outcome or captured value has changed, Capture stops
+without saving and asks you to review again. `--json capture --review` emits
+the preview only; it never prompts or applies. Plain `capture` remains useful
+for scripts that intentionally capture immediately.
+
 ## Check, status, and diff
 
 ```sh
@@ -46,8 +60,11 @@ omarchy-blueprint --profile ~/omarchy-profile restore
 
 `restore --dry-run` calculates and prints the plan without changing
 anything. Plain `restore` shows the same plan and asks for interactive
-approval before applying it. Add `--force` to resolve supported conflicts in
-favor of the profile instead of leaving them for manual review.
+approval before applying it. `--conflicts safe|force` and
+`--convergence additive|exact` override the selected machine's defaults for
+one run, independently. `--force` and `--exact` are shorthands for Force and
+Exact. Exact only removes explicitly undesired state when its owning provider
+can do so safely; it never deletes Resource data.
 
 ## Target one category
 
@@ -76,10 +93,51 @@ exclusion persists across future captures. `include` puts a previously
 excluded package back under management. Package references can be given as
 `package:<name>`, or explicitly as `official:<name>` / `aur:<name>`.
 
+These are *management* actions: package exclusion forgets its saved desired
+state. To preserve saved state while preventing one machine from updating it,
+or to skip restoring it on that machine, use Capture/Restore policy instead:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile policy show packages official:firefox --scope profile
+omarchy-blueprint --profile ~/omarchy-profile policy set capture packages disabled official:firefox --scope desktop
+omarchy-blueprint --profile ~/omarchy-profile policy set restore packages disabled official:firefox --scope desktop
+omarchy-blueprint --profile ~/omarchy-profile policy clear capture packages official:firefox --scope desktop
+```
+
+`policy set <capture|restore> <category> <enabled|disabled> [target]` sets
+an explicit override, at category level when the target is omitted.
+`policy clear <capture|restore> <category> [target]` removes that override so
+the setting inherits again. `policy show [category [target]]` reports explicit
+rules and effective settings, including their inheritance sources and target
+state; `--json` returns structured data. `--scope profile` selects portable
+defaults, while `--scope <machine>` selects a named machine without changing
+its local binding. Without `--scope`, policy uses the selected machine (or
+profile defaults when none is selected). Target keys are shown by `policy show`
+and in the Capture preview: for example `themes active`, `themes theme:<id>`,
+`defaults browser`, `shell state`, and `resources resource:<id>`.
+
+To forget a managed target and its target-specific overrides rather than
+preserving it or remembering its absence, use
+`policy stop-managing <category> <target>`. Providers that do not support this action reject it with an
+explanation; Config management and Resource untracking have their own verbs.
+
 Config paths have an equivalent policy, set from the TUI's Config screen or
 with `omarchy-blueprint include config:<path>` / `omarchy-blueprint auto
 config:<path>`; see the [TUI guide](tui.md#config-states-and-policies) for
 the exact policy wording.
+
+## Machine Restore defaults
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile machine restore-defaults desktop
+omarchy-blueprint --profile ~/omarchy-profile machine restore-defaults set desktop --conflicts force
+omarchy-blueprint --profile ~/omarchy-profile machine restore-defaults set desktop --convergence exact
+```
+
+These persisted defaults affect Restore planning for that machine. A partial
+edit retains the other axis. With no name, the read command uses the active
+machine; setting defaults always requires a name. One-run `restore` flags do
+not change these saved defaults.
 
 ## Profile Git workflow
 
