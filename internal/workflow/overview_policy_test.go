@@ -253,7 +253,7 @@ func (restoringFirefoxProvider) Verify(context.Context, profile.Data, RestoreCon
 	return model.VerificationResult{OK: true}, nil
 }
 func (restoringFirefoxProvider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
-	if op.Resource != "official:firefox" {
+	if !strings.HasPrefix(op.Resource, "official:") {
 		return nil, false
 	}
 	return []string{op.Resource}, true
@@ -348,6 +348,14 @@ func TestOverviewRestoreCandidacyFollowsTheMachinesRestoreOptions(t *testing.T) 
 					return model.RestorePlan{Operations: []model.Operation{overwrite}}
 				}
 				return model.RestorePlan{Skipped: []model.Skipped{skipped}}
+			},
+			want: AttentionDrift,
+		},
+		{
+			name: "an operation attributed to a key outside the inventory stays actionable",
+			plan: func(RestoreContext) model.RestorePlan {
+				// Mapped to official:typo, while the real difference is Firefox.
+				return model.RestorePlan{Operations: []model.Operation{{ID: "packages.remove.official.typo", Provider: "packages", Action: "remove", Resource: "official:typo", Items: []string{"typo"}}}}
 			},
 			want: AttentionDrift,
 		},

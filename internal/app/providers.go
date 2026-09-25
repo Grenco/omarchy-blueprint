@@ -247,15 +247,17 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 	}
 	targets := make([]workflow.TargetInspection, 0, len(d.Resources.Items))
 	for _, item := range d.Resources.Items {
-		present := false
+		present, fingerprint := false, ""
 		if live, ok := currentByID[item.ID]; ok {
 			present = !resourceMissing(live)
+			fingerprint = targetFingerprint(live.Hash, live.Revision)
 		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "resource:" + item.ID,
 			Label:           item.ID,
 			Desired:         workflow.TargetPresent,
 			Current:         currentPresence(present),
+			Fingerprint:     fingerprint,
 			CaptureEligible: true,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
@@ -268,6 +270,12 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 		})
 	}
 	return targets, nil
+}
+
+// targetFingerprint joins the parts of a target's current value that
+// Capture records into workflow.TargetInspection's opaque Fingerprint.
+func targetFingerprint(parts ...string) string {
+	return strings.Join(parts, "\x1f")
 }
 
 // resourceMissing mirrors how Detect itself recognizes a resource whose
@@ -703,11 +711,18 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 		case desiredPortable[key]:
 			desiredState = workflow.TargetPresent
 		}
+		fingerprint := ""
+		if id, ok := strings.CutPrefix(key, "mise:"); ok {
+			if tool, found := current.Mise[id]; found {
+				fingerprint = fmt.Sprintf("%+v", tool)
+			}
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             key,
 			Label:           packageLabel(key),
 			Desired:         desiredState,
 			Current:         currentState,
+			Fingerprint:     fingerprint,
 			CaptureEligible: true,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
@@ -1197,12 +1212,14 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 		Label:           "active",
 		Desired:         desiredPresence(d.Themes.Current != ""),
 		Current:         currentPresence(current.Current != ""),
+		Fingerprint:     current.Current,
 		CaptureEligible: true,
 		RestoreEligible: true,
 		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
 	}}
 
 	desiredThemes, currentThemes := map[string]bool{}, map[string]bool{}
+	themeFingerprints := map[string]string{}
 	for _, theme := range d.Themes.Items {
 		if theme.Type != "builtin" {
 			desiredThemes[theme.ID] = true
@@ -1211,6 +1228,7 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	for _, theme := range current.Items {
 		if theme.Type != "builtin" {
 			currentThemes[theme.ID] = true
+			themeFingerprints[theme.ID] = targetFingerprint(theme.Type, theme.URL, theme.Revision, theme.Hash, fmt.Sprint(theme.Enabled))
 		}
 	}
 	absentThemes := map[string]bool{}
@@ -1240,6 +1258,7 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			Label:           id,
 			Desired:         desiredState,
 			Current:         currentPresence(currentThemes[id]),
+			Fingerprint:     themeFingerprints[id],
 			CaptureEligible: true,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
@@ -1610,9 +1629,11 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 			desiredThirdParty[plugin.ID] = true
 		}
 	}
+	pluginFingerprints := map[string]string{}
 	for _, plugin := range current.Items {
 		if plugin.Source != "builtin" {
 			currentThirdParty[plugin.ID] = true
+			pluginFingerprints[plugin.ID] = targetFingerprint(plugin.Source, plugin.URL, plugin.Revision, plugin.Hash, plugin.ClonedFrom, fmt.Sprint(plugin.Enabled))
 		}
 	}
 	absentThirdParty := map[string]bool{}
@@ -1643,6 +1664,7 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 			Label:           id,
 			Desired:         desiredState,
 			Current:         currentPresence(currentThirdParty[id]),
+			Fingerprint:     pluginFingerprints[id],
 			CaptureEligible: true,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
@@ -2056,7 +2078,7 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 		if candidate.Classification == configprovider.ConfigDeletedBaseline {
 			current = workflow.TargetAbsent
 		}
-		targets = append(targets, configTarget(candidate.Path, desired, current, eligible, reason, workflow.TargetCapabilities{
+		target := configTarget(candidate.Path, desired, current, eligible, reason, workflow.TargetCapabilities{
 			SupportsCapture:            true,
 			SupportsRestore:            true,
 			SupportsDesiredAbsence:     true,
@@ -2072,7 +2094,9 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 			// transition must report StopManaging, not the generic Update.
 			NoActionableUpdate: configCaptureInert(candidate.Classification),
 			RecordsNewAbsence:  configRecordsNewAbsence(candidate.Classification),
-		}))
+		})
+		target.Fingerprint = targetFingerprint(candidate.UserHash, candidate.UserMode)
+		targets = append(targets, target)
 	}
 
 	// Scan omits a saved path entirely once it has no baseline counterpart
@@ -2431,6 +2455,7 @@ func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 			Label:           field.key,
 			Desired:         desiredPresence(field.desired != ""),
 			Current:         currentPresence(field.current != ""),
+			Fingerprint:     field.current,
 			CaptureEligible: true,
 			RestoreEligible: restoreEligible,
 			Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: restoreEligible},
@@ -2631,6 +2656,7 @@ func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 		Label:           "state",
 		Desired:         desiredPresence(d.Shell.Hash != ""),
 		Current:         currentPresence(current.Status == shellprovider.StatusCustomized),
+		Fingerprint:     current.Hash,
 		CaptureEligible: eligible,
 		RestoreEligible: eligible,
 		Capabilities:    workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true},
@@ -2818,8 +2844,10 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	for _, hook := range d.Hooks.Items {
 		desired[hook.Path] = true
 	}
+	hookFingerprints := map[string]string{}
 	for _, hook := range current.Items {
 		currentManaged[hook.Path] = true
+		hookFingerprints[hook.Path] = targetFingerprint(hook.Hash, hook.Mode)
 	}
 	for _, hook := range d.Hooks.Absent {
 		absent[hook.Path] = true
@@ -2848,6 +2876,7 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 			Label:           path,
 			Desired:         desiredState,
 			Current:         currentPresence(currentManaged[path]),
+			Fingerprint:     hookFingerprints[path],
 			CaptureEligible: true,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{

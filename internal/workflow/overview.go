@@ -179,7 +179,9 @@ type differenceClassifier struct {
 
 	planned bool
 	// restoreAll is set when the plan cannot be attributed target by
-	// target, so every difference is conservatively a Restore candidate.
+	// target (an unattributable operation, or a key outside the inspected
+	// inventory), so every difference is conservatively a Restore
+	// candidate.
 	restoreAll     bool
 	restoreKeys    map[string]bool
 	restoreOptions policy.RestoreOptions
@@ -240,7 +242,16 @@ func (c *differenceClassifier) restoreCandidate(key string) bool {
 				break
 			}
 			for _, key := range keys {
+				// A key outside the inspected inventory means attribution
+				// is wrong somewhere; never let it hide the real target.
+				if _, known := c.target(key); !known {
+					c.restoreAll = true
+					break
+				}
 				c.restoreKeys[key] = true
+			}
+			if c.restoreAll {
+				break
 			}
 		}
 	}

@@ -92,6 +92,12 @@ type TargetInspection struct {
 	RestoreEligible bool
 	Capabilities    TargetCapabilities
 	SafetyReason    string
+	// Fingerprint is an opaque identity for the current value Capture
+	// would record (a content hash, version, or chosen value), so an
+	// approved Capture can tell that a value changed even when the outcome
+	// (e.g. Update) did not. Empty when key and presence alone determine
+	// what Capture records.
+	Fingerprint string
 }
 
 // CaptureDecision is the resolved, immutable Capture outcome for one
