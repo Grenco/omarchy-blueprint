@@ -295,3 +295,85 @@ func TestCapturePreserveKeepsAResourcesSavedInboundLinks(t *testing.T) {
 		t.Fatalf("Capture Preserve rewrote the inbound link to %q, want the saved a.txt", got)
 	}
 }
+
+// A saved inbound link belongs to a preserved resource. Retargeting its
+// source into another, captured resource must neither duplicate the source
+// nor transfer the frozen link.
+func TestCaptureKeepsAPreservedResourcesInboundLinkWhenItsSourceMovesToAnotherResource(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		preserve func(t *testing.T, session *workflow.Session, alpha string)
+	}{
+		{"alpha is Capture Preserve", func(t *testing.T, session *workflow.Session, _ string) {
+			if err := session.SetPolicy(workflow.PolicyScope{}, policy.AxisCapture, "resources", "resource:alpha", policy.SettingDisabled); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"alpha is missing on this machine", func(t *testing.T, _ *workflow.Session, alpha string) {
+			if err := os.RemoveAll(alpha); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profileDir, deps, home := resourceSandbox(t)
+			deps.ResourceLinkRoots = func(home string) []resourcesprovider.LinkSearchRoot {
+				return []resourcesprovider.LinkSearchRoot{{Path: home}}
+			}
+			alpha, beta := filepath.Join(home, "alpha"), filepath.Join(home, "beta")
+			writeAppFile(t, filepath.Join(alpha, "a.txt"), "a\n")
+			writeAppFile(t, filepath.Join(beta, "b.txt"), "b\n")
+			link := filepath.Join(home, ".current")
+			if err := os.Symlink(filepath.Join(alpha, "a.txt"), link); err != nil {
+				t.Fatal(err)
+			}
+			for _, root := range []string{alpha, beta} {
+				if code, out := configRun(t, deps, profileDir, "track", root); code != 0 {
+					t.Fatalf("track %s code=%d out=%s", root, code, out)
+				}
+			}
+			if code, out := configRun(t, deps, profileDir, "capture", "resources"); code != 0 {
+				t.Fatalf("capture code=%d out=%s", code, out)
+			}
+
+			session := fingerprintSession(t, deps, profileDir)
+			test.preserve(t, session, alpha)
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(beta, "b.txt"), link); err != nil {
+				t.Fatal(err)
+			}
+
+			ids := []string{"resources"}
+			review, err := session.InspectCaptureMany(context.Background(), ids)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := session.CaptureApproved(context.Background(), ids, review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved, err := profile.Load(profileDir)
+			if err != nil {
+				t.Fatalf("the saved profile must stay valid: %v", err)
+			}
+			var inbound []profile.ResourceLink
+			for _, item := range saved.Resources.Links {
+				if item.Origin == "inbound" {
+					inbound = append(inbound, item)
+				}
+			}
+			if len(inbound) != 1 || inbound[0].TargetResource != "alpha" || inbound[0].Target != "a.txt" {
+				t.Fatalf("inbound links = %#v, want only the preserved link into alpha/a.txt", inbound)
+			}
+			warned := false
+			for _, change := range result.Changes {
+				warned = warned || (change.Type == "warn" && strings.Contains(change.Summary, "stays with preserved resource alpha"))
+			}
+			if !warned {
+				t.Fatalf("Capture must say the retarget into beta was not captured: %#v", result.Changes)
+			}
+		})
+	}
+}
