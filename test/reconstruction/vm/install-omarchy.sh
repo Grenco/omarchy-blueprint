@@ -55,8 +55,8 @@ ra_install_base() {
   ra_ssh 'source /usr/share/omarchy/default/bash/env-bootstrap; findmnt -no SOURCE /; uname -r; kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase"); pacman -Q "$kernel" "$kernel-headers"; systemd-analyze; omarchy theme current; command -v omarchy-shell' \
     >> "$RA_ARTIFACTS/base/guest-checks.log" 2>&1
   ra_note "Omarchy installed and ready in $(($(date +%s)-start))s"
-  ra_ssh 'sudo systemctl poweroff' >/dev/null 2>&1 || true
-  ra_wait_exit "$pid" 90 || ra_fail OMARCHY_INSTALL "installed base did not power off"
+  ra_ssh_sudo 'systemctl poweroff' > "$RA_ARTIFACTS/base/shutdown.log" 2>&1 || true
+  ra_wait_exit "$pid" 90 || ra_fail OMARCHY_INSTALL "installed base did not power off; see shutdown.log"
   cp "$work/base/vars.fd" "$work/base/OVMF_VARS.base.fd"
   chmod 0444 "$work/base/omarchy-base.qcow2" "$work/base/OVMF_VARS.base.fd"
   qemu-img info "$work/base/omarchy-base.qcow2" > "$RA_ARTIFACTS/base/disk.txt"

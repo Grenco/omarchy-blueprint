@@ -59,6 +59,13 @@ ra_ssh() {
     -o ConnectTimeout=2 "$RA_USER@127.0.0.1" "$@"
 }
 
+ra_ssh_sudo() {
+  local quoted
+  printf -v quoted '%q' "$1"
+  # The ephemeral unattended user has the known fixture password used in cidata.
+  printf '%s\n' "$RA_USER" | ra_ssh "sudo -S -p '' bash -c $quoted"
+}
+
 ra_guest_health() {
   ra_ssh 'set -e
     source /usr/share/omarchy/default/bash/env-bootstrap
