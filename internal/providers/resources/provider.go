@@ -408,9 +408,10 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 	}
 	// A preserved item was not re-scanned live, so its resource-internal
 	// links were never rediscovered above; carry its prior links forward
-	// unchanged instead of silently dropping them.
+	// unchanged instead of silently dropping them. Inbound links into a
+	// preserved item are part of its frozen desired state too.
 	for _, link := range saved.Links {
-		if link.Origin == "resource" && preserved[link.SourceResource] {
+		if (link.Origin == "resource" && preserved[link.SourceResource]) || (link.Origin == "inbound" && preserved[link.TargetResource]) {
 			next.Links = append(next.Links, link)
 		}
 	}
@@ -423,7 +424,7 @@ func (p Provider) PrepareCapture(ctx context.Context, saved profile.Resources, o
 		return fail(err)
 	}
 	for _, link := range links {
-		if link.Classification == LinkManagedInbound {
+		if link.Classification == LinkManagedInbound && !preserved[link.TargetResource] {
 			next.Links = append(next.Links, resourceLink(link, "inbound"))
 		}
 	}

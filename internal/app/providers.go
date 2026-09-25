@@ -248,11 +248,16 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 	for _, item := range current.Items {
 		currentByID[item.ID] = item
 	}
-	// Capture also rebuilds each copy resource's internal links.
-	linksBySource := map[string][]profile.ResourceLink{}
+	// Capture also persists links: a copy resource's internal links belong
+	// to their source resource, and inbound links to the resource they
+	// point into, which carries them forward when Capture preserves it.
+	linksByResource := map[string][]profile.ResourceLink{}
 	for _, link := range current.Links {
-		if link.Origin == "resource" {
-			linksBySource[link.SourceResource] = append(linksBySource[link.SourceResource], link)
+		switch link.Origin {
+		case "resource":
+			linksByResource[link.SourceResource] = append(linksByResource[link.SourceResource], link)
+		case "inbound":
+			linksByResource[link.TargetResource] = append(linksByResource[link.TargetResource], link)
 		}
 	}
 	targets := make([]workflow.TargetInspection, 0, len(d.Resources.Items))
@@ -266,7 +271,7 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 			fingerprint = canonicalFingerprint(struct {
 				Resource profile.Resource
 				Links    []profile.ResourceLink
-			}{live, linksBySource[item.ID]})
+			}{live, linksByResource[item.ID]})
 		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "resource:" + item.ID,
