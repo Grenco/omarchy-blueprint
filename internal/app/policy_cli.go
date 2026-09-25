@@ -21,12 +21,17 @@ func policyCommand(deps Dependencies, opt *options) *cobra.Command {
 
 func policyScope(session *workflow.Session, name string, explicit bool) (workflow.PolicyScope, error) {
 	if explicit && name == "" {
-		return workflow.PolicyScope{}, fmt.Errorf("--scope must be profile or a named machine")
+		return workflow.PolicyScope{}, fmt.Errorf("--scope must be profile or machine:<name>")
 	}
 	if !explicit {
 		name = session.Machine().Name
 	} else if name == "profile" {
 		name = ""
+	} else if strings.HasPrefix(name, "machine:") {
+		name = strings.TrimPrefix(name, "machine:")
+		if name == "" {
+			return workflow.PolicyScope{}, fmt.Errorf("--scope machine:<name> requires a machine name")
+		}
 	}
 	if name != "" {
 		for _, item := range session.Profile().Machines.Items {
@@ -43,7 +48,82 @@ func policyScopeLabel(scope workflow.PolicyScope) string {
 	if scope.Machine == "" {
 		return "profile"
 	}
-	return scope.Machine
+	return "machine:" + scope.Machine
+}
+
+// CLI values describe user intent; workflow and on-disk policy retain their
+// shared enabled/disabled representation. The axes are deliberately distinct.
+func parsePolicyValue(axis policy.Axis, value string) (policy.Setting, error) {
+	switch axis {
+	case policy.AxisCapture:
+		switch value {
+		case "update":
+			return policy.SettingEnabled, nil
+		case "preserve":
+			return policy.SettingDisabled, nil
+		}
+		return "", fmt.Errorf("invalid Capture policy %q; want update or preserve", value)
+	case policy.AxisRestore:
+		switch value {
+		case "apply":
+			return policy.SettingEnabled, nil
+		case "skip":
+			return policy.SettingDisabled, nil
+		}
+		return "", fmt.Errorf("invalid Restore policy %q; want apply or skip", value)
+	default:
+		return "", policy.ValidateAxis(axis)
+	}
+}
+
+func policyValue(axis policy.Axis, enabled bool) string {
+	if axis == policy.AxisCapture {
+		if enabled {
+			return "update"
+		}
+		return "preserve"
+	}
+	if enabled {
+		return "apply"
+	}
+	return "skip"
+}
+
+type cliEffectiveSetting struct {
+	Value    string        `json:"value"`
+	Source   policy.Source `json:"source"`
+	Explicit bool          `json:"explicit"`
+}
+
+func effectivePolicyValue(axis policy.Axis, setting policy.EffectiveSetting) cliEffectiveSetting {
+	return cliEffectiveSetting{Value: policyValue(axis, setting.Enabled), Source: setting.Source, Explicit: setting.Explicit}
+}
+
+type cliPolicyEffective struct {
+	Capture cliEffectiveSetting `json:"capture"`
+	Restore cliEffectiveSetting `json:"restore"`
+}
+
+type cliPolicyRule struct {
+	Category string `json:"category"`
+	Target   string `json:"target,omitempty"`
+	Value    string `json:"value"`
+}
+
+type cliPolicyRuleSet struct {
+	Capture []cliPolicyRule `json:"capture"`
+	Restore []cliPolicyRule `json:"restore"`
+}
+
+func cliPolicyRules(rules policy.Rules) cliPolicyRuleSet {
+	converted := cliPolicyRuleSet{Capture: make([]cliPolicyRule, 0, len(rules.Capture)), Restore: make([]cliPolicyRule, 0, len(rules.Restore))}
+	for _, rule := range rules.Capture {
+		converted.Capture = append(converted.Capture, cliPolicyRule{Category: rule.Category, Target: rule.Target, Value: policyValue(policy.AxisCapture, rule.Setting == policy.SettingEnabled)})
+	}
+	for _, rule := range rules.Restore {
+		converted.Restore = append(converted.Restore, cliPolicyRule{Category: rule.Category, Target: rule.Target, Value: policyValue(policy.AxisRestore, rule.Setting == policy.SettingEnabled)})
+	}
+	return converted
 }
 
 func policyProvider(deps Dependencies, opt *options, category string) (workflow.Provider, error) {
@@ -105,7 +185,7 @@ func policyShowCommand(deps Dependencies, opt *options) *cobra.Command {
 			Category   string                     `json:"category"`
 			Target     string                     `json:"target,omitempty"`
 			Inspection *workflow.TargetInspection `json:"inspection,omitempty"`
-			Effective  policy.Effective           `json:"effective"`
+			Effective  cliPolicyEffective         `json:"effective"`
 		}
 		items := make([]entry, 0)
 		providers := workflowProviders(deps, opt)
@@ -158,7 +238,10 @@ func policyShowCommand(deps Dependencies, opt *options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				item := entry{Category: provider.ID(), Target: key, Effective: effective}
+				item := entry{Category: provider.ID(), Target: key, Effective: cliPolicyEffective{
+					Capture: effectivePolicyValue(policy.AxisCapture, effective.Capture),
+					Restore: effectivePolicyValue(policy.AxisRestore, effective.Restore),
+				}}
 				if found {
 					item.Inspection = &inspected
 				}
@@ -172,29 +255,23 @@ func policyShowCommand(deps Dependencies, opt *options) *cobra.Command {
 			if item.Target != "" {
 				label += "/" + item.Target
 			}
-			fmt.Fprintf(&human, "%s  Capture: %s (%s)  Restore: %s (%s)\n", label, policyValue(item.Effective.Capture), item.Effective.Capture.Source.Kind, policyValue(item.Effective.Restore), item.Effective.Restore.Source.Kind)
+			fmt.Fprintf(&human, "%s  Capture: %s (%s)  Restore: %s (%s)\n", label, strings.ToUpper(item.Effective.Capture.Value[:1])+item.Effective.Capture.Value[1:], item.Effective.Capture.Source.Kind, strings.ToUpper(item.Effective.Restore.Value[:1])+item.Effective.Restore.Value[1:], item.Effective.Restore.Source.Kind)
 		}
-		return emit(deps.Out, opt.json, "policy show", true, map[string]any{"scope": policyScopeLabel(scope), "rules": rules, "targets": items}, human.String())
+		return emit(deps.Out, opt.json, "policy show", true, map[string]any{"scope": policyScopeLabel(scope), "rules": cliPolicyRules(rules), "targets": items}, human.String())
 	}}
-	cmd.Flags().StringVar(&scopeName, "scope", "", "policy scope: profile or a named machine (default: active machine)")
+	cmd.Flags().StringVar(&scopeName, "scope", "", "policy scope: profile or machine:<name> (default: active machine)")
 	return cmd
-}
-
-func policyValue(value policy.EffectiveSetting) string {
-	if value.Enabled {
-		return "enabled"
-	}
-	return "disabled"
 }
 
 func policySetCommand(deps Dependencies, opt *options) *cobra.Command {
 	var scopeName string
-	cmd := &cobra.Command{Use: "set <capture|restore> <category> <enabled|disabled> [target]", Args: cobra.RangeArgs(3, 4), Short: "Set an explicit category or target override", RunE: func(cmd *cobra.Command, args []string) error {
-		axis, setting := policy.Axis(args[0]), policy.Setting(args[2])
+	cmd := &cobra.Command{Use: "set <capture|restore> <category> <update|preserve|apply|skip> [target]", Args: cobra.RangeArgs(3, 4), Short: "Set an explicit category or target override", RunE: func(cmd *cobra.Command, args []string) error {
+		axis := policy.Axis(args[0])
 		if err := policy.ValidateAxis(axis); err != nil {
 			return err
 		}
-		if err := policy.ValidateSetting(setting); err != nil {
+		setting, err := parsePolicyValue(axis, args[2])
+		if err != nil {
 			return err
 		}
 		session, err := openWorkflow(deps, opt)
@@ -220,9 +297,9 @@ func policySetCommand(deps Dependencies, opt *options) *cobra.Command {
 		if err := session.SetPolicy(scope, axis, args[1], target, setting); err != nil {
 			return err
 		}
-		return emit(deps.Out, opt.json, "policy set", true, map[string]any{"scope": policyScopeLabel(scope), "axis": axis, "category": args[1], "target": target, "setting": setting}, fmt.Sprintf("Set %s %s/%s to %s at %s scope.\n", axis, args[1], target, setting, policyScopeLabel(scope)))
+		return emit(deps.Out, opt.json, "policy set", true, map[string]any{"scope": policyScopeLabel(scope), "axis": axis, "category": args[1], "target": target, "value": args[2]}, fmt.Sprintf("Set %s %s/%s to %s at %s scope.\n", axis, args[1], target, args[2], policyScopeLabel(scope)))
 	}}
-	cmd.Flags().StringVar(&scopeName, "scope", "", "policy scope: profile or a named machine (default: active machine)")
+	cmd.Flags().StringVar(&scopeName, "scope", "", "policy scope: profile or machine:<name> (default: active machine)")
 	return cmd
 }
 
@@ -258,7 +335,7 @@ func policyClearCommand(deps Dependencies, opt *options) *cobra.Command {
 		}
 		return emit(deps.Out, opt.json, "policy clear", true, map[string]any{"scope": policyScopeLabel(scope), "axis": axis, "category": args[1], "target": target}, fmt.Sprintf("Cleared %s %s/%s at %s scope.\n", axis, args[1], target, policyScopeLabel(scope)))
 	}}
-	cmd.Flags().StringVar(&scopeName, "scope", "", "policy scope: profile or a named machine (default: active machine)")
+	cmd.Flags().StringVar(&scopeName, "scope", "", "policy scope: profile or machine:<name> (default: active machine)")
 	return cmd
 }
 

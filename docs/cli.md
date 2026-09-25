@@ -99,19 +99,24 @@ or to skip restoring it on that machine, use Capture/Restore policy instead:
 
 ```sh
 omarchy-blueprint --profile ~/omarchy-profile policy show packages official:firefox --scope profile
-omarchy-blueprint --profile ~/omarchy-profile policy set capture packages disabled official:firefox --scope desktop
-omarchy-blueprint --profile ~/omarchy-profile policy set restore packages disabled official:firefox --scope desktop
-omarchy-blueprint --profile ~/omarchy-profile policy clear capture packages official:firefox --scope desktop
+omarchy-blueprint --profile ~/omarchy-profile policy set capture packages preserve official:firefox --scope machine:desktop
+omarchy-blueprint --profile ~/omarchy-profile policy set restore packages skip official:firefox --scope machine:desktop
+omarchy-blueprint --profile ~/omarchy-profile policy clear capture packages official:firefox --scope machine:desktop
 ```
 
-`policy set <capture|restore> <category> <enabled|disabled> [target]` sets
-an explicit override, at category level when the target is omitted.
+`policy set capture <category> <update|preserve> [target]` and
+`policy set restore <category> <apply|skip> [target]` set explicit overrides,
+at category level when the target is omitted. Preserve keeps previously saved
+desired state; Skip leaves it unapplied on the selected machine. Neither
+forgets it.
 `policy clear <capture|restore> <category> [target]` removes that override so
 the setting inherits again. `policy show [category [target]]` reports explicit
 rules and effective settings, including their inheritance sources and target
-state; `--json` returns structured data. `--scope profile` selects portable
-defaults, while `--scope <machine>` selects a named machine without changing
-its local binding. Without `--scope`, policy uses the selected machine (or
+state; `--json` returns semantic `value` fields and source/explicit metadata
+for each axis. `--scope profile` selects portable defaults, while
+`--scope machine:<name>` selects a named machine without changing its local
+binding, including one named `profile` (`--scope machine:profile`). Without
+`--scope`, policy uses the selected machine (or
 profile defaults when none is selected). Target keys are shown by `policy show`
 and in the Capture preview: for example `themes active`, `themes theme:<id>`,
 `defaults browser`, `shell state`, and `resources resource:<id>`.
