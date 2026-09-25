@@ -11,6 +11,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HarnessLifecycleTests(unittest.TestCase):
+    def test_overlay_nvram_is_writable_but_base_is_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "base").mkdir()
+            (root / "base/omarchy-base.qcow2").write_bytes(b"base")
+            vars_base = root / "base/OVMF_VARS.base.fd"
+            vars_base.write_bytes(b"NVRAM")
+            vars_base.chmod(0o444)
+            stub = root / "qemu-img"
+            stub.write_text("#!/bin/sh\nexit 0\n")
+            stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", f"source '{ROOT}/lib/common.sh'; "
+                 f"source '{ROOT}/vm/guest.sh'; ra_guest_create source"],
+                env={**os.environ, "RA_WORK": directory, "PATH": f"{directory}:{os.environ['PATH']}"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(vars_base.stat().st_mode & 0o777, 0o444)
+            self.assertEqual((root / "guests/source.vars.fd").stat().st_mode & 0o777, 0o644)
+
     def test_guest_sudo_uses_disposable_account_password(self):
         result = subprocess.run(
             ["bash", "-c", f"source '{ROOT}/lib/common.sh'; "
