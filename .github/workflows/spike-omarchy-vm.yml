@@ -3,8 +3,6 @@ name: Spike - real Omarchy VM
 
 on:
   workflow_dispatch:
-  push:
-    branches: [spike/omarchy-vm-feasibility] # Temporary: register a branch-only workflow for its first run.
 
 permissions:
   contents: read
@@ -155,6 +153,8 @@ jobs:
           set -euo pipefail
           cd /mnt/spike
           # Keep a VGA console: the official installer only runs on guest tty1.
+          echo 'OMARCHY_INSTALL=no' >> "$GITHUB_ENV"
+          echo 'GUEST_BOOT=no' >> "$GITHUB_ENV"
           qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m 8192 \
             -display none -vga std -serial file:omarchy-serial.log \
             -monitor unix:monitor.sock,server,nowait \
@@ -191,6 +191,7 @@ jobs:
                 -o ConnectTimeout=2 -o BatchMode=yes spike@127.0.0.1 \
                 'test "$(cat /proc/1/comm)" = systemd && systemctl show -p Version && command -v pacman && command -v git && test -d "$HOME" && command -v omarchy && pacman -Q omarchy-keyring' \
                 >guest-checks.log 2>&1; then
+              echo "OMARCHY_INSTALL=yes" >> "$GITHUB_ENV"
               echo "GUEST_BOOT=yes" >> "$GITHUB_ENV"
               echo "install_and_boot_seconds=$(($(date +%s)-install_start))" >> "$GITHUB_ENV"
               echo "minimum_host_free_bytes=$min_free" >> "$GITHUB_ENV"
@@ -210,7 +211,7 @@ jobs:
         shell: bash
         run: |
           echo "## Omarchy VM feasibility spike" >> "$GITHUB_STEP_SUMMARY"
-          for name in KVM NESTED_BOOT GUEST_BOOT disk_before disk_after_deps minimum_host_free_bytes install_and_boot_seconds; do
+          for name in KVM NESTED_BOOT OMARCHY_INSTALL GUEST_BOOT disk_before disk_after_deps minimum_host_free_bytes install_and_boot_seconds; do
             value="${!name:-unknown}"
             echo "$name=$value" | tee -a "$GITHUB_STEP_SUMMARY"
           done
