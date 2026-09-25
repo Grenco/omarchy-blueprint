@@ -45,7 +45,7 @@ ra_install_base() {
     -device ide-cd,drive=installer,bootindex=2 \
     -drive file="$work/cidata.iso",format=raw,media=cdrom,if=none,id=seed \
     -device ide-cd,drive=seed,bus=ide.1 \
-    -netdev "user,id=n0,hostfwd=tcp::${RA_SSH_PORT}-:22" -device virtio-net-pci,netdev=n0 &
+    -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${RA_SSH_PORT}-:22" -device virtio-net-pci,netdev=n0 &
   pid=$!
   ra_cleanup_add ra_kill_if_running "$pid"
   if ! ra_wait_ready "$pid" "$RA_ARTIFACTS/base/guest-checks.log" 480; then

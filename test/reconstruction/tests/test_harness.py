@@ -8,9 +8,18 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LOOPBACK_FORWARD = 'hostfwd=tcp:127.0.0.1:${RA_SSH_PORT}-:22'
 
 
 class HarnessLifecycleTests(unittest.TestCase):
+    def test_both_qemu_guests_bind_ssh_to_loopback_only(self):
+        for script in ("vm/install-omarchy.sh", "vm/guest.sh"):
+            with self.subTest(script=script):
+                source = (ROOT / script).read_text()
+                self.assertEqual(source.count('hostfwd='), 1)
+                self.assertIn(LOOPBACK_FORWARD, source)
+                self.assertNotIn('hostfwd=tcp::', source)
+
     def test_overlay_nvram_is_writable_but_base_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
