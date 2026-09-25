@@ -74,7 +74,7 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 		if len(targets) == 0 {
 			continue
 		}
-		differs, err := targetDifferences(ctx, provider, s.profile)
+		differs, err := targetDifferences(ctx, provider, s.profile, targets)
 		if err != nil {
 			return CaptureInspection{}, fmt.Errorf("compare %s targets: %w", provider.ID(), err)
 		}
@@ -190,11 +190,22 @@ type ChangeTargetResolver interface {
 	ChangeTargetKey(change model.Change) (key string, ok bool)
 }
 
+// RestoreTargetResolver is implemented by providers that can attribute each
+// operation in their Restore plan to the policy target key it acts on, so
+// workflow can tell whether a difference is really a Restore candidate
+// under the machine's effective Restore intent. ok=false means the
+// operation cannot be attributed; ok=true with an empty key means it only
+// supports other operations (e.g. reloading Hyprland) and targets nothing.
+type RestoreTargetResolver interface {
+	RestoreOperationTargetKey(op model.Operation) (key string, ok bool)
+}
+
 // targetDifferences reports, per target key, whether the provider's current
 // state differs from saved desired state. Without a resolver, or when any
-// change cannot be attributed, every target is conservatively treated as
-// differing so a real change is never presented as "no action needed".
-func targetDifferences(ctx context.Context, provider Provider, data profile.Data) (func(string) bool, error) {
+// change cannot be attributed to a target in this provider's inspected
+// inventory, every target is conservatively treated as differing so a real
+// change is never presented as "no action needed".
+func targetDifferences(ctx context.Context, provider Provider, data profile.Data, targets []TargetInspection) (func(string) bool, error) {
 	resolver, ok := provider.(ChangeTargetResolver)
 	if !ok {
 		return func(string) bool { return true }, nil
@@ -203,10 +214,14 @@ func targetDifferences(ctx context.Context, provider Provider, data profile.Data
 	if err != nil {
 		return nil, err
 	}
+	inventory := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		inventory[target.Key] = true
+	}
 	changed := make(map[string]bool, len(changes))
 	for _, change := range changes {
 		key, ok := resolver.ChangeTargetKey(change)
-		if !ok {
+		if !ok || (key != "" && !inventory[key]) {
 			return func(string) bool { return true }, nil
 		}
 		if key != "" {
