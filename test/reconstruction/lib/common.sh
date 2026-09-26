@@ -6,6 +6,8 @@ RA_WORK=${RA_WORK:-/mnt/omarchy-blueprint-ra}
 RA_ARTIFACTS=${RA_ARTIFACTS:-$RA_WORK/artifacts}
 RA_USER=${RA_USER:-spike}
 RA_SSH_PORT=${RA_SSH_PORT:-2222}
+RA_BLUEPRINT_BIN=${RA_BLUEPRINT_BIN:-/tmp/omarchy-blueprint-ra}
+RA_GUEST_PROFILE=/home/$RA_USER/omarchy-profile
 RA_MIN_FREE_BYTES=${RA_MIN_FREE_BYTES:-19327352832} # 18 GiB
 OMARCHY_ISO_URL=${OMARCHY_ISO_URL:-https://iso.omarchy.org/omarchy-4.0.4.iso}
 OMARCHY_ISO_SHA256=${OMARCHY_ISO_SHA256:-ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d}
@@ -55,10 +57,11 @@ ra_kill_if_running() {
   fi
 }
 
+RA_SSH_OPTS=(-p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2)
+
 ra_ssh() {
-  ssh -p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=2 "$RA_USER@127.0.0.1" "$@"
+  ssh "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" "$@"
 }
 
 ra_ssh_sudo() {
