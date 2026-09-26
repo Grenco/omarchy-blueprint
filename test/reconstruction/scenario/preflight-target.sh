@@ -13,11 +13,16 @@ ra_boot_target() {
   ra_guest_stage target || ra_fail TARGET_PREFLIGHT "could not stage test inputs on Machine B"
 }
 
+# mode "fresh": nothing from Machine A, not even the profile, has arrived.
+# mode "ready": after readiness the profile is imported, but no canonical
+# customization may exist before Restore.
 ra_assert_target_pristine() {
-  local log="$RA_ARTIFACTS/target/preflight.log" reason
-  ra_guest_exec target 'bash -s' > "$log" 2>&1 <<'GUEST' || {
+  local phase=${1:-TARGET_PREFLIGHT} mode=${2:-fresh} reason
+  local log="$RA_ARTIFACTS/target/absence-$mode.log"
+  ra_guest_exec target "bash -s $mode" > "$log" 2>&1 <<'GUEST' || {
 source /tmp/blueprint-ra-fixtures/guest-env.sh
 set -uo pipefail
+mode=$1
 status=0
 absent() {
   local name=$1
@@ -27,8 +32,10 @@ absent() {
 absent "package:$RA_PACKAGE" eval '! pacman -Q "$RA_PACKAGE" >/dev/null 2>&1'
 absent "theme:$RA_THEME" test "$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null)" != "$RA_THEME"
 absent "default:terminal=$RA_DEFAULT_TERMINAL" test "$(omarchy default terminal)" != "$RA_DEFAULT_TERMINAL"
-for path in ".config/omarchy/plugins/$RA_PLUGIN_ID" "$RA_CONFIG_PATH" "$RA_HOOK_PATH" "$RA_HELPER_SOURCE" \
-            "$RA_HELPER_TARGET" "$RA_GIT_PATH" "$RA_SKIP_PATH" omarchy-profile .local/state/omarchy-blueprint; do
+paths=(".config/omarchy/plugins/$RA_PLUGIN_ID" "$RA_CONFIG_PATH" "$RA_HOOK_PATH" "$RA_HELPER_SOURCE"
+       "$RA_HELPER_TARGET" "$RA_GIT_PATH" "$RA_SKIP_PATH")
+[[ $mode != fresh ]] || paths+=(omarchy-profile .local/state/omarchy-blueprint)
+for path in "${paths[@]}"; do
   absent "~/$path" test ! -e "$HOME/$path"
 done
 shell_doc="$HOME/.config/omarchy/shell.json"
@@ -38,9 +45,9 @@ absent "shell:idle.lock=600,bar.position=bottom" eval \
 exit "$status"
 GUEST
     reason=$(grep '^FAIL ' "$log" | head -1 || true)
-    ra_fail TARGET_PREFLIGHT "${reason:-pristine check failed} (see target/preflight.log)"
+    ra_fail "$phase" "${reason:-pristine check failed} (see target/absence-$mode.log)"
   }
-  grep '^PASS ' "$log" > "$RA_ARTIFACTS/target/preflight.txt"
+  grep '^PASS ' "$log" > "$RA_ARTIFACTS/target/absence-$mode.txt"
 }
 
 ra_import_target_profile() {

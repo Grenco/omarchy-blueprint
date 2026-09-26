@@ -1,0 +1,53 @@
+name: Reconstruction Boot Soak
+
+# Diagnostic only, never a merge gate: characterizes guest boot stalls by
+# rebooting one pristine guest repeatedly. It performs no reconstruction, so
+# it deliberately has its own workflow and check name, distinct from the
+# reconstruction gate's.
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: Reboot cycles (alternating warm reboot and cold power cycle)
+        default: '30'
+      boot_debug:
+        description: Rebuild the boot image with kernel and systemd output on the serial console
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconstruction-boot-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: Reconstruction Boot Soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check soak scripts
+        run: bash -n test/reconstruction/soak.sh test/reconstruction/lib/common.sh test/reconstruction/vm/*.sh
+      - name: Install VM dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf genisoimage openssh-client
+      - name: Prepare workspace
+        run: sudo mkdir -p /mnt/omarchy-blueprint-ra && sudo chown "$USER:$USER" /mnt/omarchy-blueprint-ra
+      - name: Soak guest boots
+        run: bash test/reconstruction/soak.sh "$CYCLES" "$BOOT_DEBUG"
+        env:
+          CYCLES: ${{ inputs.cycles }}
+          BOOT_DEBUG: ${{ inputs.boot_debug && 'debug' || '' }}
+      - name: Summarize
+        if: always()
+        run: cat /mnt/omarchy-blueprint-ra/artifacts/summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reconstruction-boot-soak-artifacts
+          path: /mnt/omarchy-blueprint-ra/artifacts
+          if-no-files-found: ignore

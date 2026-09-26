@@ -92,7 +92,7 @@ It does not require:
 - rollback fault injection;
 - recovery from failed verification;
 - secret/sensitive-content scenarios;
-- cross-Omarchy-version migrations;
+- cross-Omarchy-version migrations (Machine A and Machine B must reach the same ready Omarchy runtime before Capture and Restore; see Substrate pinning);
 - multiple personas;
 - GUI/visual equivalence;
 - monitor or hardware reconstruction;
@@ -374,9 +374,19 @@ The gate pins test substrate identity:
 - the exact Blueprint PR commit;
 - repository-controlled fixture bytes and expected Git revision.
 
-The workflow must not follow an unpinned "latest" Omarchy release.
+The workflow must not follow an unpinned "latest" Omarchy release for its install substrate.
 
 Updating the pinned Omarchy release is a deliberate repository change that must pass the gate.
+
+### Amendment (ADR 0022): install substrate, ready runtime, and symmetry
+
+A fresh official Omarchy install has no pacman sync databases. The only supported way to make it ready to manage packages is Omarchy's own `omarchy update`, which is a full system upgrade. Blueprint deliberately never syncs package metadata itself (ADR 0022). The old "never follow latest" statement therefore cannot hold literally for the runtime a Restore runs on. The gate distinguishes:
+
+- **Pinned install substrate:** the official Omarchy ISO version and checksum above. Every run installs exactly this.
+- **Authoritative ready runtime:** the exact Omarchy release that `omarchy update` resolves during that run. Omarchy chooses it; the harness never chooses, pins or manufactures a newer state.
+- **Invariant:** Machine A and Machine B each run `omarchy update` from the pinned substrate, and must reach the same ready runtime (`omarchy version`) before customization and Restore respectively. A mismatch, for example because Omarchy published a release between the two updates, fails the run loudly and is never retried until the versions happen to match. Both versions are recorded in the artifacts and the summary.
+
+Capture and Restore therefore always happen on the same Omarchy version, so v1 stays reconstruction rather than migration. This is an intentional relaxation of the substrate pinning, forced by the supported product path, and it is limited to the runtime; the install substrate stays pinned.
 
 The package manager inside the pinned guest may use normal supported repository resolution. Reconstruction Assurance is not intended to become a hermetic Linux distribution build.
 

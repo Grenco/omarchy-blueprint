@@ -11,9 +11,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def stage(role: str) -> list[str]:
+def stage(role: str, guest_binary: str = "binary") -> list[str]:
     """Run ra_guest_stage with guest I/O stubbed, returning the privileged commands issued."""
     with tempfile.TemporaryDirectory() as work:
+        Path(work, "guest-binary").write_text(guest_binary)
         Path(work, "git-tls").mkdir()
         Path(work, "artifacts", role).mkdir(parents=True)
         Path(work, "git-tls/cert.pem").write_text("cert")
@@ -23,7 +24,10 @@ def stage(role: str) -> list[str]:
             source '{ROOT}/lib/common.sh'
             source '{ROOT}/scenario/stage-guest.sh'
             ra_guest_wait_session() {{ :; }}
-            ra_guest_exec() {{ cat >/dev/null; }}
+            ra_guest_exec() {{
+              cat >/dev/null
+              [[ $2 != *sha256sum* ]] || sha256sum '{work}/guest-binary' | cut -d' ' -f1
+            }}
             ra_guest_copy_to() {{ :; }}
             ra_ssh_sudo() {{ printf '%s\\n' "$1" >> '{log}'; }}
             ra_guest_stage {role}
@@ -37,20 +41,17 @@ def stage(role: str) -> list[str]:
 
 
 class StagingTests(unittest.TestCase):
+    def test_guest_must_run_the_exact_host_build(self):
+        stage("source")
+        with self.assertRaisesRegex(AssertionError, "does not match"):
+            stage("target", guest_binary="tampered")
+
     def test_common_staging_never_refreshes_package_databases(self):
         for role in ("source", "target"):
             with self.subTest(role=role):
                 commands = "\n".join(stage(role))
                 self.assertIn("omarchy-blueprint", commands)
                 self.assertNotRegex(commands, r"pacman\s+-S")
-
-    def test_only_machine_a_refreshes_package_databases(self):
-        calls = re.findall(r"ra_guest_refresh_package_databases\s+(\S+)",
-                           "\n".join(p.read_text() for p in
-                                     [ROOT / "run.sh", *sorted((ROOT / "scenario").glob("*.sh"))]))
-        self.assertEqual(calls, ["source"])
-        self.assertNotIn("ra_guest_refresh_package_databases", (ROOT / "scenario/preflight-target.sh").read_text())
-
 
     def test_session_readiness_waits_for_first_login_provisioning_to_settle(self):
         # Stubbed guest: the shell answers at once, first-run finishes on the third poll.

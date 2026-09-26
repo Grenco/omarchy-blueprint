@@ -14,7 +14,9 @@ def load_envelope(path: Path) -> dict:
 
 def restore_plan(envelope: dict) -> dict:
     plan = envelope["data"]["plan"]
-    if not isinstance(plan.get("operations"), list):
+    if plan.get("operations") is None:  # Blueprint encodes an empty plan as null.
+        plan["operations"] = []
+    if not isinstance(plan["operations"], list):
         raise AssertionError("restore plan has no operations list")
     return plan
 
@@ -28,10 +30,29 @@ def assert_no_destructive_ops(plan: dict) -> None:
             raise AssertionError(f"destructive operation: {operation}")
 
 
-def assert_no_interactive_ops(plan: dict) -> None:
+def assert_expected_interactive_ops(plan: dict, package: str) -> None:
+    """Exactly one elevated step: the canonical package install, at the terminal (ADR 0022).
+
+    Requiring it keeps the gate exercising real sudo authentication; any
+    other interactive operation is unexpected.
+    """
+    installs = []
     for operation in plan["operations"]:
-        if operation.get("interactive") is True:
-            raise AssertionError(f"interactive operation: {operation}")
+        is_install = (operation.get("provider") == "packages" and operation.get("resource") == f"official:{package}"
+                      and (operation.get("command") or [])[:3] == ["omarchy", "pkg", "add"])
+        if is_install:
+            installs.append(operation)
+        elif operation.get("interactive") is True:
+            raise AssertionError(f"unexpected interactive operation: {operation}")
+    if len(installs) != 1:
+        raise AssertionError(f"expected exactly one interactive omarchy pkg add for {package}, found {len(installs)}")
+    install = installs[0]
+    if package not in install["command"][3:]:
+        raise AssertionError(f"canonical install does not add {package}: {install}")
+    if install.get("interactive") is not True:
+        raise AssertionError(f"package install must be interactive: {install}")
+    if "administrator authentication" not in (install.get("notice") or ""):
+        raise AssertionError(f"package install must explain administrator authentication: {install}")
 
 
 def assert_provider_present(plan: dict, provider: str) -> None:
@@ -47,10 +68,30 @@ def assert_skip(plan: dict, provider: str, resource_substring: str, reason_subst
 
 
 def assert_copy_destination(plan: dict, resource_substring: str, destination: str) -> None:
+    """A Resource is restored to destination, as a directory copy or a file write."""
     if not any(resource_substring in op.get("resource", "")
-               and isinstance(op.get("copy"), dict)
-               and op["copy"].get("destination") == destination for op in plan["operations"]):
+               and any(isinstance(op.get(kind), dict) and op[kind].get("destination") == destination
+                       for kind in ("copy", "file")) for op in plan["operations"]):
         raise AssertionError(f"missing mapped copy for {resource_substring} at {destination}")
+
+
+CANONICAL_PROVIDERS = ("packages", "themes", "plugins", "shell", "config", "hooks", "defaults", "resources")
+
+
+def assert_canonical_plan(plan: dict, package: str) -> None:
+    """The post-readiness Safe + Additive plan that the user approves on Machine B."""
+    if plan.get("requirements"):
+        raise AssertionError(f"readiness requirements remain after omarchy update: {plan['requirements']}")
+    for provider in CANONICAL_PROVIDERS:
+        assert_provider_present(plan, provider)
+    assert_no_destructive_ops(plan)
+    assert_expected_interactive_ops(plan, package)
+    for operation in plan["operations"]:
+        command = operation.get("command") or []
+        if any(arg.startswith("-Sy") for arg in command) or command[:2] == ["omarchy", "update"]:
+            raise AssertionError(f"Blueprint planned its own package metadata sync: {operation}")
+    assert_copy_destination(plan, "helper-script", "/home/spike/bin/blueprint-ra-helper")
+    assert_skip(plan, "resources", "target-only-skip", "restore disabled")
 
 
 def assert_final_convergence(plan: dict, allowed_skip_substring: str) -> None:
@@ -60,3 +101,20 @@ def assert_final_convergence(plan: dict, allowed_skip_substring: str) -> None:
         if (allowed_skip_substring not in skip.get("resource", "")
                 or "restore disabled" not in skip.get("reason", "")):
             raise AssertionError(f"unexpected final skip: {skip}")
+
+
+def main() -> None:
+    import sys
+    if len(sys.argv) != 3 or sys.argv[1] not in ("assert-canonical-plan", "assert-final-plan"):
+        raise SystemExit("usage: contract.py assert-canonical-plan|assert-final-plan <restore.json>")
+    plan = restore_plan(load_envelope(Path(sys.argv[2])))
+    if sys.argv[1] == "assert-canonical-plan":
+        expected = dict(line.split("=", 1) for line in
+                        (Path(__file__).resolve().parents[1] / "fixtures/expected.env").read_text().splitlines() if line)
+        assert_canonical_plan(plan, expected["RA_PACKAGE"])
+    else:
+        assert_final_convergence(plan, "target-only-skip")
+
+
+if __name__ == "__main__":
+    main()

@@ -14,8 +14,8 @@ ra_guest_enable_session() {
 # (autostarted by Hyprland; installs mise tools and edits user config) has
 # finished, so nothing but the scenario changes the guest from here on.
 ra_guest_wait_session() {
-  local role=$1 i shell=""
-  for (( i=0; i<900; i+=5 )); do
+  local role=$1 shell="" end=$((SECONDS + 900))
+  while (( SECONDS < end )); do
     if [[ -z $shell ]] && ra_guest_exec "$role" 'source /usr/share/omarchy/default/bash/env-bootstrap
         while IFS= read -r a; do export "$a"; done < <(systemctl --user show-environment)
         omarchy-shell shell ping' >> "$RA_ARTIFACTS/$role/session.log" 2>&1; then
@@ -35,8 +35,8 @@ ra_guest_wait_session() {
 ra_guest_stage() {
   local role=$1
   ra_guest_wait_session "$role" || return 1
-  tar -C "$RA_ROOT" --transform 's,^fixtures/,,;s,^scenario/,,' -cf - \
-    fixtures scenario/guest-env.sh scenario/customize-source.sh |
+  tar -C "$RA_ROOT" --transform 's,^fixtures/,,;s,^scenario/,,;s,^verify/,,' -cf - \
+    fixtures scenario/guest-env.sh scenario/customize-source.sh verify/verify-target.sh |
     ra_guest_exec "$role" 'rm -rf /tmp/blueprint-ra-fixtures && mkdir /tmp/blueprint-ra-fixtures &&
       tar -C /tmp/blueprint-ra-fixtures -xf -' || return 1
   # Trust the per-run fixture Git certificate for that remote only, outside $HOME.
@@ -46,20 +46,16 @@ ra_guest_stage() {
     git config --system http.https://10.0.2.2:9443/.sslCAInfo /etc/blueprint-ra/git-fixture.pem &&
     install -m 0755 /tmp/omarchy-blueprint /usr/local/bin/omarchy-blueprint" \
     > "$RA_ARTIFACTS/$role/stage.log" 2>&1 || return 1
-  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null'
-}
-
-# The installed base ships without pacman sync databases. Source fixture
-# preparation only (retryable network transfer; packages untouched): Machine B
-# must keep the official fresh-install state that Restore has to handle.
-ra_guest_refresh_package_databases() {
-  local role=$1 attempt
-  for attempt in 1 2 3; do
-    ra_ssh_sudo 'pacman -Sy --noconfirm' >> "$RA_ARTIFACTS/$role/pacman-sync.log" 2>&1 && return 0
-    ra_note "$role pacman database refresh attempt $attempt failed"
-    sleep 10
-  done
-  return 1
+  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null' || return 1
+  # Both guests must run the exact binary built from the PR head.
+  local host guest
+  host=$(sha256sum "$RA_BLUEPRINT_BIN" | cut -d' ' -f1)
+  guest=$(ra_guest_exec "$role" "sha256sum /usr/local/bin/omarchy-blueprint | cut -d' ' -f1") || return 1
+  if [[ $guest != "$host" ]]; then
+    ra_note "$role Blueprint binary $guest does not match the host build $host"
+    return 1
+  fi
+  ra_record "$role Blueprint sha256: $guest"
 }
 
 # Runs the exact PR build of Blueprint inside the guest's session environment.
