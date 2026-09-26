@@ -5,7 +5,6 @@ trap 'ra_finish "$?"' EXIT
 
 mkdir -p "$RA_ARTIFACTS"/{host,base,source,profile,target}
 
-# PR 2 ends after target preflight; Restore phases arrive in PR 3.
 ra_phase INFRASTRUCTURE
 ra_note "workspace: $RA_WORK"
 {
@@ -41,6 +40,7 @@ source "$RA_ROOT/scenario/stage-guest.sh"
 source "$RA_ROOT/scenario/capture-source.sh"
 source "$RA_ROOT/scenario/preflight-target.sh"
 source "$RA_ROOT/scenario/readiness.sh"
+source "$RA_ROOT/scenario/restore-target.sh"
 ra_guest_create source
 ra_guest_start source blueprint-ra-source
 ra_guest_enable_session source
@@ -77,4 +77,15 @@ ra_require_same_ready_runtime
 ra_assert_target_pristine TARGET_READINESS ready
 ra_pass TARGET_READINESS
 
-ra_guest_stop target || ra_fail TARGET_READINESS "Machine B did not shut down"
+# A completely new plan: only this one is previewed, approved and applied.
+ra_phase RESTORE_PLAN
+ra_restore_plan
+ra_pass RESTORE_PLAN
+
+ra_apply_approved_restore
+
+ra_phase INDEPENDENT_VERIFY
+ra_verify_target
+ra_pass INDEPENDENT_VERIFY
+
+ra_guest_stop target || ra_fail INDEPENDENT_VERIFY "Machine B did not shut down"
