@@ -6,7 +6,7 @@
 
 **Architecture:** Reuse the proven QEMU/KVM and unattended Omarchy-install mechanics from the feasibility spike, but move them into focused scripts under `test/reconstruction/` instead of embedding the test in workflow YAML. Build one pristine Omarchy base per PR, run source and target as sequential qcow2 overlays, hand off only a deterministic profile archive, exercise the normal CLI Restore prompt/recalculation path, and grade Machine B with native system assertions after Blueprint Verify succeeds.
 
-**Tech Stack:** GitHub Actions `ubuntu-24.04`, QEMU/KVM + OVMF + qcow2, Bash, Python 3 standard library, OpenSSH, Git daemon, Go 1.25+/1.26 existing CI, Omarchy 4.0.4 official ISO, existing `omarchy-blueprint` CLI.
+**Tech Stack:** GitHub Actions `ubuntu-24.04`, QEMU/KVM + OVMF + qcow2, Bash, Python 3 standard library, OpenSSH, OpenSSL + Python standard-library HTTPS server for a dumb-HTTP Git fixture remote, Go 1.25+/1.26 existing CI, Omarchy 4.0.4 official ISO, existing `omarchy-blueprint` CLI.
 
 **Spec:** `docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md`
 
@@ -87,7 +87,8 @@ The implementation should converge on these files and responsibilities:
 - `test/reconstruction/fixtures/hooks/blueprint-ra` — harmless executable Hook fixture.
 - `test/reconstruction/fixtures/skip/skip.txt` — Restore-disabled copied Resource fixture.
 - `test/reconstruction/fixtures/expected.env` — immutable expected IDs, paths, hashes/revision, theme/default values.
-- `test/reconstruction/scenario/build-fixtures.sh` — construct deterministic bare Git remote and start/stop host Git daemon.
+- `test/reconstruction/scenario/serve_git.py` — standard-library HTTPS static server for the dumb-HTTP Git fixture remote.
+- `test/reconstruction/scenario/build-fixtures.sh` — construct deterministic bare Git remote, its fixture TLS certificate, and start/stop the host HTTPS Git server.
 - `test/reconstruction/scenario/customize-source.sh` — configure Machine A and independently assert source state before Capture.
 - `test/reconstruction/scenario/capture-source.sh` — initialize profile/machines, track Resources, configure target policy through public CLI, preview/review/approve Capture, check, archive/digest profile.
 - `test/reconstruction/scenario/approve_capture.py` — drive the real TTY-required Capture review prompt once and preserve its transcript/exit status.
@@ -141,6 +142,15 @@ Implement and merge in this order. Do not begin PR N+1 until PR N is reviewed, C
    - Add dry-run contract, real approval helper, Restore/journal checks, independent target verification, final no-actionable-work check, diagnostics, and production workflow naming.
    - This PR turns the workflow into the complete Reconstruction Assurance gate. After it merges, configure the repository rules/branch protection to require the `Reconstruction Assurance` check for every PR.
    - Success means the full canonical A → profile → B lifecycle is green on the exact head SHA with focused failure artifacts.
+
+**Prerequisite between PR 2 and PR 3 — fresh-package readiness.** Before PR 3, Blueprint must be able to inspect, `check`, and `status` a freshly installed supported Omarchy machine that has no pacman sync databases. Restore must also provide a safe, supported path for package resolution and elevation, without the harness pre-refreshing databases, pre-warming sudo, adding `NOPASSWD`, or running Blueprint wholesale as root. PR 2's hosted runs exposed two separate product defects:
+
+- **Read path:** with no sync databases, native-package detection fails. Blueprint `check` on the fresh Machine B exits 1 with `check packages: detect explicitly installed native packages: pacman -Qqen: exit status 1: warning: database file for '<repo>' does not exist (use '-Sy' to download)`. `status` and inspection share that detection.
+- **Write path:** Blueprint plans missing official packages as `omarchy pkg add <packages...>`, and normal Restore runs non-interactive operations through `SystemRunner.Run` (`CombinedOutput()`, with no stdin or terminal). For a non-root user, Omarchy 4.0.4's `omarchy pkg add` runs `sudo pacman -S --noconfirm --needed ...` and only skips sudo when its own EUID is 0. With cold sudo credentials, Restore cannot install `alacritty`, and it also needs package metadata the fresh install lacks. Running the outer SSH with `-tt` does not help, because Blueprint launches the command through its non-interactive runner.
+
+The metadata question needs deliberate design rather than blindly embedding `pacman -Sy` in Blueprint; Omarchy's own full package refresh is substantially broader than a metadata-only refresh. Both defects must be solved before the canonical PR 3 Restore is allowed to go green. PR 3 then exercises the resulting contract on the unmodified fresh target.
+
+The harness must never work around these gaps. Prohibited: pre-warming sudo credentials, `NOPASSWD` sudoers rules, running Blueprint wholesale as root, refreshing Machine B's package databases, or otherwise granting Blueprint authority or preparation that a real user's fresh machine would not have. A separate focused regression for these cases may follow later, but it does not replace the canonical fresh-target lifecycle.
 
 Do not merge the old spike workflow from `spike/omarchy-vm-feasibility`; use it as implementation evidence only. Once PR 3 is complete, the production workflow supersedes the spike.
 
@@ -711,8 +721,11 @@ git commit -m "ci: add real Omarchy reconstruction substrate"
 
 **Interfaces:**
 - `ra_build_git_fixture` produces `$RA_WORK/git/blueprint-ra.git` and asserts HEAD `e161ca52ec7604e6fb335ef15fc212bba03a2994`.
-- `ra_start_git_daemon` serves `git://10.0.2.2:9418/blueprint-ra.git` to guests.
-- `ra_stop_git_daemon` stops it.
+- `ra_start_git_server` serves `https://10.0.2.2:9443/blueprint-ra.git` to guests (dumb HTTP over TLS, bound to host loopback, which QEMU user networking exposes as `10.0.2.2`).
+- `ra_stop_git_server` stops it.
+- `ra_guest_trust_git_fixture <role>` installs the fixture certificate as `/etc/blueprint-ra/git-fixture.pem` and scopes it with `git config --system http.https://10.0.2.2:9443/.sslCAInfo`. This is identical guest network infrastructure applied to both machines before any customization or preflight; it lives outside `$HOME` and is never Blueprint state.
+
+> **Amendment (PR 2):** Blueprint deliberately treats only `https`, `ssh`, and scp-like Git remotes as portable, and `git remote get-url` expands `insteadOf`, so the originally planned `git://10.0.2.2:9418` daemon cannot be tracked as a Git Resource. The fixture is therefore served over HTTPS with a per-run self-signed certificate. The design only requires a deterministic repository-controlled remote reachable from QEMU; the commit and its revision are unchanged.
 
 - [ ] **Step 1: Add exact fixture contents**
 
@@ -777,7 +790,7 @@ RA_HELPER_SOURCE=.local/bin/blueprint-ra-helper
 RA_HELPER_TARGET=bin/blueprint-ra-helper
 RA_GIT_RESOURCE=git-fixture
 RA_GIT_PATH=Projects/blueprint-ra-fixture
-RA_GIT_REMOTE=git://10.0.2.2:9418/blueprint-ra.git
+RA_GIT_REMOTE=https://10.0.2.2:9443/blueprint-ra.git
 RA_GIT_REVISION=e161ca52ec7604e6fb335ef15fc212bba03a2994
 RA_SKIP_RESOURCE=target-only-skip
 RA_SKIP_PATH=.local/share/blueprint-ra/skip.txt
@@ -800,15 +813,17 @@ GIT_COMMITTER_DATE='2026-09-25T00:00:00Z' \
   git -C "$work/repo" commit -q -m 'fixture: seed reconstruction resource'
 test "$(git -C "$work/repo" rev-parse HEAD)" = "$RA_GIT_REVISION"
 git clone -q --bare "$work/repo" "$RA_WORK/git/blueprint-ra.git"
-touch "$RA_WORK/git/blueprint-ra.git/git-daemon-export-ok"
+git -C "$RA_WORK/git/blueprint-ra.git" update-server-info
 ```
 
-- [ ] **Step 4: Start Git daemon and prove host-local clone works**
+Generate a fresh self-signed certificate per run with subject alternative names `IP:10.0.2.2` and `IP:127.0.0.1`. Its private key stays on the host.
+
+- [ ] **Step 4: Start the HTTPS Git server and prove host-local clone works**
 
 ```bash
-git daemon --reuseaddr --export-all --base-path="$RA_WORK/git" --listen=0.0.0.0 --port=9418 "$RA_WORK/git" &
-RA_GIT_DAEMON_PID=$!
-test "$(git ls-remote git://127.0.0.1:9418/blueprint-ra.git refs/heads/main | awk '{print $1}')" = "$RA_GIT_REVISION"
+python3 "$RA_ROOT/scenario/serve_git.py" --root "$RA_WORK/git" --cert ... --key ... --port 9443 &
+RA_GIT_SERVER_PID=$!
+test "$(git -c http.sslCAInfo="$cert" ls-remote https://127.0.0.1:9443/blueprint-ra.git refs/heads/main | awk '{print $1}')" = "$RA_GIT_REVISION"
 ```
 
 Then on the next real guest smoke, assert `git ls-remote "$RA_GIT_REMOTE"` works from QEMU before source customization.
@@ -836,7 +851,7 @@ Require:
 
 ```bash
 ! pacman -Q alacritty >/dev/null 2>&1
-test "$(omarchy theme current)" != catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" != catppuccin
 test "$(omarchy default terminal)" != alacritty
 test ! -e "$HOME/.config/omarchy/plugins/blueprint.ra.fixture"
 test ! -e "$HOME/.config/blueprint-ra/config.toml"
@@ -845,9 +860,19 @@ test ! -e "$HOME/.local/bin/blueprint-ra-helper"
 test ! -e "$HOME/Projects/blueprint-ra-fixture"
 ```
 
+> **Amendment (PR 2):** `omarchy theme current` prints a display name (`Catppuccin`), so theme assertions compare Omarchy's native `~/.local/state/omarchy/current/theme.name` (`catppuccin`) instead of the display string.
+
 If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguishes pristine Omarchy state"; do not silently choose another value.
 
 - [ ] **Step 2: Install Alacritty and set the terminal default**
+
+`omarchy pkg add` invokes `sudo` itself, and the guest's sudo neither prompts nor honours `SUDO_ASKPASS` without a terminal. The harness therefore runs the same native command as root through `sudo -S` (its supported `EUID == 0` path), fed the disposable fixture password from a throwaway `/tmp` helper for this customization only (no sudoers change).
+
+> **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Only Machine A refreshes them, with `pacman -Sy` (source fixture preparation, retryable, no package upgrade), because the harness must create the source customization. Machine B is never refreshed: the canonical target intentionally keeps the package-manager state produced by the official fresh install, because whether Blueprint can reconstruct onto that machine is exactly what Reconstruction Assurance asks. Common staging for both guests is limited to harness inputs: the Blueprint binary, the fixture certificate, fixture files, and desktop-session readiness.
+
+> **Amendment (PR 2):** the Omarchy ISO only writes SDDM autologin for encrypted targets, so the unencrypted unattended guest stops at the greeter with no desktop session, no notification daemon, and no running `omarchy-shell` (which Blueprint's plugin inspection requires). Both guests receive the same `/etc/sddm.conf.d/autologin.conf` (`User=spike`, `Session=omarchy.desktop`) the ISO writes for encrypted installs, before their identity reboot, and staging waits until `omarchy-shell shell ping` succeeds.
+
+> **Amendment (PR 2):** the first Hyprland login autostarts `omarchy-provision-first-run`, which installs mise tools (for example `codex`) and edits `~/.config/mise/config.toml` over several minutes. A hosted run approved Capture while this was still running, and Blueprint correctly failed closed with a changed review. Session readiness on both guests therefore also waits, up to 15 minutes, until first-login provisioning has finished: `~/.local/state/omarchy/first-run.log` exists and no `omarchy-provision-first-run` process remains. The completion marker is not used, because Omarchy only writes it when every step succeeds, and some steps (such as speaker tuning) may not apply in a VM. The first-run log is kept as a diagnostic.
 
 ```bash
 omarchy pkg add alacritty
@@ -862,7 +887,7 @@ This one package intentionally serves both Packages and Defaults coverage.
 
 ```bash
 omarchy theme set catppuccin
-test "$(omarchy theme current)" = catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" = catppuccin
 ```
 
 Do not edit Omarchy theme selection files directly. If the pinned guest requires a supported headless environment variable for native theme application, apply the same environment consistently to source customization and the later Blueprint Restore process and document it in `README.md`; do not patch Omarchy.
@@ -904,7 +929,7 @@ cp /tmp/blueprint-ra-fixtures/hooks/blueprint-ra "$HOME/.config/omarchy/hooks/po
 chmod 0755 "$HOME/.config/omarchy/hooks/post-update.d/blueprint-ra"
 ```
 
-- [ ] **Step 7: Create Resource fixtures and clone the Git fixture through the host daemon**
+- [ ] **Step 7: Create Resource fixtures and clone the Git fixture through the host HTTPS server**
 
 ```bash
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/blueprint-ra" "$HOME/Projects"
@@ -1083,7 +1108,7 @@ Require all:
 
 ```bash
 ! pacman -Q alacritty >/dev/null 2>&1
-test "$(omarchy theme current)" != catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" != catppuccin
 test "$(omarchy default terminal)" != alacritty
 test ! -e "$HOME/.config/omarchy/plugins/blueprint.ra.fixture"
 test ! -e "$HOME/.config/blueprint-ra/config.toml"
@@ -1139,6 +1164,16 @@ omarchy-blueprint --profile "$HOME/omarchy-profile" --machine target --json chec
 
 Require exit 0.
 
+> **Amendment (PR 2): known-gap sentinel.** Until the fresh-package readiness prerequisite lands, this `check` fails on the unmodified Machine B (read-path defect). PR 2 pins that failure narrowly instead of either requiring success or ignoring the result:
+>
+> 1. Before running `check`, require that Machine B still has no pacman sync database for any configured repository (no `/var/lib/pacman/sync/<repo>.db` for any repository in `pacman-conf --repo-list`; the sync directory can hold other installer leftovers and is recorded as a diagnostic), so an accidental target refresh cannot silently hide the sentinel.
+> 2. Run `check`, keeping stdout, stderr and the exit status.
+> 3. If it exits 1 with no successful envelope, and stderr consists *only* of the known failure, record `known gap: packages.fresh-sync-database-readiness` in the summary and keep the stderr as an artifact. `TARGET_PREFLIGHT` still passes. Only the known failure means: the first non-empty line is `Error: check packages: detect explicitly installed native packages: pacman -Qqen: exit status 1: warning: database file for '<repo>' does not exist (use '-Sy' to download)`, and every later non-empty line is another `warning: database file for '<repo>' does not exist (use '-Sy' to download)`. Any other stderr content, such as a second unrelated error, rejects the classification. Repository names and how many there are stay variable. Guest SSH runs with `LogLevel=ERROR`, so client warnings do not pollute Blueprint's stderr.
+> 4. If it exits 0, fail `TARGET_PREFLIGHT` with "fresh-machine package-readiness gap unexpectedly resolved; update the harness to require check success".
+> 5. Any other failure fails `TARGET_PREFLIGHT` as an unexpected `check` failure.
+>
+> The sentinel is a temporary executable TODO, not accepted debt. The product PR that fixes fresh-machine detection turns Reconstruction Assurance red, and must switch this step back to requiring `check` success.
+
 - [ ] **Step 7: Commit**
 
 ```bash
@@ -1192,6 +1227,8 @@ git commit -m "ci: exercise profile handoff on pull requests"
 ---
 
 # PR 3 — `test: require end-to-end reconstruction assurance`
+
+**Prerequisite:** the fresh-package readiness prerequisite described under Pull Request Topology (read path and write path) is resolved and merged first, and the PR 2 known-gap sentinel has been switched back to requiring target `check` success. Machine B keeps its official fresh-install package-manager state.
 
 **PR goal:** Complete the real Restore/approval/verification path, rename the check to its production stable context, and make it suitable for required branch protection.
 
@@ -1395,7 +1432,7 @@ Machine B must satisfy:
 
 ```bash
 pacman -Q alacritty
-test "$(omarchy theme current)" = catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" = catppuccin
 test "$(omarchy default terminal)" = alacritty
 ```
 
@@ -1446,7 +1483,7 @@ test ! -e "$HOME/.local/bin/blueprint-ra-helper"
 Git Resource:
 
 ```bash
-test "$(git -C "$HOME/Projects/blueprint-ra-fixture" remote get-url origin)" = 'git://10.0.2.2:9418/blueprint-ra.git'
+test "$(git -C "$HOME/Projects/blueprint-ra-fixture" remote get-url origin)" = 'https://10.0.2.2:9443/blueprint-ra.git'
 test "$(git -C "$HOME/Projects/blueprint-ra-fixture" rev-parse HEAD)" = 'e161ca52ec7604e6fb335ef15fc212bba03a2994'
 test -z "$(git -C "$HOME/Projects/blueprint-ra-fixture" status --porcelain)"
 ```

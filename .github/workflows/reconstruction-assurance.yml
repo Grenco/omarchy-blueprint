@@ -1,22 +1,29 @@
 name: Reconstruction Harness
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: reconstruction-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   substrate:
     name: Omarchy VM substrate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - name: Test reconstruction host helpers
-        run: python3 -m unittest discover -s test/reconstruction/tests -p 'test_*.py'
+        run: python3 -m unittest discover -s test/reconstruction/tests -p 'test_*.py' -v
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - name: Check reconstruction scripts
+        run: bash -n test/reconstruction/run.sh test/reconstruction/lib/common.sh test/reconstruction/vm/*.sh test/reconstruction/scenario/*.sh
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
@@ -26,10 +33,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf genisoimage openssh-client
       - name: Build Blueprint
-        run: go build -o /tmp/omarchy-blueprint-ra ./cmd/omarchy-blueprint
+        run: CGO_ENABLED=0 go build -o /tmp/omarchy-blueprint-ra ./cmd/omarchy-blueprint
       - name: Prepare reconstruction workspace
         run: sudo mkdir -p /mnt/omarchy-blueprint-ra && sudo chown "$USER:$USER" /mnt/omarchy-blueprint-ra
-      - name: Run substrate harness
+      - name: Run source Capture and target preflight
         run: bash test/reconstruction/run.sh
       - uses: actions/upload-artifact@v4
         if: failure()
