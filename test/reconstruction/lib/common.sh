@@ -58,6 +58,23 @@ ra_boot_mark() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$2" >> "$RA_ARTIFACTS/$1/boot-timings.txt"
 }
 
+# Best effort: a screenshot through the QEMU monitor never replaces the real error.
+ra_screendump() {
+  python3 - "$1" "$2" <<'PY' || true
+import socket
+import sys
+import time
+
+with socket.socket(socket.AF_UNIX) as monitor:
+    monitor.settimeout(5)
+    monitor.connect(sys.argv[1])
+    monitor.recv(4096)
+    monitor.sendall(f"screendump {sys.argv[2]}\n".encode())
+    time.sleep(2)
+    monitor.recv(4096)
+PY
+}
+
 ra_cleanup_add() {
   local command
   printf -v command '%q ' "$@"

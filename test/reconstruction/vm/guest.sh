@@ -15,13 +15,21 @@ ra_guest_create() {
   chmod 0644 "$RA_WORK/guests/$role.vars.fd"
 }
 
+# Keep the serial tail and a screenshot when a guest misses a readiness window.
+ra_guest_timeout_diagnostics() {
+  local role=$1 stamp
+  stamp=$(date -u +%H%M%S)
+  tail -c 4000 "$RA_ARTIFACTS/$role/serial.log" > "$RA_ARTIFACTS/$role/boot-timeout-$stamp-serial-tail.txt" 2>/dev/null || true
+  ra_screendump "$RA_WORK/guests/$role.monitor.sock" "$RA_ARTIFACTS/$role/boot-timeout-$stamp-screen.ppm"
+}
+
 ra_guest_start() {
   local role=$1 hostname=$2
   [[ -z $RA_ACTIVE_GUEST ]] || { ra_note "guest $RA_ACTIVE_GUEST is still active"; return 1; }
   [[ -f $RA_WORK/guests/$role.qcow2 ]] || { ra_note "overlay missing: $role"; return 1; }
   [[ -f $RA_WORK/guests/$role.vars.fd ]] || { ra_note "NVRAM missing: $role"; return 1; }
   qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m 8192 \
-    -display none -vga std -serial "file:$RA_ARTIFACTS/$role/serial.log" -monitor none \
+    -display none -vga std -serial "file:$RA_ARTIFACTS/$role/serial.log" -monitor "unix:$RA_WORK/guests/$role.monitor.sock,server,nowait" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file="$RA_WORK/guests/$role.vars.fd" \
     -drive file="$RA_WORK/guests/$role.qcow2",format=qcow2,if=none,id=disk \
@@ -33,7 +41,7 @@ ra_guest_start() {
   ra_boot_mark "$role" "qemu started"
   if ! ra_wait_ready "$RA_GUEST_PID" "$RA_ARTIFACTS/$role/guest-checks.log" 120; then
     ra_boot_mark "$role" "readiness timed out"
-    tail -c 4000 "$RA_ARTIFACTS/$role/serial.log" > "$RA_ARTIFACTS/$role/boot-timeout-serial-tail.txt" 2>/dev/null || true
+    ra_guest_timeout_diagnostics "$role"
     return 1
   fi
   ra_boot_mark "$role" "ready"
@@ -86,7 +94,7 @@ ra_guest_freshen_identity() {
     ra_boot_mark "$role" "identity reboot ready"
   else
     ra_boot_mark "$role" "identity reboot timed out"
-    tail -c 4000 "$RA_ARTIFACTS/$role/serial.log" > "$RA_ARTIFACTS/$role/boot-timeout-serial-tail.txt" 2>/dev/null || true
+    ra_guest_timeout_diagnostics "$role"
     ra_note "$role never rebooted"
     return 1
   fi
@@ -118,7 +126,7 @@ ra_guest_reboot() {
     sleep 3
   done
   ra_boot_mark "$role" "reboot timed out"
-  tail -c 4000 "$RA_ARTIFACTS/$role/serial.log" > "$RA_ARTIFACTS/$role/boot-timeout-serial-tail.txt" 2>/dev/null || true
+  ra_guest_timeout_diagnostics "$role"
   ra_note "$role did not come back from reboot within 120s"
   return 1
 }

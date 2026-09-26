@@ -2,19 +2,7 @@
 # Sourced by run.sh: owns only pristine Omarchy installation and base validation.
 
 ra_base_screen() {
-  python3 - "$RA_WORK/base/monitor.sock" "$RA_ARTIFACTS/base/guest-screen.ppm" <<'PY' || true
-import socket
-import sys
-import time
-
-with socket.socket(socket.AF_UNIX) as monitor:
-    monitor.settimeout(5)
-    monitor.connect(sys.argv[1])
-    monitor.recv(4096)
-    monitor.sendall(f"screendump {sys.argv[2]}\n".encode())
-    time.sleep(2)
-    monitor.recv(4096)
-PY
+  ra_screendump "$RA_WORK/base/monitor.sock" "$RA_ARTIFACTS/base/guest-screen.ppm"
 }
 
 ra_install_base() {
