@@ -10,17 +10,25 @@ ra_guest_enable_session() {
     > "$RA_ARTIFACTS/$1/session.log" 2>&1
 }
 
+# Ready means the desktop shell answers and Omarchy's first-login provisioning
+# (autostarted by Hyprland; installs mise tools and edits user config) has
+# finished, so nothing but the scenario changes the guest from here on.
 ra_guest_wait_session() {
-  local role=$1 i
-  for (( i=0; i<180; i+=3 )); do
-    if ra_guest_exec "$role" 'source /usr/share/omarchy/default/bash/env-bootstrap
+  local role=$1 i shell=""
+  for (( i=0; i<900; i+=5 )); do
+    if [[ -z $shell ]] && ra_guest_exec "$role" 'source /usr/share/omarchy/default/bash/env-bootstrap
         while IFS= read -r a; do export "$a"; done < <(systemctl --user show-environment)
         omarchy-shell shell ping' >> "$RA_ARTIFACTS/$role/session.log" 2>&1; then
+      shell=ready
+    fi
+    if [[ -n $shell ]] && ra_guest_exec "$role" 'test -f ~/.local/state/omarchy/first-run.log &&
+        ! pgrep -u "$USER" -f "[o]marchy-provision-first-run" >/dev/null' >> "$RA_ARTIFACTS/$role/session.log" 2>&1; then
+      ra_guest_exec "$role" 'cat ~/.local/state/omarchy/first-run.log' > "$RA_ARTIFACTS/$role/first-run.log" 2>&1 || true
       return 0
     fi
-    sleep 3
+    sleep 5
   done
-  ra_note "$role Omarchy desktop session did not become ready; see $role/session.log"
+  ra_note "$role Omarchy desktop session did not settle (shell: ${shell:-not ready}); see $role/session.log"
   return 1
 }
 

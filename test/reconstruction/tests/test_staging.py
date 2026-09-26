@@ -52,5 +52,32 @@ class StagingTests(unittest.TestCase):
         self.assertNotIn("ra_guest_refresh_package_databases", (ROOT / "scenario/preflight-target.sh").read_text())
 
 
+    def test_session_readiness_waits_for_first_login_provisioning_to_settle(self):
+        # Stubbed guest: the shell answers at once, first-run finishes on the third poll.
+        with tempfile.TemporaryDirectory() as work:
+            Path(work, "artifacts/source").mkdir(parents=True)
+            script = f"""
+                source '{ROOT}/lib/common.sh'
+                source '{ROOT}/scenario/stage-guest.sh'
+                sleep() {{ :; }}
+                ra_guest_exec() {{
+                  printf '%s\\n' "$2" >> '{work}/commands'
+                  if [[ $2 == *provision-first-run* ]]; then
+                    echo x >> '{work}/polls'
+                    (( $(wc -l < '{work}/polls') >= 3 ))
+                  fi
+                }}
+                ra_guest_wait_session source
+            """
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                                    env={**os.environ, "RA_WORK": work}, stdin=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(Path(work, "polls").read_text().splitlines()), 3)
+            commands = Path(work, "commands").read_text()
+            self.assertIn("omarchy-shell shell ping", commands)
+            self.assertIn("first-run.log", commands)
+            self.assertIn("[o]marchy-provision-first-run", commands)
+
+
 if __name__ == "__main__":
     unittest.main()

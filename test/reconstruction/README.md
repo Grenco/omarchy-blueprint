@@ -33,7 +33,9 @@ running Blueprint as root, or preparing Machine B's packages.
 The ISO only enables SDDM autologin for encrypted installs, and this
 unattended install is unencrypted, so each guest gets the same
 `/etc/sddm.conf.d/autologin.conf` (`Session=omarchy.desktop`) before its identity
-reboot. Staging waits until `omarchy-shell shell ping` answers.
+reboot. Staging waits until `omarchy-shell shell ping` answers and Omarchy's
+first-login provisioning (`omarchy-provision-first-run`, which installs mise
+tools) has finished, so it cannot race the scenario.
 
 Guest commands run with the graphical session's environment
 (`scenario/guest-env.sh`), the same for source customization and Blueprint.
