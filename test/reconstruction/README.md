@@ -21,9 +21,14 @@ as portable, so a `git://` daemon would not do. Each guest trusts the per-run
 certificate for that URL only, through the system Git config, which is outside
 `$HOME` and is not Blueprint state.
 
-The installed base has no pacman sync databases, so staging refreshes them
-(`pacman -Sy`, retried as a network transfer) identically on both guests without
-upgrading packages.
+The installed base has no pacman sync databases. Machine A refreshes them
+(`pacman -Sy`, retried as a network transfer, no upgrade) as source fixture
+preparation. Machine B never does: the canonical target keeps the official
+fresh-install package-manager state, because reconstructing onto that machine is
+the point. Common staging on both guests is limited to harness inputs: the
+Blueprint build, the fixture certificate, fixture files and desktop-session
+readiness. Never make Restore pass by pre-warming sudo, adding `NOPASSWD`,
+running Blueprint as root, or preparing Machine B's packages.
 
 The ISO only enables SDDM autologin for encrypted installs, and this
 unattended install is unencrypted, so each guest gets the same

@@ -48,6 +48,8 @@ ra_pass OMARCHY_INSTALL
 
 ra_phase SOURCE_CUSTOMIZATION
 ra_guest_stage source || ra_fail SOURCE_CUSTOMIZATION "could not stage test inputs on Machine A"
+ra_guest_refresh_package_databases source ||
+  ra_fail SOURCE_CUSTOMIZATION "could not refresh Machine A package databases (see source/pacman-sync.log)"
 ra_customize_source
 ra_pass SOURCE_CUSTOMIZATION
 

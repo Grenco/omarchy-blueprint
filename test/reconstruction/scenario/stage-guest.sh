@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Sourced by run.sh: identical test inputs for either guest. Nothing here is
-# source state; the target receives fixtures from the repository, not Machine A.
+# Sourced by run.sh: identical harness inputs for either guest. Nothing here is
+# source state or target preparation; the target receives fixtures from the
+# repository, not Machine A, and keeps its fresh-install package state.
 
 # The ISO only configures autologin for encrypted targets; this unattended
 # install is unencrypted, so write the same drop-in before the identity reboot.
@@ -37,12 +38,12 @@ ra_guest_stage() {
     git config --system http.https://10.0.2.2:9443/.sslCAInfo /etc/blueprint-ra/git-fixture.pem &&
     install -m 0755 /tmp/omarchy-blueprint /usr/local/bin/omarchy-blueprint" \
     > "$RA_ARTIFACTS/$role/stage.log" 2>&1 || return 1
-  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null' || return 1
-  ra_guest_refresh_package_databases "$role"
+  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null'
 }
 
-# The installed base ships without pacman sync databases. Refresh them the same
-# way on both guests (network transfer, so retryable); packages are untouched.
+# The installed base ships without pacman sync databases. Source fixture
+# preparation only (retryable network transfer; packages untouched): Machine B
+# must keep the official fresh-install state that Restore has to handle.
 ra_guest_refresh_package_databases() {
   local role=$1 attempt
   for attempt in 1 2 3; do
