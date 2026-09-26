@@ -39,6 +39,7 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
     parser.add_argument("--approve", default=approve, help="exact prompt to answer with 'yes' once")
     parser.add_argument("--sudo-password-file")
     parser.add_argument("--max-sudo", type=int, default=3)
+    parser.add_argument("--min-sudo", type=int, default=0, help="fail a successful command that asked fewer times")
     parser.add_argument("--prompt-timeout", type=float, default=900, help="fail after this long without output")
     parser.add_argument("--exit-timeout", type=float, default=5400, help="fail if the command runs longer")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -46,6 +47,8 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("missing command")
+    if args.min_sudo and not args.sudo_password_file:
+        parser.error("--min-sudo needs --sudo-password-file")
     password = None
     if args.sudo_password_file:
         with open(args.sudo_password_file, "rb") as secret:
@@ -105,6 +108,8 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
         return fail(label, f"command exited {status} without the approval prompt", bytes(output))
     if status != 0:
         return fail(label, f"command failed with exit {status}; not retrying", bytes(output))
+    if sudo_answers < args.min_sudo:
+        return fail(label, f"expected at least {args.min_sudo} sudo prompt(s), saw {sudo_answers}", bytes(output))
     return 0
 
 

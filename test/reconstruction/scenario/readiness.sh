@@ -16,9 +16,11 @@ ra_drive_terminal() {
 
 ra_omarchy_ready() {
   local role=$1 phase=$2 a="$RA_ARTIFACTS/$1" synced version
-  # The fixture user answers sudo's own prompts; -y skips Omarchy's confirmations, never sudo.
+  # Cold credentials: the update must really ask for sudo, which the fixture
+  # user answers at its own prompt; -y skips Omarchy's confirmations, never sudo.
+  ra_guest_exec "$role" 'sudo -K' || ra_fail "$phase" "could not invalidate $role sudo credentials"
   ra_drive_terminal --transcript "$a/omarchy-update.txt" --sudo-password-file "$(ra_sudo_password_file)" \
-      --max-sudo 10 --prompt-timeout 900 --exit-timeout 3600 -- \
+      --min-sudo 1 --max-sudo 10 --prompt-timeout 900 --exit-timeout 3600 -- \
       ssh -tt "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" \
       "source /tmp/blueprint-ra-fixtures/guest-env.sh && omarchy update -y" 2> "$a/omarchy-update.err" ||
     ra_fail "$phase" "omarchy update failed on $role; not retried (see $role/omarchy-update.txt)"

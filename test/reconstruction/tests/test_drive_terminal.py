@@ -92,6 +92,17 @@ class DriveTerminalTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("sudo asked more than 2 times", result.stderr)
 
+    def test_required_sudo_must_actually_be_asked_for(self):
+        with tempfile.TemporaryDirectory() as work:
+            result = drive(work, "approve", "--approve", RESTORE_PROMPT,
+                           "--sudo-password-file", f"{work}/password", "--min-sudo", "1")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("expected at least 1 sudo prompt", result.stderr)
+        with tempfile.TemporaryDirectory() as work:
+            result = drive(work, "approve-sudo", "--approve", RESTORE_PROMPT,
+                           "--sudo-password-file", f"{work}/password", "--min-sudo", "1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_failure_after_approval_is_reported_once_and_not_retried(self):
         with tempfile.TemporaryDirectory() as work:
             result = drive(work, "approve-changed", "--approve", RESTORE_PROMPT)

@@ -31,18 +31,28 @@ def assert_no_destructive_ops(plan: dict) -> None:
 
 
 def assert_expected_interactive_ops(plan: dict, package: str) -> None:
-    """Only the canonical official package install elevates, at the terminal (ADR 0022)."""
-    install = None
+    """Exactly one elevated step: the canonical package install, at the terminal (ADR 0022).
+
+    Requiring it keeps the gate exercising real sudo authentication; any
+    other interactive operation is unexpected.
+    """
+    installs = []
     for operation in plan["operations"]:
         is_install = (operation.get("provider") == "packages" and operation.get("resource") == f"official:{package}"
                       and (operation.get("command") or [])[:3] == ["omarchy", "pkg", "add"])
         if is_install:
-            install = operation
-        if operation.get("interactive") is True and not (
-                is_install and "administrator" in (operation.get("notice") or "")):
+            installs.append(operation)
+        elif operation.get("interactive") is True:
             raise AssertionError(f"unexpected interactive operation: {operation}")
-    if install is not None and install.get("interactive") is not True:
+    if len(installs) != 1:
+        raise AssertionError(f"expected exactly one interactive omarchy pkg add for {package}, found {len(installs)}")
+    install = installs[0]
+    if package not in install["command"][3:]:
+        raise AssertionError(f"canonical install does not add {package}: {install}")
+    if install.get("interactive") is not True:
         raise AssertionError(f"package install must be interactive: {install}")
+    if "administrator authentication" not in (install.get("notice") or ""):
+        raise AssertionError(f"package install must explain administrator authentication: {install}")
 
 
 def assert_provider_present(plan: dict, provider: str) -> None:

@@ -32,7 +32,7 @@ def restore(transcript: str, status: int = 0, journal: str = VERIFIED) -> tuple[
           cp '{work}/transcript' "$2"
           return {status}
         }}
-        ra_guest_exec() {{ :; }}
+        ra_guest_exec() {{ [[ $2 != 'sudo -K' ]] || echo sudo-K >> '{work}/drives'; }}
         ra_guest_copy_from() {{ printf '%s\\n' "$2" > '{work}/copied-from'; cp '{work}/journal' "$3"; }}
         ra_apply_approved_restore
     """
@@ -48,7 +48,10 @@ class ApprovedRestoreTests(unittest.TestCase):
         for phase in ("RESTORE_APPROVAL", "RESTORE_APPLY", "BLUEPRINT_VERIFY"):
             self.assertIn(f"{phase} PASS", summary)
         drives = Path(work, "drives").read_text().splitlines()
+        self.assertEqual(drives[0], "sudo-K")  # credentials are cold before the session
+        drives = drives[1:]
         self.assertEqual(len(drives), 1)
+        self.assertIn("--min-sudo 1", drives[0])
         for forbidden in ("--yes", "--json", "--force", "--exact", "--conflicts", "--convergence"):
             self.assertNotIn(forbidden, drives[0])
         self.assertIn("ssh -tt", drives[0])
@@ -69,7 +72,7 @@ class ApprovedRestoreTests(unittest.TestCase):
                 result, summary, work = restore(transcript, status)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"phase: {phase.strip()}", summary)
-                self.assertEqual(len(Path(work, "drives").read_text().splitlines()), 1)
+                self.assertEqual(len([d for d in Path(work, "drives").read_text().splitlines() if d != "sudo-K"]), 1)
 
     def test_journal_must_be_blueprints_and_record_successful_verification(self):
         outside = f"{PROMPT}yes\nRestore verified. Journal: /tmp/fake.jsonl\n"

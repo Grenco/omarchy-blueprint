@@ -28,10 +28,11 @@ def harness(work: str, body: str) -> tuple[subprocess.CompletedProcess, str]:
 
 def stubs(work: str, update_status: int = 0, version: str = "4.1.2-1", synced_after: str = "yes") -> str:
     return f"""
-        ra_drive_terminal() {{ printf '%s\\n' "$*" >> '{work}/drives'; return {update_status}; }}
+        ra_drive_terminal() {{ printf '%s\\n' "$*" >> '{work}/drives'; echo drive >> '{work}/order'; return {update_status}; }}
         ra_guest_reboot() {{ echo reboot >> '{work}/reboots'; echo reboot >> '{work}/order'; }}
         ra_guest_stage() {{ echo stage >> '{work}/order'; }}
         ra_guest_exec() {{
+          [[ $2 != 'sudo -K' ]] || echo sudo-K >> '{work}/order'
           case $2 in
             *'omarchy version'*) echo '{version}' ;;
             *'$repo.db'*) [[ '{synced_after}' == yes ]] || printf 'core ' ;;
@@ -63,7 +64,9 @@ class ReadinessTests(unittest.TestCase):
             self.assertNotIn(" spike ", f" {drives[0]} ")  # the password is only ever in the file
             self.assertEqual(Path(work, "reboots").read_text(), "reboot\n")
             # The reboot clears /tmp, so staged inputs are restored after it.
-            self.assertEqual(Path(work, "order").read_text(), "reboot\nstage\n")
+            # Cold credentials, the update must really ask for sudo, then the reboot clears /tmp.
+            self.assertEqual(Path(work, "order").read_text(), "sudo-K\ndrive\nreboot\nstage\n")
+            self.assertIn("--min-sudo 1", drives[0])
             self.assertEqual(Path(work, "artifacts/source/ready-omarchy-version.txt").read_text().strip(), "4.1.2-1")
             self.assertIn("source ready Omarchy: 4.1.2-1", summary)
             password = Path(work, "sudo-password")

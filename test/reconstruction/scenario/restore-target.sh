@@ -27,9 +27,11 @@ ra_apply_approved_restore() {
   local a="$RA_ARTIFACTS/target" transcript="$RA_ARTIFACTS/target/restore-transcript.txt" status=0 journal
   ra_phase RESTORE_APPROVAL
   ra_fingerprint_target
-  # A real terminal: yes once at Blueprint's prompt, and only sudo's own prompt answered.
+  # A real terminal: yes once at Blueprint's prompt, and sudo's own prompt, which
+  # must really appear because credentials are cold, answered by the fixture user.
+  ra_guest_exec target 'sudo -K' || ra_fail RESTORE_APPROVAL "could not invalidate Machine B sudo credentials"
   ra_drive_terminal --transcript "$transcript" --approve "Apply this restore? [y/N] " \
-      --sudo-password-file "$(ra_sudo_password_file)" --max-sudo 3 --prompt-timeout 900 --exit-timeout 3600 -- \
+      --sudo-password-file "$(ra_sudo_password_file)" --min-sudo 1 --max-sudo 3 --prompt-timeout 900 --exit-timeout 3600 -- \
       ssh -tt "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" \
       "source /tmp/blueprint-ra-fixtures/guest-env.sh && omarchy-blueprint --profile $RA_GUEST_PROFILE --machine target restore" \
       2> "$a/restore-driver.err" || status=$?

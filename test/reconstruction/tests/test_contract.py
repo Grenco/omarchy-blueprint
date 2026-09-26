@@ -47,6 +47,22 @@ class PlanContractTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "interactive"):
             contract.assert_expected_interactive_ops({"operations": [{**install, "interactive": False}]}, "alacritty")
 
+    def test_the_canonical_elevated_install_is_required(self):
+        install = {"provider": "packages", "resource": "official:alacritty", "interactive": True,
+                   "command": ["omarchy", "pkg", "add", "alacritty"],
+                   "notice": "May ask for administrator authentication (sudo) in this terminal"}
+        other = {"provider": "packages", "resource": "mise:node", "command": ["mise", "install", "node"]}
+        cases = {
+            "missing": [other],
+            "not interactive": [{**install, "interactive": False}],
+            "wrong command": [{**install, "command": ["omarchy", "pkg", "add", "kitty"]}],
+            "no notice": [{**install, "notice": "installs a package"}],
+            "duplicated": [install, dict(install)],
+        }
+        for name, operations in cases.items():
+            with self.subTest(name), self.assertRaises(AssertionError):
+                contract.assert_expected_interactive_ops({"operations": operations}, "alacritty")
+
     def test_requires_provider_skip_and_mapped_copy(self):
         plan = {"operations": [{"provider": "resources", "action": "copy",
                                 "resource": "resource:helper-script",
