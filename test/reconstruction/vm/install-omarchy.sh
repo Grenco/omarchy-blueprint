@@ -5,9 +5,11 @@ ra_base_screen() {
   ra_screendump "$RA_WORK/base/monitor.sock" "$RA_ARTIFACTS/base/guest-screen.ppm"
 }
 
-# boot_image (diagnostic soak only): "installer" (default, the image the
-# official installer built), "rebuilt" (regenerated on the installed system)
-# or "debug" (regenerated with serial-console boot output).
+# boot_image (diagnostic soak only): "installer" (default, as installed),
+# "no-uart-console" / "ttys0-console" (the installer's image, with only the
+# boot loader's console=uart,io,0x3f8 removed or replaced by
+# console=ttyS0,115200), "rebuilt" (limine-update) or "debug" (regenerated
+# with serial-console boot output).
 ra_install_base() {
   local work=$1 boot_image=${2:-installer} pid start free_now
   mkdir -p "$work/base" "$work/cidata" "$RA_ARTIFACTS/base"
@@ -46,9 +48,17 @@ ra_install_base() {
   ra_ssh 'source /usr/share/omarchy/default/bash/env-bootstrap; findmnt -no SOURCE /; uname -r; kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase"); pacman -Q "$kernel" "$kernel-headers"; systemd-analyze; omarchy theme current; command -v omarchy-shell' \
     >> "$RA_ARTIFACTS/base/guest-checks.log" 2>&1
   ra_note "Omarchy installed and ready in $(($(date +%s)-start))s"
-  if [[ $boot_image != installer ]]; then
+  if declare -F ra_base_record_boot_image >/dev/null; then
     ra_base_record_boot_image installer
-    if [[ $boot_image == debug ]]; then
+  fi
+  if [[ $boot_image != installer ]]; then
+    if [[ $boot_image == no-uart-console || $boot_image == ttys0-console ]]; then
+      local replacement=""
+      [[ $boot_image == ttys0-console ]] && replacement="console=ttyS0,115200"
+      ra_ssh_sudo "sed -i '/cmdline:/ s#console=uart,io,0x3f8#$replacement#' /boot/limine.conf && grep -c 'console=uart' /boot/limine.conf; true" \
+        > "$RA_ARTIFACTS/base/boot-console.log" 2>&1 ||
+        ra_fail OMARCHY_INSTALL "could not change the boot console (see base/boot-console.log)"
+    elif [[ $boot_image == debug ]]; then
       ra_base_enable_boot_debug || ra_fail OMARCHY_INSTALL "could not enable boot debugging (see base/boot-debug.log)"
     else
       ra_ssh_sudo 'limine-update' > "$RA_ARTIFACTS/base/boot-rebuild.log" 2>&1 ||

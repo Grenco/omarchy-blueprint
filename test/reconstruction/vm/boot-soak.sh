@@ -17,7 +17,8 @@ ra_base_enable_boot_debug() {
 # Identity and initramfs contents of the unified kernel images, so boot
 # image variants can be compared: hash, lsinitcpio analysis, module list.
 ra_base_record_boot_image() {
-  ra_ssh_sudo 'for efi in /boot/EFI/Linux/*.efi; do
+  ra_ssh_sudo 'echo "== /boot/limine.conf"; cat /boot/limine.conf
+    for efi in /boot/EFI/Linux/*.efi; do
       echo "== $efi"; sha256sum "$efi"
       objcopy -O binary --only-section=.cmdline "$efi" /tmp/ra-cmdline && echo "cmdline: $(tr -d "\0" < /tmp/ra-cmdline)"
       objcopy -O binary --only-section=.initrd "$efi" /tmp/ra-initrd || continue
@@ -116,6 +117,13 @@ ra_fresh_overlay_trials() {
       if [[ $2 == debug ]] && { ! grep -q 'console=ttyS0' "$RA_ARTIFACTS/soak-cmdline.txt" ||
            grep -qE '(^| )(quiet|loglevel=0)( |$)' "$RA_ARTIFACTS/soak-cmdline.txt"; }; then
         ra_fail INFRASTRUCTURE "debug console output is not effective on the kernel command line (see soak-cmdline.txt)"
+      fi
+      # A console variant must really have changed what the kernel booted with.
+      if [[ $2 == no-uart-console || $2 == ttys0-console ]] && grep -q 'console=uart' "$RA_ARTIFACTS/soak-cmdline.txt"; then
+        ra_fail INFRASTRUCTURE "console=uart is still on the kernel command line (see soak-cmdline.txt)"
+      fi
+      if [[ $2 == ttys0-console ]] && ! grep -q 'console=ttyS0,115200' "$RA_ARTIFACTS/soak-cmdline.txt"; then
+        ra_fail INFRASTRUCTURE "console=ttyS0 did not reach the kernel command line (see soak-cmdline.txt)"
       fi
     fi
     ra_guest_enable_session "$role" || ra_fail INFRASTRUCTURE "could not enable the trial session"

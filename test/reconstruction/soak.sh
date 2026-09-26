@@ -2,17 +2,17 @@
 # Diagnostic only, never a gate: install the pinned base, then reboot one
 # guest repeatedly to characterize boot stalls (vm/boot-soak.sh). It runs no
 # Capture or Restore, so it has its own workflow and check name.
-# Usage: soak.sh <reboot-cycles|fresh-overlay> <count> [installer|rebuilt|debug]
+# Usage: soak.sh <reboot-cycles|fresh-overlay> <count> [installer|no-uart-console|ttys0-console|rebuilt|debug]
 #   reboot-cycles: one guest, alternating warm reboots and cold power cycles
 #   fresh-overlay: new overlay per trial; first boot, then identity or plain reboot
 set -euo pipefail
 RA_TITLE="Reconstruction Boot Soak (diagnostic, not reconstruction)"
 source "$(dirname "$0")/lib/common.sh"
 trap 'ra_finish "$?"' EXIT
-experiment=${1:?usage: soak.sh <reboot-cycles|fresh-overlay> <count> [installer|rebuilt|debug]}
-count=${2:?usage: soak.sh <reboot-cycles|fresh-overlay> <count> [installer|rebuilt|debug]}
+experiment=${1:?usage: soak.sh <reboot-cycles|fresh-overlay> <count> [installer|no-uart-console|ttys0-console|rebuilt|debug]}
+count=${2:?usage: soak.sh <reboot-cycles|fresh-overlay> <count> [installer|no-uart-console|ttys0-console|rebuilt|debug]}
 boot_image=${3:-installer}
-[[ $boot_image == installer || $boot_image == rebuilt || $boot_image == debug ]] || { ra_note "unknown boot image: $boot_image"; exit 2; }
+[[ $boot_image =~ ^(installer|no-uart-console|ttys0-console|rebuilt|debug)$ ]] || { ra_note "unknown boot image: $boot_image"; exit 2; }
 [[ $experiment == reboot-cycles || $experiment == fresh-overlay ]] || { ra_note "unknown experiment: $experiment"; exit 2; }
 [[ $count =~ ^[1-9][0-9]*$ ]] || { ra_note "count must be a positive integer"; exit 2; }
 
