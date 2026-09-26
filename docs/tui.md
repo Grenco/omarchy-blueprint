@@ -115,7 +115,14 @@ which can resolve them in favour of the profile; convergence (`e`) is
 also remove Blueprint-managed extras. Exact never deletes Resource data. These
 toggles are one-run overrides and do not change the machine's saved defaults.
 Review the consequences of a plan before approving it; approval replans
-before applying.
+before applying, and refuses if the plan changed since you approved it.
+
+Package changes that need administrator authentication are marked
+interactive. When you approve such a plan, the interface steps aside and the
+restore runs in the terminal so `sudo` can show its own prompt, then
+Blueprint returns. On a freshly installed machine without a package database,
+the plan shows **Requires before applying** and cannot be applied until you
+run `omarchy update` in a terminal and open Restore again.
 
 ## Software
 
