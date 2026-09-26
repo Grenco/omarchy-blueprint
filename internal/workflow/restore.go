@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
@@ -55,10 +58,65 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	result := RestoreResult{Options: resolved, Plan: plan}
-	if operation, ok := interactiveOperation(plan); ok {
-		return result, fmt.Errorf("restore operation %s requires an interactive terminal and cannot run through this executor", operation.Resource)
+	return s.executeRestore(ctx, RestoreResult{Options: resolved, Plan: plan}, providers, contexts, false)
+}
+
+// ApplyApprovedRestore applies a plan the user approved. It replans and
+// refuses unless the recalculated plan is exactly the approved one, so
+// approval never covers authority that appeared afterwards. terminal says
+// the caller has handed the real terminal to this call (CLI, or the TUI
+// after releasing it), so interactive operations may prompt there.
+func (s *Session) ApplyApprovedRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool) (RestoreResult, error) {
+	plan, providers, contexts, resolved, err := s.restorePlan(ctx, onlyProvider, options)
+	if err != nil {
+		return RestoreResult{}, err
 	}
+	result := RestoreResult{Options: resolved, Plan: plan}
+	if !reflect.DeepEqual(plan, approved) {
+		return result, ErrRestorePlanChanged
+	}
+	return s.executeRestore(ctx, result, providers, contexts, terminal)
+}
+
+// ErrRestorePlanChanged means the recalculated plan differs from the one the
+// user approved, so the approval does not cover it.
+var ErrRestorePlanChanged = errors.New("restore plan changed after approval; inspect the new plan and approve again")
+
+// UnmetRequirementsError refuses a plan whose requirements the machine does
+// not yet satisfy. Nothing has been applied.
+type UnmetRequirementsError struct{ Requirements []model.Requirement }
+
+func (e *UnmetRequirementsError) Error() string {
+	parts := make([]string, 0, len(e.Requirements))
+	for _, requirement := range e.Requirements {
+		parts = append(parts, fmt.Sprintf("%s; run `%s`, then plan the restore again", requirement.Reason, strings.Join(requirement.Remediation, " ")))
+	}
+	return "restore cannot be applied yet: " + strings.Join(parts, "; ")
+}
+
+// CheckRestoreApplicable refuses, before any mutation, a plan with unmet
+// requirements or with interactive operations when no terminal is handed over.
+func CheckRestoreApplicable(plan model.RestorePlan, terminal bool) error {
+	if len(plan.Requirements) > 0 {
+		return &UnmetRequirementsError{Requirements: plan.Requirements}
+	}
+	if operation, ok := interactiveOperation(plan); ok && !terminal {
+		return fmt.Errorf("restore operation %s requires an interactive terminal and cannot run through this executor", operation.Resource)
+	}
+	return nil
+}
+
+func (s *Session) executeRestore(ctx context.Context, result RestoreResult, providers []RestoreProvider, contexts map[string]RestoreContext, terminal bool) (RestoreResult, error) {
+	plan := result.Plan
+	if err := CheckRestoreApplicable(plan, terminal); err != nil {
+		return result, err
+	}
+	if _, ok := interactiveOperation(plan); ok {
+		if _, ok := s.deps.Runner.(command.InteractiveRunner); !ok {
+			return result, errors.New("restore needs terminal-attached execution, but this runner cannot provide it")
+		}
+	}
+	var err error
 	if len(plan.Operations) == 0 {
 		result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
 		return result, err
@@ -86,20 +144,6 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 		return result, fmt.Errorf("restore completed with %d failed operation(s)", len(result.Execution.Failed))
 	}
 	return result, nil
-}
-
-// ErrRestorePlanChanged means the recalculated plan differs from the one the
-// user approved, so the approval does not cover it.
-var ErrRestorePlanChanged = errors.New("restore plan changed after approval; inspect the new plan and approve again")
-
-// UnmetRequirementsError refuses a plan whose requirements are unsatisfied.
-type UnmetRequirementsError struct{ Requirements []model.Requirement }
-
-func (e *UnmetRequirementsError) Error() string { return "not implemented" }
-
-// ApplyApprovedRestore is not implemented yet.
-func (s *Session) ApplyApprovedRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool) (RestoreResult, error) {
-	return RestoreResult{}, errors.New("not implemented")
 }
 
 func interactiveOperation(plan model.RestorePlan) (model.Operation, bool) {
@@ -155,6 +199,7 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
 		plan.Operations, plan.Skipped = append(plan.Operations, part.Operations...), append(plan.Skipped, part.Skipped...)
+		plan.Requirements = append(plan.Requirements, part.Requirements...)
 	}
 	if s.finalizeRestore != nil {
 		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, resolved); err != nil {

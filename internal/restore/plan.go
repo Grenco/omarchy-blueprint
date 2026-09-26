@@ -40,6 +40,19 @@ func ValidatePlan(plan model.RestorePlan) error {
 			return err
 		}
 	}
+	for _, requirement := range plan.Requirements {
+		if strings.TrimSpace(requirement.ID) == "" || strings.TrimSpace(requirement.Kind) == "" {
+			return fmt.Errorf("restore requirement has empty id or kind: %#v", requirement)
+		}
+		if len(requirement.Remediation) == 0 {
+			return fmt.Errorf("restore requirement %q has no remediation", requirement.ID)
+		}
+		for _, id := range requirement.Operations {
+			if _, ok := seen[id]; !ok {
+				return fmt.Errorf("restore requirement %q names unknown operation %q", requirement.ID, id)
+			}
+		}
+	}
 	return nil
 }
 

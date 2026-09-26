@@ -1743,6 +1743,14 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}
+	// Refuse before approval, journal or mutation when the machine is not
+	// ready; the user acts on the remediation and plans again (ADR 0022).
+	if len(plan.Requirements) > 0 {
+		if !opt.json {
+			fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
+		}
+		return workflow.CheckRestoreApplicable(plan, true)
+	}
 	if len(plan.Operations) == 0 {
 		verification, err := verifyRestoreProviders(ctx, d, restoreProviders, contexts)
 		if err != nil {
@@ -1977,7 +1985,7 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 }
 
 func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlanOptions) string {
-	rendered := renderPlan(plan, dry)
+	rendered := renderPlan(plan, dry) + renderRequirements(plan)
 	if !options.Force {
 		return rendered
 	}
@@ -1987,6 +1995,19 @@ func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlan
 		}
 	}
 	return rendered
+}
+
+// renderRequirements lists what the user must do before the plan can apply.
+func renderRequirements(plan model.RestorePlan) string {
+	if len(plan.Requirements) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Requires before applying:\n")
+	for _, requirement := range plan.Requirements {
+		fmt.Fprintf(&b, "! %s\n  Run: %s\n  Needed by: %s\n", requirement.Reason, strings.Join(requirement.Remediation, " "), strings.Join(requirement.Operations, ", "))
+	}
+	return b.String()
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {

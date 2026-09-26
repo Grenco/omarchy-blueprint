@@ -42,13 +42,40 @@ type Restore struct {
 	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
 }
 
-// restoreTerminalCommand is not implemented yet.
-type restoreTerminalCommand struct{ approved model.RestorePlan }
+// restoreTerminalCommand applies an approved plan while bubbletea has
+// released the terminal (tea.Exec), so operations that elevate through sudo
+// prompt on the real terminal exactly as they do from the CLI. The same
+// workflow apply runs; only the terminal ownership differs (ADR 0022).
+type restoreTerminalCommand struct {
+	ctx      context.Context
+	session  *workflow.Session
+	options  *policy.RestoreOptions
+	approved model.RestorePlan
+	stdout   io.Writer
+	result   workflow.RestoreResult
+}
 
-func (*restoreTerminalCommand) Run() error          { return fmt.Errorf("not implemented") }
-func (*restoreTerminalCommand) SetStdin(io.Reader)  {}
-func (*restoreTerminalCommand) SetStdout(io.Writer) {}
-func (*restoreTerminalCommand) SetStderr(io.Writer) {}
+func (c *restoreTerminalCommand) Run() error {
+	if c.session == nil {
+		return fmt.Errorf("restore session is unavailable")
+	}
+	out := c.stdout
+	if out == nil {
+		out = io.Discard
+	}
+	fmt.Fprintln(out, "Applying the approved Blueprint restore. Commands may ask for administrator authentication here; Blueprint never sees the password.")
+	var err error
+	c.result, err = c.session.ApplyApprovedRestore(c.ctx, restoreScopeAll, c.options, c.approved, true)
+	if err != nil {
+		fmt.Fprintln(out, "Restore failed:", err)
+	} else {
+		fmt.Fprintln(out, "Restore applied; returning to Blueprint.")
+	}
+	return err
+}
+func (*restoreTerminalCommand) SetStdin(io.Reader)      {}
+func (c *restoreTerminalCommand) SetStdout(w io.Writer) { c.stdout = w }
+func (*restoreTerminalCommand) SetStderr(io.Writer)     {}
 
 const restoreScopeAll = ""
 
@@ -67,7 +94,7 @@ func NewRestore(session *workflow.Session) *Restore {
 	return NewRestoreContext(context.Background(), session)
 }
 func NewRestoreContext(ctx context.Context, session *workflow.Session) *Restore {
-	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions()}
+	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions(), exec: tea.Exec}
 }
 func (s *Restore) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Restore) SetSize(width, height int)          { s.width, s.height = width, height }
@@ -144,11 +171,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		s.override = true
 		return s.refreshPlan()
 	case "enter":
-		if len(s.plan().Operations) > 0 {
-			if s.hasInteractiveOperation() {
-				s.err = fmt.Errorf("this restore needs an interactive terminal; run the restore from the CLI")
-				return nil
-			}
+		if s.CanApply() {
 			s.confirm = true
 			return func() tea.Msg {
 				return components.ModalRequest{Title: "Apply restore", Content: components.Confirm(s.confirmation())}
@@ -174,6 +197,9 @@ func (s *Restore) View() string {
 			Explanation: "Restore recreates state that is already saved in this Blueprint profile.",
 			Guidance:    "Capture the parts of this machine you want Blueprint to remember before using Restore.",
 		})
+	}
+	if len(s.plan().Requirements) > 0 {
+		return s.requirementsView() + "\n" + s.currentPlanView()
 	}
 	return s.currentPlanView()
 }
@@ -553,16 +579,25 @@ func skipReasonLabel(reason string) string {
 	return "Skipped"
 }
 
+// apply runs the approved plan through the shared workflow. A plan with
+// interactive operations gets the real terminal via tea.Exec; any other plan
+// applies without leaving the interface. Either way the workflow refuses a
+// plan that changed after approval.
 func (s *Restore) apply() tea.Cmd {
 	var options *policy.RestoreOptions
 	if s.override {
 		options = &s.options
 	}
+	approved := s.plan()
+	if s.hasInteractiveOperation() {
+		command := &restoreTerminalCommand{ctx: s.ctx, session: s.session, options: options, approved: approved}
+		return s.exec(command, func(err error) tea.Msg { return restoreAppliedMsg{command.result, err} })
+	}
 	return func() tea.Msg {
 		if s.session == nil {
 			return restoreAppliedMsg{err: fmt.Errorf("restore session is unavailable")}
 		}
-		result, err := s.session.ApplyRestore(s.ctx, restoreScopeAll, options)
+		result, err := s.session.ApplyApprovedRestore(s.ctx, restoreScopeAll, options, approved, false)
 		return restoreAppliedMsg{result, err}
 	}
 }
@@ -579,7 +614,7 @@ func (s *Restore) hasInteractiveOperation() bool {
 	return false
 }
 func (s *Restore) CanApply() bool {
-	return !s.planning && len(s.plan().Operations) > 0 && !s.hasInteractiveOperation()
+	return !s.planning && len(s.plan().Operations) > 0 && len(s.plan().Requirements) == 0
 }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }
@@ -681,5 +716,18 @@ func (s *Restore) confirmation() string {
 	if s.forcedOverrides > 0 {
 		prompt += fmt.Sprintf(" %d forced override(s).", s.forcedOverrides)
 	}
+	if s.hasInteractiveOperation() {
+		prompt += " Some operations may ask for administrator authentication in this terminal; Blueprint steps aside while they run."
+	}
 	return prompt
+}
+
+// requirementsView explains what the user must do before this plan applies.
+func (s *Restore) requirementsView() string {
+	var b strings.Builder
+	b.WriteString("Requires before applying:\n")
+	for _, requirement := range s.plan().Requirements {
+		fmt.Fprintf(&b, "  %s\n  Run `%s` in a terminal, then open Restore again to replan.\n", components.DisplayText(requirement.Reason), components.DisplayText(strings.Join(requirement.Remediation, " ")))
+	}
+	return b.String()
 }

@@ -220,7 +220,51 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 
 type PlanOptions struct{ Exact bool }
 
+// elevationNotice explains interactive package operations: Omarchy's package
+// commands elevate through sudo (or yay), which owns its own prompt.
+const elevationNotice = "May ask for administrator authentication (sudo) in this terminal; Blueprint never sees or stores the password."
+
+// Plan plans package Restore. Operations that install through pacman need
+// sync metadata; without it the plan carries a readiness requirement that
+// Omarchy's own update satisfies, never a sync Blueprint performs (ADR 0022).
 func (p Provider) Plan(saved, current profile.Packages, schema int, from, to string, options ...PlanOptions) (model.RestorePlan, error) {
+	plan, err := p.plan(saved, current, schema, from, to, options...)
+	if err != nil || !current.OriginUnavailable {
+		return plan, err
+	}
+	var needs []string
+	for _, op := range plan.Operations {
+		if needsPackageMetadata(op) {
+			needs = append(needs, op.ID)
+		}
+	}
+	if len(needs) > 0 {
+		sort.Strings(needs)
+		plan.Requirements = append(plan.Requirements, model.Requirement{
+			ID: "packages.metadata", Provider: "packages", Kind: "package-metadata",
+			Reason:      "package metadata unavailable: pacman sync databases missing for " + strings.Join(current.MissingSyncDatabases, ", ") + "; installing packages needs Omarchy's own system update first",
+			Remediation: []string{"omarchy", "update"},
+			Operations:  needs,
+		})
+	}
+	return plan, nil
+}
+
+// needsPackageMetadata reports operations that resolve packages from sync
+// repositories. Removals and Mise installs do not.
+func needsPackageMetadata(op model.Operation) bool {
+	if op.Action != "install" {
+		return false
+	}
+	for _, prefix := range []string{"packages.install.official", "packages.install.aur.", "packages.install.semantic.", "packages.preinstall.install.", "packages.preinstalls.install"} {
+		if strings.HasPrefix(op.ID, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p Provider) plan(saved, current profile.Packages, schema int, from, to string, options ...PlanOptions) (model.RestorePlan, error) {
 	var opts PlanOptions
 	if len(options) > 0 {
 		opts = options[0]
@@ -609,15 +653,17 @@ func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []m
 			action, commandName, risk = "remove", "omarchy-pkg-drop", model.RiskHigh
 		}
 		operations = append(operations, model.Operation{
-			ID:         "packages.preinstall." + action + "." + item,
-			Provider:   "packages",
-			Action:     action,
-			Resource:   "preinstall:" + item,
-			Items:      []string{item},
-			Command:    []string{commandName, item},
-			DependsOn:  append([]string(nil), groupDependency...),
-			Risk:       risk,
-			Reversible: false,
+			ID:          "packages.preinstall." + action + "." + item,
+			Provider:    "packages",
+			Action:      action,
+			Resource:    "preinstall:" + item,
+			Items:       []string{item},
+			Command:     []string{commandName, item},
+			DependsOn:   append([]string(nil), groupDependency...),
+			Risk:        risk,
+			Reversible:  false,
+			Interactive: true,
+			Notice:      elevationNotice,
 		})
 	}
 	return operations, skipped
@@ -717,7 +763,7 @@ func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packag
 			}
 			commandLine := []string{"omarchy", "pkg", "drop", id}
 			operationID := "packages.remove." + kind + "." + id
-			interactive, notice := false, ""
+			interactive, notice := true, elevationNotice
 			if kind == "official" {
 				if recipe, found := omarchy.SemanticRecipe(id); found {
 					commandLine = append([]string(nil), recipe.Remove...)
@@ -870,7 +916,7 @@ func operation(kind string, names, argv []string) model.Operation {
 	if kind == "aur" && len(names) == 1 {
 		id += "." + names[0]
 	}
-	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false}
+	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false, Interactive: true, Notice: elevationNotice}
 }
 
 func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {

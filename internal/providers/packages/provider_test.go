@@ -156,8 +156,9 @@ func TestPlanUsesSemanticTailscaleInstallerAndOrdinaryPackageFallback(t *testing
 	if semantic == nil || !reflect.DeepEqual(semantic.Command, []string{"omarchy-install-service-tailscale"}) || !semantic.Interactive || semantic.Notice == "" {
 		t.Fatalf("semantic operation = %#v, want interactive Omarchy service install with notice", semantic)
 	}
-	if ordinary == nil || !reflect.DeepEqual(ordinary.Command, []string{"omarchy", "pkg", "add", "firefox"}) || ordinary.Interactive {
-		t.Fatalf("ordinary operation = %#v, want raw package fallback", ordinary)
+	// Both elevate through sudo, so both run at the terminal (ADR 0022).
+	if ordinary == nil || !reflect.DeepEqual(ordinary.Command, []string{"omarchy", "pkg", "add", "firefox"}) || !ordinary.Interactive {
+		t.Fatalf("ordinary operation = %#v, want interactive omarchy pkg add fallback", ordinary)
 	}
 }
 
