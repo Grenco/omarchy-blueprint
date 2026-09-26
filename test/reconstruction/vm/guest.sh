@@ -29,7 +29,7 @@ ra_guest_start() {
   [[ -f $RA_WORK/guests/$role.qcow2 ]] || { ra_note "overlay missing: $role"; return 1; }
   [[ -f $RA_WORK/guests/$role.vars.fd ]] || { ra_note "NVRAM missing: $role"; return 1; }
   qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -smp 4 -m 8192 \
-    -display none -vga std -serial "file:$RA_ARTIFACTS/$role/serial.log" -monitor "unix:$RA_WORK/guests/$role.monitor.sock,server,nowait" \
+    -display none -vga std -chardev "file,id=serial0,path=$RA_ARTIFACTS/$role/serial.log,append=on" -serial chardev:serial0 -monitor "unix:$RA_WORK/guests/$role.monitor.sock,server,nowait" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file="$RA_WORK/guests/$role.vars.fd" \
     -drive file="$RA_WORK/guests/$role.qcow2",format=qcow2,if=none,id=disk \

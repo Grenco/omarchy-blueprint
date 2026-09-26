@@ -7,6 +7,8 @@
 
 # Adds serial-console kernel and systemd output to the pinned install's boot
 # entries through Omarchy's own Limine configuration, before overlays exist.
+# Note: this rebuilds the unified kernel image, so a debug soak does not boot
+# the installer-built image; compare it with a non-debug soak.
 ra_base_enable_boot_debug() {
   ra_ssh_sudo "printf '%s\n' 'KERNEL_CMDLINE[default]+=\" console=tty0 console=ttyS0,115200 loglevel=7 systemd.show_status=1\"' >> /etc/default/limine && limine-update" \
     > "$RA_ARTIFACTS/base/boot-debug.log" 2>&1
@@ -37,6 +39,9 @@ ra_soak_recover() {
 ra_boot_soak() {
   local role=source cycles=$1 i kind started result
   : > "$RA_ARTIFACTS/soak.txt"
+  # Evidence of which boot configuration the soak measured.
+  ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
+  ra_record "boot soak debug console: ${RA_BOOT_DEBUG:-0}"
   for (( i=1; i<=cycles; i++ )); do
     kind=warm
     (( i % 2 == 0 )) && kind=cold
