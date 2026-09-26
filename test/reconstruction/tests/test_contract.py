@@ -59,6 +59,16 @@ class PlanContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             contract.assert_copy_destination(plan, "helper-script", "/home/spike/.local/bin/blueprint-ra-helper")
 
+    def test_converged_plan_with_null_operations_is_empty(self):
+        # Blueprint encodes an empty plan's operations as null (run 36237192431).
+        plan = contract.restore_plan({"data": {"plan": {"operations": None, "skipped": [
+            {"provider": "resources", "resource": "resource:target-only-skip",
+             "reason": 'restore disabled for machine "target"'}]}}})
+        self.assertEqual(plan["operations"], [])
+        contract.assert_final_convergence(plan, "target-only-skip")
+        with self.assertRaises(AssertionError):
+            contract.restore_plan({"data": {"plan": {"operations": "nope"}}})
+
     def test_final_convergence_allows_only_policy_skip(self):
         plan = {"operations": [], "skipped": [{"provider": "resources",
                 "resource": "resource:target-only-skip", "reason": 'restore disabled for machine "target"'}]}

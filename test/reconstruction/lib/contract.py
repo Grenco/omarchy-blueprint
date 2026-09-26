@@ -14,7 +14,9 @@ def load_envelope(path: Path) -> dict:
 
 def restore_plan(envelope: dict) -> dict:
     plan = envelope["data"]["plan"]
-    if not isinstance(plan.get("operations"), list):
+    if plan.get("operations") is None:  # Blueprint encodes an empty plan as null.
+        plan["operations"] = []
+    if not isinstance(plan["operations"], list):
         raise AssertionError("restore plan has no operations list")
     return plan
 
