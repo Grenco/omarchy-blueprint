@@ -49,6 +49,17 @@ type machineRunner struct {
 	// every explicit package is foreign.
 	repos  []string
 	dbPath string
+	// allCommands records every command; interactiveCommands those run
+	// attached to the terminal.
+	allCommands         [][]string
+	interactiveCommands [][]string
+}
+
+// RunInteractive models SystemRunner's terminal-attached execution.
+func (r *machineRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+	r.interactiveCommands = append(r.interactiveCommands, append([]string{name}, args...))
+	_, err := r.Run(ctx, name, args...)
+	return err
 }
 
 func (r *machineRunner) freshSync() bool {
@@ -79,6 +90,7 @@ func TestMain(m *testing.M) {
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	r.allCommands = append(r.allCommands, append([]string{name}, args...))
 	key := name + " " + strings.Join(args, " ")
 	switch key {
 	case "omarchy version":

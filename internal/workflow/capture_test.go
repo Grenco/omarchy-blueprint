@@ -38,6 +38,7 @@ type captureTestProvider struct {
 	lastVerify                    *RestoreContext
 	stopManagingFail              bool
 	interactive                   bool
+	requirement                   bool
 }
 
 func (p captureTestProvider) ID() string               { return p.id }
@@ -63,10 +64,15 @@ func (p captureTestProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.I
 	if p.lastPlan != nil {
 		*p.lastPlan = restoreCtx
 	}
+	var plan model.RestorePlan
 	if p.interactive {
-		return model.RestorePlan{Operations: []model.Operation{{ID: "interactive", Provider: p.id, Resource: "semantic", Command: []string{"true"}, Interactive: true}}}, nil
+		plan.Operations = []model.Operation{{ID: "interactive", Provider: p.id, Resource: "semantic", Command: []string{"true"}, Interactive: true}}
 	}
-	return model.RestorePlan{}, nil
+	if p.requirement {
+		plan.Operations = append(plan.Operations, model.Operation{ID: "needs-metadata", Provider: p.id, Resource: "official:alacritty", Command: []string{"true"}})
+		plan.Requirements = []model.Requirement{{ID: "packages.metadata", Provider: p.id, Kind: "package-metadata", Reason: "package metadata unavailable", Remediation: []string{"omarchy", "update"}, Operations: []string{"needs-metadata"}}}
+	}
+	return plan, nil
 }
 func (p captureTestProvider) Verify(_ context.Context, _ profile.Data, restoreCtx RestoreContext) (model.VerificationResult, error) {
 	if p.lastVerify != nil {

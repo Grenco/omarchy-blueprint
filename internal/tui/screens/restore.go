@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 
@@ -37,7 +38,17 @@ type Restore struct {
 	// entryOffset is the first visible line of the Changes/Skipped region
 	// when the plan is taller than the workspace.
 	entryOffset int
+	// exec hands the terminal to a blocking command (tea.Exec).
+	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
 }
+
+// restoreTerminalCommand is not implemented yet.
+type restoreTerminalCommand struct{ approved model.RestorePlan }
+
+func (*restoreTerminalCommand) Run() error          { return fmt.Errorf("not implemented") }
+func (*restoreTerminalCommand) SetStdin(io.Reader)  {}
+func (*restoreTerminalCommand) SetStdout(io.Writer) {}
+func (*restoreTerminalCommand) SetStderr(io.Writer) {}
 
 const restoreScopeAll = ""
 

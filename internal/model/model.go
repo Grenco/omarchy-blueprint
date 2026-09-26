@@ -112,6 +112,21 @@ type RestorePlan struct {
 	OmarchyTo      string      `json:"omarchy_to"`
 	Operations     []Operation `json:"operations"`
 	Skipped        []Skipped   `json:"skipped,omitempty"`
+	// Requirements must be satisfied by the user before the plan may be
+	// applied; apply refuses while any remains (ADR 0022).
+	Requirements []Requirement `json:"requirements,omitempty"`
+}
+
+// Requirement is a machine precondition a plan's operations need but that
+// Blueprint deliberately does not perform itself, such as Omarchy's package
+// metadata readiness. Remediation is the command the user runs.
+type Requirement struct {
+	ID          string   `json:"id"`
+	Provider    string   `json:"provider"`
+	Kind        string   `json:"kind"`
+	Reason      string   `json:"reason"`
+	Remediation []string `json:"remediation"`
+	Operations  []string `json:"operations"`
 }
 
 type Skipped struct {
