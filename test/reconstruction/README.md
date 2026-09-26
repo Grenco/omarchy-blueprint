@@ -66,8 +66,10 @@ databases: native-package detection (`pacman -Qqen`) fails. Until the
 fresh-package readiness prerequisite before PR 3 lands, target preflight pins
 that failure narrowly:
 
-- Machine B must still have no `/var/lib/pacman/sync/*.db`, so a target refresh
-  cannot hide the sentinel.
+- Machine B must still have no sync database for any configured repository
+  (`/var/lib/pacman/sync/<repo>.db` for each repository in
+  `pacman-conf --repo-list`), so a target refresh cannot hide the sentinel. The
+  directory listing is kept in `target/pacman-sync-state.txt`.
 - `check` must exit 1 with no successful envelope, and its stderr must carry the
   fingerprint `check packages:` / `detect explicitly installed native
   packages:` / `pacman -Qqen:` / `exit status 1` / `database file for '<repo>'

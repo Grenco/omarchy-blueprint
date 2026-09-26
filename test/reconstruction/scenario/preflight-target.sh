@@ -77,9 +77,14 @@ ra_import_target_profile() {
 # pacman sync databases, `check` on Machine B must fail with exactly that
 # defect. Any other failure, or success, fails preflight so this is revisited.
 ra_target_check_sentinel() {
-  local a="$RA_ARTIFACTS/target" status=0
-  if ra_guest_exec target 'compgen -G "/var/lib/pacman/sync/*.db" >/dev/null'; then
-    ra_fail TARGET_PREFLIGHT "Machine B has pacman sync databases; its fresh-install package state was altered"
+  local a="$RA_ARTIFACTS/target" status=0 synced
+  ra_guest_exec target 'pacman-conf --repo-list; ls -la /var/lib/pacman/sync/' > "$a/pacman-sync-state.txt" 2>&1 || true
+  # Only configured repositories matter; the sync directory may hold other files.
+  synced=$(ra_guest_exec target 'for repo in $(pacman-conf --repo-list); do
+      [[ ! -e /var/lib/pacman/sync/$repo.db ]] || printf "%s " "$repo"; done') ||
+    ra_fail TARGET_PREFLIGHT "could not inspect Machine B pacman sync databases"
+  if [[ -n $synced ]]; then
+    ra_fail TARGET_PREFLIGHT "Machine B has pacman sync databases for: ${synced% }; its fresh-install package state was altered"
   fi
   ra_blueprint target --profile "$RA_GUEST_PROFILE" --machine target --json check \
     > "$a/check.json" 2> "$a/check.stderr" || status=$?

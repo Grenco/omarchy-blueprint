@@ -24,7 +24,7 @@ def sentinel(sync_databases: bool, status: int, stdout: str, stderr: str) -> tup
             source '{ROOT}/scenario/stage-guest.sh'
             source '{ROOT}/scenario/capture-source.sh'
             source '{ROOT}/scenario/preflight-target.sh'
-            ra_guest_exec() {{ [[ $2 == *pacman/sync* ]] && {'true' if sync_databases else 'false'}; }}
+            ra_guest_exec() {{ [[ $2 == *'$repo.db'* ]] && printf '%s' '{'core ' if sync_databases else ''}'; return 0; }}
             ra_blueprint() {{ cat '{work}/stdout'; cat '{work}/stderr' >&2; return {status}; }}
             ra_phase TARGET_PREFLIGHT
             ra_target_check_sentinel
