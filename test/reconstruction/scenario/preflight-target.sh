@@ -99,4 +99,22 @@ ra_target_fresh_check() {
     > "$a/restore-plan.json" 2>> "$log" &&
     ra_contract restore-plan "$a/restore-plan.json" 2>> "$log" ||
     ra_fail TARGET_PREFLIGHT "Restore planning failed on fresh Machine B (see target/restore-plan.json)"
+  ra_contract readiness-plan "$a/restore-plan.json" 2>> "$log" ||
+    ra_fail TARGET_PREFLIGHT "Restore plan on fresh Machine B does not demand package readiness (see target/restore-plan.json)"
+  ra_target_refuses_unready_restore
+}
+
+# The real apply path must refuse before any mutation while readiness is
+# unmet. It runs without a terminal, so nothing could prompt either.
+ra_target_refuses_unready_restore() {
+  local a="$RA_ARTIFACTS/target" status=0
+  ra_blueprint target --profile "$RA_GUEST_PROFILE" --machine target restore packages --yes \
+    > "$a/restore-refusal.txt" 2>&1 || status=$?
+  if (( status == 0 )) || ! grep -q 'omarchy update' "$a/restore-refusal.txt"; then
+    ra_fail TARGET_PREFLIGHT "Restore on fresh Machine B did not refuse with the readiness remediation (see target/restore-refusal.txt)"
+  fi
+  if ra_guest_exec target "pacman -Q $RA_PACKAGE" >/dev/null 2>&1 ||
+     ra_guest_exec target 'test -e ~/.local/state/omarchy-blueprint/restores' >/dev/null 2>&1; then
+    ra_fail TARGET_PREFLIGHT "refused Restore still mutated Machine B"
+  fi
 }
