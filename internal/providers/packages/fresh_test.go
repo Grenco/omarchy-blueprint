@@ -65,6 +65,12 @@ esac
 `)
 	script("sh", `exec /bin/sh "$@"`)
 	script("cat", `exec /bin/cat "$@"`)
+	// Omarchy's preinstall catalogue, so detection does not depend on the
+	// host being an Omarchy machine; HOME isolates its opt-out marker.
+	if err := os.WriteFile(filepath.Join(bin, "omarchy-remove-preinstalls"), []byte("#!/bin/sh\nomarchy-pkg-drop \\\n  aether\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", dir)
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	return fakePacman{dbPath: dbPath, log: log}
 }
