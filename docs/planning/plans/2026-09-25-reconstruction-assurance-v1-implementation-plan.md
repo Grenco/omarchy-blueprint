@@ -861,6 +861,8 @@ If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguish
 
 > **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Guest staging refreshes them with `pacman -Sy` identically on Machine A and Machine B (infrastructure, retryable, no package upgrade), so later Blueprint Restore resolves packages the same way source customization did.
 
+> **Amendment (PR 2):** the Omarchy ISO only writes SDDM autologin for encrypted targets, so the unencrypted unattended guest stops at the greeter with no desktop session, no notification daemon, and no running `omarchy-shell` (which Blueprint's plugin inspection requires). Both guests receive the same `/etc/sddm.conf.d/autologin.conf` (`User=spike`, `Session=omarchy.desktop`) the ISO writes for encrypted installs, before their identity reboot, and staging waits until `omarchy-shell shell ping` succeeds.
+
 ```bash
 omarchy pkg add alacritty
 omarchy default terminal alacritty
