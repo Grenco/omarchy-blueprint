@@ -5,7 +5,7 @@ trap 'ra_finish "$?"' EXIT
 
 mkdir -p "$RA_ARTIFACTS"/{host,base,source,profile,target}
 
-# PR 1 stops after substrate/overlay validation; product phases arrive later.
+# PR 2 ends after target preflight; Restore phases arrive in PR 3.
 ra_phase INFRASTRUCTURE
 ra_note "workspace: $RA_WORK"
 {
@@ -26,6 +26,10 @@ if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
 fi
 [[ -r /dev/kvm && -w /dev/kvm ]] || ra_fail INFRASTRUCTURE "/dev/kvm unusable"
 command -v qemu-system-x86_64 >/dev/null || ra_fail INFRASTRUCTURE "QEMU missing"
+[[ -x $RA_BLUEPRINT_BIN ]] || ra_fail INFRASTRUCTURE "Blueprint build missing: $RA_BLUEPRINT_BIN"
+source "$RA_ROOT/scenario/build-fixtures.sh"
+ra_build_git_fixture || ra_fail INFRASTRUCTURE "could not build the pinned Git fixture"
+ra_start_git_server || ra_fail INFRASTRUCTURE "fixture Git server did not start"
 ra_pass INFRASTRUCTURE
 
 source "$RA_ROOT/vm/install-omarchy.sh"
@@ -33,16 +37,30 @@ ra_phase OMARCHY_INSTALL
 ra_install_base "$RA_WORK"
 
 source "$RA_ROOT/vm/guest.sh"
-for role in source target; do
-  ra_guest_create "$role"
-  ra_guest_start "$role" "blueprint-ra-$role"
-  ra_guest_freshen_identity "$role" "blueprint-ra-$role"
-  if [[ $role == target ]]; then
-    source_id=$(<"$RA_ARTIFACTS/source/machine-id.txt")
-    target_id=$(<"$RA_ARTIFACTS/target/machine-id.txt")
-    [[ $source_id != "$target_id" ]] || ra_fail OMARCHY_INSTALL "source and target share machine identity"
-  fi
-  ra_guest_stop "$role"
-  rm -f "$RA_WORK/guests/$role.qcow2" "$RA_WORK/guests/$role.vars.fd"
-done
+source "$RA_ROOT/scenario/stage-guest.sh"
+source "$RA_ROOT/scenario/capture-source.sh"
+source "$RA_ROOT/scenario/preflight-target.sh"
+ra_guest_create source
+ra_guest_start source blueprint-ra-source
+ra_guest_freshen_identity source blueprint-ra-source
 ra_pass OMARCHY_INSTALL
+
+ra_phase SOURCE_CUSTOMIZATION
+ra_guest_stage source || ra_fail SOURCE_CUSTOMIZATION "could not stage test inputs on Machine A"
+ra_customize_source
+ra_pass SOURCE_CUSTOMIZATION
+
+ra_phase CAPTURE
+ra_capture_source
+ra_pass CAPTURE
+
+ra_phase PROFILE_HANDOFF
+ra_handoff_profile
+ra_pass PROFILE_HANDOFF
+
+ra_phase TARGET_PREFLIGHT
+ra_boot_target
+ra_assert_target_pristine
+ra_import_target_profile
+ra_guest_stop target || ra_fail TARGET_PREFLIGHT "Machine B did not shut down"
+ra_pass TARGET_PREFLIGHT
