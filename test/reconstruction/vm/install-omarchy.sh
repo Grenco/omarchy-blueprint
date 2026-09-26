@@ -43,6 +43,9 @@ ra_install_base() {
   ra_ssh 'source /usr/share/omarchy/default/bash/env-bootstrap; findmnt -no SOURCE /; uname -r; kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase"); pacman -Q "$kernel" "$kernel-headers"; systemd-analyze; omarchy theme current; command -v omarchy-shell' \
     >> "$RA_ARTIFACTS/base/guest-checks.log" 2>&1
   ra_note "Omarchy installed and ready in $(($(date +%s)-start))s"
+  if [[ ${RA_BOOT_DEBUG:-0} == 1 ]]; then
+    ra_base_enable_boot_debug || ra_fail OMARCHY_INSTALL "could not enable boot debugging (see base/boot-debug.log)"
+  fi
   ra_ssh_sudo 'systemctl poweroff' > "$RA_ARTIFACTS/base/shutdown.log" 2>&1 || true
   ra_wait_exit "$pid" 90 || ra_fail OMARCHY_INSTALL "installed base did not power off; see shutdown.log"
   cp "$work/base/vars.fd" "$work/base/OVMF_VARS.base.fd"

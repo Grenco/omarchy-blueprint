@@ -32,6 +32,7 @@ ra_start_git_server || ra_fail INFRASTRUCTURE "fixture Git server did not start"
 ra_pass INFRASTRUCTURE
 
 source "$RA_ROOT/vm/install-omarchy.sh"
+source "$RA_ROOT/vm/boot-soak.sh"
 ra_phase OMARCHY_INSTALL
 ra_install_base "$RA_WORK"
 
@@ -46,6 +47,13 @@ ra_guest_start source blueprint-ra-source
 ra_guest_enable_session source
 ra_guest_freshen_identity source blueprint-ra-source
 ra_pass OMARCHY_INSTALL
+
+# Diagnostic only: repeated reboots to classify boot stalls; no product phases.
+if (( ${RA_BOOT_SOAK:-0} > 0 )); then
+  ra_boot_soak "$RA_BOOT_SOAK"
+  ra_guest_stop source || true
+  exit 0
+fi
 
 ra_phase SOURCE_READINESS
 ra_guest_stage source || ra_fail SOURCE_READINESS "could not stage test inputs on Machine A"

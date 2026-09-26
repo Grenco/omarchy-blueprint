@@ -3,6 +3,14 @@ name: Reconstruction Assurance
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      boot_soak:
+        description: 'Diagnostic only: reboot cycles to run instead of the canonical lifecycle (0 = normal run)'
+        default: '0'
+      boot_debug:
+        description: 'Diagnostic only: kernel and systemd output on the serial console'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,6 +48,9 @@ jobs:
         run: sudo mkdir -p /mnt/omarchy-blueprint-ra && sudo chown "$USER:$USER" /mnt/omarchy-blueprint-ra
       - name: Reconstruct the canonical machine
         run: bash test/reconstruction/run.sh
+        env:
+          RA_BOOT_SOAK: ${{ inputs.boot_soak || '0' }}
+          RA_BOOT_DEBUG: ${{ inputs.boot_debug && '1' || '0' }}
       - name: Summarize
         if: always()
         run: cat /mnt/omarchy-blueprint-ra/artifacts/summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
