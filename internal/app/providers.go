@@ -660,6 +660,16 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	for key := range absent {
 		keys[key] = true
 	}
+	// Without sync metadata a package's kind is unknown, so presence of an
+	// official:/aur: target is physical presence and Capture is blocked
+	// rather than inferred (ADR 0022).
+	installed := map[string]bool{}
+	for _, name := range current.Installed {
+		installed[name] = true
+	}
+	originUnknown := func(key string) bool {
+		return current.OriginUnavailable && (strings.HasPrefix(key, "official:") || strings.HasPrefix(key, "aur:"))
+	}
 	portableKeys := make([]string, 0, len(keys))
 	for key := range keys {
 		portableKeys = append(portableKeys, key)
@@ -718,6 +728,10 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	}
 	for _, key := range portableKeys {
 		currentState := currentPresence(currentPortable[key])
+		if originUnknown(key) {
+			_, name, _ := strings.Cut(key, ":")
+			currentState = currentPresence(installed[name])
+		}
 		if excluded[key] {
 			// Legacy Excluded is Capture Disabled + Restore Disabled with no
 			// desired state, not a deletion tombstone: unmanaged inspection
@@ -746,13 +760,18 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 				fingerprint = canonicalFingerprint(tool)
 			}
 		}
+		captureEligible, safetyReason := true, ""
+		if originUnknown(key) {
+			captureEligible, safetyReason = false, packagesprovider.OriginUnavailableReason(current.MissingSyncDatabases)+"; Capture keeps the saved desired state"
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             key,
 			Label:           packageLabel(key),
 			Desired:         desiredState,
 			Current:         currentState,
 			Fingerprint:     fingerprint,
-			CaptureEligible: true,
+			CaptureEligible: captureEligible,
+			SafetyReason:    safetyReason,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
 				SupportsCapture:        true,
@@ -1105,6 +1124,21 @@ func (p packagesStateProvider) Check(ctx context.Context, d profile.Data) error 
 // canonicalized to itself. It never requires the
 // package to currently be installed or excluded -- a not-yet-captured or
 // already-tombstoned reference must validate too.
+// CheckNotes explains read-only package inspection on a machine without
+// pacman sync metadata (ADR 0022). It only reads configuration and stats.
+func (p packagesStateProvider) CheckNotes(ctx context.Context, _ profile.Data) ([]string, error) {
+	provider, err := p.provider()
+	if err != nil {
+		return nil, err
+	}
+	missing, err := provider.MissingSyncDatabases(ctx)
+	if err != nil || len(missing) == 0 {
+		return nil, err
+	}
+	return []string{"package origin classification unavailable: pacman sync databases missing for " + strings.Join(missing, ", ") +
+		"; installed packages are still checked, Capture keeps saved official/AUR state, and installing packages needs `omarchy update` first"}, nil
+}
+
 func (packagesStateProvider) ValidateTarget(target string) (string, error) {
 	if target == "preinstalls" {
 		return target, nil

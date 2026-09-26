@@ -33,6 +33,8 @@ func (r semanticVerifyRunner) Run(_ context.Context, name string, args ...string
 func (r queryRunner) Run(_ context.Context, name string, args ...string) (string, error) {
 	key := name + " " + strings.Join(args, " ")
 	switch key {
+	case "pacman-conf --repo-list":
+		return "", nil
 	case "sh -c command -v omarchy-remove-preinstalls":
 		return "/usr/bin/omarchy-remove-preinstalls\n", nil
 	case "cat /usr/bin/omarchy-remove-preinstalls":
