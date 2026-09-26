@@ -155,7 +155,9 @@ The harness must never work around these gaps. Prohibited: pre-warming sudo cred
 **Prerequisite status (ADR 0022).** ADR 0022 decides the whole contract, and it lands in two product PRs:
 
 - **Read path — resolved (PR A, `fix/fresh-package-readiness`).** Detection checks configured repositories for sync databases before trusting `-Qqen`/`-Qqem`. Without them it uses only local `-Qq`/`-Qqe` and records package origin as unavailable. `check`, `status`, Capture inspection and Restore planning work on the fresh machine and never mutate it. Capture keeps saved official/AUR state, and Exact removes nothing whose origin is unknown. The PR 2 known-gap sentinel is retired; target preflight now requires `check` success.
-- **Write path — decided, implemented in PR B.** Blueprint never syncs package metadata itself. A plan whose package operations need metadata carries a visible `packages.metadata` requirement naming Omarchy's own `omarchy update`, and apply is refused before any mutation until it is satisfied. Package operations that elevate through sudo are planned `Interactive` and run attached to the terminal from both CLI and TUI. Headless runs refuse before mutation.
+- **Write path — implemented (PR B, `fix/elevated-package-restore`).** Blueprint never syncs package metadata itself. A plan whose package operations need metadata carries a visible `packages.metadata` requirement naming Omarchy's own `omarchy update`, and apply is refused before any mutation until it is satisfied. Package operations that elevate through sudo are planned `Interactive` and run attached to the terminal from both CLI and TUI. Headless runs refuse before mutation.
+
+PR B also proves on the real fresh Machine B that the Restore dry-run demands this readiness, and that a real apply refuses before any mutation. The full readiness → approved elevated install lifecycle is PR 3's to prove, as amended below.
 
 PR 3 remains blocked until PR B merges.
 
@@ -1175,7 +1177,7 @@ Require exit 0.
 >
 > 1. no pacman sync database for any configured repository (no `/var/lib/pacman/sync/<repo>.db` for any repository in `pacman-conf --repo-list`), so the harness cannot have prepared package state;
 > 2. `check` succeeds, and its JSON `notes` report the unavailable package origin;
-> 3. `restore --dry-run --json` returns a plan.
+> 3. `restore --dry-run --json` returns a plan; from PR B, its only requirement is `packages.metadata` (naming `omarchy update`, gating the interactive canonical install), and a real `restore packages --yes` refuses before mutation.
 >
 > The known-gap classifier and summary mechanism are deleted.
 
