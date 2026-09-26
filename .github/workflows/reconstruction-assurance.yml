@@ -15,7 +15,7 @@ jobs:
   substrate:
     name: Omarchy VM substrate
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - name: Test reconstruction host helpers

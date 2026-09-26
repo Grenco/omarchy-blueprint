@@ -21,14 +21,18 @@ as portable, so a `git://` daemon would not do. Each guest trusts the per-run
 certificate for that URL only, through the system Git config, which is outside
 `$HOME` and is not Blueprint state.
 
-The installed base has no pacman sync databases. Machine A refreshes them
-(`pacman -Sy`, retried as a network transfer, no upgrade) as source fixture
-preparation. Machine B never does: the canonical target keeps the official
-fresh-install package-manager state, because reconstructing onto that machine is
-the point. Common staging on both guests is limited to harness inputs: the
-Blueprint build, the fixture certificate, fixture files and desktop-session
-readiness. Never make Restore pass by pre-warming sudo, adding `NOPASSWD`,
-running Blueprint as root, or preparing Machine B's packages.
+The installed base has no pacman sync databases, and the only supported way to
+make it package-ready is Omarchy's own `omarchy update` (ADR 0022). Both
+machines therefore become ready the same way (`SOURCE_READINESS`,
+`TARGET_READINESS`): `omarchy update -y` over a real terminal, where the
+fixture user answers only `sudo`'s own prompt, then a reboot into the updated
+system. Machine A does this before customization. Machine B does it only after
+target preflight has proven the untouched fresh state and Blueprint's demand
+for readiness. Both must reach the same ready Omarchy version, recorded in the
+summary; a mismatch fails and is never retried. The harness never runs
+`pacman -Sy`, pre-warms sudo, adds `NOPASSWD`, or runs Blueprint as root.
+Common staging on both guests is limited to harness inputs: the Blueprint
+build, the fixture certificate, fixture files and desktop-session readiness.
 
 The ISO only enables SDDM autologin for encrypted installs, and this
 unattended install is unencrypted, so each guest gets the same

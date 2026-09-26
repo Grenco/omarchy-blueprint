@@ -40,16 +40,19 @@ source "$RA_ROOT/vm/guest.sh"
 source "$RA_ROOT/scenario/stage-guest.sh"
 source "$RA_ROOT/scenario/capture-source.sh"
 source "$RA_ROOT/scenario/preflight-target.sh"
+source "$RA_ROOT/scenario/readiness.sh"
 ra_guest_create source
 ra_guest_start source blueprint-ra-source
 ra_guest_enable_session source
 ra_guest_freshen_identity source blueprint-ra-source
 ra_pass OMARCHY_INSTALL
 
+ra_phase SOURCE_READINESS
+ra_guest_stage source || ra_fail SOURCE_READINESS "could not stage test inputs on Machine A"
+ra_omarchy_ready source SOURCE_READINESS
+ra_pass SOURCE_READINESS
+
 ra_phase SOURCE_CUSTOMIZATION
-ra_guest_stage source || ra_fail SOURCE_CUSTOMIZATION "could not stage test inputs on Machine A"
-ra_guest_refresh_package_databases source ||
-  ra_fail SOURCE_CUSTOMIZATION "could not refresh Machine A package databases (see source/pacman-sync.log)"
 ra_customize_source
 ra_pass SOURCE_CUSTOMIZATION
 
@@ -65,5 +68,13 @@ ra_phase TARGET_PREFLIGHT
 ra_boot_target
 ra_assert_target_pristine
 ra_import_target_profile
-ra_guest_stop target || ra_fail TARGET_PREFLIGHT "Machine B did not shut down"
 ra_pass TARGET_PREFLIGHT
+
+# The pre-readiness dry-run only proved the demand; it is never approved.
+ra_phase TARGET_READINESS
+ra_omarchy_ready target TARGET_READINESS
+ra_require_same_ready_runtime
+ra_assert_target_pristine TARGET_READINESS ready
+ra_pass TARGET_READINESS
+
+ra_guest_stop target || ra_fail TARGET_READINESS "Machine B did not shut down"

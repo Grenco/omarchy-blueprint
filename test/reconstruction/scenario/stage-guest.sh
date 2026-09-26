@@ -49,19 +49,6 @@ ra_guest_stage() {
   ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null'
 }
 
-# The installed base ships without pacman sync databases. Source fixture
-# preparation only (retryable network transfer; packages untouched): Machine B
-# must keep the official fresh-install state that Restore has to handle.
-ra_guest_refresh_package_databases() {
-  local role=$1 attempt
-  for attempt in 1 2 3; do
-    ra_ssh_sudo 'pacman -Sy --noconfirm' >> "$RA_ARTIFACTS/$role/pacman-sync.log" 2>&1 && return 0
-    ra_note "$role pacman database refresh attempt $attempt failed"
-    sleep 10
-  done
-  return 1
-}
-
 # Runs the exact PR build of Blueprint inside the guest's session environment.
 ra_blueprint() {
   local role=$1 quoted

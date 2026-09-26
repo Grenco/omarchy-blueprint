@@ -44,14 +44,6 @@ class StagingTests(unittest.TestCase):
                 self.assertIn("omarchy-blueprint", commands)
                 self.assertNotRegex(commands, r"pacman\s+-S")
 
-    def test_only_machine_a_refreshes_package_databases(self):
-        calls = re.findall(r"ra_guest_refresh_package_databases\s+(\S+)",
-                           "\n".join(p.read_text() for p in
-                                     [ROOT / "run.sh", *sorted((ROOT / "scenario").glob("*.sh"))]))
-        self.assertEqual(calls, ["source"])
-        self.assertNotIn("ra_guest_refresh_package_databases", (ROOT / "scenario/preflight-target.sh").read_text())
-
-
     def test_session_readiness_waits_for_first_login_provisioning_to_settle(self):
         # Stubbed guest: the shell answers at once, first-run finishes on the third poll.
         with tempfile.TemporaryDirectory() as work:

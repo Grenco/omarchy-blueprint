@@ -12,13 +12,14 @@ RA_MIN_FREE_BYTES=${RA_MIN_FREE_BYTES:-19327352832} # 18 GiB
 OMARCHY_ISO_URL=${OMARCHY_ISO_URL:-https://iso.omarchy.org/omarchy-4.0.4.iso}
 OMARCHY_ISO_SHA256=${OMARCHY_ISO_SHA256:-ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d}
 
-RA_PHASES=(INFRASTRUCTURE OMARCHY_INSTALL SOURCE_CUSTOMIZATION CAPTURE PROFILE_HANDOFF
-  TARGET_PREFLIGHT RESTORE_PLAN RESTORE_APPROVAL RESTORE_APPLY BLUEPRINT_VERIFY INDEPENDENT_VERIFY)
+RA_PHASES=(INFRASTRUCTURE OMARCHY_INSTALL SOURCE_READINESS SOURCE_CUSTOMIZATION CAPTURE PROFILE_HANDOFF
+  TARGET_PREFLIGHT TARGET_READINESS RESTORE_PLAN RESTORE_APPROVAL RESTORE_APPLY BLUEPRINT_VERIFY INDEPENDENT_VERIFY)
 declare -A RA_PHASE_STATUS=()
 RA_CURRENT_PHASE=""
 RA_FIRST_FAILURE_PHASE=""
 RA_FIRST_FAILURE_MESSAGE=""
 RA_CLEANUP_CMDS=()
+RA_FACTS=()
 RA_MIN_OBSERVED_DISK=-1
 RA_MIN_OBSERVED_MEMORY=-1
 
@@ -43,6 +44,18 @@ ra_fail() {
   fi
   ra_note "$phase: $message"
   return 1
+}
+
+# A run fact worth reading in the summary, such as a ready Omarchy version.
+ra_record() {
+  RA_FACTS+=("$1")
+  ra_note "$1"
+}
+
+# Timestamped boot milestones, so slow boots can be told apart from hangs.
+ra_boot_mark() {
+  mkdir -p "$RA_ARTIFACTS/$1"
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$2" >> "$RA_ARTIFACTS/$1/boot-timings.txt"
 }
 
 ra_cleanup_add() {
@@ -141,6 +154,9 @@ ra_finish() {
     printf 'Reconstruction Assurance\n'
     for phase in "${RA_PHASES[@]}"; do
       printf '%s %s\n' "$phase" "${RA_PHASE_STATUS[$phase]:-NOT RUN}"
+    done
+    for phase in "${RA_FACTS[@]}"; do
+      printf '%s\n' "$phase"
     done
     if [[ -n $RA_FIRST_FAILURE_PHASE ]]; then
       printf 'phase: %s\nmessage: %s\n' "$RA_FIRST_FAILURE_PHASE" "$RA_FIRST_FAILURE_MESSAGE"
