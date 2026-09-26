@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -85,6 +86,20 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 		return result, fmt.Errorf("restore completed with %d failed operation(s)", len(result.Execution.Failed))
 	}
 	return result, nil
+}
+
+// ErrRestorePlanChanged means the recalculated plan differs from the one the
+// user approved, so the approval does not cover it.
+var ErrRestorePlanChanged = errors.New("restore plan changed after approval; inspect the new plan and approve again")
+
+// UnmetRequirementsError refuses a plan whose requirements are unsatisfied.
+type UnmetRequirementsError struct{ Requirements []model.Requirement }
+
+func (e *UnmetRequirementsError) Error() string { return "not implemented" }
+
+// ApplyApprovedRestore is not implemented yet.
+func (s *Session) ApplyApprovedRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool) (RestoreResult, error) {
+	return RestoreResult{}, errors.New("not implemented")
 }
 
 func interactiveOperation(plan model.RestorePlan) (model.Operation, bool) {
