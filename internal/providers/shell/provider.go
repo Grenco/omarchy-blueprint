@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -44,6 +46,60 @@ type Provider struct {
 type ShellIntent struct {
 	Baseline Document
 	Desired  Document
+}
+
+// RestoreCompatibility assesses the captured Shell schema against the same
+// already-detected target State used by Plan. Only the captured profile
+// snapshots are read to validate trusted intent; no live target is rescanned.
+func (p Provider) RestoreCompatibility(saved profile.Shell, current State, apply bool) (model.CompatibilityCategory, error) {
+	if !apply || saved.Hash == "" {
+		return compatibility.BuildCategory("shell", false, nil, nil)
+	}
+	if saved.Version == SupportedVersion {
+		if _, err := p.loadIntent(saved); err != nil {
+			return model.CompatibilityCategory{}, err
+		}
+	} else {
+		// An unsupported, *parseable* historical schema is a compatibility
+		// finding. Corrupt snapshots or mismatched metadata remain errors.
+		if err := p.validateRecordedSnapshots(saved); err != nil {
+			return model.CompatibilityCategory{}, err
+		}
+	}
+	if current.Baseline.Hash == "" || current.Baseline.Value == nil || current.Baseline.Version == 0 {
+		return model.CompatibilityCategory{}, fmt.Errorf("current Shell baseline is not a trustworthy parsed document")
+	}
+	if current.UserExists && (current.Current.Hash == "" || current.Current.Value == nil || current.Current.Version == 0) {
+		return model.CompatibilityCategory{}, fmt.Errorf("current Shell user document is not a trustworthy parsed document")
+	}
+	if saved.Version != SupportedVersion || current.Status == StatusUnsupported || current.Version != SupportedVersion || current.Baseline.Version != SupportedVersion || current.UserExists && current.Current.Version != SupportedVersion {
+		return compatibility.BuildCategory("shell", true, nil, []model.CompatibilityFinding{{Code: "shell.schema.unsupported", Target: "state", State: model.CompatibilityIncompatible, Authority: model.CompatibilityBlocked, Summary: "captured or current Shell schema is unsupported; migration requires review"}})
+	}
+	if current.Status != StatusDefault && current.Status != StatusCustomized {
+		return model.CompatibilityCategory{}, fmt.Errorf("unrecognized current Shell state %q", current.Status)
+	}
+	return compatibility.BuildCategory("shell", true, []model.CompatibilityEvidence{{Kind: "shell-schema", Summary: "captured and current Shell schema and baselines support semantic merge"}}, nil)
+}
+
+func (p Provider) validateRecordedSnapshots(saved profile.Shell) error {
+	for _, item := range []struct {
+		name, wantHash string
+	}{
+		{name: "shell.json", wantHash: saved.Hash},
+		{name: "baseline.json", wantHash: saved.BaselineHash},
+	} {
+		if item.wantHash == "" || saved.Version <= 0 {
+			return fmt.Errorf("recorded Shell snapshot metadata is incomplete")
+		}
+		document, err := ReadDocument(filepath.Join(p.ProfileDir, "shell", item.name))
+		if err != nil {
+			return fmt.Errorf("read captured Shell %s: %w", item.name, err)
+		}
+		if document.Hash != item.wantHash || document.Version != saved.Version {
+			return fmt.Errorf("captured Shell %s does not match recorded metadata", item.name)
+		}
+	}
+	return nil
 }
 
 var errUnsupportedShell = errors.New("unsupported Omarchy shell schema version")
