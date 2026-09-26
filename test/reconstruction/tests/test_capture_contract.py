@@ -192,5 +192,48 @@ class ProfileTests(unittest.TestCase):
             contract.assert_profile(write_profile(Path(directory), {"machines/target.toml": text}), VALUES)
 
 
+# Observed on the fresh Omarchy 4.0.4 target in run 36224717263.
+FRESH_CHECK_STDERR = """Error: check packages: detect explicitly installed native packages: pacman -Qqen: exit status 1: warning: database file for 'core' does not exist (use '-Sy' to download)
+warning: database file for 'extra' does not exist (use '-Sy' to download)
+warning: database file for 'multilib' does not exist (use '-Sy' to download)
+warning: database file for 'omarchy' does not exist (use '-Sy' to download)
+"""
+
+
+class KnownGapTests(unittest.TestCase):
+    def test_recognizes_fresh_sync_database_check_failure(self):
+        self.assertTrue(contract.is_fresh_sync_database_gap(1, "", FRESH_CHECK_STDERR))
+
+    def test_repository_warning_list_is_incidental(self):
+        only_core = FRESH_CHECK_STDERR.splitlines()[0]
+        self.assertTrue(contract.is_fresh_sync_database_gap(1, "", only_core))
+        renamed = FRESH_CHECK_STDERR.replace("'core'", "'core-testing'")
+        self.assertTrue(contract.is_fresh_sync_database_gap(1, "", renamed))
+
+    def test_rejects_other_status_success_envelope_or_other_error(self):
+        success = json.dumps({"api_version": 1, "command": "check", "ok": True, "data": {}})
+        cases = [
+            (0, "", FRESH_CHECK_STDERR),
+            (2, "", FRESH_CHECK_STDERR),
+            (1, success, FRESH_CHECK_STDERR),
+            (1, "", "Error: check packages: detect explicitly installed native packages: pacman -Qqen: exit status 1: error: failed to initialize alpm library"),
+            (1, "", "Error: check themes: Omarchy did not report an active theme"),
+            (1, "", FRESH_CHECK_STDERR.replace("pacman -Qqen", "pacman -Qqem")),
+        ]
+        for status, stdout, stderr in cases:
+            with self.subTest(status=status, stderr=stderr[:60]):
+                self.assertFalse(contract.is_fresh_sync_database_gap(status, stdout, stderr))
+
+    def test_cli_exit_status_reports_classification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out, err = Path(directory, "check.json"), Path(directory, "check.stderr")
+            out.write_text("")
+            err.write_text(FRESH_CHECK_STDERR)
+            run = lambda status: subprocess.run([sys.executable, str(MODULE), "fresh-sync-gap", status, str(out), str(err)],
+                                                capture_output=True, text=True).returncode
+            self.assertEqual(run("1"), 0)
+            self.assertNotEqual(run("0"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
