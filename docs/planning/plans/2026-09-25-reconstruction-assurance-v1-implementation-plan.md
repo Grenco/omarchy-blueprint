@@ -143,6 +143,15 @@ Implement and merge in this order. Do not begin PR N+1 until PR N is reviewed, C
    - This PR turns the workflow into the complete Reconstruction Assurance gate. After it merges, configure the repository rules/branch protection to require the `Reconstruction Assurance` check for every PR.
    - Success means the full canonical A → profile → B lifecycle is green on the exact head SHA with focused failure artifacts.
 
+**Prerequisite between PR 2 and PR 3 — resolve the real Restore privilege/package-readiness contract.** PR 2's hosted runs exposed two product gaps that PR 3 must not paper over in the harness:
+
+- Blueprint plans missing official packages as `omarchy pkg add <packages...>`, and normal Restore runs non-interactive operations through `SystemRunner.Run` (`CombinedOutput()`, with no stdin or terminal). For a non-root user, Omarchy 4.0.4's `omarchy pkg add` runs `sudo pacman -S --noconfirm --needed ...` and only skips sudo when its own EUID is 0. With cold sudo credentials, Restore cannot install `alacritty`. Running the outer SSH with `-tt` does not help, because Blueprint launches the command through its non-interactive runner.
+- The supported fresh Omarchy 4.0.4 install has no pacman sync databases, so package resolution fails until they are refreshed.
+
+Before PR 3 starts, product work must decide in general (1) how Blueprint safely executes a Restore operation whose authoritative Omarchy mechanism requires elevation, and (2) what Blueprint does when a fresh supported install has no package sync databases. The second needs deliberate design rather than blindly embedding `pacman -Sy` in Blueprint; Omarchy's own full package refresh is substantially broader than a metadata-only refresh. PR 3 then exercises the resulting contract on the unmodified fresh target.
+
+The harness must never work around these gaps. Prohibited: pre-warming sudo credentials, `NOPASSWD` sudoers rules, running Blueprint wholesale as root, refreshing Machine B's package databases, or otherwise granting Blueprint authority or preparation that a real user's fresh machine would not have. A separate focused regression for these cases may follow later, but it does not replace the canonical fresh-target lifecycle.
+
 Do not merge the old spike workflow from `spike/omarchy-vm-feasibility`; use it as implementation evidence only. Once PR 3 is complete, the production workflow supersedes the spike.
 
 ---
@@ -859,7 +868,7 @@ If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguish
 
 `omarchy pkg add` invokes `sudo` itself, and the guest's sudo neither prompts nor honours `SUDO_ASKPASS` without a terminal. The harness therefore runs the same native command as root through `sudo -S` (its supported `EUID == 0` path), fed the disposable fixture password from a throwaway `/tmp` helper for this customization only (no sudoers change).
 
-> **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Guest staging refreshes them with `pacman -Sy` identically on Machine A and Machine B (infrastructure, retryable, no package upgrade), so later Blueprint Restore resolves packages the same way source customization did.
+> **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Only Machine A refreshes them, with `pacman -Sy` (source fixture preparation, retryable, no package upgrade), because the harness must create the source customization. Machine B is never refreshed: the canonical target intentionally keeps the package-manager state produced by the official fresh install, because whether Blueprint can reconstruct onto that machine is exactly what Reconstruction Assurance asks. Common staging for both guests is limited to harness inputs: the Blueprint binary, the fixture certificate, fixture files, and desktop-session readiness.
 
 > **Amendment (PR 2):** the Omarchy ISO only writes SDDM autologin for encrypted targets, so the unencrypted unattended guest stops at the greeter with no desktop session, no notification daemon, and no running `omarchy-shell` (which Blueprint's plugin inspection requires). Both guests receive the same `/etc/sddm.conf.d/autologin.conf` (`User=spike`, `Session=omarchy.desktop`) the ISO writes for encrypted installs, before their identity reboot, and staging waits until `omarchy-shell shell ping` succeeds.
 
@@ -1206,6 +1215,8 @@ git commit -m "ci: exercise profile handoff on pull requests"
 ---
 
 # PR 3 — `test: require end-to-end reconstruction assurance`
+
+**Prerequisite:** the Restore privilege/package-readiness contract described under Pull Request Topology is resolved and merged first. Machine B keeps its official fresh-install package-manager state.
 
 **PR goal:** Complete the real Restore/approval/verification path, rename the check to its production stable context, and make it suitable for required branch protection.
 
