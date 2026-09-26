@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -219,6 +220,116 @@ func Plan(saved, current profile.Packages, schema int, from, to string) model.Re
 }
 
 type PlanOptions struct{ Exact bool }
+
+// RestoreCompatibility characterizes the effective package intent using only
+// the state already detected for Plan. It never queries or repairs pacman.
+func RestoreCompatibility(saved, current profile.Packages, applyTargets map[string]bool, exact bool, requirements []model.Requirement) (model.CompatibilityCategory, error) {
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	apply := func(ref string) bool { return applyTargets == nil || applyTargets[ref] }
+	installed, official, aur := set(current.Installed), set(current.Official), set(current.AUR)
+	metadataRequired := false
+	for _, requirement := range requirements {
+		metadataRequired = metadataRequired || requirement.ID == "packages.metadata"
+	}
+	assessPresent := func(kind, name string) error {
+		ref := kind + ":" + name
+		if !apply(ref) {
+			return nil
+		}
+		if current.OriginUnavailable {
+			finding := model.CompatibilityFinding{Code: "packages.origin.unknown", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "package repository origin cannot be established from local metadata"}
+			if !installed[name] {
+				if !metadataRequired {
+					return fmt.Errorf("compatibility: missing %s requires a same-plan packages.metadata requirement", ref)
+				}
+				finding.Authority, finding.RequirementID = model.CompatibilityBlocked, "packages.metadata"
+			}
+			findings = append(findings, finding)
+			return nil
+		}
+		classified := official[name]
+		if kind == "aur" {
+			classified = aur[name]
+		}
+		if installed[name] && classified {
+			if kind == "official" {
+				if _, semantic := omarchy.SemanticRecipe(name); semantic && !current.SemanticInstalled[name] {
+					findings = append(findings, model.CompatibilityFinding{Code: "packages.semantic.unestablished", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "installed package does not establish its semantic recipe state"})
+					return nil
+				}
+			}
+			evidence = append(evidence, model.CompatibilityEvidence{Kind: "package-local-origin", Summary: "installed package and repository origin are known"})
+			return nil
+		}
+		findings = append(findings, model.CompatibilityFinding{Code: "packages.availability.unestablished", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current local package state cannot establish target package availability"})
+		return nil
+	}
+	for _, name := range saved.Official {
+		if err := assessPresent("official", name); err != nil {
+			return model.CompatibilityCategory{}, err
+		}
+	}
+	for _, name := range saved.AUR {
+		if err := assessPresent("aur", name); err != nil {
+			return model.CompatibilityCategory{}, err
+		}
+	}
+	if exact {
+		for _, absence := range saved.Absent {
+			kind, name, valid := splitRef(absence.Ref)
+			if !valid || !apply(absence.Ref) || machineSpecific(name) || (kind != "official" && kind != "aur") {
+				continue
+			}
+			if !installed[name] {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "physical-package-absence", Summary: "the desired-absent package is not installed"})
+				continue
+			}
+			if current.OriginUnavailable {
+				findings = append(findings, model.CompatibilityFinding{Code: "packages.origin.unknown", Target: absence.Ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "package origin is unknown; Exact removal remains disabled"})
+				continue
+			}
+			classified := official[name]
+			if kind == "aur" {
+				classified = aur[name]
+			}
+			if classified {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "package-local-origin", Summary: "installed package and removal origin are known"})
+			} else {
+				findings = append(findings, model.CompatibilityFinding{Code: "packages.origin.unknown", Target: absence.Ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "package origin does not establish the requested Exact removal"})
+			}
+		}
+	}
+	for id, tool := range saved.Mise {
+		if !apply("mise:" + id) {
+			continue
+		}
+		if actual, found := current.Mise[id]; found && EqualMiseTool(tool, actual) && current.MiseInstalled[id] {
+			evidence = append(evidence, model.CompatibilityEvidence{Kind: "mise-declaration", Summary: "current declared tool and installed state are known"})
+		} else {
+			findings = append(findings, model.CompatibilityFinding{Code: "packages.mise.unestablished", Target: "mise:" + id, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current tool declaration or installed state is not established"})
+		}
+	}
+	if saved.Preinstalls.Managed {
+		for id := range saved.Preinstalls.Items {
+			if apply("preinstall:" + id) {
+				if current.Preinstalls.Managed {
+					evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-preinstall", Summary: "current Omarchy preinstall catalogue is available"})
+				} else {
+					findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstall:" + id, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current preinstall catalogue is unavailable"})
+				}
+			}
+		}
+		if apply("preinstalls") {
+			if current.Preinstalls.Managed {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-preinstall", Summary: "current Omarchy preinstall catalogue is available"})
+			} else {
+				findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current preinstall catalogue is unavailable"})
+			}
+		}
+	}
+	return compatibility.BuildCategory("packages", len(evidence)+len(findings) > 0, evidence, findings)
+}
 
 // elevationNotice explains interactive package operations: Omarchy's package
 // commands elevate through sudo (or yay), which owns its own prompt.
