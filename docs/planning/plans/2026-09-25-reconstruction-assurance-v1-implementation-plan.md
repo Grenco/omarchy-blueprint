@@ -143,12 +143,12 @@ Implement and merge in this order. Do not begin PR N+1 until PR N is reviewed, C
    - This PR turns the workflow into the complete Reconstruction Assurance gate. After it merges, configure the repository rules/branch protection to require the `Reconstruction Assurance` check for every PR.
    - Success means the full canonical A → profile → B lifecycle is green on the exact head SHA with focused failure artifacts.
 
-**Prerequisite between PR 2 and PR 3 — resolve the real Restore privilege/package-readiness contract.** PR 2's hosted runs exposed two product gaps that PR 3 must not paper over in the harness:
+**Prerequisite between PR 2 and PR 3 — fresh-package readiness.** Before PR 3, Blueprint must be able to inspect, `check`, and `status` a freshly installed supported Omarchy machine that has no pacman sync databases. Restore must also provide a safe, supported path for package resolution and elevation, without the harness pre-refreshing databases, pre-warming sudo, adding `NOPASSWD`, or running Blueprint wholesale as root. PR 2's hosted runs exposed two separate product defects:
 
-- Blueprint plans missing official packages as `omarchy pkg add <packages...>`, and normal Restore runs non-interactive operations through `SystemRunner.Run` (`CombinedOutput()`, with no stdin or terminal). For a non-root user, Omarchy 4.0.4's `omarchy pkg add` runs `sudo pacman -S --noconfirm --needed ...` and only skips sudo when its own EUID is 0. With cold sudo credentials, Restore cannot install `alacritty`. Running the outer SSH with `-tt` does not help, because Blueprint launches the command through its non-interactive runner.
-- The supported fresh Omarchy 4.0.4 install has no pacman sync databases, so package resolution fails until they are refreshed.
+- **Read path:** with no sync databases, native-package detection fails. Blueprint `check` on the fresh Machine B exits 1 with `check packages: detect explicitly installed native packages: pacman -Qqen: exit status 1: warning: database file for '<repo>' does not exist (use '-Sy' to download)`. `status` and inspection share that detection.
+- **Write path:** Blueprint plans missing official packages as `omarchy pkg add <packages...>`, and normal Restore runs non-interactive operations through `SystemRunner.Run` (`CombinedOutput()`, with no stdin or terminal). For a non-root user, Omarchy 4.0.4's `omarchy pkg add` runs `sudo pacman -S --noconfirm --needed ...` and only skips sudo when its own EUID is 0. With cold sudo credentials, Restore cannot install `alacritty`, and it also needs package metadata the fresh install lacks. Running the outer SSH with `-tt` does not help, because Blueprint launches the command through its non-interactive runner.
 
-Before PR 3 starts, product work must decide in general (1) how Blueprint safely executes a Restore operation whose authoritative Omarchy mechanism requires elevation, and (2) what Blueprint does when a fresh supported install has no package sync databases. The second needs deliberate design rather than blindly embedding `pacman -Sy` in Blueprint; Omarchy's own full package refresh is substantially broader than a metadata-only refresh. PR 3 then exercises the resulting contract on the unmodified fresh target.
+The metadata question needs deliberate design rather than blindly embedding `pacman -Sy` in Blueprint; Omarchy's own full package refresh is substantially broader than a metadata-only refresh. Both defects must be solved before the canonical PR 3 Restore is allowed to go green. PR 3 then exercises the resulting contract on the unmodified fresh target.
 
 The harness must never work around these gaps. Prohibited: pre-warming sudo credentials, `NOPASSWD` sudoers rules, running Blueprint wholesale as root, refreshing Machine B's package databases, or otherwise granting Blueprint authority or preparation that a real user's fresh machine would not have. A separate focused regression for these cases may follow later, but it does not replace the canonical fresh-target lifecycle.
 
@@ -1164,6 +1164,16 @@ omarchy-blueprint --profile "$HOME/omarchy-profile" --machine target --json chec
 
 Require exit 0.
 
+> **Amendment (PR 2): known-gap sentinel.** Until the fresh-package readiness prerequisite lands, this `check` fails on the unmodified Machine B (read-path defect). PR 2 pins that failure narrowly instead of either requiring success or ignoring the result:
+>
+> 1. Before running `check`, require that Machine B still has no pacman sync databases (no `/var/lib/pacman/sync/*.db`), so an accidental target refresh cannot silently hide the sentinel.
+> 2. Run `check`, keeping stdout, stderr and the exit status.
+> 3. If it exits 1 with no successful envelope, and stderr carries the semantic fingerprint (`check packages:`, `detect explicitly installed native packages:`, `pacman -Qqen:`, `exit status 1`, `database file for '<repo>' does not exist`, `use '-Sy' to download`), record `known gap: packages.fresh-sync-database-readiness` in the summary and keep the stderr as an artifact. `TARGET_PREFLIGHT` still passes. The exact list of repository warnings is incidental and is not byte-matched.
+> 4. If it exits 0, fail `TARGET_PREFLIGHT` with "fresh-machine package-readiness gap unexpectedly resolved; update the harness to require check success".
+> 5. Any other failure fails `TARGET_PREFLIGHT` as an unexpected `check` failure.
+>
+> The sentinel is a temporary executable TODO, not accepted debt. The product PR that fixes fresh-machine detection turns Reconstruction Assurance red, and must switch this step back to requiring `check` success.
+
 - [ ] **Step 7: Commit**
 
 ```bash
@@ -1218,7 +1228,7 @@ git commit -m "ci: exercise profile handoff on pull requests"
 
 # PR 3 — `test: require end-to-end reconstruction assurance`
 
-**Prerequisite:** the Restore privilege/package-readiness contract described under Pull Request Topology is resolved and merged first. Machine B keeps its official fresh-install package-manager state.
+**Prerequisite:** the fresh-package readiness prerequisite described under Pull Request Topology (read path and write path) is resolved and merged first, and the PR 2 known-gap sentinel has been switched back to requiring target `check` success. Machine B keeps its official fresh-install package-manager state.
 
 **PR goal:** Complete the real Restore/approval/verification path, rename the check to its production stable context, and make it suitable for required branch protection.
 
