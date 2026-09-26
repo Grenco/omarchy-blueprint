@@ -857,7 +857,7 @@ If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguish
 
 - [ ] **Step 2: Install Alacritty and set the terminal default**
 
-`omarchy pkg add` invokes `sudo` itself. Without a terminal, sudo uses `SUDO_ASKPASS`; the harness stages a throwaway askpass helper for the disposable fixture account under `/tmp` for this customization only (no sudoers change).
+`omarchy pkg add` invokes `sudo` itself, and the guest's sudo neither prompts nor honours `SUDO_ASKPASS` without a terminal. The harness therefore runs the same native command as root through `sudo -S` (its supported `EUID == 0` path), fed the disposable fixture password from a throwaway `/tmp` helper for this customization only (no sudoers change).
 
 ```bash
 omarchy pkg add alacritty
