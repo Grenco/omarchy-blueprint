@@ -291,10 +291,15 @@ Cleanup is best-effort and must not replace the original failure status.
 - **Blueprint verification as the only oracle:** risks the same bug existing in execution and verification.
 - **Automatic rerun after Capture/Restore failure:** can hide nondeterministic product failures and proves eventual luck rather than deterministic reconstruction.
 
+## Amendments
+
+- **ADR 0022 (fresh-package readiness):** a fresh official Omarchy install has no pacman sync databases. Machine B keeps that state through target preflight, where Blueprint `check` and Restore planning must succeed on it. Blueprint never synchronizes package metadata inside Restore. Instead, a Restore that installs packages carries a plan-visible `packages.metadata` requirement naming `omarchy update`. The canonical lifecycle therefore includes that product-demanded, user-performed readiness step between preflight and the approved Restore. After it, Machine B runs the current supported Omarchy release rather than the pinned install release. Package operations that need administrator authority run interactively at the real sudo prompt; the harness never pre-warms sudo, adds `NOPASSWD`, or runs Blueprint as root. See the implementation plan's PR 3 prerequisite.
+
 ## References
 
 - `ROADMAP.md` — Phase 7 Reconstruction Assurance and VM testing strategy.
 - `docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md`
 - `docs/adr/0016-machine-overlay-resource-path-mappings.md`
+- `docs/adr/0022-fresh-package-readiness-and-elevated-restore.md`
 - `docs/planning/specs/2026-09-18-machine-aware-capture-restore-policy-design.md`
 - CI feasibility spike: `spike/omarchy-vm-feasibility`
