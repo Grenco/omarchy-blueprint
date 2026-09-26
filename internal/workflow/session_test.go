@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -128,6 +129,7 @@ func TestSessionProfileGitPullReloadsProfile(t *testing.T) {
 		}
 	}
 	run("init", "--bare", remote)
+	gittest.ConfigureRemote(t, remote)
 	run("-C", root, "init", "-b", "main")
 	run("-C", root, "config", "user.name", "Blueprint Test")
 	run("-C", root, "config", "user.email", "blueprint@example.test")
@@ -215,6 +217,7 @@ func TestProfileGitPullRejectsInvalidPolicyFromRemote(t *testing.T) {
 		}
 	}
 	run("init", "--bare", remote)
+	gittest.ConfigureRemote(t, remote)
 	run("-C", root, "init", "-b", "main")
 	run("-C", root, "config", "user.name", "Blueprint Test")
 	run("-C", root, "config", "user.email", "blueprint@example.test")

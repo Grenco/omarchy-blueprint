@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -59,6 +60,7 @@ func TestProfileGitStatusNonRepositoryHumanAndJSON(t *testing.T) {
 func TestProfileGitLifecycle(t *testing.T) {
 	profileDir, origin := newProfileGitProfile(t), filepath.Join(t.TempDir(), "origin.git")
 	gitRun(t, "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	if code, output := profileGitRun(t, profileDir, "profile", "git", "init"); code != 0 || !strings.Contains(output, "init complete") {
 		t.Fatalf("init code=%d output=%q", code, output)
 	}
@@ -111,6 +113,7 @@ func TestProfileGitLifecycle(t *testing.T) {
 func TestProfileGitRefusesUnsafeOperationsAndSanitizesRemote(t *testing.T) {
 	profileDir, origin := newProfileGitProfile(t), filepath.Join(t.TempDir(), "origin.git")
 	gitRun(t, "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	profileGitMustRun(t, profileDir, "profile", "git", "init")
 	gitRun(t, "-C", profileDir, "config", "user.email", "test@example.invalid")
 	gitRun(t, "-C", profileDir, "config", "user.name", "Blueprint Test")

@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
@@ -259,6 +260,7 @@ func TestSyncScreenCommitPushStopsOnCommitErrorAndPushesNoopAhead(t *testing.T) 
 	session, root := newSyncSession(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	git(t, t.TempDir(), "init", "--bare", remote)
+	gittest.ConfigureRemote(t, remote)
 	git(t, root, "init", "-b", "main")
 	git(t, root, "add", "profile.toml")
 	git(t, root, "commit", "-m", "initial")

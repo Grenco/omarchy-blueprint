@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
@@ -77,6 +78,9 @@ type fakeBaselineHistory bool
 func (h fakeBaselineHistory) Match(string, string) (bool, error) { return bool(h), nil }
 
 func TestMain(m *testing.M) {
+	// Git-backed tests must not leave detached automatic maintenance running
+	// against temporary repositories while they are being removed.
+	gittest.DisableAutomaticMaintenance()
 	dir, err := os.MkdirTemp("", "omarchy-blueprint-mise-*")
 	if err != nil {
 		panic(err)

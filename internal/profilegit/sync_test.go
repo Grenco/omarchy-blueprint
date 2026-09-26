@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -224,6 +225,7 @@ func TestPullRejectsMissingUpstream(t *testing.T) {
 func TestPushEstablishesAndUsesUpstream(t *testing.T) {
 	origin := filepath.Join(t.TempDir(), "origin.git")
 	git(t, filepath.Dir(origin), "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	root := t.TempDir()
 	git(t, root, "init", "-b", "main")
 	git(t, root, "remote", "add", "origin", origin)
@@ -304,6 +306,7 @@ func gitRemoteClones(t *testing.T) (origin, first, second string) {
 	first = filepath.Join(parent, "first")
 	second = filepath.Join(parent, "second")
 	git(t, parent, "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	git(t, parent, "clone", origin, first)
 	gitIdentity(t, first)
 	git(t, first, "checkout", "-b", "main")

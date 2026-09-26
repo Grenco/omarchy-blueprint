@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
@@ -294,6 +295,7 @@ func TestPlanGitDiffUntrackedOperationIDsDoNotCollide(t *testing.T) {
 func TestPlanGitDiffReconstructsRealGitState(t *testing.T) {
 	home, profileDir, source, origin := t.TempDir(), t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "origin.git")
 	runGitLifecycle(t, "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	runGitLifecycle(t, "init", source)
 	runGitLifecycle(t, "-C", source, "config", "user.email", "test@example.invalid")
 	runGitLifecycle(t, "-C", source, "config", "user.name", "Blueprint Test")
@@ -376,6 +378,7 @@ func TestMachineMappedGitDiffReconstruction(t *testing.T) {
 	source := filepath.Join(home, "dotfiles")
 	mapped := filepath.Join(t.TempDir(), "desktop", "dotfiles")
 	runGitLifecycle(t, "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	runGitLifecycle(t, "init", source)
 	runGitLifecycle(t, "-C", source, "config", "user.email", "test@example.invalid")
 	runGitLifecycle(t, "-C", source, "config", "user.name", "Blueprint Test")
