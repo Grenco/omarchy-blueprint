@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 
@@ -17,6 +18,8 @@ import (
 type Provider struct {
 	Runner           command.Runner
 	MiseGlobalConfig string
+	// Stat checks sync database presence; nil uses os.Stat.
+	Stat func(string) (fs.FileInfo, error)
 }
 
 func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {

@@ -43,6 +43,21 @@ type machineRunner struct {
 	miseCommands       [][]string
 	preinstallsRemoved bool
 	preinstalls        map[string]bool
+	// repos/dbPath model pacman-conf. With no repos (the default) sync
+	// metadata is trivially complete; a repo without dbPath/sync/<repo>.db
+	// reproduces a fresh Omarchy install, where -Qqen fails and -Qqem claims
+	// every explicit package is foreign.
+	repos  []string
+	dbPath string
+}
+
+func (r *machineRunner) freshSync() bool {
+	for _, repo := range r.repos {
+		if _, err := os.Stat(filepath.Join(r.dbPath, "sync", repo+".db")); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // fakeBaselineHistory is opt-in: command tests retain nil-history behavior.
@@ -81,9 +96,35 @@ func (r *machineRunner) Run(_ context.Context, name string, args ...string) (str
 			return "", nil
 		}
 		return "", &command.RunError{Name: "sh", Args: args, ExitCode: 1, Err: errors.New("exit status 1")}
+	case "pacman-conf --repo-list":
+		return strings.Join(r.repos, "\n") + "\n", nil
+	case "pacman-conf DBPath":
+		return r.dbPath + "/\n", nil
+	case "pacman -Qqe":
+		explicit := map[string]bool{}
+		for pkg := range r.official {
+			explicit[pkg] = true
+		}
+		for pkg := range r.aur {
+			explicit[pkg] = true
+		}
+		return keys(explicit), nil
 	case "pacman -Qqen":
+		if r.freshSync() {
+			return "", &command.RunError{Name: name, Args: args, ExitCode: 1, Output: "warning: database file for 'core' does not exist (use '-Sy' to download)", Err: errors.New("exit status 1")}
+		}
 		return keys(r.official), nil
 	case "pacman -Qqem":
+		if r.freshSync() {
+			all := map[string]bool{}
+			for pkg := range r.official {
+				all[pkg] = true
+			}
+			for pkg := range r.aur {
+				all[pkg] = true
+			}
+			return keys(all), nil
+		}
 		return keys(r.aur), nil
 	case "pacman -Qq":
 		all := map[string]bool{}
