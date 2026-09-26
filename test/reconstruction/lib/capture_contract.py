@@ -4,8 +4,6 @@
 import argparse
 import json
 from pathlib import Path
-import re
-import sys
 import tomllib
 
 
@@ -99,27 +97,16 @@ def assert_check(data: dict, machine: str) -> None:
         raise AssertionError(f"check ran for {data.get('machine')}, want {machine}")
 
 
-# The fresh-install read-path defect, exactly: native package detection needs
-# pacman sync databases a fresh Omarchy install lacks. Repository names vary;
-# any other stderr content means a different failure.
-_MISSING_DATABASE = r"warning: database file for '[^']+' does not exist \(use '-Sy' to download\)"
-FRESH_SYNC_GAP_FIRST_LINE = re.compile(
-    r"Error: check packages: detect explicitly installed native packages: "
-    r"pacman -Qqen: exit status 1: " + _MISSING_DATABASE)
-FRESH_SYNC_GAP_WARNING = re.compile(_MISSING_DATABASE)
+def assert_fresh_check(data: dict, machine: str) -> None:
+    """A fresh Omarchy install must pass check while reporting unknown package origin (ADR 0022)."""
+    assert_check(data, machine)
+    if not any("package origin classification unavailable" in note for note in data.get("notes") or []):
+        raise AssertionError("check did not report the fresh machine's unavailable package origin")
 
 
-def is_fresh_sync_database_gap(status: int, stdout: str, stderr: str) -> bool:
-    if status != 1:
-        return False
-    try:
-        if json.loads(stdout).get("ok") is True:
-            return False
-    except (ValueError, AttributeError):
-        pass
-    lines = [line.rstrip() for line in stderr.splitlines() if line.strip()]
-    return (bool(lines) and FRESH_SYNC_GAP_FIRST_LINE.fullmatch(lines[0]) is not None
-            and all(FRESH_SYNC_GAP_WARNING.fullmatch(line) for line in lines[1:]))
+def assert_restore_plan(data: dict) -> None:
+    if data.get("dry_run") is not True or not isinstance((data.get("plan") or {}).get("operations"), list):
+        raise AssertionError("expected a Restore dry-run plan with an operations list")
 
 
 def _toml(profile: Path, name: str) -> dict:
@@ -173,7 +160,8 @@ def main() -> None:
         "capture-preview": ("file", "machine"),
         "restore-defaults": ("file", "machine", "conflicts", "convergence"),
         "check": ("file", "machine"),
-        "fresh-sync-gap": ("status", "stdout", "stderr"),
+        "fresh-check": ("file", "machine"),
+        "restore-plan": ("file",),
         "profile": ("directory",),
     }.items():
         command = commands.add_parser(name)
@@ -192,10 +180,10 @@ def main() -> None:
     elif args.check == "restore-defaults":
         assert_restore_defaults(load_envelope(args.file, "machine restore-defaults"),
                                 args.machine, args.conflicts, args.convergence)
-    elif args.check == "fresh-sync-gap":
-        if not is_fresh_sync_database_gap(int(args.status), Path(args.stdout).read_text(),
-                                          Path(args.stderr).read_text()):
-            sys.exit(1)
+    elif args.check == "fresh-check":
+        assert_fresh_check(load_envelope(args.file, "check"), args.machine)
+    elif args.check == "restore-plan":
+        assert_restore_plan(load_envelope(args.file, "restore"))
     elif args.check == "check":
         assert_check(load_envelope(args.file, "check"), args.machine)
     else:
