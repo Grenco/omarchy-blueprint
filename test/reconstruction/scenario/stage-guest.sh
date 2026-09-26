@@ -2,8 +2,30 @@
 # Sourced by run.sh: identical test inputs for either guest. Nothing here is
 # source state; the target receives fixtures from the repository, not Machine A.
 
+# The ISO only configures autologin for encrypted targets; this unattended
+# install is unencrypted, so write the same drop-in before the identity reboot.
+ra_guest_enable_session() {
+  ra_ssh_sudo "printf '[Autologin]\\nUser=%s\\nSession=omarchy.desktop\\n' '$RA_USER' > /etc/sddm.conf.d/autologin.conf" \
+    > "$RA_ARTIFACTS/$1/session.log" 2>&1
+}
+
+ra_guest_wait_session() {
+  local role=$1 i
+  for (( i=0; i<180; i+=3 )); do
+    if ra_guest_exec "$role" 'source /usr/share/omarchy/default/bash/env-bootstrap
+        while IFS= read -r a; do export "$a"; done < <(systemctl --user show-environment)
+        omarchy-shell shell ping' >> "$RA_ARTIFACTS/$role/session.log" 2>&1; then
+      return 0
+    fi
+    sleep 3
+  done
+  ra_note "$role Omarchy desktop session did not become ready; see $role/session.log"
+  return 1
+}
+
 ra_guest_stage() {
   local role=$1
+  ra_guest_wait_session "$role" || return 1
   tar -C "$RA_ROOT" --transform 's,^fixtures/,,;s,^scenario/,,' -cf - \
     fixtures scenario/guest-env.sh scenario/customize-source.sh |
     ra_guest_exec "$role" 'rm -rf /tmp/blueprint-ra-fixtures && mkdir /tmp/blueprint-ra-fixtures &&
