@@ -231,6 +231,8 @@ Inside that substrate, normal supported package resolution remains real.
 
 The workflow must not follow an unversioned "latest" Omarchy release on every pull request. Updating the supported Omarchy pin is a deliberate repository change that itself passes Reconstruction Assurance.
 
+*Amended by ADR 0022:* the pin applies to the install substrate. Both machines then run Omarchy's own `omarchy update`, and must reach the same ready runtime before Capture and Restore (see Amendments).
+
 ### 12. Failure diagnostics are a first-class requirement
 
 Failures must identify a phase such as:
@@ -293,7 +295,11 @@ Cleanup is best-effort and must not replace the original failure status.
 
 ## Amendments
 
-- **ADR 0022 (fresh-package readiness):** a fresh official Omarchy install has no pacman sync databases. Machine B keeps that state through target preflight, where Blueprint `check` and Restore planning must succeed on it. Blueprint never synchronizes package metadata inside Restore. Instead, a Restore that installs packages carries a plan-visible `packages.metadata` requirement naming `omarchy update`. The canonical lifecycle therefore includes that product-demanded, user-performed readiness step between preflight and the approved Restore. After it, Machine B runs the current supported Omarchy release rather than the pinned install release. Package operations that need administrator authority run interactively at the real sudo prompt; the harness never pre-warms sudo, adds `NOPASSWD`, or runs Blueprint as root. See the implementation plan's PR 3 prerequisite.
+- **ADR 0022 (fresh-package readiness):** a fresh official Omarchy install has no pacman sync databases, the only supported way to make it package-ready is `omarchy update` (a full upgrade), and Blueprint never syncs metadata itself. The canonical lifecycle is therefore symmetric at the Capture/Restore boundary:
+  - Machine A boots the pinned install, runs `omarchy update`, records its ready Omarchy version, and only then is customized and captured. The source-only `pacman -Sy` fixture workaround is removed.
+  - Machine B boots the pinned install and must first prove the untouched fresh package state: `check` succeeds with package origin unavailable, the Restore dry-run demands `omarchy update`, and a real apply refuses before mutation. Only then does it run `omarchy update`, record its ready version, and require it to equal Machine A's. It re-proves that the canonical customizations are absent, discards the pre-readiness plan, and runs the normal preview → approval → recalculation → apply → verify lifecycle on a fresh plan.
+  - Package operations that need administrator authority run interactively at the real sudo prompt. The harness never pre-warms sudo, adds `NOPASSWD`, or runs Blueprint as root.
+  - The install substrate stays pinned; the ready runtime is whatever Omarchy's update resolves, identical on both machines. See the design's Substrate pinning amendment.
 
 ## References
 

@@ -877,7 +877,7 @@ If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguish
 
 `omarchy pkg add` invokes `sudo` itself, and the guest's sudo neither prompts nor honours `SUDO_ASKPASS` without a terminal. The harness therefore runs the same native command as root through `sudo -S` (its supported `EUID == 0` path), fed the disposable fixture password from a throwaway `/tmp` helper for this customization only (no sudoers change).
 
-> **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Only Machine A refreshes them, with `pacman -Sy` (source fixture preparation, retryable, no package upgrade), because the harness must create the source customization. Machine B is never refreshed: the canonical target intentionally keeps the package-manager state produced by the official fresh install, because whether Blueprint can reconstruct onto that machine is exactly what Reconstruction Assurance asks. Common staging for both guests is limited to harness inputs: the Blueprint binary, the fixture certificate, fixture files, and desktop-session readiness.
+> **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Only Machine A refreshes them, with `pacman -Sy` (source fixture preparation, retryable, no package upgrade), because the harness must create the source customization. *Superseded in PR 3:* Machine A becomes package-ready through `omarchy update`, exactly like Machine B, and the `pacman -Sy` step is removed. Machine B is never refreshed: the canonical target intentionally keeps the package-manager state produced by the official fresh install, because whether Blueprint can reconstruct onto that machine is exactly what Reconstruction Assurance asks. Common staging for both guests is limited to harness inputs: the Blueprint binary, the fixture certificate, fixture files, and desktop-session readiness.
 
 > **Amendment (PR 2):** the Omarchy ISO only writes SDDM autologin for encrypted targets, so the unencrypted unattended guest stops at the greeter with no desktop session, no notification daemon, and no running `omarchy-shell` (which Blueprint's plugin inspection requires). Both guests receive the same `/etc/sddm.conf.d/autologin.conf` (`User=spike`, `Session=omarchy.desktop`) the ISO writes for encrypted installs, before their identity reboot, and staging waits until `omarchy-shell shell ping` succeeds.
 
@@ -1237,15 +1237,31 @@ git commit -m "ci: exercise profile handoff on pull requests"
 
 **Prerequisite:** both fresh-package readiness PRs (ADR 0022 read path and write path) are merged. Machine B keeps its official fresh-install package-manager state until Blueprint itself demands readiness.
 
-> **Amendment (ADR 0022): canonical Restore includes the product-demanded readiness step.** A fresh Omarchy 4.0.4 install cannot install any package with any tool until Omarchy's own update has created sync metadata, and Blueprint deliberately does not do this inside Restore (ADR 0022 §6). The canonical lifecycle on Machine B is therefore:
+> **Amendment (ADR 0022, revised on review): symmetric readiness at the Capture/Restore boundary.** A fresh Omarchy 4.0.4 install cannot install any package with any tool until Omarchy's own `omarchy update` has run, and Blueprint deliberately never syncs metadata itself (ADR 0022 §6). Updating only Machine B would make the canonical test a cross-version Restore (a v1 non-goal), so both machines reach the same ready runtime:
 >
-> 1. target preflight on untouched package state (PR 2);
-> 2. `restore --dry-run --json` must report exactly the `packages.metadata` requirement, naming `omarchy update` and the package operations that need it; a plain `restore` must refuse before mutation;
-> 3. only then, the harness performs that named remediation as the user would: `omarchy update` in a real terminal, with cold sudo credentials, answering `sudo`'s own prompt at the prompt. There is no sudoers change, no pre-warming, and Blueprint is not involved;
-> 4. re-plan: the requirement is gone, and the plan shows the interactive official package install;
-> 5. the normal approved Restore, where `omarchy pkg add` asks for authentication at the real prompt through Blueprint's interactive runner.
+> ```text
+> pinned 4.0.4 install
+>   ├── Machine A: fresh boot → omarchy update → reboot → record ready Omarchy version
+>   │              → canonical customization → Capture
+>   └── Machine B: fresh boot → prove untouched 4.0.4 package state
+>                  → check succeeds with origin unavailable
+>                  → Restore dry-run MUST demand omarchy update; real apply MUST refuse before mutation
+>                  → omarchy update → reboot → record ready Omarchy version
+>                  → require source_ready_version == target_ready_version
+>                  → independently re-prove canonical customizations absent
+>                  → re-plan: readiness requirement MUST be gone
+>                  → normal preview → approval → recalculation → real sudo prompt → apply → verify
+>                  → independent verify
+> ```
 >
-> This invalidates ADR 0021's implicit assumption that Machine B stays at the pinned Omarchy release during Restore: after step 3 it runs the current supported release. Step 2 must fail, rather than being skipped, if Blueprint stops demanding readiness on a fresh machine.
+> Rules:
+>
+> - **Readiness is Omarchy's.** Each machine runs `omarchy update -y` over a real terminal (SSH `-tt` under a local PTY) with cold sudo credentials. The harness answers only `sudo`'s own `[sudo] password for spike: ` prompt, with the disposable fixture password, as the user would. There is no sudoers change, no pre-warming, and Blueprint is not involved. `-y` is Omarchy's documented unattended flag; it skips Omarchy's own confirmations, never sudo. Each machine then reboots into the updated system (the running kernel's modules are typically replaced) and waits for the desktop session to settle again. Failures are phases `SOURCE_READINESS` and `TARGET_READINESS`, and are never retried.
+> - **Same runtime or fail.** `omarchy version` after readiness is recorded for both machines in `source/`, `target/` and the summary. A mismatch fails `TARGET_READINESS` loudly, with no retry. Full `pacman -Q` manifests of both ready states are kept as diagnostics only.
+> - **No source `pacman -Sy`.** The PR 2 source-only sync-database refresh is removed; Machine A becomes package-ready through the same `omarchy update` as Machine B.
+> - **Two separate plans.** The pre-readiness dry-run on Machine B exists only to prove that Blueprint detected the machine was not ready and demanded the supported remediation, and that apply refuses. It is never approved. After readiness it is discarded, and a completely new plan is calculated. Only that post-readiness plan takes part in preview → approval → recalculation → equality check → apply.
+> - **Interactive operations are expected.** The post-readiness canonical plan's official package install is interactive, with the administrator-authentication notice (ADR 0022 §7), so the real Restore runs over a real terminal. The approval helper sends `yes` once at `Apply this restore? [y/N] ` and answers `sudo`'s own prompt when `omarchy pkg add` raises it. Any other interactive operation in the canonical plan is a failure.
+> - **Boot stall gates activation, not implementation.** Before the workflow becomes a required check, determine whether the occasional post-boot SSH readiness timeout is a hang after the initramfs hibernation-resume check or just a boot slower than 120 seconds. Instrument the boot path with serial milestones and timestamps, and keep the screenshot and serial tail on failure. If it is slow, choose a bounded timeout from measured evidence; if it hangs, fix or avoid the cause. Never add an automatic semantic rerun.
 
 **PR goal:** Complete the real Restore/approval/verification path, rename the check to its production stable context, and make it suitable for required branch protection.
 
@@ -1267,7 +1283,8 @@ Fixtures in the unit test must cover:
 - missing provider operation for packages/themes/plugins/shell/config/hooks/defaults/resources;
 - unexpected `remove` action;
 - any `delete` payload;
-- `interactive: true`;
+- `interactive: true` on anything other than the official package install (ADR 0022 amendment: that install must be interactive, with the administrator-authentication notice);
+- any `requirements` left in the post-readiness plan;
 - helper Resource copy to `/home/spike/.local/bin/blueprint-ra-helper` instead of mapped `/home/spike/bin/blueprint-ra-helper`;
 - absent policy skip for `target-only-skip`;
 - policy skip with wrong reason;
@@ -1362,7 +1379,7 @@ Expected: PASS.
 
 - [ ] **Step 4: Use the helper around remote normal Restore**
 
-From the host, run the SSH command through `approve_restore.py` without allocating a pseudo-TTY and without `--yes`/`--json`:
+From the host, run the SSH command through `approve_restore.py` without `--yes`/`--json`. *Amended (ADR 0022):* interactive operations need a real terminal, so the helper runs `ssh -tt` under a local PTY. It sends `yes` once at the approval prompt, and answers only `sudo`'s own password prompt when an interactive package operation raises it:
 
 ```text
 ssh ... spike@127.0.0.1 omarchy-blueprint --profile /home/spike/omarchy-profile --machine target restore
@@ -1591,6 +1608,10 @@ artifacts/
 
 Use `timeout` only around bounded top-level operations/readiness loops. At minimum support environment-configurable defaults for base install, guest ready, source customization, Capture, Restore, and independent verification. Timeout exits must preserve the active phase name.
 
+- [ ] **Step 1b: Instrument the boot path (amendment)**
+
+Record host-side timestamps for each boot (QEMU start, reboot request, first SSH banner, health pass) and the serial tail at each readiness timeout, so an occasional stall can be classified as slow or hung from evidence. Do not simply raise the 120-second timeout.
+
 - [ ] **Step 2: Add QEMU serial/screenshot diagnostics on VM failures**
 
 Keep serial logs always. On failure, use the QEMU monitor to `screendump` a PPM when a guest process is still alive. Do not make screenshot failure override the primary error.
@@ -1635,6 +1656,8 @@ git commit -m "test: harden reconstruction failure diagnostics"
 ```
 
 ### Task 17: Promote the workflow to the required production Reconstruction Assurance check
+
+> **Amendment:** renaming the workflow and job to the stable production context is part of PR 3, but configuring it as a *required* check waits until the boot-stall investigation (PR 3 amendment) has an evidence-based answer.
 
 **Files:**
 - Modify: `.github/workflows/reconstruction-assurance.yml`
