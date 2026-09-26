@@ -65,7 +65,7 @@ ra_kill_if_running() {
 }
 
 RA_SSH_OPTS=(-p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes
-  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2)
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -o LogLevel=ERROR)
 
 ra_ssh() {
   ssh "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" "$@"

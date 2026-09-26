@@ -99,11 +99,14 @@ def assert_check(data: dict, machine: str) -> None:
         raise AssertionError(f"check ran for {data.get('machine')}, want {machine}")
 
 
-# Semantic fingerprint of the fresh-install read-path defect: native package
-# detection needs pacman sync databases that a fresh Omarchy install lacks.
-FRESH_SYNC_GAP_MARKERS = ("check packages:", "detect explicitly installed native packages:",
-                          "pacman -Qqen:", "exit status 1")
-FRESH_SYNC_GAP_DATABASE = re.compile(r"database file for '[^']+' does not exist \(use '-Sy' to download\)")
+# The fresh-install read-path defect, exactly: native package detection needs
+# pacman sync databases a fresh Omarchy install lacks. Repository names vary;
+# any other stderr content means a different failure.
+_MISSING_DATABASE = r"warning: database file for '[^']+' does not exist \(use '-Sy' to download\)"
+FRESH_SYNC_GAP_FIRST_LINE = re.compile(
+    r"Error: check packages: detect explicitly installed native packages: "
+    r"pacman -Qqen: exit status 1: " + _MISSING_DATABASE)
+FRESH_SYNC_GAP_WARNING = re.compile(_MISSING_DATABASE)
 
 
 def is_fresh_sync_database_gap(status: int, stdout: str, stderr: str) -> bool:
@@ -114,8 +117,9 @@ def is_fresh_sync_database_gap(status: int, stdout: str, stderr: str) -> bool:
             return False
     except (ValueError, AttributeError):
         pass
-    return (all(marker in stderr for marker in FRESH_SYNC_GAP_MARKERS)
-            and FRESH_SYNC_GAP_DATABASE.search(stderr) is not None)
+    lines = [line.rstrip() for line in stderr.splitlines() if line.strip()]
+    return (bool(lines) and FRESH_SYNC_GAP_FIRST_LINE.fullmatch(lines[0]) is not None
+            and all(FRESH_SYNC_GAP_WARNING.fullmatch(line) for line in lines[1:]))
 
 
 def _toml(profile: Path, name: str) -> dict:
