@@ -14,6 +14,17 @@ ra_base_enable_boot_debug() {
     > "$RA_ARTIFACTS/base/boot-debug.log" 2>&1
 }
 
+# Identity and initramfs contents of the unified kernel images, so boot
+# image variants can be compared: hash, lsinitcpio analysis, module list.
+ra_base_record_boot_image() {
+  ra_ssh_sudo 'for efi in /boot/EFI/Linux/*.efi; do
+      echo "== $efi"; sha256sum "$efi"
+      objcopy -O binary --only-section=.cmdline "$efi" /tmp/ra-cmdline && echo "cmdline: $(tr -d "\0" < /tmp/ra-cmdline)"
+      objcopy -O binary --only-section=.initrd "$efi" /tmp/ra-initrd || continue
+      lsinitcpio -a /tmp/ra-initrd; echo "-- modules"; lsinitcpio -l /tmp/ra-initrd | grep -E "\.ko" | sort
+    done' > "$RA_ARTIFACTS/base/boot-image-$1.txt" 2>&1 || true
+}
+
 ra_soak_health() {
   local role=$1 end=$((SECONDS + RA_REBOOT_DEADLINE))
   while (( SECONDS < end )); do
@@ -41,7 +52,7 @@ ra_boot_soak() {
   : > "$RA_ARTIFACTS/soak.txt"
   # Evidence of which boot configuration the soak measured.
   ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
-  ra_record "boot soak debug console: $2"
+  ra_record "boot soak boot image: $2"
   for (( i=1; i<=cycles; i++ )); do
     kind=warm
     (( i % 2 == 0 )) && kind=cold
@@ -84,7 +95,7 @@ ra_soak_discard() {
 ra_fresh_overlay_trials() {
   local role=source trials=$1 i arm started result
   : > "$RA_ARTIFACTS/soak.txt"
-  ra_record "boot soak experiment: fresh-overlay ($trials trials, debug console: $2)"
+  ra_record "boot soak experiment: fresh-overlay ($trials trials, boot image: $2)"
   for (( i=1; i<=trials; i++ )); do
     arm=identity
     (( i % 2 == 0 )) && arm=plain
@@ -101,8 +112,10 @@ ra_fresh_overlay_trials() {
     if [[ ! -s $RA_ARTIFACTS/soak-cmdline.txt ]]; then
       # Evidence of the boot configuration measured; a debug soak must really have it.
       ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
-      if [[ $2 == debug ]] && ! grep -q 'console=ttyS0' "$RA_ARTIFACTS/soak-cmdline.txt"; then
-        ra_fail INFRASTRUCTURE "debug console did not reach the kernel command line (see soak-cmdline.txt)"
+      # Later parameters win, so the image's own quiet/loglevel=0 would silence debug output.
+      if [[ $2 == debug ]] && { ! grep -q 'console=ttyS0' "$RA_ARTIFACTS/soak-cmdline.txt" ||
+           grep -qE '(^| )(quiet|loglevel=0)( |$)' "$RA_ARTIFACTS/soak-cmdline.txt"; }; then
+        ra_fail INFRASTRUCTURE "debug console output is not effective on the kernel command line (see soak-cmdline.txt)"
       fi
     fi
     ra_guest_enable_session "$role" || ra_fail INFRASTRUCTURE "could not enable the trial session"

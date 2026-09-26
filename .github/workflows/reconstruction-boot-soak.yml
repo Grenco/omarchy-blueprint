@@ -15,10 +15,11 @@ on:
       count:
         description: Reboot cycles or overlay trials
         default: '30'
-      boot_debug:
-        description: Rebuild the boot image with kernel and systemd output on the serial console
-        type: boolean
-        default: false
+      boot_image:
+        description: installer (as built by the official installer), rebuilt (regenerated on the installed system) or debug (regenerated with serial-console output)
+        type: choice
+        options: [installer, rebuilt, debug]
+        default: installer
 
 permissions:
   contents: read
@@ -43,11 +44,11 @@ jobs:
       - name: Prepare workspace
         run: sudo mkdir -p /mnt/omarchy-blueprint-ra && sudo chown "$USER:$USER" /mnt/omarchy-blueprint-ra
       - name: Soak guest boots
-        run: bash test/reconstruction/soak.sh "$EXPERIMENT" "$COUNT" "$BOOT_DEBUG"
+        run: bash test/reconstruction/soak.sh "$EXPERIMENT" "$COUNT" "$BOOT_IMAGE"
         env:
           EXPERIMENT: ${{ inputs.experiment }}
           COUNT: ${{ inputs.count }}
-          BOOT_DEBUG: ${{ inputs.boot_debug && 'debug' || '' }}
+          BOOT_IMAGE: ${{ inputs.boot_image }}
       - name: Summarize
         if: always()
         run: cat /mnt/omarchy-blueprint-ra/artifacts/summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true

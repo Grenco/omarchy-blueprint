@@ -5,9 +5,11 @@ ra_base_screen() {
   ra_screendump "$RA_WORK/base/monitor.sock" "$RA_ARTIFACTS/base/guest-screen.ppm"
 }
 
-# boot_debug=debug (diagnostic soak only) adds serial-console boot output.
+# boot_image (diagnostic soak only): "installer" (default, the image the
+# official installer built), "rebuilt" (regenerated on the installed system)
+# or "debug" (regenerated with serial-console boot output).
 ra_install_base() {
-  local work=$1 boot_debug=${2:-} pid start free_now
+  local work=$1 boot_image=${2:-installer} pid start free_now
   mkdir -p "$work/base" "$work/cidata" "$RA_ARTIFACTS/base"
   start=$(date +%s)
   printf '%s\n%s\n' "$OMARCHY_ISO_URL" "$OMARCHY_ISO_SHA256" > "$RA_ARTIFACTS/base/iso.txt"
@@ -44,8 +46,15 @@ ra_install_base() {
   ra_ssh 'source /usr/share/omarchy/default/bash/env-bootstrap; findmnt -no SOURCE /; uname -r; kernel=$(cat "/usr/lib/modules/$(uname -r)/pkgbase"); pacman -Q "$kernel" "$kernel-headers"; systemd-analyze; omarchy theme current; command -v omarchy-shell' \
     >> "$RA_ARTIFACTS/base/guest-checks.log" 2>&1
   ra_note "Omarchy installed and ready in $(($(date +%s)-start))s"
-  if [[ $boot_debug == debug ]]; then
-    ra_base_enable_boot_debug || ra_fail OMARCHY_INSTALL "could not enable boot debugging (see base/boot-debug.log)"
+  if [[ $boot_image != installer ]]; then
+    ra_base_record_boot_image installer
+    if [[ $boot_image == debug ]]; then
+      ra_base_enable_boot_debug || ra_fail OMARCHY_INSTALL "could not enable boot debugging (see base/boot-debug.log)"
+    else
+      ra_ssh_sudo 'limine-update' > "$RA_ARTIFACTS/base/boot-rebuild.log" 2>&1 ||
+        ra_fail OMARCHY_INSTALL "could not rebuild the boot image (see base/boot-rebuild.log)"
+    fi
+    ra_base_record_boot_image "$boot_image"
   fi
   ra_ssh_sudo 'systemctl poweroff' > "$RA_ARTIFACTS/base/shutdown.log" 2>&1 || true
   ra_wait_exit "$pid" 90 || ra_fail OMARCHY_INSTALL "installed base did not power off; see shutdown.log"
