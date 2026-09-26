@@ -16,9 +16,9 @@ on:
         description: Reboot cycles or overlay trials
         default: '30'
       boot_image:
-        description: installer (as installed), no-uart-console / ttys0-console (installer image; only the boot loader console=uart,io,0x3f8 removed or replaced by console=ttyS0,115200), rebuilt (limine-update) or debug (regenerated with serial-console output)
+        description: installer (as installed), tty0-console / ttys0-console (installer image; an explicit console= appended so systemd-stub adds no console=uart), rebuilt (limine-update) or debug (regenerated with serial-console output)
         type: choice
-        options: [installer, no-uart-console, ttys0-console, rebuilt, debug]
+        options: [installer, tty0-console, ttys0-console, rebuilt, debug]
         default: installer
 
 permissions:
