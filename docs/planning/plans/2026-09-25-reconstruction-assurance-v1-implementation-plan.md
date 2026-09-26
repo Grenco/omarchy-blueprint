@@ -1166,7 +1166,7 @@ Require exit 0.
 
 > **Amendment (PR 2): known-gap sentinel.** Until the fresh-package readiness prerequisite lands, this `check` fails on the unmodified Machine B (read-path defect). PR 2 pins that failure narrowly instead of either requiring success or ignoring the result:
 >
-> 1. Before running `check`, require that Machine B still has no pacman sync databases (no `/var/lib/pacman/sync/*.db`), so an accidental target refresh cannot silently hide the sentinel.
+> 1. Before running `check`, require that Machine B still has no pacman sync database for any configured repository (no `/var/lib/pacman/sync/<repo>.db` for any repository in `pacman-conf --repo-list`; the sync directory can hold other installer leftovers and is recorded as a diagnostic), so an accidental target refresh cannot silently hide the sentinel.
 > 2. Run `check`, keeping stdout, stderr and the exit status.
 > 3. If it exits 1 with no successful envelope, and stderr carries the semantic fingerprint (`check packages:`, `detect explicitly installed native packages:`, `pacman -Qqen:`, `exit status 1`, `database file for '<repo>' does not exist`, `use '-Sy' to download`), record `known gap: packages.fresh-sync-database-readiness` in the summary and keep the stderr as an artifact. `TARGET_PREFLIGHT` still passes. The exact list of repository warnings is incidental and is not byte-matched.
 > 4. If it exits 0, fail `TARGET_PREFLIGHT` with "fresh-machine package-readiness gap unexpectedly resolved; update the harness to require check success".
