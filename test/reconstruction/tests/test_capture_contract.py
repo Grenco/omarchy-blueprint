@@ -224,6 +224,24 @@ class KnownGapTests(unittest.TestCase):
             with self.subTest(status=status, stderr=stderr[:60]):
                 self.assertFalse(contract.is_fresh_sync_database_gap(status, stdout, stderr))
 
+    def test_rejects_any_other_stderr_content(self):
+        cases = {
+            "unrelated second error": FRESH_CHECK_STDERR + "Error: check themes: some unrelated new failure\n",
+            "unrelated line between warnings": FRESH_CHECK_STDERR.replace(
+                "warning: database file for 'extra'", "warning: something else\nwarning: database file for 'extra'"),
+            "prefix before the error": "Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.\n"
+                                       + FRESH_CHECK_STDERR,
+            "trailing text on the error line": FRESH_CHECK_STDERR.replace("(use '-Sy' to download)\n",
+                                                                          "(use '-Sy' to download); also broken\n", 1),
+            "empty": "",
+        }
+        for name, stderr in cases.items():
+            with self.subTest(name):
+                self.assertFalse(contract.is_fresh_sync_database_gap(1, "", stderr))
+
+    def test_blank_lines_are_not_content(self):
+        self.assertTrue(contract.is_fresh_sync_database_gap(1, "", "\n" + FRESH_CHECK_STDERR + "\n\n"))
+
     def test_cli_exit_status_reports_classification(self):
         with tempfile.TemporaryDirectory() as directory:
             out, err = Path(directory, "check.json"), Path(directory, "check.stderr")

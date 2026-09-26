@@ -37,6 +37,10 @@ def sentinel(sync_databases: bool, status: int, stdout: str, stderr: str) -> tup
 
 
 class TargetCheckSentinelTests(unittest.TestCase):
+    def test_guest_ssh_keeps_stderr_free_of_client_warnings(self):
+        # The exclusive classifier sees Blueprint's stderr through SSH.
+        self.assertIn("LogLevel=ERROR", (ROOT / "lib/common.sh").read_text().split("RA_SSH_OPTS=(")[1].split(")")[0])
+
     def test_known_gap_passes_preflight_and_is_reported(self):
         result, summary = sentinel(False, 1, "", FRESH_STDERR)
         self.assertEqual(result.returncode, 0, summary + result.stderr)

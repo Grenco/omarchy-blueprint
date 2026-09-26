@@ -70,10 +70,13 @@ that failure narrowly:
   (`/var/lib/pacman/sync/<repo>.db` for each repository in
   `pacman-conf --repo-list`), so a target refresh cannot hide the sentinel. The
   directory listing is kept in `target/pacman-sync-state.txt`.
-- `check` must exit 1 with no successful envelope, and its stderr must carry the
-  fingerprint `check packages:` / `detect explicitly installed native
-  packages:` / `pacman -Qqen:` / `exit status 1` / `database file for '<repo>'
-  does not exist (use '-Sy' to download)`. The repository list is not matched.
+- `check` must exit 1 with no successful envelope, and its stderr must be only
+  the known failure: a first line `Error: check packages: detect explicitly
+  installed native packages: pacman -Qqen: exit status 1: warning: database file
+  for '<repo>' does not exist (use '-Sy' to download)`, followed only by more
+  `warning: database file for '<repo>' …` lines. Anything else, such as a second
+  unrelated error, is rejected. Repository names vary. Guest SSH uses
+  `LogLevel=ERROR` so client warnings stay out of that stderr.
   This passes preflight and adds `known gap: packages.fresh-sync-database-readiness`
   to `summary.txt`; stderr is kept in `target/check.stderr`.
 - Unexpected success fails `TARGET_PREFLIGHT` ("gap unexpectedly resolved"). The
