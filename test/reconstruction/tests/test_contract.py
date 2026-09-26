@@ -75,8 +75,9 @@ def canonical_plan() -> dict:
     ops += [{"provider": "packages", "action": "install", "resource": "official:alacritty", "interactive": True,
              "command": ["omarchy", "pkg", "add", "alacritty"],
              "notice": "May ask for administrator authentication (sudo) in this terminal"},
-            {"provider": "resources", "action": "copy", "resource": "resource:helper-script",
-             "copy": {"destination": "/home/spike/bin/blueprint-ra-helper"}},
+            # Shape observed in run 36236715592: a copied file Resource is a file write.
+            {"provider": "resources", "action": "file", "resource": "resource:helper-script",
+             "file": {"destination": "/home/spike/bin/blueprint-ra-helper", "expected_missing": True, "mode": 493}},
             {"provider": "resources", "action": "validate", "resource": "resource:git-fixture", "command": ["git"]}]
     return {"operations": ops, "skipped": [{"provider": "resources", "resource": "resource:target-only-skip",
                                             "reason": 'restore disabled for machine "target"'}]}
@@ -95,7 +96,7 @@ class CanonicalPlanTests(unittest.TestCase):
                  ("packages", "themes", "plugins", "shell", "config", "hooks", "defaults", "resources")}
         remove = canonical_plan(); remove["operations"].append({"provider": "themes", "action": "remove"})
         delete = canonical_plan(); delete["operations"].append({"provider": "config", "action": "write", "delete": {}})
-        unmapped = canonical_plan(); unmapped["operations"][7]["copy"]["destination"] = "/home/spike/.local/bin/blueprint-ra-helper"
+        unmapped = canonical_plan(); unmapped["operations"][7]["file"]["destination"] = "/home/spike/.local/bin/blueprint-ra-helper"
         noskip = canonical_plan(); noskip["skipped"] = []
         wrongskip = canonical_plan(); wrongskip["skipped"][0]["reason"] = "conflict"
         unready = canonical_plan(); unready["requirements"] = [{"id": "packages.metadata"}]

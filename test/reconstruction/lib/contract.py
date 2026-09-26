@@ -56,9 +56,10 @@ def assert_skip(plan: dict, provider: str, resource_substring: str, reason_subst
 
 
 def assert_copy_destination(plan: dict, resource_substring: str, destination: str) -> None:
+    """A Resource is restored to destination, as a directory copy or a file write."""
     if not any(resource_substring in op.get("resource", "")
-               and isinstance(op.get("copy"), dict)
-               and op["copy"].get("destination") == destination for op in plan["operations"]):
+               and any(isinstance(op.get(kind), dict) and op[kind].get("destination") == destination
+                       for kind in ("copy", "file")) for op in plan["operations"]):
         raise AssertionError(f"missing mapped copy for {resource_substring} at {destination}")
 
 
