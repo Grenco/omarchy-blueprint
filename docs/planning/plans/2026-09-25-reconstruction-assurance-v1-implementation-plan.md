@@ -872,6 +872,8 @@ If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguish
 
 > **Amendment (PR 2):** the Omarchy ISO only writes SDDM autologin for encrypted targets, so the unencrypted unattended guest stops at the greeter with no desktop session, no notification daemon, and no running `omarchy-shell` (which Blueprint's plugin inspection requires). Both guests receive the same `/etc/sddm.conf.d/autologin.conf` (`User=spike`, `Session=omarchy.desktop`) the ISO writes for encrypted installs, before their identity reboot, and staging waits until `omarchy-shell shell ping` succeeds.
 
+> **Amendment (PR 2):** the first Hyprland login autostarts `omarchy-provision-first-run`, which installs mise tools (for example `codex`) and edits `~/.config/mise/config.toml` over several minutes. A hosted run approved Capture while this was still running, and Blueprint correctly failed closed with a changed review. Session readiness on both guests therefore also waits, up to 15 minutes, until first-login provisioning has finished: `~/.local/state/omarchy/first-run.log` exists and no `omarchy-provision-first-run` process remains. The completion marker is not used, because Omarchy only writes it when every step succeeds, and some steps (such as speaker tuning) may not apply in a VM. The first-run log is kept as a diagnostic.
+
 ```bash
 omarchy pkg add alacritty
 omarchy default terminal alacritty
