@@ -6,6 +6,8 @@ RA_WORK=${RA_WORK:-/mnt/omarchy-blueprint-ra}
 RA_ARTIFACTS=${RA_ARTIFACTS:-$RA_WORK/artifacts}
 RA_USER=${RA_USER:-spike}
 RA_SSH_PORT=${RA_SSH_PORT:-2222}
+RA_BLUEPRINT_BIN=${RA_BLUEPRINT_BIN:-/tmp/omarchy-blueprint-ra}
+RA_GUEST_PROFILE=/home/$RA_USER/omarchy-profile
 RA_MIN_FREE_BYTES=${RA_MIN_FREE_BYTES:-19327352832} # 18 GiB
 OMARCHY_ISO_URL=${OMARCHY_ISO_URL:-https://iso.omarchy.org/omarchy-4.0.4.iso}
 OMARCHY_ISO_SHA256=${OMARCHY_ISO_SHA256:-ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d}
@@ -17,6 +19,7 @@ RA_CURRENT_PHASE=""
 RA_FIRST_FAILURE_PHASE=""
 RA_FIRST_FAILURE_MESSAGE=""
 RA_CLEANUP_CMDS=()
+RA_KNOWN_GAPS=()
 RA_MIN_OBSERVED_DISK=-1
 RA_MIN_OBSERVED_MEMORY=-1
 
@@ -43,6 +46,12 @@ ra_fail() {
   return 1
 }
 
+# A pinned, still-open product defect the run observed exactly as expected.
+ra_known_gap() {
+  RA_KNOWN_GAPS+=("$1")
+  ra_note "known gap: $1"
+}
+
 ra_cleanup_add() {
   local command
   printf -v command '%q ' "$@"
@@ -55,10 +64,11 @@ ra_kill_if_running() {
   fi
 }
 
+RA_SSH_OPTS=(-p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -o LogLevel=ERROR)
+
 ra_ssh() {
-  ssh -p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=2 "$RA_USER@127.0.0.1" "$@"
+  ssh "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" "$@"
 }
 
 ra_ssh_sudo() {
@@ -138,6 +148,9 @@ ra_finish() {
     printf 'Reconstruction Assurance\n'
     for phase in "${RA_PHASES[@]}"; do
       printf '%s %s\n' "$phase" "${RA_PHASE_STATUS[$phase]:-NOT RUN}"
+    done
+    for phase in "${RA_KNOWN_GAPS[@]}"; do
+      printf 'known gap: %s\n' "$phase"
     done
     if [[ -n $RA_FIRST_FAILURE_PHASE ]]; then
       printf 'phase: %s\nmessage: %s\n' "$RA_FIRST_FAILURE_PHASE" "$RA_FIRST_FAILURE_MESSAGE"
