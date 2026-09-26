@@ -103,5 +103,25 @@ class HarnessLifecycleTests(unittest.TestCase):
             self.assertIn("TARGET_PREFLIGHT NOT RUN", summary)
 
 
+class ReadinessDeadlineTests(unittest.TestCase):
+    def test_readiness_deadline_is_wall_clock_even_when_each_probe_is_slow(self):
+        # Old iteration-counted loops stretched "6s" to ~16s when every SSH probe stalled.
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            started = time.monotonic()
+            result = subprocess.run(
+                ["bash", "-c", f"source '{ROOT}/lib/common.sh'; sleep 60 >/dev/null 2>&1 & pid=$!; status=0; "
+                 "ra_measure_host() { :; }; ra_guest_health() { sleep 4; return 1; }; "
+                 f"ra_wait_ready $pid '{directory}/log' 6 || status=$?; kill $pid; exit $status"],
+                env={**os.environ, "RA_WORK": directory}, capture_output=True, text=True, timeout=60)
+            elapsed = time.monotonic() - started
+            self.assertNotEqual(result.returncode, 0)
+            self.assertLess(elapsed, 12, f"deadline overran: {elapsed:.1f}s")
+
+    def test_ssh_allows_a_loaded_guest_time_to_send_its_banner(self):
+        options = (ROOT / "lib/common.sh").read_text().split("RA_SSH_OPTS=(")[1].split(")")[0]
+        self.assertIn("ConnectTimeout=10", options)
+
+
 if __name__ == "__main__":
     unittest.main()

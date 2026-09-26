@@ -14,8 +14,8 @@ ra_guest_enable_session() {
 # (autostarted by Hyprland; installs mise tools and edits user config) has
 # finished, so nothing but the scenario changes the guest from here on.
 ra_guest_wait_session() {
-  local role=$1 i shell=""
-  for (( i=0; i<900; i+=5 )); do
+  local role=$1 shell="" end=$((SECONDS + 900))
+  while (( SECONDS < end )); do
     if [[ -z $shell ]] && ra_guest_exec "$role" 'source /usr/share/omarchy/default/bash/env-bootstrap
         while IFS= read -r a; do export "$a"; done < <(systemctl --user show-environment)
         omarchy-shell shell ping' >> "$RA_ARTIFACTS/$role/session.log" 2>&1; then

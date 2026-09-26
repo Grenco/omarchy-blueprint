@@ -8,6 +8,12 @@ RA_USER=${RA_USER:-spike}
 RA_SSH_PORT=${RA_SSH_PORT:-2222}
 RA_BLUEPRINT_BIN=${RA_BLUEPRINT_BIN:-/tmp/omarchy-blueprint-ra}
 RA_GUEST_PROFILE=/home/$RA_USER/omarchy-profile
+# Measured (run 36232762318): with autologin, a guest can take ~200s after a
+# reboot before it passes health, and its sshd can miss a 2s banner window
+# while the desktop session and first-login provisioning load it. Deadlines
+# are wall-clock and bounded; nothing semantic is retried.
+RA_BOOT_DEADLINE=${RA_BOOT_DEADLINE:-240}
+RA_REBOOT_DEADLINE=${RA_REBOOT_DEADLINE:-300}
 RA_MIN_FREE_BYTES=${RA_MIN_FREE_BYTES:-19327352832} # 18 GiB
 OMARCHY_ISO_URL=${OMARCHY_ISO_URL:-https://iso.omarchy.org/omarchy-4.0.4.iso}
 OMARCHY_ISO_SHA256=${OMARCHY_ISO_SHA256:-ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d}
@@ -88,7 +94,7 @@ ra_kill_if_running() {
 }
 
 RA_SSH_OPTS=(-p "$RA_SSH_PORT" -i "$RA_WORK/control_key" -o BatchMode=yes
-  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -o LogLevel=ERROR)
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR)
 
 ra_ssh() {
   ssh "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" "$@"
@@ -131,8 +137,8 @@ ra_guest_health() {
 }
 
 ra_wait_ready() {
-  local pid=$1 log=$2 deadline=$3 i
-  for (( i=0; i<deadline; i+=3 )); do
+  local pid=$1 log=$2 deadline=$3 end=$((SECONDS + $3))
+  while (( SECONDS < end )); do
     ra_measure_host
     if ra_guest_health > "$log" 2>&1; then
       return 0

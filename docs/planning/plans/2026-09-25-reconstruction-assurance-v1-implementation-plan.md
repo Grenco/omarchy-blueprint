@@ -1262,6 +1262,14 @@ git commit -m "ci: exercise profile handoff on pull requests"
 > - **Two separate plans.** The pre-readiness dry-run on Machine B exists only to prove that Blueprint detected the machine was not ready and demanded the supported remediation, and that apply refuses. It is never approved. After readiness it is discarded, and a completely new plan is calculated. Only that post-readiness plan takes part in preview → approval → recalculation → equality check → apply.
 > - **Interactive operations are expected.** The post-readiness canonical plan's official package install is interactive, with the administrator-authentication notice (ADR 0022 §7), so the real Restore runs over a real terminal. The approval helper sends `yes` once at `Apply this restore? [y/N] ` and answers `sudo`'s own prompt when `omarchy pkg add` raises it. Any other interactive operation in the canonical plan is a failure.
 > - **Boot stall gates activation, not implementation.** Before the workflow becomes a required check, determine whether the occasional post-boot SSH readiness timeout is a hang after the initramfs hibernation-resume check or just a boot slower than 120 seconds. Instrument the boot path with serial milestones and timestamps, and keep the screenshot and serial tail on failure. If it is slow, choose a bounded timeout from measured evidence; if it hangs, fix or avoid the cause. Never add an automatic semantic rerun.
+>
+>   *First evidence (run 36232762318):*
+>   - Machine A's identity reboot was answering SSH again with a new boot ID, but its health check then failed with `Connection timed out during banner exchange`. The guest was alive, but `sshd` missed the 2-second `ConnectTimeout` while loaded.
+>   - The earlier "stall" logs show the same banner-exchange timeouts, and the serial tail ending after the resume check is also what healthy boots show.
+>   - The stalls began when PR 2 enabled autologin: every boot starts a full Hyprland session, and the first boot also runs first-login provisioning.
+>   - The readiness loops counted iterations rather than wall time, so a "120 s" window really lasted about 200 s.
+>
+>   This indicates slow-under-load, not hung. The harness now gives SSH 10 seconds for the handshake and uses bounded wall-clock deadlines (boot 240 s, reboot 300 s). It marks "ssh answered" and "healthy" separately in `boot-timings.txt`, and uploads artifacts from every run. The required-check decision uses the timing distribution from several green runs under these rules, not a single measurement.
 
 **PR goal:** Complete the real Restore/approval/verification path, rename the check to its production stable context, and make it suitable for required branch protection.
 
