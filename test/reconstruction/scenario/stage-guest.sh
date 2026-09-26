@@ -35,8 +35,8 @@ ra_guest_wait_session() {
 ra_guest_stage() {
   local role=$1
   ra_guest_wait_session "$role" || return 1
-  tar -C "$RA_ROOT" --transform 's,^fixtures/,,;s,^scenario/,,' -cf - \
-    fixtures scenario/guest-env.sh scenario/customize-source.sh |
+  tar -C "$RA_ROOT" --transform 's,^fixtures/,,;s,^scenario/,,;s,^verify/,,' -cf - \
+    fixtures scenario/guest-env.sh scenario/customize-source.sh verify/verify-target.sh |
     ra_guest_exec "$role" 'rm -rf /tmp/blueprint-ra-fixtures && mkdir /tmp/blueprint-ra-fixtures &&
       tar -C /tmp/blueprint-ra-fixtures -xf -' || return 1
   # Trust the per-run fixture Git certificate for that remote only, outside $HOME.

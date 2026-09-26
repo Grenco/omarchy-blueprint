@@ -23,7 +23,7 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
       - name: Check reconstruction scripts
-        run: bash -n test/reconstruction/run.sh test/reconstruction/lib/common.sh test/reconstruction/vm/*.sh test/reconstruction/scenario/*.sh
+        run: bash -n test/reconstruction/run.sh test/reconstruction/lib/common.sh test/reconstruction/vm/*.sh test/reconstruction/scenario/*.sh test/reconstruction/verify/*.sh
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.x'
