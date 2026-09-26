@@ -7,8 +7,13 @@ name: Reconstruction Boot Soak
 on:
   workflow_dispatch:
     inputs:
-      cycles:
-        description: Reboot cycles (alternating warm reboot and cold power cycle)
+      experiment:
+        description: reboot-cycles (one guest, warm/cold) or fresh-overlay (new overlay per trial, identity vs plain first reboot)
+        type: choice
+        options: [fresh-overlay, reboot-cycles]
+        default: fresh-overlay
+      count:
+        description: Reboot cycles or overlay trials
         default: '30'
       boot_debug:
         description: Rebuild the boot image with kernel and systemd output on the serial console
@@ -26,7 +31,7 @@ jobs:
   soak:
     name: Reconstruction Boot Soak
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - name: Check soak scripts
@@ -38,9 +43,10 @@ jobs:
       - name: Prepare workspace
         run: sudo mkdir -p /mnt/omarchy-blueprint-ra && sudo chown "$USER:$USER" /mnt/omarchy-blueprint-ra
       - name: Soak guest boots
-        run: bash test/reconstruction/soak.sh "$CYCLES" "$BOOT_DEBUG"
+        run: bash test/reconstruction/soak.sh "$EXPERIMENT" "$COUNT" "$BOOT_DEBUG"
         env:
-          CYCLES: ${{ inputs.cycles }}
+          EXPERIMENT: ${{ inputs.experiment }}
+          COUNT: ${{ inputs.count }}
           BOOT_DEBUG: ${{ inputs.boot_debug && 'debug' || '' }}
       - name: Summarize
         if: always()

@@ -66,3 +66,57 @@ ra_boot_soak() {
   done
   ra_record "boot soak: $(awk '{print $3}' "$RA_ARTIFACTS/soak.txt" | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
 }
+
+# Stops a stuck guest without restarting it, keeping the diagnostics first.
+ra_soak_discard() {
+  local role=$1
+  ra_guest_timeout_diagnostics "$role"
+  ra_kill_if_running "$RA_GUEST_PID"
+  wait "$RA_GUEST_PID" 2>/dev/null || true
+  RA_ACTIVE_GUEST="" RA_GUEST_PID=""
+}
+
+# Reproduces the conditions of every observed stall: the first boots of a
+# fresh overlay. Each trial creates a new overlay, cold-boots it, enables the
+# autologin session and then reboots, alternating two arms:
+#   identity: the production identity reboot (hostname + new machine ID)
+#   plain:    a plain systemctl reboot, isolating the identity change
+ra_fresh_overlay_trials() {
+  local role=source trials=$1 i arm started result
+  : > "$RA_ARTIFACTS/soak.txt"
+  ra_record "boot soak experiment: fresh-overlay ($trials trials, debug console: $2)"
+  for (( i=1; i<=trials; i++ )); do
+    arm=identity
+    (( i % 2 == 0 )) && arm=plain
+    rm -f "$RA_WORK/guests/$role.qcow2" "$RA_WORK/guests/$role.vars.fd"
+    ra_guest_create "$role" || ra_fail INFRASTRUCTURE "could not create trial overlay"
+    ra_boot_mark "$role" "trial $i ($arm)"
+    started=$SECONDS
+    if ! ra_guest_start "$role" "blueprint-ra-$role"; then
+      ra_soak_record "$i" "first-boot-hung" "$((SECONDS - started))"
+      ra_soak_discard "$role"
+      continue
+    fi
+    ra_soak_record "$i" "first-boot-ok" "$((SECONDS - started))"
+    ra_guest_enable_session "$role" || ra_fail INFRASTRUCTURE "could not enable the trial session"
+    started=$SECONDS
+    result=ok
+    if [[ $arm == identity ]]; then
+      if ! ra_guest_freshen_identity "$role" "blueprint-ra-$role-$i"; then
+        result=hung
+        tail -1 "$RA_ARTIFACTS/$role/boot-timings.txt" | grep -q 'ssh answered: yes' && result=slow
+      fi
+    elif ! ra_guest_reboot "$role"; then
+      result=hung
+    else
+      ra_soak_health "$role" || result=slow
+    fi
+    ra_soak_record "$i" "$arm-reboot-$result" "$((SECONDS - started))"
+    if [[ $result == ok ]]; then
+      ra_guest_stop "$role" || ra_soak_discard "$role"
+    else
+      ra_soak_discard "$role"
+    fi
+  done
+  ra_record "boot soak: $(awk '{print $3}' "$RA_ARTIFACTS/soak.txt" | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
+}
