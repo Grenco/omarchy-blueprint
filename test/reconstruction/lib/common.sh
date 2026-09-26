@@ -26,6 +26,7 @@ RA_FIRST_FAILURE_PHASE=""
 RA_FIRST_FAILURE_MESSAGE=""
 RA_CLEANUP_CMDS=()
 RA_FACTS=()
+RA_TITLE=${RA_TITLE:-Reconstruction Assurance}
 RA_MIN_OBSERVED_DISK=-1
 RA_MIN_OBSERVED_MEMORY=-1
 
@@ -79,6 +80,30 @@ with socket.socket(socket.AF_UNIX) as monitor:
     time.sleep(2)
     monitor.recv(4096)
 PY
+}
+
+# Host prerequisites for any guest run: disk, KVM and QEMU.
+ra_check_host() {
+  local free_bytes
+  ra_note "workspace: $RA_WORK"
+  {
+    uname -a
+    lscpu
+    free -h
+    df -h / /mnt
+    ls -l /dev/kvm || true
+    qemu-system-x86_64 --version || true
+  } > "$RA_ARTIFACTS/host/runner.txt" 2>&1
+  free_bytes=$(df -B1 --output=avail /mnt | tail -1 | tr -d ' ')
+  if (( free_bytes < RA_MIN_FREE_BYTES )); then
+    ra_fail INFRASTRUCTURE "need at least $RA_MIN_FREE_BYTES free bytes on /mnt; have $free_bytes"
+  fi
+  [[ -e /dev/kvm ]] || ra_fail INFRASTRUCTURE "/dev/kvm missing"
+  if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+    sudo chgrp "$(id -gn)" /dev/kvm
+  fi
+  [[ -r /dev/kvm && -w /dev/kvm ]] || ra_fail INFRASTRUCTURE "/dev/kvm unusable"
+  command -v qemu-system-x86_64 >/dev/null || ra_fail INFRASTRUCTURE "QEMU missing"
 }
 
 ra_cleanup_add() {
@@ -174,7 +199,7 @@ ra_finish() {
   fi
   mkdir -p "$RA_ARTIFACTS/host"
   {
-    printf 'Reconstruction Assurance\n'
+    printf '%s\n' "$RA_TITLE"
     for phase in "${RA_PHASES[@]}"; do
       printf '%s %s\n' "$phase" "${RA_PHASE_STATUS[$phase]:-NOT RUN}"
     done

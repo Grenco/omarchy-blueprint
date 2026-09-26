@@ -108,6 +108,17 @@ exit codes and line counts as evidence. Never make this pass by refreshing
 Machine B's databases, pre-warming sudo, adding `NOPASSWD`, or running
 Blueprint as root.
 
+## Boot soak (diagnostic, never a gate)
+
+`soak.sh <cycles> [debug]`, dispatched through the separate **Reconstruction
+Boot Soak** workflow, installs the pinned base with the same autologin setup
+and reboots one guest repeatedly, alternating warm reboots and cold power
+cycles. It classifies each boot as `ok`, `slow` or `hung` and keeps boot
+timings, serial tails and screenshots. `debug` rebuilds the boot image with
+serial-console kernel and systemd output, so compare it against a non-debug
+soak. It runs no Capture or Restore, so it can never produce the
+`Reconstruction Assurance` check; `run.sh` has no diagnostic mode.
+
 The disposable `spike` account uses a fixture password for its unattended
 configuration and authenticated guest reboot/poweroff; it is passed to real
 `sudo` on stdin. No external credentials are required.

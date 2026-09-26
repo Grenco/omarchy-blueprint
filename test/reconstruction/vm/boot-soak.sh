@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sourced by run.sh when RA_BOOT_SOAK > 0: a diagnostic, never a gate. It
+# Sourced by soak.sh only: a diagnostic, never a gate. It
 # reboots one guest repeatedly, alternating warm reboots with cold power
 # cycles, and classifies each boot so the occasional stall can be diagnosed
 # from evidence: "ok", "slow" (SSH answered, health late) or "hung" (SSH never
@@ -41,7 +41,7 @@ ra_boot_soak() {
   : > "$RA_ARTIFACTS/soak.txt"
   # Evidence of which boot configuration the soak measured.
   ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
-  ra_record "boot soak debug console: ${RA_BOOT_DEBUG:-0}"
+  ra_record "boot soak debug console: $2"
   for (( i=1; i<=cycles; i++ )); do
     kind=warm
     (( i % 2 == 0 )) && kind=cold
