@@ -218,5 +218,35 @@ class FreshCheckTests(unittest.TestCase):
             path.write_text(json.dumps({"api_version": 1, "command": "restore", "ok": True, "data": {"plan": {}}}))
             self.assertNotEqual(run(), 0)
 
+
+def readiness_plan(**changes):
+    plan = {"operations": [{"id": "packages.install.official", "resource": "official:alacritty",
+                            "command": ["omarchy", "pkg", "add", "alacritty"], "interactive": True}],
+            "requirements": [{"id": "packages.metadata", "provider": "packages", "kind": "package-metadata",
+                              "reason": "package metadata unavailable", "remediation": ["omarchy", "update"],
+                              "operations": ["packages.install.official"]}]}
+    plan.update(changes)
+    return {"dry_run": True, "plan": plan}
+
+
+class ReadinessPlanTests(unittest.TestCase):
+    def test_fresh_target_plan_requires_omarchy_update_for_interactive_install(self):
+        contract.assert_readiness_plan(readiness_plan(), VALUES)
+
+    def test_rejects_missing_or_wrong_readiness(self):
+        base = readiness_plan()["plan"]
+        cases = {
+            "no requirement": {"requirements": []},
+            "wrong remediation": {"requirements": [{**base["requirements"][0], "remediation": ["pacman", "-Sy"]}]},
+            "install not covered": {"requirements": [{**base["requirements"][0], "operations": []}]},
+            "install not interactive": {"operations": [{**base["operations"][0], "interactive": False}]},
+            "blueprint syncs itself": {"operations": base["operations"] + [{"id": "sync", "command": ["pacman", "-Sy"]}]},
+            "extra requirement": {"requirements": base["requirements"] + [{**base["requirements"][0], "id": "other"}]},
+        }
+        for name, change in cases.items():
+            with self.subTest(name), self.assertRaises(AssertionError):
+                contract.assert_readiness_plan(readiness_plan(**change), VALUES)
+
+
 if __name__ == "__main__":
     unittest.main()

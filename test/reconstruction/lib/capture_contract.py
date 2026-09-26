@@ -109,6 +109,25 @@ def assert_restore_plan(data: dict) -> None:
         raise AssertionError("expected a Restore dry-run plan with an operations list")
 
 
+def assert_readiness_plan(data: dict, values: dict) -> None:
+    """On the fresh target, installing the canonical package must wait for Omarchy's update (ADR 0022)."""
+    assert_restore_plan(data)
+    plan = data["plan"]
+    requirements = plan.get("requirements") or []
+    if len(requirements) != 1 or requirements[0].get("id") != "packages.metadata" \
+            or requirements[0].get("kind") != "package-metadata" or requirements[0].get("remediation") != ["omarchy", "update"]:
+        raise AssertionError(f"expected only the packages.metadata readiness requirement: {requirements}")
+    install = [op for op in plan["operations"] if op.get("resource") == f"official:{values['RA_PACKAGE']}"]
+    if len(install) != 1 or install[0].get("interactive") is not True or install[0].get("command", [])[:3] != ["omarchy", "pkg", "add"]:
+        raise AssertionError(f"expected one interactive omarchy pkg add for {values['RA_PACKAGE']}: {install}")
+    if install[0]["id"] not in requirements[0].get("operations", []):
+        raise AssertionError("the package install is not gated by the readiness requirement")
+    for op in plan["operations"]:
+        command = op.get("command") or []
+        if any(arg.startswith("-Sy") for arg in command) or command[:2] == ["omarchy", "update"]:
+            raise AssertionError(f"Blueprint planned its own package metadata sync: {op}")
+
+
 def _toml(profile: Path, name: str) -> dict:
     return tomllib.loads((profile / name).read_text())
 
@@ -162,6 +181,7 @@ def main() -> None:
         "check": ("file", "machine"),
         "fresh-check": ("file", "machine"),
         "restore-plan": ("file",),
+        "readiness-plan": ("file",),
         "profile": ("directory",),
     }.items():
         command = commands.add_parser(name)
@@ -184,6 +204,8 @@ def main() -> None:
         assert_fresh_check(load_envelope(args.file, "check"), args.machine)
     elif args.check == "restore-plan":
         assert_restore_plan(load_envelope(args.file, "restore"))
+    elif args.check == "readiness-plan":
+        assert_readiness_plan(load_envelope(args.file, "restore"), values)
     elif args.check == "check":
         assert_check(load_envelope(args.file, "check"), args.machine)
     else:

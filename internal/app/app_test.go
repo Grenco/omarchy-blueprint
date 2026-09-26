@@ -49,6 +49,17 @@ type machineRunner struct {
 	// every explicit package is foreign.
 	repos  []string
 	dbPath string
+	// allCommands records every command; interactiveCommands those run
+	// attached to the terminal.
+	allCommands         [][]string
+	interactiveCommands [][]string
+}
+
+// RunInteractive models SystemRunner's terminal-attached execution.
+func (r *machineRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+	r.interactiveCommands = append(r.interactiveCommands, append([]string{name}, args...))
+	_, err := r.Run(ctx, name, args...)
+	return err
 }
 
 func (r *machineRunner) freshSync() bool {
@@ -79,6 +90,7 @@ func TestMain(m *testing.M) {
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	r.allCommands = append(r.allCommands, append([]string{name}, args...))
 	key := name + " " + strings.Join(args, " ")
 	switch key {
 	case "omarchy version":
@@ -1406,7 +1418,7 @@ func TestThemeVerticalSlice(t *testing.T) {
 	}
 	runner := &machineRunner{official: map[string]bool{"zoxide": true}, aur: map[string]bool{}, theme: "Osaka Jade"}
 	deps := Dependencies{
-		Runner: runner, In: strings.NewReader(""), Now: time.Now,
+		Runner: runner, In: strings.NewReader(""), Now: time.Now, IsTTY: func() bool { return true },
 		StateHome: func() (string, error) { return stateDir, nil },
 		ThemeDirs: func() (string, string, error) { return builtin, user, nil },
 		ConfigDirs: func() (string, string, error) {
@@ -1515,7 +1527,7 @@ func TestPackageVerticalSlice(t *testing.T) {
 	profileDir, stateDir := t.TempDir(), t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	runner := &machineRunner{official: map[string]bool{"base": true, "zoxide": true}, aur: map[string]bool{"tool-bin": true}}
-	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Now: func() time.Time { return now }, StateHome: func() (string, error) { return stateDir, nil }}
+	deps := Dependencies{Runner: runner, IsTTY: func() bool { return true }, In: strings.NewReader(""), Now: func() time.Time { return now }, StateHome: func() (string, error) { return stateDir, nil }}
 
 	run := func(args ...string) (int, string, string) {
 		var out, stderr bytes.Buffer
@@ -1993,7 +2005,7 @@ func TestRestoreContinuesAfterAURFailureAndSummarizesIt(t *testing.T) {
 	profileDir, stateDir := t.TempDir(), t.TempDir()
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	runner := &machineRunner{official: map[string]bool{"base": true}, aur: map[string]bool{"broken": true, "later": true}}
-	deps := Dependencies{Runner: runner, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, StateHome: func() (string, error) { return stateDir, nil }}
+	deps := Dependencies{Runner: runner, IsTTY: func() bool { return true }, In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, Now: func() time.Time { return now }, StateHome: func() (string, error) { return stateDir, nil }}
 	if code := Execute(context.Background(), []string{"init", profileDir}, deps); code != 0 {
 		t.Fatalf("init code %d", code)
 	}
@@ -3008,6 +3020,7 @@ func TestPackagesMiseThreeSourceRestore(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	miseConfig := filepath.Join(t.TempDir(), "mise", "config.toml")
 	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	deps.IsTTY = func() bool { return true } // official package installs elevate at the terminal
 	if err := os.MkdirAll(filepath.Dir(miseConfig), 0o755); err != nil {
 		t.Fatal(err)
 	}

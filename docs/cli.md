@@ -66,6 +66,18 @@ one run, independently. `--force` and `--exact` are shorthands for Force and
 Exact. Exact only removes explicitly undesired state when its owning provider
 can do so safely; it never deletes Resource data.
 
+Installing or removing system packages goes through Omarchy, which asks for
+administrator authentication with `sudo`. These steps are marked interactive
+in the plan and run in your terminal, where `sudo` shows its own prompt;
+Blueprint never sees or stores the password.
+
+A freshly installed Omarchy machine has no package database yet. Blueprint can
+still check it and show what it would restore, but a plan that installs
+packages lists `Requires before applying: … Run: omarchy update` and refuses
+to apply until you have run Omarchy's own update. Blueprint never updates the
+system for you. `restore <category>` still applies categories that need no
+packages.
+
 ## Target one category
 
 Most lifecycle commands accept an optional category argument to operate on
@@ -175,7 +187,10 @@ omarchy-blueprint --profile ~/omarchy-profile restore --dry-run --json
 
 `--yes` approves a restore without an interactive prompt. `--json` emits
 machine-readable output and can be combined with `--dry-run` or `--yes`;
-a JSON restore never waits for a prompt.
+a JSON restore never waits for a prompt. Plans with interactive steps (such as
+package changes that need `sudo`) are refused before anything is applied when
+there is no terminal or `--json` is set; inspect them with `--dry-run --json`,
+whose plan carries `interactive` operations and any `requirements`.
 
 ## Exit codes
 

@@ -72,7 +72,13 @@ Exact safe. Target preflight therefore requires, on the untouched Machine B:
   state; the listing is kept in `target/pacman-sync-state.txt`;
 - `check` succeeds and its JSON `notes` report the unavailable package origin,
   proving Blueprint saw the fresh state;
-- `restore --dry-run --json` returns a plan.
+- `restore --dry-run --json` returns a plan whose only requirement is
+  `packages.metadata`, naming `omarchy update` and gating the interactive
+  `omarchy pkg add` of the canonical package, and Blueprint plans no metadata
+  sync of its own;
+- a real `restore packages --yes` refuses with that remediation, leaves the
+  package absent, and creates no restore journal
+  (`target/restore-refusal.txt`).
 
 `target/pacman-queries.txt` records pacman's own `-Qq`/`-Qqe`/`-Qqen`/`-Qqem`
 exit codes and line counts as evidence. Never make this pass by refreshing
