@@ -152,6 +152,13 @@ The metadata question needs deliberate design rather than blindly embedding `pac
 
 The harness must never work around these gaps. Prohibited: pre-warming sudo credentials, `NOPASSWD` sudoers rules, running Blueprint wholesale as root, refreshing Machine B's package databases, or otherwise granting Blueprint authority or preparation that a real user's fresh machine would not have. A separate focused regression for these cases may follow later, but it does not replace the canonical fresh-target lifecycle.
 
+**Prerequisite status (ADR 0022).** ADR 0022 decides the whole contract, and it lands in two product PRs:
+
+- **Read path — resolved (PR A, `fix/fresh-package-readiness`).** Detection checks configured repositories for sync databases before trusting `-Qqen`/`-Qqem`. Without them it uses only local `-Qq`/`-Qqe` and records package origin as unavailable. `check`, `status`, Capture inspection and Restore planning work on the fresh machine and never mutate it. Capture keeps saved official/AUR state, and Exact removes nothing whose origin is unknown. The PR 2 known-gap sentinel is retired; target preflight now requires `check` success.
+- **Write path — decided, implemented in PR B.** Blueprint never syncs package metadata itself. A plan whose package operations need metadata carries a visible `packages.metadata` requirement naming Omarchy's own `omarchy update`, and apply is refused before any mutation until it is satisfied. Package operations that elevate through sudo are planned `Interactive` and run attached to the terminal from both CLI and TUI. Headless runs refuse before mutation.
+
+PR 3 remains blocked until PR B merges.
+
 Do not merge the old spike workflow from `spike/omarchy-vm-feasibility`; use it as implementation evidence only. Once PR 3 is complete, the production workflow supersedes the spike.
 
 ---
@@ -1164,15 +1171,13 @@ omarchy-blueprint --profile "$HOME/omarchy-profile" --machine target --json chec
 
 Require exit 0.
 
-> **Amendment (PR 2): known-gap sentinel.** Until the fresh-package readiness prerequisite lands, this `check` fails on the unmodified Machine B (read-path defect). PR 2 pins that failure narrowly instead of either requiring success or ignoring the result:
+> **Amendment (ADR 0022): fresh-machine check is a hard requirement.** PR 2 briefly pinned this step's failure as the known gap `packages.fresh-sync-database-readiness`. With the read-path fix, target preflight requires, on the untouched Machine B:
 >
-> 1. Before running `check`, require that Machine B still has no pacman sync database for any configured repository (no `/var/lib/pacman/sync/<repo>.db` for any repository in `pacman-conf --repo-list`; the sync directory can hold other installer leftovers and is recorded as a diagnostic), so an accidental target refresh cannot silently hide the sentinel.
-> 2. Run `check`, keeping stdout, stderr and the exit status.
-> 3. If it exits 1 with no successful envelope, and stderr consists *only* of the known failure, record `known gap: packages.fresh-sync-database-readiness` in the summary and keep the stderr as an artifact. `TARGET_PREFLIGHT` still passes. Only the known failure means: the first non-empty line is `Error: check packages: detect explicitly installed native packages: pacman -Qqen: exit status 1: warning: database file for '<repo>' does not exist (use '-Sy' to download)`, and every later non-empty line is another `warning: database file for '<repo>' does not exist (use '-Sy' to download)`. Any other stderr content, such as a second unrelated error, rejects the classification. Repository names and how many there are stay variable. Guest SSH runs with `LogLevel=ERROR`, so client warnings do not pollute Blueprint's stderr.
-> 4. If it exits 0, fail `TARGET_PREFLIGHT` with "fresh-machine package-readiness gap unexpectedly resolved; update the harness to require check success".
-> 5. Any other failure fails `TARGET_PREFLIGHT` as an unexpected `check` failure.
+> 1. no pacman sync database for any configured repository (no `/var/lib/pacman/sync/<repo>.db` for any repository in `pacman-conf --repo-list`), so the harness cannot have prepared package state;
+> 2. `check` succeeds, and its JSON `notes` report the unavailable package origin;
+> 3. `restore --dry-run --json` returns a plan.
 >
-> The sentinel is a temporary executable TODO, not accepted debt. The product PR that fixes fresh-machine detection turns Reconstruction Assurance red, and must switch this step back to requiring `check` success.
+> The known-gap classifier and summary mechanism are deleted.
 
 - [ ] **Step 7: Commit**
 
@@ -1228,7 +1233,17 @@ git commit -m "ci: exercise profile handoff on pull requests"
 
 # PR 3 — `test: require end-to-end reconstruction assurance`
 
-**Prerequisite:** the fresh-package readiness prerequisite described under Pull Request Topology (read path and write path) is resolved and merged first, and the PR 2 known-gap sentinel has been switched back to requiring target `check` success. Machine B keeps its official fresh-install package-manager state.
+**Prerequisite:** both fresh-package readiness PRs (ADR 0022 read path and write path) are merged. Machine B keeps its official fresh-install package-manager state until Blueprint itself demands readiness.
+
+> **Amendment (ADR 0022): canonical Restore includes the product-demanded readiness step.** A fresh Omarchy 4.0.4 install cannot install any package with any tool until Omarchy's own update has created sync metadata, and Blueprint deliberately does not do this inside Restore (ADR 0022 §6). The canonical lifecycle on Machine B is therefore:
+>
+> 1. target preflight on untouched package state (PR 2);
+> 2. `restore --dry-run --json` must report exactly the `packages.metadata` requirement, naming `omarchy update` and the package operations that need it; a plain `restore` must refuse before mutation;
+> 3. only then, the harness performs that named remediation as the user would: `omarchy update` in a real terminal, with cold sudo credentials, answering `sudo`'s own prompt at the prompt. There is no sudoers change, no pre-warming, and Blueprint is not involved;
+> 4. re-plan: the requirement is gone, and the plan shows the interactive official package install;
+> 5. the normal approved Restore, where `omarchy pkg add` asks for authentication at the real prompt through Blueprint's interactive runner.
+>
+> This invalidates ADR 0021's implicit assumption that Machine B stays at the pinned Omarchy release during Restore: after step 3 it runs the current supported release. Step 2 must fail, rather than being skipped, if Blueprint stops demanding readiness on a fresh machine.
 
 **PR goal:** Complete the real Restore/approval/verification path, rename the check to its production stable context, and make it suitable for required branch protection.
 

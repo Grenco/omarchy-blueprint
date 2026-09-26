@@ -19,7 +19,6 @@ RA_CURRENT_PHASE=""
 RA_FIRST_FAILURE_PHASE=""
 RA_FIRST_FAILURE_MESSAGE=""
 RA_CLEANUP_CMDS=()
-RA_KNOWN_GAPS=()
 RA_MIN_OBSERVED_DISK=-1
 RA_MIN_OBSERVED_MEMORY=-1
 
@@ -44,12 +43,6 @@ ra_fail() {
   fi
   ra_note "$phase: $message"
   return 1
-}
-
-# A pinned, still-open product defect the run observed exactly as expected.
-ra_known_gap() {
-  RA_KNOWN_GAPS+=("$1")
-  ra_note "known gap: $1"
 }
 
 ra_cleanup_add() {
@@ -148,9 +141,6 @@ ra_finish() {
     printf 'Reconstruction Assurance\n'
     for phase in "${RA_PHASES[@]}"; do
       printf '%s %s\n' "$phase" "${RA_PHASE_STATUS[$phase]:-NOT RUN}"
-    done
-    for phase in "${RA_KNOWN_GAPS[@]}"; do
-      printf 'known gap: %s\n' "$phase"
     done
     if [[ -n $RA_FIRST_FAILURE_PHASE ]]; then
       printf 'phase: %s\nmessage: %s\n' "$RA_FIRST_FAILURE_PHASE" "$RA_FIRST_FAILURE_MESSAGE"

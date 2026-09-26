@@ -825,6 +825,12 @@ func parseRestoreOverride(force, exact bool, conflictsFlag, convergenceFlag stri
 	return override, nil
 }
 
+// checkNoter reports non-failing facts about a provider's environment that
+// a user should know when checking, such as degraded but safe inspection.
+type checkNoter interface {
+	CheckNotes(ctx context.Context, d profile.Data) ([]string, error)
+}
+
 func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 	providers := stateProviders(deps, opt)
 	return &cobra.Command{Use: "check", Args: cobra.NoArgs, Short: "Validate the profile and environment", RunE: func(cmd *cobra.Command, _ []string) error {
@@ -844,6 +850,7 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 			return err
 		}
 		checks := []string{"profile valid", "schema supported", "Omarchy compatible"}
+		notes := []string{}
 		for _, provider := range providers {
 			if !provider.Captured(d) {
 				continue
@@ -852,13 +859,23 @@ func checkCommand(deps Dependencies, opt *options) *cobra.Command {
 				return fmt.Errorf("check %s: %w", provider.ID(), err)
 			}
 			checks = append(checks, providerCheckLabel(provider.ID()))
+			if noter, ok := provider.(checkNoter); ok {
+				more, err := noter.CheckNotes(cmd.Context(), d)
+				if err != nil {
+					return fmt.Errorf("check %s: %w", provider.ID(), err)
+				}
+				notes = append(notes, more...)
+			}
 		}
 		human := "✓ " + strings.Join(checks, "\n✓ ") + "\n"
+		for _, note := range notes {
+			human += "ℹ " + note + "\n"
+		}
 		human += renderMachineContext(context)
 		if len(context.Dormant) > 0 {
 			human += fmt.Sprintf("ℹ dormant machine mappings: %s\n", strings.Join(context.Dormant, ", "))
 		}
-		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "omarchy": info, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
+		return emit(deps.Out, opt.json, "check", true, map[string]any{"checks": checks, "notes": notes, "omarchy": info, "machine": machineContextOutput(context), "dormant_mappings": context.Dormant}, human)
 	}}
 }
 

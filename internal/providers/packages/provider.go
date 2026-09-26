@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -17,22 +20,40 @@ import (
 type Provider struct {
 	Runner           command.Runner
 	MiseGlobalConfig string
+	// Stat checks sync database presence; nil uses os.Stat.
+	Stat func(string) (fs.FileInfo, error)
 }
 
 func (p Provider) Detect(ctx context.Context) (profile.Packages, error) {
-	official, err := p.query(ctx, "-Qqen")
+	missing, err := p.MissingSyncDatabases(ctx)
 	if err != nil {
-		return profile.Packages{}, fmt.Errorf("detect explicitly installed native packages: %w", err)
-	}
-	aur, err := p.query(ctx, "-Qqem")
-	if err != nil {
-		return profile.Packages{}, fmt.Errorf("detect explicitly installed foreign packages: %w", err)
+		return profile.Packages{}, err
 	}
 	installed, err := p.query(ctx, "-Qq")
 	if err != nil {
 		return profile.Packages{}, fmt.Errorf("detect installed packages: %w", err)
 	}
-	packages := profile.Packages{Official: official, AUR: aur, Installed: installed}
+	var packages profile.Packages
+	if len(missing) > 0 {
+		// Native/foreign classification needs sync metadata: without it -Qqen
+		// fails and -Qqem reports every package as foreign (ADR 0022). Only
+		// local presence is knowable, so origin is recorded as unavailable.
+		explicit, err := p.query(ctx, "-Qqe")
+		if err != nil {
+			return profile.Packages{}, fmt.Errorf("detect explicitly installed packages: %w", err)
+		}
+		packages = profile.Packages{Installed: installed, OriginUnavailable: true, MissingSyncDatabases: missing, UnclassifiedExplicit: explicit}
+	} else {
+		official, err := p.query(ctx, "-Qqen")
+		if err != nil {
+			return profile.Packages{}, fmt.Errorf("detect explicitly installed native packages: %w", err)
+		}
+		aur, err := p.query(ctx, "-Qqem")
+		if err != nil {
+			return profile.Packages{}, fmt.Errorf("detect explicitly installed foreign packages: %w", err)
+		}
+		packages = profile.Packages{Official: official, AUR: aur, Installed: installed}
+	}
 	preinstalls, err := omarchy.DetectPreinstalls(ctx, p.Runner)
 	if err != nil {
 		return profile.Packages{}, fmt.Errorf("detect Omarchy preinstalls: %w", err)
@@ -102,16 +123,57 @@ func (p Provider) detectMiseInstalled(ctx context.Context) map[string]bool {
 	return installed
 }
 
+// pacmanQueryLimit bounds package-list output; real lists are tens of KiB.
+const pacmanQueryLimit = 16 << 20
+
+// query reads stdout only, so pacman's stderr warnings can never be parsed
+// as package names. Exit status 1 with no output at all is pacman's
+// documented empty result; any diagnostic output makes it a real failure.
 func (p Provider) query(ctx context.Context, arg string) ([]string, error) {
-	out, err := p.Runner.Run(ctx, "pacman", arg)
+	out, err := command.RunOutput(ctx, p.Runner, pacmanQueryLimit, "pacman", arg)
 	if err != nil {
 		var runErr *command.RunError
-		if errors.As(err, &runErr) && runErr.ExitCode == 1 && strings.TrimSpace(out) == "" {
+		if errors.As(err, &runErr) && runErr.ExitCode == 1 && strings.TrimSpace(runErr.Output) == "" {
 			return []string{}, nil
 		}
 		return nil, err
 	}
-	return lines(out), nil
+	return lines(string(out)), nil
+}
+
+// MissingSyncDatabases lists configured repositories without a pacman sync
+// database. It only reads configuration and stats files; it never syncs.
+func (p Provider) MissingSyncDatabases(ctx context.Context) ([]string, error) {
+	repos, err := command.RunOutput(ctx, p.Runner, pacmanQueryLimit, "pacman-conf", "--repo-list")
+	if err != nil {
+		return nil, fmt.Errorf("list configured pacman repositories: %w", err)
+	}
+	names := strings.Fields(string(repos))
+	if len(names) == 0 {
+		return nil, nil
+	}
+	dbPath, err := command.RunOutput(ctx, p.Runner, pacmanQueryLimit, "pacman-conf", "DBPath")
+	if err != nil {
+		return nil, fmt.Errorf("read pacman DBPath: %w", err)
+	}
+	root := strings.TrimSpace(string(dbPath))
+	if root == "" {
+		return nil, errors.New("read pacman DBPath: empty path")
+	}
+	stat := p.Stat
+	if stat == nil {
+		stat = os.Stat
+	}
+	var missing []string
+	for _, repo := range names {
+		path := filepath.Join(root, "sync", repo+".db")
+		if _, err := stat(path); errors.Is(err, fs.ErrNotExist) {
+			missing = append(missing, repo)
+		} else if err != nil {
+			return nil, fmt.Errorf("inspect pacman sync database %s: %w", path, err)
+		}
+	}
+	return missing, nil
 }
 
 func (p Provider) Check(ctx context.Context, saved profile.Packages) error {
@@ -217,6 +279,9 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		if !savedNames[name] && !(opts.Exact && absent["aur:"+name]) {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: "aur:" + name, Reason: "additional package left installed; removal disabled"})
 		}
+	}
+	if current.OriginUnavailable {
+		plan.Skipped = append(plan.Skipped, unclassifiedExtras(current, savedNames)...)
 	}
 	if opts.Exact {
 		plan = planExactArchRemovals(plan, saved, physicalCurrent)
@@ -373,12 +438,15 @@ func Verify(saved, current profile.Packages, options ...VerifyOptions) model.Ver
 				continue
 			}
 			switch kind {
-			case "official":
-				if set(current.Official)[id] {
-					missing = append(missing, absence.Ref)
+			case "official", "aur":
+				present := set(current.Official)[id]
+				if kind == "aur" {
+					present = set(current.AUR)[id]
 				}
-			case "aur":
-				if set(current.AUR)[id] {
+				if current.OriginUnavailable {
+					present = set(current.Installed)[id]
+				}
+				if present {
 					missing = append(missing, absence.Ref)
 				}
 			case "mise":
@@ -598,8 +666,28 @@ func absenceRefSet(absences []profile.PackageAbsence) map[string]bool {
 	return refs
 }
 
+// OriginUnavailableReason explains why package origin is unknown.
+func OriginUnavailableReason(missing []string) string {
+	return "package origin unavailable: pacman sync databases missing for " + strings.Join(missing, ", ")
+}
+
+// unclassifiedExtras reports explicitly installed packages that cannot be
+// attributed to official or AUR because origin is unknown; none is removed.
+func unclassifiedExtras(current profile.Packages, savedNames map[string]bool) []model.Skipped {
+	count := 0
+	for _, name := range current.UnclassifiedExplicit {
+		if _, preinstall := current.Preinstalls.Items[name]; !savedNames[name] && !preinstall {
+			count++
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	return []model.Skipped{{Provider: "packages", Resource: "packages:unclassified", Reason: fmt.Sprintf("%d explicitly installed package(s) have unknown origin (%s); none are removed", count, OriginUnavailableReason(current.MissingSyncDatabases))}}
+}
+
 func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packages) model.RestorePlan {
-	official, aur := set(current.Official), set(current.AUR)
+	official, aur, installed := set(current.Official), set(current.AUR), set(current.Installed)
 	for _, absence := range saved.Absent {
 		kind, id, ok := splitRef(absence.Ref)
 		if !ok || id == "" {
@@ -607,6 +695,13 @@ func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packag
 		}
 		if machineSpecific(id) {
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: absence.Ref, Reason: "hardware/machine-specific package is protected from removal"})
+			continue
+		}
+		if current.OriginUnavailable && (kind == "official" || kind == "aur") {
+			// Unknown origin can only reduce destructive authority.
+			if installed[id] {
+				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "packages", Resource: absence.Ref, Reason: OriginUnavailableReason(current.MissingSyncDatabases) + "; removal disabled"})
+			}
 			continue
 		}
 		switch kind {
@@ -816,6 +911,13 @@ func classify(packages profile.Packages) profile.Packages {
 		}
 	}
 	packages.Installed = lines(strings.Join(installed, "\n"))
+	var explicit []string
+	for _, name := range packages.UnclassifiedExplicit {
+		if !machineSpecific(name) {
+			explicit = append(explicit, name)
+		}
+	}
+	packages.UnclassifiedExplicit = lines(strings.Join(explicit, "\n"))
 	return packages
 }
 
@@ -863,8 +965,21 @@ func Merge(previous, current profile.Packages, enabled func(ref string) bool) pr
 	result.Preinstalls = mergePreinstalls(previous.Preinstalls, current.Preinstalls, enabled)
 	prevAbsent, prevAbsentMise := absenceIndex(previous.Absent)
 	var absences []profile.PackageAbsence
-	result.Official, absences = mergeNames("official", set(previous.Official), set(current.Official), prevAbsent, enabled, absences)
-	result.AUR, absences = mergeNames("aur", set(previous.AUR), set(current.AUR), prevAbsent, enabled, absences)
+	if current.OriginUnavailable {
+		// Without origin, Capture cannot tell official from AUR or present
+		// from absent in either kind, so it keeps the previous desired state
+		// and tombstones exactly rather than rewriting them from a guess.
+		result.Official = append([]string(nil), previous.Official...)
+		result.AUR = append([]string(nil), previous.AUR...)
+		for _, absence := range previous.Absent {
+			if kind, _, ok := splitRef(absence.Ref); ok && (kind == "official" || kind == "aur") {
+				absences = append(absences, absence)
+			}
+		}
+	} else {
+		result.Official, absences = mergeNames("official", set(previous.Official), set(current.Official), prevAbsent, enabled, absences)
+		result.AUR, absences = mergeNames("aur", set(previous.AUR), set(current.AUR), prevAbsent, enabled, absences)
+	}
 	result.Mise, absences = mergeMise(previous.Mise, current.Mise, prevAbsent, prevAbsentMise, enabled, absences)
 	sort.Strings(result.Official)
 	sort.Strings(result.AUR)

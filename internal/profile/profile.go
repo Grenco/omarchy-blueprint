@@ -86,6 +86,13 @@ type Packages struct {
 	MachineSpecific []string         `json:"machine_specific,omitempty"`
 	Excluded        []string         `json:"excluded,omitempty"`
 	Installed       []string         `json:"-" toml:"-"`
+	// OriginUnavailable is live-detection state (ADR 0022): at least one
+	// configured repository has no pacman sync database, so official versus
+	// AUR origin is unknown. Official and AUR are then empty meaning unknown,
+	// not absent; Installed and UnclassifiedExplicit carry physical state.
+	OriginUnavailable    bool     `json:"origin_unavailable,omitempty" toml:"-"`
+	MissingSyncDatabases []string `json:"missing_sync_databases,omitempty" toml:"-"`
+	UnclassifiedExplicit []string `json:"unclassified_explicit,omitempty" toml:"-"`
 }
 
 type Preinstalls struct {
