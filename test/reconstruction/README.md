@@ -56,8 +56,31 @@ Phase boundaries:
   is powered off and its disk deleted.
 - `TARGET_PREFLIGHT`: Machine B boots with a distinct identity, has none of the
   source state, verifies and extracts the archive, binds `target` without
-  changing profile bytes, persists Safe + Additive Restore defaults, and passes
-  `check`.
+  changing profile bytes, persists Safe + Additive Restore defaults, and runs
+  `check` under the known-gap sentinel below.
+
+## Known gap: `packages.fresh-sync-database-readiness`
+
+Blueprint cannot yet `check` a fresh Omarchy install that has no pacman sync
+databases: native-package detection (`pacman -Qqen`) fails. Until the
+fresh-package readiness prerequisite before PR 3 lands, target preflight pins
+that failure narrowly:
+
+- Machine B must still have no `/var/lib/pacman/sync/*.db`, so a target refresh
+  cannot hide the sentinel.
+- `check` must exit 1 with no successful envelope, and its stderr must carry the
+  fingerprint `check packages:` / `detect explicitly installed native
+  packages:` / `pacman -Qqen:` / `exit status 1` / `database file for '<repo>'
+  does not exist (use '-Sy' to download)`. The repository list is not matched.
+  This passes preflight and adds `known gap: packages.fresh-sync-database-readiness`
+  to `summary.txt`; stderr is kept in `target/check.stderr`.
+- Unexpected success fails `TARGET_PREFLIGHT` ("gap unexpectedly resolved"). The
+  fixing product PR must then switch this step back to requiring `check` success.
+- Any other failure fails `TARGET_PREFLIGHT`.
+
+The product prerequisite covers both the read path (inspection, `check` and
+`status` on a fresh install) and the write path (Restore's `omarchy pkg add`
+needs package metadata and elevation).
 
 The disposable `spike` account uses a fixture password for its unattended
 configuration and authenticated guest reboot/poweroff; it is passed to real

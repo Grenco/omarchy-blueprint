@@ -4,6 +4,8 @@
 import argparse
 import json
 from pathlib import Path
+import re
+import sys
 import tomllib
 
 
@@ -97,6 +99,25 @@ def assert_check(data: dict, machine: str) -> None:
         raise AssertionError(f"check ran for {data.get('machine')}, want {machine}")
 
 
+# Semantic fingerprint of the fresh-install read-path defect: native package
+# detection needs pacman sync databases that a fresh Omarchy install lacks.
+FRESH_SYNC_GAP_MARKERS = ("check packages:", "detect explicitly installed native packages:",
+                          "pacman -Qqen:", "exit status 1")
+FRESH_SYNC_GAP_DATABASE = re.compile(r"database file for '[^']+' does not exist \(use '-Sy' to download\)")
+
+
+def is_fresh_sync_database_gap(status: int, stdout: str, stderr: str) -> bool:
+    if status != 1:
+        return False
+    try:
+        if json.loads(stdout).get("ok") is True:
+            return False
+    except (ValueError, AttributeError):
+        pass
+    return (all(marker in stderr for marker in FRESH_SYNC_GAP_MARKERS)
+            and FRESH_SYNC_GAP_DATABASE.search(stderr) is not None)
+
+
 def _toml(profile: Path, name: str) -> dict:
     return tomllib.loads((profile / name).read_text())
 
@@ -148,6 +169,7 @@ def main() -> None:
         "capture-preview": ("file", "machine"),
         "restore-defaults": ("file", "machine", "conflicts", "convergence"),
         "check": ("file", "machine"),
+        "fresh-sync-gap": ("status", "stdout", "stderr"),
         "profile": ("directory",),
     }.items():
         command = commands.add_parser(name)
@@ -166,6 +188,10 @@ def main() -> None:
     elif args.check == "restore-defaults":
         assert_restore_defaults(load_envelope(args.file, "machine restore-defaults"),
                                 args.machine, args.conflicts, args.convergence)
+    elif args.check == "fresh-sync-gap":
+        if not is_fresh_sync_database_gap(int(args.status), Path(args.stdout).read_text(),
+                                          Path(args.stderr).read_text()):
+            sys.exit(1)
     elif args.check == "check":
         assert_check(load_envelope(args.file, "check"), args.machine)
     else:

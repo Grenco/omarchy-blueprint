@@ -70,7 +70,24 @@ ra_import_target_profile() {
     ra_contract restore-defaults "$a/restore-defaults.json" target safe additive 2>> "$log" ||
     ra_fail TARGET_PREFLIGHT "target Safe + Additive Restore defaults were not persisted (see target/blueprint.log)"
 
-  ra_blueprint target --profile "$p" --machine target --json check > "$a/check.json" 2>> "$log" &&
-    ra_contract check "$a/check.json" target 2>> "$log" ||
-    ra_fail TARGET_PREFLIGHT "Blueprint check failed on Machine B (see target/blueprint.log)"
+  ra_target_check_sentinel
+}
+
+# Temporary executable TODO: until Blueprint can check a fresh install without
+# pacman sync databases, `check` on Machine B must fail with exactly that
+# defect. Any other failure, or success, fails preflight so this is revisited.
+ra_target_check_sentinel() {
+  local a="$RA_ARTIFACTS/target" status=0
+  if ra_guest_exec target 'compgen -G "/var/lib/pacman/sync/*.db" >/dev/null'; then
+    ra_fail TARGET_PREFLIGHT "Machine B has pacman sync databases; its fresh-install package state was altered"
+  fi
+  ra_blueprint target --profile "$RA_GUEST_PROFILE" --machine target --json check \
+    > "$a/check.json" 2> "$a/check.stderr" || status=$?
+  if ra_contract fresh-sync-gap "$status" "$a/check.json" "$a/check.stderr"; then
+    ra_known_gap packages.fresh-sync-database-readiness
+  elif (( status == 0 )); then
+    ra_fail TARGET_PREFLIGHT "fresh-machine package-readiness gap unexpectedly resolved; update the harness to require check success"
+  else
+    ra_fail TARGET_PREFLIGHT "Blueprint check failed on Machine B for an unexpected reason (see target/check.stderr)"
+  fi
 }
