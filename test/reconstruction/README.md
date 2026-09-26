@@ -21,6 +21,10 @@ as portable, so a `git://` daemon would not do. Each guest trusts the per-run
 certificate for that URL only, through the system Git config, which is outside
 `$HOME` and is not Blueprint state.
 
+The installed base has no pacman sync databases, so staging refreshes them
+(`pacman -Sy`, retried as a network transfer) identically on both guests without
+upgrading packages.
+
 Guest commands run with the graphical session's environment
 (`scenario/guest-env.sh`), the same for source customization and Blueprint.
 `omarchy pkg add` needs root and sudo cannot prompt without a terminal, so
