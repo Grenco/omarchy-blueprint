@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/ownership"
@@ -66,6 +68,93 @@ type DetectedFile struct {
 // State is the detected state of all managed files.
 type State struct {
 	Files []DetectedFile `json:"files"`
+}
+
+// RestoreCompatibility uses only saved desired state and the same ScanSummary
+// used by PlanOverlay; it never rescans, probes by writing, or overrides Config
+// ownership and baseline safety. applyTargets uses bare logical Config paths.
+func RestoreCompatibility(saved profile.Configs, scan ScanSummary, applyTargets map[string]bool, exact bool) (model.CompatibilityCategory, error) {
+	byPath := make(map[string]Candidate, len(scan.Candidates))
+	for _, candidate := range scan.Candidates {
+		if _, duplicate := byPath[candidate.Path]; duplicate {
+			return model.CompatibilityCategory{}, fmt.Errorf("compatibility: duplicate Config scan candidate %q", candidate.Path)
+		}
+		byPath[candidate.Path] = candidate
+	}
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	apply := func(path string) bool {
+		return !IsExcludedConfigPath(path, saved.Excluded) && (applyTargets == nil || applyTargets[path])
+	}
+	assess := func(path, savedHash, savedBaseline string, deletion bool) {
+		candidate, found := byPath[path]
+		finding := model.CompatibilityFinding{Code: "config.baseline.ambiguous", Target: path, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current baseline or target state cannot establish the captured Config intent"}
+		if surface := configScanSurface(path, scan.Surfaces); surface == SurfaceStateHeavy || surface == SurfaceSensitive {
+			finding.Code, finding.Summary = "config.surface.unsupported", "current Config surface is not safely supported"
+			finding.State, finding.Authority = model.CompatibilityIncompatible, model.CompatibilityBlocked
+			findings = append(findings, finding)
+			return
+		}
+		if found {
+			switch candidate.Classification {
+			case ConfigDelegated:
+				finding.Code, finding.Summary = "config.owner.delegated", "current Config path belongs to a stronger provider"
+				finding.State, finding.Authority = model.CompatibilityIncompatible, model.CompatibilityBlocked
+				findings = append(findings, finding)
+				return
+			case ConfigUnsupported, ConfigExcluded, ConfigVolatile, ConfigSensitive, ConfigUnmanagedSymlink, ConfigOversized:
+				finding.Code, finding.Summary = "config.surface.unsupported", "current Config path is not safely supported"
+				finding.State, finding.Authority = model.CompatibilityIncompatible, model.CompatibilityBlocked
+				findings = append(findings, finding)
+				return
+			}
+		}
+		if deletion {
+			if !found || candidate.UserHash == "" {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "config-explicit-absence", Summary: "explicit ConfigDelete is already absent on target"})
+				return
+			}
+			if savedBaseline != "" && (candidate.UserHash == savedBaseline || candidate.UserHash == candidate.BaselineHash && candidate.BaselineHash != "") {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "config-current-baseline", Summary: "explicit ConfigDelete matches a known baseline with guarded removal"})
+				return
+			}
+		} else if found && savedHash != "" {
+			if savedBaseline != "" && candidate.BaselineHash == savedBaseline && candidate.Classification != ConfigAmbiguousBaseline && candidate.Classification != ConfigAmbiguousDeletion {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "config-current-baseline", Summary: "captured and current Config baseline identities agree"})
+				return
+			}
+			if savedBaseline == "" && candidate.Classification == ConfigAdded && (candidate.UserHash == "" || candidate.UserHash == savedHash) {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "config-desired-state", Summary: "portable added Config path has safe current state"})
+				return
+			}
+		}
+		if exact && found && candidate.UserHash != "" {
+			finding.Authority = model.CompatibilityReduced
+		}
+		findings = append(findings, finding)
+	}
+	for _, file := range saved.Files {
+		if apply(file.Path) {
+			assess(file.Path, file.Hash, file.BaselineHash, false)
+		}
+	}
+	for _, deletion := range saved.Deletes {
+		if apply(deletion.Path) {
+			assess(deletion.Path, "", deletion.BaselineHash, true)
+		}
+	}
+	return compatibility.BuildCategory("config", len(evidence)+len(findings) > 0, evidence, findings)
+}
+
+func configScanSurface(path string, surfaces []SurfaceSummary) SurfaceClassification {
+	var kind SurfaceClassification
+	longest := 0
+	for _, surface := range surfaces {
+		if (path == surface.Path || strings.HasPrefix(path, surface.Path+"/")) && len(surface.Path) > longest {
+			longest, kind = len(surface.Path), surface.Classification
+		}
+	}
+	return kind
 }
 
 func (p Provider) specs() []Spec {
