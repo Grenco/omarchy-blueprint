@@ -15,7 +15,20 @@ ra_guest_stage() {
     git config --system http.https://10.0.2.2:9443/.sslCAInfo /etc/blueprint-ra/git-fixture.pem &&
     install -m 0755 /tmp/omarchy-blueprint /usr/local/bin/omarchy-blueprint" \
     > "$RA_ARTIFACTS/$role/stage.log" 2>&1 || return 1
-  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null'
+  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null' || return 1
+  ra_guest_refresh_package_databases "$role"
+}
+
+# The installed base ships without pacman sync databases. Refresh them the same
+# way on both guests (network transfer, so retryable); packages are untouched.
+ra_guest_refresh_package_databases() {
+  local role=$1 attempt
+  for attempt in 1 2 3; do
+    ra_ssh_sudo 'pacman -Sy --noconfirm' >> "$RA_ARTIFACTS/$role/pacman-sync.log" 2>&1 && return 0
+    ra_note "$role pacman database refresh attempt $attempt failed"
+    sleep 10
+  done
+  return 1
 }
 
 # Runs the exact PR build of Blueprint inside the guest's session environment.
