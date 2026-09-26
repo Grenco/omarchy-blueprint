@@ -28,7 +28,7 @@ ra_blueprint() {
 
 ra_customize_source() {
   local log="$RA_ARTIFACTS/source/customize.log" status=0 reason
-  # sudo inside `omarchy pkg add` has no terminal; answer it for the fixture account.
+  # Prints the fixture account password for `sudo -S omarchy pkg add`; removed afterwards.
   printf '#!/bin/sh\nprintf "%%s\\n" %q\n' "$RA_USER" |
     ra_guest_exec source 'umask 077 && cat > /tmp/blueprint-ra-askpass && chmod 0700 /tmp/blueprint-ra-askpass'
   ra_guest_exec source 'bash /tmp/blueprint-ra-fixtures/customize-source.sh' > "$log" 2>&1 || status=$?
