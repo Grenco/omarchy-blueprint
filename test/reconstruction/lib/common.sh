@@ -106,6 +106,47 @@ ra_check_host() {
   command -v qemu-system-x86_64 >/dev/null || ra_fail INFRASTRUCTURE "QEMU missing"
 }
 
+# Samples a QEMU process over a few seconds without the guest's help: whether
+# it is alive and how much CPU time and disk I/O it used, to tell a stuck guest
+# from a working one. Prints key=value fields.
+ra_qemu_activity() {
+  local pid=$1 seconds=$2 cpu0 cpu1 read0 read1 write0 write1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "alive=no"
+    return 0
+  fi
+  cpu0=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null || echo 0)
+  read0=$(awk '/^read_bytes/ {print $2}' "/proc/$pid/io" 2>/dev/null || echo 0)
+  write0=$(awk '/^write_bytes/ {print $2}' "/proc/$pid/io" 2>/dev/null || echo 0)
+  sleep "$seconds"
+  cpu1=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null || echo "$cpu0")
+  read1=$(awk '/^read_bytes/ {print $2}' "/proc/$pid/io" 2>/dev/null || echo "$read0")
+  write1=$(awk '/^write_bytes/ {print $2}' "/proc/$pid/io" 2>/dev/null || echo "$write0")
+  echo "alive=yes seconds=$seconds cpu_ticks_delta=$((cpu1 - cpu0)) read_bytes_delta=$((read1 - read0)) write_bytes_delta=$((write1 - write0))"
+}
+
+# Runs QEMU monitor commands and saves their replies (best effort).
+ra_monitor() {
+  local socket=$1 out=$2
+  shift 2
+  python3 - "$socket" "$@" > "$out" 2>&1 <<'PY' || true
+import socket
+import sys
+import time
+
+with socket.socket(socket.AF_UNIX) as monitor:
+    monitor.settimeout(5)
+    monitor.connect(sys.argv[1])
+    time.sleep(0.5)
+    monitor.recv(65536)
+    for command in sys.argv[2:]:
+        monitor.sendall(f"{command}\n".encode())
+        time.sleep(1)
+        print(f"== {command}")
+        print(monitor.recv(65536).decode(errors="replace"))
+PY
+}
+
 ra_cleanup_add() {
   local command
   printf -v command '%q ' "$@"
