@@ -98,6 +98,13 @@ ra_fresh_overlay_trials() {
       continue
     fi
     ra_soak_record "$i" "first-boot-ok" "$((SECONDS - started))"
+    if [[ ! -s $RA_ARTIFACTS/soak-cmdline.txt ]]; then
+      # Evidence of the boot configuration measured; a debug soak must really have it.
+      ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
+      if [[ $2 == debug ]] && ! grep -q 'console=ttyS0' "$RA_ARTIFACTS/soak-cmdline.txt"; then
+        ra_fail INFRASTRUCTURE "debug console did not reach the kernel command line (see soak-cmdline.txt)"
+      fi
+    fi
     ra_guest_enable_session "$role" || ra_fail INFRASTRUCTURE "could not enable the trial session"
     started=$SECONDS
     result=ok
