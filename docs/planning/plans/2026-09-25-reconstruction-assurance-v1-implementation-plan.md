@@ -6,7 +6,7 @@
 
 **Architecture:** Reuse the proven QEMU/KVM and unattended Omarchy-install mechanics from the feasibility spike, but move them into focused scripts under `test/reconstruction/` instead of embedding the test in workflow YAML. Build one pristine Omarchy base per PR, run source and target as sequential qcow2 overlays, hand off only a deterministic profile archive, exercise the normal CLI Restore prompt/recalculation path, and grade Machine B with native system assertions after Blueprint Verify succeeds.
 
-**Tech Stack:** GitHub Actions `ubuntu-24.04`, QEMU/KVM + OVMF + qcow2, Bash, Python 3 standard library, OpenSSH, Git daemon, Go 1.25+/1.26 existing CI, Omarchy 4.0.4 official ISO, existing `omarchy-blueprint` CLI.
+**Tech Stack:** GitHub Actions `ubuntu-24.04`, QEMU/KVM + OVMF + qcow2, Bash, Python 3 standard library, OpenSSH, OpenSSL + Python standard-library HTTPS server for a dumb-HTTP Git fixture remote, Go 1.25+/1.26 existing CI, Omarchy 4.0.4 official ISO, existing `omarchy-blueprint` CLI.
 
 **Spec:** `docs/planning/specs/2026-09-25-reconstruction-assurance-v1-design.md`
 
@@ -87,7 +87,8 @@ The implementation should converge on these files and responsibilities:
 - `test/reconstruction/fixtures/hooks/blueprint-ra` — harmless executable Hook fixture.
 - `test/reconstruction/fixtures/skip/skip.txt` — Restore-disabled copied Resource fixture.
 - `test/reconstruction/fixtures/expected.env` — immutable expected IDs, paths, hashes/revision, theme/default values.
-- `test/reconstruction/scenario/build-fixtures.sh` — construct deterministic bare Git remote and start/stop host Git daemon.
+- `test/reconstruction/scenario/serve_git.py` — standard-library HTTPS static server for the dumb-HTTP Git fixture remote.
+- `test/reconstruction/scenario/build-fixtures.sh` — construct deterministic bare Git remote, its fixture TLS certificate, and start/stop the host HTTPS Git server.
 - `test/reconstruction/scenario/customize-source.sh` — configure Machine A and independently assert source state before Capture.
 - `test/reconstruction/scenario/capture-source.sh` — initialize profile/machines, track Resources, configure target policy through public CLI, preview/review/approve Capture, check, archive/digest profile.
 - `test/reconstruction/scenario/approve_capture.py` — drive the real TTY-required Capture review prompt once and preserve its transcript/exit status.
@@ -711,8 +712,11 @@ git commit -m "ci: add real Omarchy reconstruction substrate"
 
 **Interfaces:**
 - `ra_build_git_fixture` produces `$RA_WORK/git/blueprint-ra.git` and asserts HEAD `e161ca52ec7604e6fb335ef15fc212bba03a2994`.
-- `ra_start_git_daemon` serves `git://10.0.2.2:9418/blueprint-ra.git` to guests.
-- `ra_stop_git_daemon` stops it.
+- `ra_start_git_server` serves `https://10.0.2.2:9443/blueprint-ra.git` to guests (dumb HTTP over TLS, bound to host loopback, which QEMU user networking exposes as `10.0.2.2`).
+- `ra_stop_git_server` stops it.
+- `ra_guest_trust_git_fixture <role>` installs the fixture certificate as `/etc/blueprint-ra/git-fixture.pem` and scopes it with `git config --system http.https://10.0.2.2:9443/.sslCAInfo`. This is identical guest network infrastructure applied to both machines before any customization or preflight; it lives outside `$HOME` and is never Blueprint state.
+
+> **Amendment (PR 2):** Blueprint deliberately treats only `https`, `ssh`, and scp-like Git remotes as portable, and `git remote get-url` expands `insteadOf`, so the originally planned `git://10.0.2.2:9418` daemon cannot be tracked as a Git Resource. The fixture is therefore served over HTTPS with a per-run self-signed certificate. The design only requires a deterministic repository-controlled remote reachable from QEMU; the commit and its revision are unchanged.
 
 - [ ] **Step 1: Add exact fixture contents**
 
@@ -777,7 +781,7 @@ RA_HELPER_SOURCE=.local/bin/blueprint-ra-helper
 RA_HELPER_TARGET=bin/blueprint-ra-helper
 RA_GIT_RESOURCE=git-fixture
 RA_GIT_PATH=Projects/blueprint-ra-fixture
-RA_GIT_REMOTE=git://10.0.2.2:9418/blueprint-ra.git
+RA_GIT_REMOTE=https://10.0.2.2:9443/blueprint-ra.git
 RA_GIT_REVISION=e161ca52ec7604e6fb335ef15fc212bba03a2994
 RA_SKIP_RESOURCE=target-only-skip
 RA_SKIP_PATH=.local/share/blueprint-ra/skip.txt
@@ -800,15 +804,17 @@ GIT_COMMITTER_DATE='2026-09-25T00:00:00Z' \
   git -C "$work/repo" commit -q -m 'fixture: seed reconstruction resource'
 test "$(git -C "$work/repo" rev-parse HEAD)" = "$RA_GIT_REVISION"
 git clone -q --bare "$work/repo" "$RA_WORK/git/blueprint-ra.git"
-touch "$RA_WORK/git/blueprint-ra.git/git-daemon-export-ok"
+git -C "$RA_WORK/git/blueprint-ra.git" update-server-info
 ```
 
-- [ ] **Step 4: Start Git daemon and prove host-local clone works**
+Generate a fresh self-signed certificate per run with subject alternative names `IP:10.0.2.2` and `IP:127.0.0.1`. Its private key stays on the host.
+
+- [ ] **Step 4: Start the HTTPS Git server and prove host-local clone works**
 
 ```bash
-git daemon --reuseaddr --export-all --base-path="$RA_WORK/git" --listen=0.0.0.0 --port=9418 "$RA_WORK/git" &
-RA_GIT_DAEMON_PID=$!
-test "$(git ls-remote git://127.0.0.1:9418/blueprint-ra.git refs/heads/main | awk '{print $1}')" = "$RA_GIT_REVISION"
+python3 "$RA_ROOT/scenario/serve_git.py" --root "$RA_WORK/git" --cert ... --key ... --port 9443 &
+RA_GIT_SERVER_PID=$!
+test "$(git -c http.sslCAInfo="$cert" ls-remote https://127.0.0.1:9443/blueprint-ra.git refs/heads/main | awk '{print $1}')" = "$RA_GIT_REVISION"
 ```
 
 Then on the next real guest smoke, assert `git ls-remote "$RA_GIT_REMOTE"` works from QEMU before source customization.
@@ -836,7 +842,7 @@ Require:
 
 ```bash
 ! pacman -Q alacritty >/dev/null 2>&1
-test "$(omarchy theme current)" != catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" != catppuccin
 test "$(omarchy default terminal)" != alacritty
 test ! -e "$HOME/.config/omarchy/plugins/blueprint.ra.fixture"
 test ! -e "$HOME/.config/blueprint-ra/config.toml"
@@ -845,9 +851,13 @@ test ! -e "$HOME/.local/bin/blueprint-ra-helper"
 test ! -e "$HOME/Projects/blueprint-ra-fixture"
 ```
 
+> **Amendment (PR 2):** `omarchy theme current` prints a display name (`Catppuccin`), so theme assertions compare Omarchy's native `~/.local/state/omarchy/current/theme.name` (`catppuccin`) instead of the display string.
+
 If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguishes pristine Omarchy state"; do not silently choose another value.
 
 - [ ] **Step 2: Install Alacritty and set the terminal default**
+
+`omarchy pkg add` invokes `sudo` itself. Without a terminal, sudo uses `SUDO_ASKPASS`; the harness stages a throwaway askpass helper for the disposable fixture account under `/tmp` for this customization only (no sudoers change).
 
 ```bash
 omarchy pkg add alacritty
@@ -862,7 +872,7 @@ This one package intentionally serves both Packages and Defaults coverage.
 
 ```bash
 omarchy theme set catppuccin
-test "$(omarchy theme current)" = catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" = catppuccin
 ```
 
 Do not edit Omarchy theme selection files directly. If the pinned guest requires a supported headless environment variable for native theme application, apply the same environment consistently to source customization and the later Blueprint Restore process and document it in `README.md`; do not patch Omarchy.
@@ -904,7 +914,7 @@ cp /tmp/blueprint-ra-fixtures/hooks/blueprint-ra "$HOME/.config/omarchy/hooks/po
 chmod 0755 "$HOME/.config/omarchy/hooks/post-update.d/blueprint-ra"
 ```
 
-- [ ] **Step 7: Create Resource fixtures and clone the Git fixture through the host daemon**
+- [ ] **Step 7: Create Resource fixtures and clone the Git fixture through the host HTTPS server**
 
 ```bash
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/blueprint-ra" "$HOME/Projects"
@@ -1083,7 +1093,7 @@ Require all:
 
 ```bash
 ! pacman -Q alacritty >/dev/null 2>&1
-test "$(omarchy theme current)" != catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" != catppuccin
 test "$(omarchy default terminal)" != alacritty
 test ! -e "$HOME/.config/omarchy/plugins/blueprint.ra.fixture"
 test ! -e "$HOME/.config/blueprint-ra/config.toml"
@@ -1395,7 +1405,7 @@ Machine B must satisfy:
 
 ```bash
 pacman -Q alacritty
-test "$(omarchy theme current)" = catppuccin
+test "$(cat "$HOME/.local/state/omarchy/current/theme.name")" = catppuccin
 test "$(omarchy default terminal)" = alacritty
 ```
 
@@ -1446,7 +1456,7 @@ test ! -e "$HOME/.local/bin/blueprint-ra-helper"
 Git Resource:
 
 ```bash
-test "$(git -C "$HOME/Projects/blueprint-ra-fixture" remote get-url origin)" = 'git://10.0.2.2:9418/blueprint-ra.git'
+test "$(git -C "$HOME/Projects/blueprint-ra-fixture" remote get-url origin)" = 'https://10.0.2.2:9443/blueprint-ra.git'
 test "$(git -C "$HOME/Projects/blueprint-ra-fixture" rev-parse HEAD)" = 'e161ca52ec7604e6fb335ef15fc212bba03a2994'
 test -z "$(git -C "$HOME/Projects/blueprint-ra-fixture" status --porcelain)"
 ```
