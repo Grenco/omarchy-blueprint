@@ -70,14 +70,14 @@ ra_import_target_profile() {
     ra_contract restore-defaults "$a/restore-defaults.json" target safe additive 2>> "$log" ||
     ra_fail TARGET_PREFLIGHT "target Safe + Additive Restore defaults were not persisted (see target/blueprint.log)"
 
-  ra_target_check_sentinel
+  ra_target_fresh_check
 }
 
-# Temporary executable TODO: until Blueprint can check a fresh install without
-# pacman sync databases, `check` on Machine B must fail with exactly that
-# defect. Any other failure, or success, fails preflight so this is revisited.
-ra_target_check_sentinel() {
-  local a="$RA_ARTIFACTS/target" status=0 synced
+# Machine B keeps the package state the official install left: no sync
+# database for any configured repository. Blueprint must still check it,
+# report the unavailable package origin, and plan a Restore (ADR 0022).
+ra_target_fresh_check() {
+  local a="$RA_ARTIFACTS/target" synced log="$RA_ARTIFACTS/target/blueprint.log"
   ra_guest_exec target 'pacman-conf --repo-list; ls -la /var/lib/pacman/sync/' > "$a/pacman-sync-state.txt" 2>&1 || true
   # Only configured repositories matter; the sync directory may hold other files.
   synced=$(ra_guest_exec target 'for repo in $(pacman-conf --repo-list); do
@@ -86,13 +86,17 @@ ra_target_check_sentinel() {
   if [[ -n $synced ]]; then
     ra_fail TARGET_PREFLIGHT "Machine B has pacman sync databases for: ${synced% }; its fresh-install package state was altered"
   fi
-  ra_blueprint target --profile "$RA_GUEST_PROFILE" --machine target --json check \
-    > "$a/check.json" 2> "$a/check.stderr" || status=$?
-  if ra_contract fresh-sync-gap "$status" "$a/check.json" "$a/check.stderr"; then
-    ra_known_gap packages.fresh-sync-database-readiness
-  elif (( status == 0 )); then
-    ra_fail TARGET_PREFLIGHT "fresh-machine package-readiness gap unexpectedly resolved; update the harness to require check success"
-  else
-    ra_fail TARGET_PREFLIGHT "Blueprint check failed on Machine B for an unexpected reason (see target/check.stderr)"
-  fi
+  # Read-only evidence of what pacman itself can answer on the fresh machine.
+  ra_guest_exec target 'for q in -Qq -Qqe -Qqen -Qqem; do out=$(pacman "$q" 2>/dev/null); status=$?
+      printf "pacman %s exit=%s lines=%s\n" "$q" "$status" "$(printf "%s" "$out" | grep -c .)"; done' \
+    > "$a/pacman-queries.txt" 2>&1 || true
+  ra_blueprint target --profile "$RA_GUEST_PROFILE" --machine target --json check > "$a/check.json" 2>> "$log" &&
+    ra_contract check "$a/check.json" target 2>> "$log" ||
+    ra_fail TARGET_PREFLIGHT "Blueprint check failed on fresh Machine B (see target/check.json, target/blueprint.log)"
+  ra_contract fresh-check "$a/check.json" target 2>> "$log" ||
+    ra_fail TARGET_PREFLIGHT "Blueprint check did not report the fresh machine's unavailable package origin"
+  ra_blueprint target --profile "$RA_GUEST_PROFILE" --machine target --json restore --dry-run \
+    > "$a/restore-plan.json" 2>> "$log" &&
+    ra_contract restore-plan "$a/restore-plan.json" 2>> "$log" ||
+    ra_fail TARGET_PREFLIGHT "Restore planning failed on fresh Machine B (see target/restore-plan.json)"
 }
