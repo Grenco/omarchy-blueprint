@@ -859,6 +859,8 @@ If any fail, classify `SOURCE_CUSTOMIZATION` with "fixture no longer distinguish
 
 `omarchy pkg add` invokes `sudo` itself, and the guest's sudo neither prompts nor honours `SUDO_ASKPASS` without a terminal. The harness therefore runs the same native command as root through `sudo -S` (its supported `EUID == 0` path), fed the disposable fixture password from a throwaway `/tmp` helper for this customization only (no sudoers change).
 
+> **Amendment (PR 2):** the installed Omarchy 4.0.4 base has no pacman sync databases (`database file for 'core' does not exist`), so package resolution fails before any customization. Guest staging refreshes them with `pacman -Sy` identically on Machine A and Machine B (infrastructure, retryable, no package upgrade), so later Blueprint Restore resolves packages the same way source customization did.
+
 ```bash
 omarchy pkg add alacritty
 omarchy default terminal alacritty
