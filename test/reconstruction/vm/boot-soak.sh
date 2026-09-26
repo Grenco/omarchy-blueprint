@@ -17,7 +17,13 @@ ra_base_enable_boot_debug() {
 # Identity and initramfs contents of the unified kernel images, so boot
 # image variants can be compared: hash, lsinitcpio analysis, module list.
 ra_base_record_boot_image() {
-  ra_ssh_sudo 'echo "== /boot/limine.conf"; cat /boot/limine.conf
+  ra_ssh_sudo 'echo "== sources of console=uart"; grep -rIl "console=uart" /boot /efi /etc 2>/dev/null
+    echo "== /boot files"; find /boot -xdev -type f 2>/dev/null | sort
+    echo "== EFI loader and stub variables"
+    for v in /sys/firmware/efi/efivars/Loader* /sys/firmware/efi/efivars/Stub*; do
+      [ -e "$v" ] && printf "%s: %s\n" "${v##*/}" "$(tail -c +5 "$v" | tr -d "\0" | tr -c "[:print:]" " ")"
+    done
+    echo "== /boot/limine.conf"; cat /boot/limine.conf
     for efi in /boot/EFI/Linux/*.efi; do
       echo "== $efi"; sha256sum "$efi"
       objcopy -O binary --only-section=.cmdline "$efi" /tmp/ra-cmdline && echo "cmdline: $(tr -d "\0" < /tmp/ra-cmdline)"
