@@ -42,6 +42,7 @@ source "$RA_ROOT/scenario/capture-source.sh"
 source "$RA_ROOT/scenario/preflight-target.sh"
 ra_guest_create source
 ra_guest_start source blueprint-ra-source
+ra_guest_enable_session source
 ra_guest_freshen_identity source blueprint-ra-source
 ra_pass OMARCHY_INSTALL
 

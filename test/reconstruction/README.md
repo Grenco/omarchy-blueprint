@@ -25,6 +25,11 @@ The installed base has no pacman sync databases, so staging refreshes them
 (`pacman -Sy`, retried as a network transfer) identically on both guests without
 upgrading packages.
 
+The ISO only enables SDDM autologin for encrypted installs, and this
+unattended install is unencrypted, so each guest gets the same
+`/etc/sddm.conf.d/autologin.conf` (`Session=omarchy.desktop`) before its identity
+reboot. Staging waits until `omarchy-shell shell ping` answers.
+
 Guest commands run with the graphical session's environment
 (`scenario/guest-env.sh`), the same for source customization and Blueprint.
 `omarchy pkg add` needs root and sudo cannot prompt without a terminal, so
