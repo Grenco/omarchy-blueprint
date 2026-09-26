@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 )
 
 func TestStatusNonRepositoryAndParentRepository(t *testing.T) {
@@ -101,6 +102,7 @@ func TestStatusAheadBehindAndSanitizedOrigin(t *testing.T) {
 	parent := t.TempDir()
 	origin := filepath.Join(parent, "origin.git")
 	git(t, parent, "init", "--bare", origin)
+	gittest.ConfigureRemote(t, origin)
 	first := filepath.Join(parent, "first")
 	second := filepath.Join(parent, "second")
 	git(t, parent, "clone", origin, first)
