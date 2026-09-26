@@ -1,4 +1,4 @@
-name: Reconstruction Harness
+name: Reconstruction Assurance
 
 on:
   pull_request:
@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  substrate:
-    name: Omarchy VM substrate
+  reconstruction:
+    name: Reconstruction Assurance
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -33,14 +33,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf genisoimage openssh-client
       - name: Build Blueprint
-        run: CGO_ENABLED=0 go build -o /tmp/omarchy-blueprint-ra ./cmd/omarchy-blueprint
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o /tmp/omarchy-blueprint-ra ./cmd/omarchy-blueprint
+          sha256sum /tmp/omarchy-blueprint-ra | tee /tmp/omarchy-blueprint-ra.sha256
       - name: Prepare reconstruction workspace
         run: sudo mkdir -p /mnt/omarchy-blueprint-ra && sudo chown "$USER:$USER" /mnt/omarchy-blueprint-ra
-      - name: Run source Capture and target preflight
+      - name: Reconstruct the canonical machine
         run: bash test/reconstruction/run.sh
+      - name: Summarize
+        if: always()
+        run: cat /mnt/omarchy-blueprint-ra/artifacts/summary.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      # Always: successful runs' boot timings are the baseline for stall analysis.
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
-          name: reconstruction-harness-failure
+          name: reconstruction-assurance-artifacts
           path: /mnt/omarchy-blueprint-ra/artifacts
           if-no-files-found: ignore

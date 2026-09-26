@@ -1,14 +1,18 @@
-# Real Omarchy reconstruction harness
+# Reconstruction Assurance harness
 
-This harness runs against an official installed Omarchy guest under QEMU/KVM.
-It installs one pristine base, then runs Machine A (`source`) and Machine B
-(`target`) as sequential overlays. Machine A is customized with native Omarchy
-commands, captured through the public CLI with a normal reviewed Capture, and
-destroyed; Machine B boots fresh and receives only the profile archive. PR 3
-adds Restore and independent verification. Run `run.sh` from the repository
-checkout on a KVM-capable Ubuntu host with QEMU, OVMF, genisoimage, OpenSSL,
-Python 3, OpenSSH and a Blueprint build at `$RA_BLUEPRINT_BIN` (default
-`/tmp/omarchy-blueprint-ra`). The workflow sets up those tools on `ubuntu-24.04`.
+This harness runs against an official installed Omarchy guest under QEMU/KVM
+(ADR 0021). It installs one pristine base from the pinned ISO, then runs
+Machine A (`source`) and Machine B (`target`) as sequential overlays. Both
+machines become package-ready through Omarchy's own `omarchy update` and must
+reach the same Omarchy version. Machine A is customized with native Omarchy
+commands, captured through a normal reviewed Capture, and destroyed. Machine B
+proves its fresh state, receives only the profile archive, becomes ready, and is
+restored through the normal approved Restore at a real terminal, including the
+real `sudo` prompt. It is then graded independently. Run `run.sh` from the
+repository checkout on a KVM-capable Ubuntu host with QEMU, OVMF, genisoimage,
+OpenSSL, Python 3, OpenSSH and a Blueprint build at `$RA_BLUEPRINT_BIN` (default
+`/tmp/omarchy-blueprint-ra`). The `Reconstruction Assurance` workflow sets up
+those tools on `ubuntu-24.04`.
 
 ## Fixture contract
 
@@ -60,8 +64,23 @@ Phase boundaries:
   is powered off and its disk deleted.
 - `TARGET_PREFLIGHT`: Machine B boots with a distinct identity, has none of the
   source state, verifies and extracts the archive, binds `target` without
-  changing profile bytes, persists Safe + Additive Restore defaults, and must pass `check` and a Restore
-  dry-run with its package state untouched (below).
+  changing profile bytes, persists Safe + Additive Restore defaults, and must
+  pass `check` and a Restore dry-run with its package state untouched (below).
+- `TARGET_READINESS`: Machine B runs `omarchy update`, must reach Machine A's
+  ready Omarchy version, and must still have none of the canonical
+  customizations.
+- `RESTORE_PLAN`: a completely new plan; the pre-readiness dry-run is never
+  approved. The persisted defaults are Safe + Additive, and the plan matches the
+  canonical contract. Its only interactive step is the `omarchy pkg add`, which
+  carries the administrator-authentication notice.
+- `RESTORE_APPROVAL`, `RESTORE_APPLY`, `BLUEPRINT_VERIFY`: the normal `restore`
+  runs over a real terminal (`scenario/drive_terminal.py`). The harness sends
+  `yes` once at Blueprint's prompt and answers only `sudo`'s own prompt; there
+  is no `--yes`, `--json` or one-run override, and nothing is retried.
+  Blueprint's journal must end with a successful verification.
+- `INDEPENDENT_VERIFY`: native assertions (`verify/verify-target.sh`), then a
+  final dry-run with no actionable work beyond the intentional
+  `target-only-skip`.
 
 ## Fresh target package state
 
@@ -109,7 +128,8 @@ BLUEPRINT_VERIFY
 INDEPENDENT_VERIFY
 ```
 
-`$RA_WORK/artifacts/summary.txt` records phase status. Host, base, source and
+`$RA_WORK/artifacts/summary.txt` records phase status, both ready Omarchy versions
+and both guests' Blueprint binary hashes. Host, base, source and
 target diagnostics stay below `artifacts/`; guest disks and SSH private keys
 are never uploaded. Cleanup is best-effort and cannot replace the first error.
 Infrastructure readiness and transfers may be polled; semantic operations must

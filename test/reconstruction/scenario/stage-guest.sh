@@ -46,7 +46,16 @@ ra_guest_stage() {
     git config --system http.https://10.0.2.2:9443/.sslCAInfo /etc/blueprint-ra/git-fixture.pem &&
     install -m 0755 /tmp/omarchy-blueprint /usr/local/bin/omarchy-blueprint" \
     > "$RA_ARTIFACTS/$role/stage.log" 2>&1 || return 1
-  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null'
+  ra_guest_exec "$role" 'omarchy-blueprint --help >/dev/null' || return 1
+  # Both guests must run the exact binary built from the PR head.
+  local host guest
+  host=$(sha256sum "$RA_BLUEPRINT_BIN" | cut -d' ' -f1)
+  guest=$(ra_guest_exec "$role" "sha256sum /usr/local/bin/omarchy-blueprint | cut -d' ' -f1") || return 1
+  if [[ $guest != "$host" ]]; then
+    ra_note "$role Blueprint binary $guest does not match the host build $host"
+    return 1
+  fi
+  ra_record "$role Blueprint sha256: $guest"
 }
 
 # Runs the exact PR build of Blueprint inside the guest's session environment.
