@@ -44,6 +44,24 @@ func TestOperationPreservesInteractiveNoticeInPlanJSON(t *testing.T) {
 	}
 }
 
+func TestCompatibilityNotApplicableOmitsStateInJSON(t *testing.T) {
+	category := CompatibilityCategory{Category: "hooks", Authority: CompatibilityUnchanged}
+	b, err := json.Marshal(category)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := decoded["state"]; present {
+		t.Fatalf("not-applicable category emitted state: %s", b)
+	}
+	if decoded["applies"] != false || decoded["authority"] != "unchanged" {
+		t.Fatalf("not-applicable JSON shape changed: %s", b)
+	}
+}
+
 func containsJSONValue(b []byte, field string, value any) bool {
 	var decoded map[string]any
 	if err := json.Unmarshal(b, &decoded); err != nil {
