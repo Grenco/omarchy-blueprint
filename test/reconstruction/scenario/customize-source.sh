@@ -4,7 +4,6 @@
 source /tmp/blueprint-ra-fixtures/guest-env.sh
 set -euo pipefail
 fixtures=/tmp/blueprint-ra-fixtures
-export SUDO_ASKPASS=/tmp/blueprint-ra-askpass
 
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 step() { printf '== %s\n' "$*" >&2; }
@@ -23,7 +22,8 @@ git ls-remote "$RA_GIT_REMOTE" refs/heads/main | grep -q "^$RA_GIT_REVISION" ||
   fail "guest cannot reach fixture Git remote $RA_GIT_REMOTE"
 
 step "package and default terminal"
-omarchy pkg add "$RA_PACKAGE"
+# Without a terminal, sudo will not prompt; use omarchy-pkg-add's own root path.
+/tmp/blueprint-ra-askpass | sudo -S -p '' omarchy pkg add "$RA_PACKAGE"
 omarchy default terminal "$RA_DEFAULT_TERMINAL"
 
 step "theme"

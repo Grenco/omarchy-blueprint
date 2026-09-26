@@ -23,8 +23,9 @@ certificate for that URL only, through the system Git config, which is outside
 
 Guest commands run with the graphical session's environment
 (`scenario/guest-env.sh`), the same for source customization and Blueprint.
-`omarchy pkg add` calls `sudo` itself; during source customization only, a
-throwaway `SUDO_ASKPASS` helper under `/tmp` answers it for the fixture account.
+`omarchy pkg add` needs root and sudo cannot prompt without a terminal, so
+source customization runs it through `sudo -S` (its supported root path) with
+the fixture password from a throwaway `/tmp` helper removed afterwards.
 
 Phase boundaries:
 
