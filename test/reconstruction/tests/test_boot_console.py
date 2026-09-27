@@ -41,15 +41,43 @@ class CanonicalBootImageTests(unittest.TestCase):
                 self.assertEqual(result.stdout.strip(), consoles)
         self.assertNotEqual(bash("ra_resolve_boot_image tty0-typo").returncode, 0)
 
-    def test_console_edit_appends_to_every_boot_entry_once(self):
+    def test_durable_normalization_uses_the_limine_entry_tool_and_verifies_every_entry(self):
         with tempfile.TemporaryDirectory() as work:
-            conf = Path(work, "limine.conf")
-            conf.write_text("timeout: 3\n/+Omarchy\n  //linux\n  cmdline: root=x quiet\n  //fallback\n  cmdline: root=x\n")
-            for _ in range(2):  # idempotent
-                result = bash(f"eval \"$(ra_boot_console_edit 'console=tty0' '{conf}')\"", work)
-                self.assertEqual(result.returncode, 0, result.stderr)
-            lines = [line for line in conf.read_text().splitlines() if "cmdline:" in line]
-            self.assertEqual(lines, ["  cmdline: root=x quiet console=tty0", "  cmdline: root=x console=tty0"])
+            conf, dropin, bin_dir = Path(work, "limine.conf"), Path(work, "entry-tool.d/zz-ra.conf"), Path(work, "bin")
+            bin_dir.mkdir()
+            # Stands in for limine-update: regenerates every entry from the drop-ins.
+            Path(bin_dir, "limine-update").write_text(f"""#!/bin/bash
+declare -A KERNEL_CMDLINE=([default]="root=x quiet")
+for f in {dropin.parent}/*.conf; do source "$f"; done
+printf 'timeout: 3\\n/+Omarchy\\n  //linux\\n  cmdline: %s\\n  //fallback\\n  cmdline: %s\\n' \\
+  "${{KERNEL_CMDLINE[default]}}" "${{KERNEL_CMDLINE[default]}}" > {conf}
+""")
+            Path(bin_dir, "limine-update").chmod(0o755)
+            command = bash(f"ra_boot_console_normalize_command 'console=tty0' '{conf}' '{dropin}'", work).stdout
+            self.assertNotIn("sed", command)
+            run = subprocess.run(["bash", "-c", command], capture_output=True, text=True,
+                                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertEqual(dropin.read_text(), 'KERNEL_CMDLINE[default]+=" console=tty0"\n')
+            lines = [line.strip() for line in conf.read_text().splitlines() if "cmdline:" in line]
+            self.assertEqual(lines, ["cmdline: root=x quiet console=tty0"] * 2)
+
+    def test_durable_normalization_fails_when_regeneration_drops_the_console(self):
+        with tempfile.TemporaryDirectory() as work:
+            conf, bin_dir = Path(work, "limine.conf"), Path(work, "bin")
+            bin_dir.mkdir()
+            Path(bin_dir, "limine-update").write_text(f"#!/bin/bash\nprintf '  cmdline: root=x quiet\\n' > {conf}\n")
+            Path(bin_dir, "limine-update").chmod(0o755)
+            command = bash(f"ra_boot_console_normalize_command 'console=tty0' '{conf}' '{work}/d/zz.conf'", work).stdout
+            run = subprocess.run(["bash", "-c", command], capture_output=True, text=True,
+                                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+            self.assertNotEqual(run.returncode, 0)
+
+    def test_canonical_normalization_targets_omarchys_entry_tool_directory(self):
+        command = bash("ra_boot_console_normalize_command console=tty0").stdout
+        self.assertIn("/etc/limine-entry-tool.d/", command)
+        self.assertIn("KERNEL_CMDLINE", command)
+        self.assertIn("limine-update", command)
 
     def test_cmdline_contract_requires_tty0_and_rejects_serial_kernel_consoles(self):
         self.assertEqual(bash(f"ra_check_canonical_cmdline '{TTY0}'").returncode, 0)
@@ -78,6 +106,86 @@ class CanonicalBootImageTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("phase: INFRASTRUCTURE", summary)
                     self.assertIn("console=uart", summary)
+
+
+def base_first_boot(work: str, image: str, cmdline: str) -> tuple[subprocess.CompletedProcess, str]:
+    Path(work, "artifacts/base").mkdir(parents=True, exist_ok=True)
+    result = bash(f"""trap 'ra_finish "$?"' EXIT
+        source '{ROOT}/vm/install-omarchy.sh'
+        ra_ssh() {{ echo '{cmdline}'; }}
+        ra_phase OMARCHY_INSTALL
+        ra_base_first_disk_boot {image}
+        ra_pass OMARCHY_INSTALL""", work)
+    return result, Path(work, "artifacts/summary.txt").read_text()
+
+
+NO_CONSOLE = TTY0.replace(" console=tty0", "")
+
+
+class BaseBuilderTopologyTests(unittest.TestCase):
+    def test_canonical_base_builder_has_no_serial_device(self):
+        result = bash("ra_base_serial_args canonical /x/serial.log")
+        self.assertEqual(result.stdout.split(), ["-serial", "none"])
+        install = (ROOT / "vm/install-omarchy.sh").read_text()
+        self.assertEqual(re.findall(r"\s-serial\s", install), [])  # only through ra_base_serial_args
+        self.assertIn('"${serial[@]}"', install)
+
+    def test_diagnostic_base_builders_keep_the_original_serial_device(self):
+        for image in ("installer", "ttys0-console", "rebuilt", "debug"):
+            with self.subTest(image=image):
+                self.assertEqual(bash(f"ra_base_serial_args {image} /x/serial.log").stdout.split(),
+                                 ["-serial", "file:/x/serial.log"])
+        self.assertNotEqual(bash("ra_base_serial_args typo /x").returncode, 0)
+
+    def test_overlay_guests_restore_the_serial_device(self):
+        start = (ROOT / "vm/guest.sh").read_text().split("ra_guest_start() {")[1].split("\n}\n")[0]
+        self.assertIn("-serial chardev:serial0", start)
+        self.assertIn("serial.log", start)
+
+    def test_first_disk_boot_accepts_no_console_yet_and_rejects_serial_consoles(self):
+        for cmdline, ok in ((NO_CONSOLE, True), (TTY0, True), (INSTALLER, False), (TTYS0, False)):
+            with self.subTest(cmdline=cmdline[-40:]), tempfile.TemporaryDirectory() as work:
+                result, summary = base_first_boot(work, "canonical", cmdline)
+                self.assertEqual(Path(work, "artifacts/base/first-disk-boot-cmdline.txt").read_text().strip(), cmdline)
+                self.assertIn("-serial none", summary)
+                if ok:
+                    self.assertEqual(result.returncode, 0, summary)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("phase: INFRASTRUCTURE", summary)
+
+    def test_installer_control_first_disk_boot_is_recorded_not_enforced(self):
+        with tempfile.TemporaryDirectory() as work:
+            result, summary = base_first_boot(work, "installer", INSTALLER)
+            self.assertEqual(result.returncode, 0, summary)
+            self.assertIn("console=uart", Path(work, "artifacts/base/first-disk-boot-cmdline.txt").read_text())
+
+    def test_base_timeout_diagnostics_expect_no_serial_log_for_the_canonical_builder(self):
+        for image, expected in (("canonical", "no serial device"), ("installer", "firmware line")):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as work:
+                Path(work, "artifacts/base").mkdir(parents=True)
+                if image == "installer":
+                    Path(work, "artifacts/base/omarchy-serial.log").write_text("firmware line\n")
+                result = bash(f"""source '{ROOT}/vm/install-omarchy.sh'
+                    ra_screendump() {{ :; }}; ra_monitor() {{ :; }}; ra_qemu_activity() {{ :; }}
+                    set -e; ra_base_timeout_diagnostics {image} 1""", work)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, Path(work, "artifacts/base/boot-timeout-serial-tail.txt").read_text())
+
+    def test_overlay_boot_records_the_serial_log_and_requires_tty0(self):
+        with tempfile.TemporaryDirectory() as work:
+            Path(work, "artifacts/target").mkdir(parents=True)
+            Path(work, "artifacts/target/serial.log").write_text("BdsDxe: loading Boot0004\nBdsDxe: starting\n")
+            result = bash(f"""trap 'ra_finish "$?"' EXIT
+                source '{ROOT}/vm/guest.sh'
+                ra_guest_exec() {{ echo '{TTY0}'; }}
+                ra_phase TARGET_PREFLIGHT
+                ra_guest_require_canonical_boot target post-update
+                ra_pass TARGET_PREFLIGHT""", work)
+            summary = Path(work, "artifacts/summary.txt").read_text()
+            self.assertEqual(result.returncode, 0, summary)
+            self.assertIn("2 firmware boot manager lines", summary)
+            self.assertTrue(Path(work, "artifacts/target/proc-cmdline-post-update.txt").exists())
 
 
 class WorkflowModeTests(unittest.TestCase):

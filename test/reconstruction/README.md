@@ -112,25 +112,48 @@ Blueprint as root.
 
 GitHub-hosted QEMU/OVMF advertises a firmware serial console that causes
 systemd-stub to infer a kernel serial console (`console=uart,io,0x3f8`) when a
-boot entry has no explicit `console=`. The harness explicitly sets
-`console=tty0` to normalize this CI-only virtualization artifact: it is
-appended to every Limine entry of the pinned install before the pristine base is
-frozen into overlays. Firmware/bootloader serial logging remains available, and
-QEMU keeps its serial device and `serial.log` artifacts. This is not Blueprint
-desired state and not an Omarchy workaround for real machines.
+boot entry has no explicit `console=`. The harness normalizes this CI-only
+virtualization artifact in two steps:
 
-Each canonical guest's booted `/proc/cmdline` is kept as
-`<role>/proc-cmdline.txt` and must contain `console=tty0` and no serial kernel
-console (`console=uart…` or `console=ttyS…`). Machine A is checked after its
-first boot and Machine B after its identity reboot, before either counts as
-evidence; otherwise the run fails `INFRASTRUCTURE`.
+1. The base builder (the QEMU process that runs the official ISO install and
+   the installed system's first disk boot) has no serial device
+   (`-serial none`), so the firmware presents no serial console for
+   systemd-stub to infer. The pinned ISO offers no supported way to change the
+   installed system's kernel arguments before that first boot: its unattended
+   installer never runs archinstall `custom_commands` and regenerates
+   `limine.conf` with `limine-update` at the end of the install.
+2. After that first boot, the harness adds Omarchy's own
+   `limine-entry-tool` drop-in
+   (`/etc/limine-entry-tool.d/zz-blueprint-ra-ci-console.conf`,
+   `KERNEL_CMDLINE[default]+=" console=tty0"`), runs `limine-update`, and
+   freezes the base only if every generated `cmdline:` entry carries
+   `console=tty0`. The drop-in survives later regeneration, such as kernel
+   upgrades during `omarchy update`.
+
+Machine A and Machine B keep QEMU's serial device and `serial.log`. This is not
+Blueprint desired state and not an Omarchy workaround for real machines.
+
+The booted `/proc/cmdline` is checked at every stage, or the run fails
+`INFRASTRUCTURE`:
+
+- the base's first disk boot (`base/first-disk-boot-cmdline.txt`) must have no
+  serial kernel console (`console=uart…` or `console=ttyS…`); explicit
+  `console=tty0` is not expected yet;
+- Machine A after its first boot and Machine B after its identity reboot
+  (`<role>/proc-cmdline.txt`), and each machine after its `omarchy update`
+  reboot (`<role>/proc-cmdline-post-update.txt`), must contain `console=tty0`
+  and no serial kernel console.
+
+Because the overlays start from the base builder's NVRAM, the run also
+records how much firmware boot-manager output still reaches each machine's
+`serial.log`.
 
 Why (PR #47, Reconstruction Boot Soak, fresh-overlay trials): early boots with a
 serial kernel console reproduced an idle hang after the initramfs resume message
 (14 of 515). Explicit `console=tty0` early boots had no failures in the measured
 sample (0 of 200). The exact kernel or userspace mechanism of the hang is not
-known. The untouched `installer` image remains available in the soak as the
-substrate control.
+known. The soak keeps the untouched `installer` image, built with the original
+serial device, as the substrate control.
 
 ## Boot soak (diagnostic, never a gate)
 

@@ -31,13 +31,18 @@ ra_guest_timeout_diagnostics() {
 }
 
 # A guest is valid evidence only if it booted with the normalized CI console.
+# The optional label names a later boot (e.g. after its update reboot). Also
+# records whether firmware/bootloader output still reaches the serial log,
+# since the base NVRAM was initialized without a serial device.
 ra_guest_require_canonical_boot() {
-  local role=$1 cmdline reason
+  local role=$1 file="proc-cmdline${2:+-$2}.txt" cmdline reason
   cmdline=$(ra_guest_exec "$role" 'cat /proc/cmdline') ||
     ra_fail INFRASTRUCTURE "could not read the $role kernel command line"
-  printf '%s\n' "$cmdline" > "$RA_ARTIFACTS/$role/proc-cmdline.txt"
+  printf '%s\n' "$cmdline" > "$RA_ARTIFACTS/$role/$file"
+  ra_record "$role cmdline${2:+ ($2)}: $cmdline"
+  ra_record "$role serial log${2:+ ($2)}: $(ra_serial_observation "$RA_ARTIFACTS/$role/serial.log")"
   reason=$(ra_check_canonical_cmdline "$cmdline") ||
-    ra_fail INFRASTRUCTURE "$role booted outside the normalized CI console: $reason (see $role/proc-cmdline.txt)"
+    ra_fail INFRASTRUCTURE "$role booted outside the normalized CI console: $reason (see $role/$file)"
 }
 
 ra_guest_start() {

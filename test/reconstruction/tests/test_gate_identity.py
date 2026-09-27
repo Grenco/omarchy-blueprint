@@ -27,6 +27,7 @@ class GateIdentityTests(unittest.TestCase):
             self.assertNotIn(diagnostic, runner.replace("install-omarchy.sh", ""))
         self.assertIn("ra_guest_require_canonical_boot source", runner)
         self.assertIn("ra_guest_require_canonical_boot target", (ROOT / "scenario/preflight-target.sh").read_text())
+        self.assertIn('ra_guest_require_canonical_boot "$role" post-update', (ROOT / "scenario/readiness.sh").read_text())
 
     def test_production_workflow_runs_only_the_canonical_lifecycle(self):
         workflow = (WORKFLOWS / "reconstruction-assurance.yml").read_text()

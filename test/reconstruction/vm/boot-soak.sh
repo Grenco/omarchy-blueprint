@@ -119,6 +119,7 @@ ra_fresh_overlay_trials() {
     if [[ ! -s $RA_ARTIFACTS/soak-cmdline.txt ]]; then
       # Evidence of the boot configuration measured; a debug soak must really have it.
       ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
+      ra_record "soak overlay serial log: $(ra_serial_observation "$RA_ARTIFACTS/$role/serial.log")"
       # Later parameters win, so the image's own quiet/loglevel=0 would silence debug output.
       if [[ $2 == debug ]] && { ! grep -q 'console=ttyS0' "$RA_ARTIFACTS/soak-cmdline.txt" ||
            grep -qE '(^| )(quiet|loglevel=0)( |$)' "$RA_ARTIFACTS/soak-cmdline.txt"; }; then
