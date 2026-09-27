@@ -21,6 +21,13 @@ ra_guest_timeout_diagnostics() {
   stamp=$(date -u +%H%M%S)
   tail -c 4000 "$RA_ARTIFACTS/$role/serial.log" > "$RA_ARTIFACTS/$role/boot-timeout-$stamp-serial-tail.txt" 2>/dev/null || true
   ra_screendump "$RA_WORK/guests/$role.monitor.sock" "$RA_ARTIFACTS/$role/boot-timeout-$stamp-screen.ppm"
+  # Is the guest stuck or working? VM state, vCPU halt state, and QEMU's own CPU and disk activity.
+  ra_monitor "$RA_WORK/guests/$role.monitor.sock" "$RA_ARTIFACTS/$role/boot-timeout-$stamp-monitor.txt" \
+    "info status" "info cpus" "info blockstats"
+  {
+    ra_qemu_activity "$RA_GUEST_PID" 10
+    du -B1 "$RA_WORK/guests/$role.qcow2" 2>/dev/null
+  } > "$RA_ARTIFACTS/$role/boot-timeout-$stamp-qemu.txt" 2>&1
 }
 
 ra_guest_start() {
