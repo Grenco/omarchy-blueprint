@@ -88,10 +88,17 @@ var ErrRestorePlanChanged = errors.New("restore plan changed after approval; ins
 type UnmetRequirementsError struct{ Requirements []model.Requirement }
 
 // BlockedCompatibilityError prevents applying any part of the selected plan.
-type BlockedCompatibilityError struct{ Findings []model.CompatibilityFinding }
+type BlockedCompatibilityError struct {
+	Findings           []model.CompatibilityFinding
+	LinkedRequirements []model.Requirement
+}
 
 func (e *BlockedCompatibilityError) Error() string {
-	return fmt.Sprintf("restore compatibility blocks %d selected target(s); inspect and plan again", len(e.Findings))
+	message := fmt.Sprintf("restore compatibility blocks %d selected target(s); inspect and plan again", len(e.Findings))
+	if len(e.LinkedRequirements) > 0 {
+		message += "; " + strings.TrimPrefix((&UnmetRequirementsError{Requirements: e.LinkedRequirements}).Error(), "restore cannot be applied yet: ")
+	}
+	return message
 }
 
 func (e *UnmetRequirementsError) Error() string {
@@ -106,7 +113,19 @@ func (e *UnmetRequirementsError) Error() string {
 // requirements or with interactive operations when no terminal is handed over.
 func CheckRestoreApplicable(plan model.RestorePlan, terminal bool) error {
 	if blocking := compatibility.BlockingFindings(plan.Compatibility); len(blocking) > 0 {
-		return &BlockedCompatibilityError{Findings: blocking}
+		linked := map[string]bool{}
+		for _, finding := range blocking {
+			if finding.RequirementID != "" {
+				linked[finding.RequirementID] = true
+			}
+		}
+		block := &BlockedCompatibilityError{Findings: blocking}
+		for _, requirement := range plan.Requirements {
+			if linked[requirement.ID] {
+				block.LinkedRequirements = append(block.LinkedRequirements, requirement)
+			}
+		}
+		return block
 	}
 	if len(plan.Requirements) > 0 {
 		return &UnmetRequirementsError{Requirements: plan.Requirements}

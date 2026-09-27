@@ -64,7 +64,7 @@ func TestFreshMachineRestoreShowsReadinessAndRefusesBeforeMutation(t *testing.T)
 	}
 	for _, args := range [][]string{{"restore", "packages"}, {"restore", "packages", "--yes"}, {"--json", "restore", "packages", "--yes"}} {
 		code, output = f.run(append([]string{"--profile", f.profileDir}, args...)...)
-		if code == 0 || !strings.Contains(output, "restore compatibility blocks") || strings.Contains(output, "Apply this restore?") {
+		if code == 0 || !strings.Contains(output, "restore compatibility blocks") || !strings.Contains(output, "omarchy update") || strings.Contains(output, "Apply this restore?") {
 			t.Fatalf("%v code=%d output=%s", args, code, output)
 		}
 	}

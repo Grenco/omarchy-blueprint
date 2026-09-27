@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,9 +61,11 @@ func TestPlanRestoreAllSkippedProviderIsNotApplicable(t *testing.T) {
 }
 
 func TestCheckRestoreApplicableRejectsBlockedCompatibilityBeforeRequirements(t *testing.T) {
-	plan := model.RestorePlan{Compatibility: testCompatibility(model.CompatibilityUnknown, model.CompatibilityBlocked), Requirements: []model.Requirement{{ID: "packages.metadata"}}}
+	report := testCompatibility(model.CompatibilityUnknown, model.CompatibilityBlocked)
+	report.Categories[0].Findings[0].RequirementID = "packages.metadata"
+	plan := model.RestorePlan{Compatibility: report, Requirements: []model.Requirement{{ID: "packages.metadata", Reason: "metadata unavailable", Remediation: []string{"omarchy", "update"}}, {ID: "other", Reason: "unrelated"}}}
 	var blocked *BlockedCompatibilityError
-	if err := CheckRestoreApplicable(plan, false); !errors.As(err, &blocked) || len(blocked.Findings) != 1 || blocked.Findings[0].Code != "packages.test" {
+	if err := CheckRestoreApplicable(plan, false); !errors.As(err, &blocked) || len(blocked.Findings) != 1 || blocked.Findings[0].Code != "packages.test" || len(blocked.LinkedRequirements) != 1 || blocked.LinkedRequirements[0].ID != "packages.metadata" || !strings.Contains(err.Error(), "omarchy update") || strings.Contains(err.Error(), "unrelated") {
 		t.Fatalf("compatibility was not first/structured: %v", err)
 	}
 }
