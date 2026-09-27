@@ -94,3 +94,17 @@ func TestRestoreCompatibilityForceCannotPromptOrApplyBlockedPlugin(t *testing.T)
 		}
 	}
 }
+
+func TestRestoreCompatibilityHumanYesShowsPlanOnceBeforeApply(t *testing.T) {
+	f := newElevatedRestoreFixture(t)
+	code, output := f.run("--profile", f.profileDir, "restore", "packages", "--yes")
+	if code != 0 || !f.runner.official["alacritty"] || len(f.runner.interactiveCommands) != 1 {
+		t.Fatalf("approved package restore failed: code=%d output=%s commands=%v", code, output, f.runner.interactiveCommands)
+	}
+	if strings.Count(output, "Compatibility:\n") != 1 || !strings.Contains(output, "Packages:") || !strings.Contains(output, "+ install official:alacritty") || strings.Contains(output, "Apply this restore?") {
+		t.Fatalf("successful --yes omitted or duplicated plan inspection: %s", output)
+	}
+	if plan, result := strings.Index(output, "Compatibility:\n"), strings.Index(output, "Restore verified"); result < 0 || plan < 0 || plan >= result {
+		t.Fatalf("compatibility did not precede execution result: %s", output)
+	}
+}

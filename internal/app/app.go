@@ -1777,11 +1777,14 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if err := requireInteractiveTerminal(plan, deps.IsTTY(), opt.json); err != nil {
 		return err
 	}
+	if !opt.json {
+		fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
+	}
 	if !yes {
 		if opt.json {
 			return errors.New("restore with --json requires --yes or --dry-run")
 		}
-		fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions), "Apply this restore? [y/N] ")
+		fmt.Fprint(deps.Out, "Apply this restore? [y/N] ")
 		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
 		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
 			return errors.New("restore cancelled")
