@@ -310,22 +310,66 @@ func RestoreCompatibility(saved, current profile.Packages, applyTargets map[stri
 			findings = append(findings, model.CompatibilityFinding{Code: "packages.mise.unestablished", Target: "mise:" + id, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current tool declaration or installed state is not established"})
 		}
 	}
-	if saved.Preinstalls.Managed {
-		for id := range saved.Preinstalls.Items {
-			if apply("preinstall:" + id) {
-				if current.Preinstalls.Managed {
-					evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-preinstall", Summary: "current Omarchy preinstall catalogue is available"})
-				} else {
-					findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstall:" + id, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current preinstall catalogue is unavailable"})
+	needsMetadata := func(operationID string) bool {
+		for _, requirement := range requirements {
+			if requirement.ID != "packages.metadata" {
+				continue
+			}
+			for _, id := range requirement.Operations {
+				if id == operationID {
+					return true
 				}
 			}
 		}
-		if apply("preinstalls") {
-			if current.Preinstalls.Managed {
-				evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-preinstall", Summary: "current Omarchy preinstall catalogue is available"})
-			} else {
-				findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current preinstall catalogue is unavailable"})
+		return false
+	}
+	preinstallEvidence := model.CompatibilityEvidence{Kind: "omarchy-preinstall", Summary: "current Omarchy preinstall catalogue establishes this selected target"}
+	for id, want := range saved.Preinstalls.Items {
+		ref := "preinstall:" + id
+		if !apply(ref) {
+			continue
+		}
+		actual, supported := current.Preinstalls.Items[id]
+		if !current.Preinstalls.Managed {
+			authority := model.CompatibilityUnchanged
+			if want {
+				authority = model.CompatibilityBlocked
 			}
+			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: ref, State: model.CompatibilityUnknown, Authority: authority, Summary: "current Omarchy preinstall catalogue cannot establish this target"})
+			continue
+		}
+		if !supported {
+			if want {
+				findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unavailable", Target: ref, State: model.CompatibilityIncompatible, Authority: model.CompatibilityBlocked, Summary: "required preinstall is absent from the installed Omarchy catalogue"})
+			} else {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-preinstall-absence", Summary: "desired-absent preinstall is not in the installed Omarchy catalogue"})
+			}
+			continue
+		}
+		if want && !actual {
+			operationID := "packages.preinstall.install." + id
+			if needsMetadata(operationID) || saved.Preinstalls.Managed && !saved.Preinstalls.RemovedAll && current.Preinstalls.RemovedAll && apply("preinstalls") && needsMetadata("packages.preinstalls.install") {
+				findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.metadata.unavailable", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "installing this preinstall requires package metadata", RequirementID: "packages.metadata"})
+				continue
+			}
+			if current.OriginUnavailable {
+				return model.CompatibilityCategory{}, fmt.Errorf("compatibility: preinstall %s needs a same-plan packages.metadata requirement", ref)
+			}
+		}
+		evidence = append(evidence, preinstallEvidence)
+	}
+	if saved.Preinstalls.Managed && apply("preinstalls") {
+		switch {
+		case !current.Preinstalls.Managed:
+			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "current Omarchy preinstall group state is unavailable"})
+		case saved.Preinstalls.RemovedAll && !current.Preinstalls.RemovedAll:
+			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "broad Omarchy preinstall removal remains disabled"})
+		case !saved.Preinstalls.RemovedAll && current.Preinstalls.RemovedAll && needsMetadata("packages.preinstalls.install"):
+			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.metadata.unavailable", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "restoring Omarchy preinstalls requires package metadata", RequirementID: "packages.metadata"})
+		case !saved.Preinstalls.RemovedAll && current.Preinstalls.RemovedAll && current.OriginUnavailable:
+			return model.CompatibilityCategory{}, fmt.Errorf("compatibility: preinstall group needs a same-plan packages.metadata requirement")
+		default:
+			evidence = append(evidence, preinstallEvidence)
 		}
 	}
 	return compatibility.BuildCategory("packages", len(evidence)+len(findings) > 0, evidence, findings)

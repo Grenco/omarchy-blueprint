@@ -117,3 +117,65 @@ func TestRestoreCompatibilityDoesNotProbeOrMutate(t *testing.T) {
 		t.Fatalf("compatibility ran additional commands (including possible sync/update/sudo): before=%q after=%q", before, after)
 	}
 }
+
+func TestRestoreCompatibilityRequiredPreinstallMissingFromCatalogueBlocks(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{"foo": true}}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{"bar": false}}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "5.0")
+	if err != nil || len(plan.Skipped) == 0 || !strings.Contains(plan.Skipped[0].Reason, "not present") {
+		t.Fatalf("missing preinstall must be skipped: plan=%+v err=%v", plan, err)
+	}
+	got, err := RestoreCompatibility(saved, current, map[string]bool{"preinstall:foo": true, "preinstalls": false}, false, plan.Requirements)
+	if err != nil || got.State != model.CompatibilityIncompatible || got.Authority != model.CompatibilityBlocked || len(got.Findings) != 1 || got.Findings[0].Target != "preinstall:foo" || got.Findings[0].Code != "packages.preinstall.unavailable" {
+		t.Fatalf("required missing preinstall falsely supported: %+v err=%v", got, err)
+	}
+}
+
+func TestRestoreCompatibilitySkippedMissingPreinstallDoesNotBlock(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{"foo": true}}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{}}}
+	got, err := RestoreCompatibility(saved, current, map[string]bool{"preinstall:foo": false, "preinstalls": false}, false, nil)
+	if err != nil || got.Applies || len(got.Findings) != 0 || got.State != "" || got.Authority != model.CompatibilityUnchanged {
+		t.Fatalf("policy-skipped missing preinstall blocks: %+v err=%v", got, err)
+	}
+}
+
+func TestRestoreCompatibilityPreinstallInstallLinksMetadataRequirement(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{"foo": true}}}
+	current := freshCurrent(nil)
+	current.Preinstalls = profile.Preinstalls{Managed: true, Items: map[string]bool{"foo": false}}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "5.0")
+	if err != nil || len(plan.Requirements) != 1 || !reflect.DeepEqual(plan.Requirements[0].Operations, []string{"packages.preinstall.install.foo"}) {
+		t.Fatalf("preinstall install must need metadata: plan=%+v err=%v", plan, err)
+	}
+	got, err := RestoreCompatibility(saved, current, map[string]bool{"preinstall:foo": true, "preinstalls": false}, false, plan.Requirements)
+	if err != nil || got.State != model.CompatibilityUnknown || got.Authority != model.CompatibilityBlocked || len(got.Findings) != 1 || got.Findings[0].RequirementID != "packages.metadata" || got.Findings[0].Target != "preinstall:foo" {
+		t.Fatalf("metadata-gated preinstall install falsely supported: %+v err=%v", got, err)
+	}
+}
+
+func TestRestoreCompatibilityPreinstallGroupInstallLinksMetadataRequirement(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, RemovedAll: false}}
+	current := freshCurrent(nil)
+	current.Preinstalls = profile.Preinstalls{Managed: true, RemovedAll: true}
+	plan, err := (Provider{}).Plan(saved, current, 13, "4.0", "5.0")
+	if err != nil || len(plan.Requirements) != 1 || !reflect.DeepEqual(plan.Requirements[0].Operations, []string{"packages.preinstalls.install"}) {
+		t.Fatalf("group install must need metadata: plan=%+v err=%v", plan, err)
+	}
+	got, err := RestoreCompatibility(saved, current, map[string]bool{"preinstalls": true}, false, plan.Requirements)
+	if err != nil || got.State != model.CompatibilityUnknown || got.Authority != model.CompatibilityBlocked || len(got.Findings) != 1 || got.Findings[0].RequirementID != "packages.metadata" || got.Findings[0].Target != "preinstalls" {
+		t.Fatalf("metadata-gated preinstall group falsely supported: %+v err=%v", got, err)
+	}
+}
+
+func TestRestoreCompatibilityDesiredFalseAbsentPreinstallNeedsNoInstall(t *testing.T) {
+	saved := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{"foo": false}}}
+	current := profile.Packages{Preinstalls: profile.Preinstalls{Managed: true, Items: map[string]bool{}}}
+	got, err := RestoreCompatibility(saved, current, map[string]bool{"preinstall:foo": true, "preinstalls": false}, false, nil)
+	if err != nil || got.State != model.CompatibilitySupported || got.Authority != model.CompatibilityUnchanged || len(got.Findings) != 0 {
+		t.Fatalf("absent desired-false preinstall mistaken for missing install: %+v err=%v", got, err)
+	}
+	if verification := Verify(saved, current); !verification.OK {
+		t.Fatalf("desired-false absent preinstall is already satisfied: %+v", verification)
+	}
+}
