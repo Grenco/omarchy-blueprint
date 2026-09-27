@@ -7,6 +7,7 @@ ra_boot_target() {
   ra_guest_create target && ra_guest_start target blueprint-ra-target &&
     ra_guest_enable_session target && ra_guest_freshen_identity target blueprint-ra-target ||
     ra_fail TARGET_PREFLIGHT "Machine B did not boot with a fresh identity"
+  ra_guest_require_canonical_boot target
   source_id=$(<"$RA_ARTIFACTS/source/machine-id.txt")
   target_id=$(<"$RA_ARTIFACTS/target/machine-id.txt")
   [[ $source_id != "$target_id" ]] || ra_fail TARGET_PREFLIGHT "source and target share machine identity"

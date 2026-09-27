@@ -25,6 +25,7 @@ source "$RA_ROOT/scenario/readiness.sh"
 source "$RA_ROOT/scenario/restore-target.sh"
 ra_guest_create source
 ra_guest_start source blueprint-ra-source
+ra_guest_require_canonical_boot source
 ra_guest_enable_session source
 ra_guest_freshen_identity source blueprint-ra-source
 ra_pass OMARCHY_INSTALL

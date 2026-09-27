@@ -5,13 +5,14 @@ ra_base_screen() {
   ra_screendump "$RA_WORK/base/monitor.sock" "$RA_ARTIFACTS/base/guest-screen.ppm"
 }
 
-# boot_image (diagnostic soak only): "installer" (default, as installed),
-# "tty0-console" / "ttys0-console" (the installer's image and entries, with
-# only an explicit console= appended to the boot entries, so systemd-stub no
-# longer adds console=uart,io,0x3f8 for the firmware's serial console),
-# "rebuilt" (limine-update) or "debug" (regenerated with serial output).
+# boot_image: "canonical" (default; the installer's image with console=tty0
+# on every Limine entry, see RA_CANONICAL_BOOT_IMAGE). Diagnostic soaks only:
+# "installer" (untouched control), "ttys0-console" (explicit serial kernel
+# console), "rebuilt" (limine-update) or "debug" (serial boot output).
 ra_install_base() {
-  local work=$1 boot_image=${2:-installer} pid start free_now
+  local work=$1 boot_image pid start free_now consoles
+  boot_image=$(ra_resolve_boot_image "${2:-}") || ra_fail OMARCHY_INSTALL "unknown boot image: ${2:-}"
+  consoles=$(ra_boot_console_args "$boot_image")
   mkdir -p "$work/base" "$work/cidata" "$RA_ARTIFACTS/base"
   start=$(date +%s)
   printf '%s\n%s\n' "$OMARCHY_ISO_URL" "$OMARCHY_ISO_SHA256" > "$RA_ARTIFACTS/base/iso.txt"
@@ -52,19 +53,21 @@ ra_install_base() {
     ra_base_record_boot_image installer
   fi
   if [[ $boot_image != installer ]]; then
-    if [[ $boot_image == tty0-console || $boot_image == ttys0-console ]]; then
-      local consoles="console=tty0"
-      [[ $boot_image == ttys0-console ]] && consoles="console=ttyS0,115200 console=tty0"
-      ra_ssh_sudo "sed -i '/^ *cmdline:/ s#\$# $consoles#' /boot/limine.conf && grep '^ *cmdline:' /boot/limine.conf" \
+    if [[ -n $consoles ]]; then
+      # Every entry must end with the consoles, or the base is not frozen.
+      ra_ssh_sudo "$(ra_boot_console_edit "$consoles") && grep '^ *cmdline:' /boot/limine.conf &&
+          ! grep '^ *cmdline:' /boot/limine.conf | grep -v -- ' $consoles\$'" \
         > "$RA_ARTIFACTS/base/boot-console.log" 2>&1 ||
-        ra_fail OMARCHY_INSTALL "could not change the boot console (see base/boot-console.log)"
+        ra_fail OMARCHY_INSTALL "could not set the boot console (see base/boot-console.log)"
     elif [[ $boot_image == debug ]]; then
       ra_base_enable_boot_debug || ra_fail OMARCHY_INSTALL "could not enable boot debugging (see base/boot-debug.log)"
     else
       ra_ssh_sudo 'limine-update' > "$RA_ARTIFACTS/base/boot-rebuild.log" 2>&1 ||
         ra_fail OMARCHY_INSTALL "could not rebuild the boot image (see base/boot-rebuild.log)"
     fi
-    ra_base_record_boot_image "$boot_image"
+    if declare -F ra_base_record_boot_image >/dev/null; then
+      ra_base_record_boot_image "$boot_image"
+    fi
   fi
   ra_ssh_sudo 'systemctl poweroff' > "$RA_ARTIFACTS/base/shutdown.log" 2>&1 || true
   ra_wait_exit "$pid" 90 || ra_fail OMARCHY_INSTALL "installed base did not power off; see shutdown.log"

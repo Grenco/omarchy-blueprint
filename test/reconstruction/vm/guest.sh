@@ -30,6 +30,16 @@ ra_guest_timeout_diagnostics() {
   } > "$RA_ARTIFACTS/$role/boot-timeout-$stamp-qemu.txt" 2>&1
 }
 
+# A guest is valid evidence only if it booted with the normalized CI console.
+ra_guest_require_canonical_boot() {
+  local role=$1 cmdline reason
+  cmdline=$(ra_guest_exec "$role" 'cat /proc/cmdline') ||
+    ra_fail INFRASTRUCTURE "could not read the $role kernel command line"
+  printf '%s\n' "$cmdline" > "$RA_ARTIFACTS/$role/proc-cmdline.txt"
+  reason=$(ra_check_canonical_cmdline "$cmdline") ||
+    ra_fail INFRASTRUCTURE "$role booted outside the normalized CI console: $reason (see $role/proc-cmdline.txt)"
+}
+
 ra_guest_start() {
   local role=$1 hostname=$2
   [[ -z $RA_ACTIVE_GUEST ]] || { ra_note "guest $RA_ACTIVE_GUEST is still active"; return 1; }

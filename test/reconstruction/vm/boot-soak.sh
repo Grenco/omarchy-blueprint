@@ -124,8 +124,12 @@ ra_fresh_overlay_trials() {
            grep -qE '(^| )(quiet|loglevel=0)( |$)' "$RA_ARTIFACTS/soak-cmdline.txt"; }; then
         ra_fail INFRASTRUCTURE "debug console output is not effective on the kernel command line (see soak-cmdline.txt)"
       fi
-      # A console variant must really have changed what the kernel booted with.
-      if [[ $2 == tty0-console || $2 == ttys0-console ]] && grep -q 'console=uart' "$RA_ARTIFACTS/soak-cmdline.txt"; then
+      # A console variant must really have changed what the kernel booted with;
+      # the canonical image must meet the production contract.
+      if [[ $2 == canonical ]] && ! ra_check_canonical_cmdline "$(cat "$RA_ARTIFACTS/soak-cmdline.txt")" > /dev/null; then
+        ra_fail INFRASTRUCTURE "canonical soak booted outside the normalized CI console (see soak-cmdline.txt)"
+      fi
+      if [[ $2 == ttys0-console ]] && grep -q 'console=uart' "$RA_ARTIFACTS/soak-cmdline.txt"; then
         ra_fail INFRASTRUCTURE "console=uart is still on the kernel command line (see soak-cmdline.txt)"
       fi
       if [[ $2 == ttys0-console ]] && ! grep -q 'console=ttyS0,115200' "$RA_ARTIFACTS/soak-cmdline.txt"; then
