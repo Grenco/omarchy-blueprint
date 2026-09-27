@@ -1328,8 +1328,8 @@ func (configIntegrationProvider) DiffWithScan(context.Context, profile.Data) ([]
 func (configIntegrationProvider) InspectConfig(context.Context, profile.Data, string) (workflow.ConfigInspection, error) {
 	return workflow.ConfigInspection{Candidate: config.Candidate{Path: ".config/example/settings.toml", Classification: config.ConfigAmbiguousBaseline, Reason: "ambiguous baseline"}}, nil
 }
-func (configIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (blueprintmodel.RestorePlan, error) {
-	return blueprintmodel.RestorePlan{}, nil
+func (configIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (workflow.RestoreFragment, error) {
+	return workflow.RestoreFragment{Compatibility: blueprintmodel.CompatibilityCategory{Category: "config", Applies: true, State: blueprintmodel.CompatibilitySupported, Authority: blueprintmodel.CompatibilityUnchanged, Evidence: []blueprintmodel.CompatibilityEvidence{{Kind: "fixture", Summary: "test target available"}}}}, nil
 }
 func (configIntegrationProvider) Verify(context.Context, profile.Data, workflow.RestoreContext) (blueprintmodel.VerificationResult, error) {
 	return blueprintmodel.VerificationResult{OK: true}, nil
@@ -1351,8 +1351,8 @@ func (resourcesIntegrationProvider) Diff(context.Context, profile.Data) ([]bluep
 func (resourcesIntegrationProvider) DiffWithGitWorkingState(context.Context, profile.Data) ([]blueprintmodel.Change, map[string]resourcesprovider.GitWorkingSummary, error) {
 	return nil, map[string]resourcesprovider.GitWorkingSummary{"projects": {UnstagedTracked: 1}}, nil
 }
-func (resourcesIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (blueprintmodel.RestorePlan, error) {
-	return blueprintmodel.RestorePlan{}, nil
+func (resourcesIntegrationProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (workflow.RestoreFragment, error) {
+	return workflow.RestoreFragment{Compatibility: blueprintmodel.CompatibilityCategory{Category: "resources", Authority: blueprintmodel.CompatibilityUnchanged}}, nil
 }
 func (resourcesIntegrationProvider) Verify(context.Context, profile.Data, workflow.RestoreContext) (blueprintmodel.VerificationResult, error) {
 	return blueprintmodel.VerificationResult{OK: true}, nil

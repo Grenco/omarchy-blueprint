@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -23,6 +24,66 @@ type Provider struct {
 	BuiltinDir, UserDir, ProfileDir string
 	captureDestination, captureOld  string
 	capturePending                  bool
+}
+
+// RestoreCompatibility shares Plan's authoritative built-in inventory check;
+// third-party provenance is evidence, not proof of a target Omarchy contract.
+func (p Provider) RestoreCompatibility(saved, current profile.Themes, applyTargets map[string]bool, exact bool) (model.CompatibilityCategory, error) {
+	saved = legacy(saved)
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	apply := func(key string) bool { return applyTargets == nil || applyTargets[key] }
+	assess := func(item profile.Theme, target string) {
+		switch item.Type {
+		case "builtin":
+			if isDir(filepath.Join(p.BuiltinDir, item.ID)) {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-builtin-theme", Summary: "requested built-in theme is in the current Omarchy inventory"})
+			} else {
+				findings = append(findings, model.CompatibilityFinding{Code: "themes.builtin.unavailable", Target: target, State: model.CompatibilityIncompatible, Authority: model.CompatibilityBlocked, Summary: "required built-in theme is unavailable on this Omarchy target"})
+			}
+		case "git", "local", "overlay":
+			valid := item.Hash != ""
+			if item.Type == "git" {
+				valid = item.URL != "" && validRevision(item.Revision) && installID(item.URL) == item.ID
+			}
+			authority := model.CompatibilityUnchanged
+			if !valid {
+				authority = model.CompatibilityBlocked
+			} else {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "theme-portable-provenance", Summary: "captured third-party theme source is recorded without exposing its URL or bytes"})
+			}
+			findings = append(findings, model.CompatibilityFinding{Code: "themes.third_party.unestablished", Target: target, State: model.CompatibilityUnknown, Authority: authority, Summary: "third-party theme contract cannot be established before installation"})
+		default:
+			findings = append(findings, model.CompatibilityFinding{Code: "themes.source.unestablished", Target: target, State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "captured theme source is not established"})
+		}
+	}
+	byID := themeMap(saved.Items)
+	if saved.Current != "" && apply("active") {
+		if item, found := byID[saved.Current]; found {
+			assess(item, "active")
+		} else {
+			findings = append(findings, model.CompatibilityFinding{Code: "themes.source.unestablished", Target: "active", State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "active theme has no recorded source"})
+		}
+	}
+	for _, item := range saved.Items {
+		if apply("theme:" + item.ID) {
+			assess(item, "theme:"+item.ID)
+		}
+	}
+	if exact {
+		have := themeMap(current.Items)
+		for _, item := range saved.Absent {
+			if item.Type == "builtin" || !apply("theme:"+item.ID) {
+				continue
+			}
+			if actual, present := have[item.ID]; present && equivalent(item, actual) {
+				findings = append(findings, model.CompatibilityFinding{Code: "themes.third_party.unestablished", Target: "theme:" + item.ID, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "third-party theme removal retains native provenance and active-theme guards"})
+			} else {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "theme-absence", Summary: "matching removed theme is not present on the target"})
+			}
+		}
+	}
+	return compatibility.BuildCategory("themes", len(evidence)+len(findings) > 0, evidence, findings)
 }
 
 func (p Provider) Detect(ctx context.Context) (profile.Themes, error) {

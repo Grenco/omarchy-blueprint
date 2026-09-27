@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -30,6 +31,56 @@ type catalogItem struct {
 	FirstParty bool   `json:"firstParty"`
 	CanDisable bool   `json:"canDisable"`
 	ClonedFrom string `json:"clonedFrom"`
+}
+
+// RestoreCompatibility uses the detected catalog and captured provenance;
+// plugin enablement remains Shell-owned and is not assessed here.
+func RestoreCompatibility(saved, current profile.Plugins, applyTargets map[string]bool, exact bool) (model.CompatibilityCategory, error) {
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	apply := func(key string) bool { return applyTargets == nil || applyTargets[key] }
+	have := pluginMap(current.Items)
+	for _, item := range saved.Items {
+		key := "plugin:" + item.ID
+		if !apply(key) {
+			continue
+		}
+		actual, present := have[item.ID]
+		if item.Source == "" || item.Source == "builtin" {
+			if present && (actual.Source == "" || actual.Source == "builtin") {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-first-party-plugin", Summary: "required first-party plugin is in the current catalog"})
+			} else {
+				findings = append(findings, model.CompatibilityFinding{Code: "plugins.first_party.unavailable", Target: key, State: model.CompatibilityIncompatible, Authority: model.CompatibilityBlocked, Summary: "required first-party plugin is unavailable on this Omarchy target"})
+			}
+			continue
+		}
+		if present && Equivalent(item, actual) {
+			evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-third-party-plugin", Summary: "current catalog contains the matching captured plugin source"})
+			continue
+		}
+		valid := item.Source == "git" && item.URL != "" && validRevision(item.Revision) || item.Source == "local" && item.Hash != ""
+		authority := model.CompatibilityUnchanged
+		if !valid {
+			authority = model.CompatibilityBlocked
+		} else {
+			evidence = append(evidence, model.CompatibilityEvidence{Kind: "plugin-portable-provenance", Summary: "captured third-party plugin source is recorded without exposing its URL or bytes"})
+		}
+		findings = append(findings, model.CompatibilityFinding{Code: "plugins.third_party.unestablished", Target: key, State: model.CompatibilityUnknown, Authority: authority, Summary: "third-party plugin validation cannot be established before installation"})
+	}
+	if exact {
+		for _, item := range saved.Absent {
+			key := "plugin:" + item.ID
+			if !apply(key) || item.Source == "" || item.Source == "builtin" {
+				continue
+			}
+			if actual, present := have[item.ID]; present && Equivalent(item, actual) {
+				findings = append(findings, model.CompatibilityFinding{Code: "plugins.third_party.unestablished", Target: key, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "matching third-party plugin removal remains guarded by its captured provenance"})
+			} else {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "plugin-absence", Summary: "matching removed plugin is not present on the target"})
+			}
+		}
+	}
+	return compatibility.BuildCategory("plugins", len(evidence)+len(findings) > 0, evidence, findings)
 }
 
 func (p Provider) Detect(ctx context.Context) (profile.Plugins, error) {

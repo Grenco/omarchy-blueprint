@@ -4810,12 +4810,13 @@ func TestPluginsPlanExactFailsClosedWhenShellPathsNotConfigured(t *testing.T) {
 	}
 }
 
-func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
+func TestPluginsInspectTargetsScopesSavedBuiltinAvailability(t *testing.T) {
 	_, deps := configSandbox(t)
 	pluginDir := t.TempDir()
 	deps.PluginDir = func() (string, error) { return pluginDir, nil }
 	runner := deps.Runner.(*machineRunner)
 	runner.pluginDir = pluginDir
+	runner.plugins = map[string]bool{"current-only": true}
 	if err := os.MkdirAll(filepath.Join(pluginDir, "cool-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -4835,8 +4836,11 @@ func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
 	for _, target := range targets {
 		byKey[target.Key] = target
 	}
-	if _, ok := byKey["plugin:builtin-toggle"]; ok {
-		t.Fatalf("targets = %#v, want the builtin plugin omitted", targets)
+	if got, ok := byKey["plugin:builtin-toggle"]; !ok || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent || got.CaptureEligible || !got.RestoreEligible {
+		t.Fatalf("saved builtin availability target = %#v, ok=%v", got, ok)
+	}
+	if _, ok := byKey["plugin:current-only"]; ok {
+		t.Fatalf("current-only builtin became saved intent: %#v", targets)
 	}
 	if got, ok := byKey["plugin:cool-plugin"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
 		t.Fatalf("plugin:cool-plugin (add) = %#v, ok=%v", got, ok)
@@ -5077,11 +5081,8 @@ func TestHooksPlanAndVerifyHonorRestoreSkipForAbsentTombstone(t *testing.T) {
 }
 
 // TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer
-// proves Convergence: Exact actually threads from RestoreContext.Options
-// through hooksStateProvider.Plan into the low-level provider's
-// PlanOptions, and that a Restore-Skip tombstone is structurally never a
-// deletion candidate (filterHooksForRestoreSkip strips it before Plan ever
-// sees it).
+// proves that policy Skip and reduced compatibility authority both prevent
+// Exact deletion, while Verify still reports an unapplied tombstone.
 func TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	deps.HomeDir = func() (string, error) { return t.TempDir(), nil }
@@ -5117,14 +5118,13 @@ func TestHooksPlanExactDeletesProvenanceMatchedTombstonedHookThroughAppLayer(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	var deleted bool
 	for _, op := range plan.Operations {
 		if op.Action == "delete" && op.Resource == "hook:removed.sh" {
-			deleted = true
+			t.Fatalf("unproven Hook lifecycle authorized deletion: %#v", plan.Operations)
 		}
 	}
-	if !deleted {
-		t.Fatalf("Operations = %#v, want a deletion for the tombstoned, provenance-matched hook", plan.Operations)
+	if plan.Compatibility.State != model.CompatibilityUnknown || plan.Compatibility.Authority != model.CompatibilityReduced || len(plan.Skipped) != 1 || plan.Skipped[0].Resource != "hook:removed.sh" {
+		t.Fatalf("Exact Hook reduction not represented in the plan: %+v", plan)
 	}
 
 	verification, err := (hooksStateProvider{deps: deps, opt: opt}).Verify(context.Background(), d, applyCtx)
@@ -5536,14 +5536,9 @@ func sliceContains(items []string, target string) bool {
 }
 
 // TestExactRestoreDestructiveSafetyGate is PR 5 Task 33's aggregate
-// destructive-safety gate: a real, full CLI restore run (real command
-// dispatch through machineRunner, real filesystem deletion) with
-// Convergence: Exact, exercising a tombstoned user theme, a tombstoned
-// third-party plugin, and a tombstoned hook together, plus untracked local
-// data no Resource references at all. Only the three provenance-matched
-// tombstones are removed; the untracked data is never touched, because
-// Resources genuinely has no delete path (Task 32) and never sweeps
-// anything it was never told to track.
+// destructive-safety gate: Exact can remove matched Theme/Plugin tombstones,
+// but reduced Hook lifecycle authority withholds deletion and keeps Verify
+// non-converged. Untracked Resource-unowned data is never swept.
 func TestExactRestoreDestructiveSafetyGate(t *testing.T) {
 	profileDir, deps := configSandbox(t)
 	home := t.TempDir()
@@ -5666,8 +5661,8 @@ func TestExactRestoreDestructiveSafetyGate(t *testing.T) {
 	}
 
 	code, out := configRun(t, deps, profileDir, "restore", "--exact", "--yes")
-	if code != 0 {
-		t.Fatalf("restore code=%d out=%s", code, out)
+	if code == 0 || !strings.Contains(out, "verification failed: missing hook:old-hook.sh") {
+		t.Fatalf("withheld Hook tombstone falsely verified: code=%d out=%s", code, out)
 	}
 
 	if _, err := os.Stat(oldTheme); !os.IsNotExist(err) {
@@ -5676,8 +5671,8 @@ func TestExactRestoreDestructiveSafetyGate(t *testing.T) {
 	if _, err := os.Stat(oldPlugin); !os.IsNotExist(err) {
 		t.Fatalf("old-plugin was not removed: err=%v", err)
 	}
-	if _, err := os.Stat(oldHook); !os.IsNotExist(err) {
-		t.Fatalf("old-hook.sh was not removed: err=%v", err)
+	if _, err := os.Stat(oldHook); err != nil {
+		t.Fatalf("unknown Hook lifecycle was removed: err=%v", err)
 	}
 	if _, err := os.Stat(extra); err != nil {
 		t.Fatalf("untracked local data was touched: err=%v", err)

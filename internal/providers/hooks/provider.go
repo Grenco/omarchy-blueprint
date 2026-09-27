@@ -12,7 +12,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/content"
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 )
@@ -82,6 +84,54 @@ func (p Provider) Detect() (State, error) {
 	sort.Slice(state.Items, func(i, j int) bool { return state.Items[i].Path < state.Items[j].Path })
 	sort.Slice(state.Unmanaged, func(i, j int) bool { return state.Unmanaged[i].Path < state.Unmanaged[j].Path })
 	return state, nil
+}
+
+// RestoreCompatibility deliberately does not execute hooks or probe their
+// runtime lifecycle. The existing Plan preconditions protect bounded file
+// work, but captured bytes/path alone are not proof Omarchy still runs it.
+func RestoreCompatibility(saved profile.Hooks, current State, applyTargets map[string]bool, exact bool) (model.CompatibilityCategory, error) {
+	if err := ValidateMetadata(saved.Items); err != nil {
+		return model.CompatibilityCategory{}, err
+	}
+	if exact {
+		if err := ValidateMetadata(saved.Absent); err != nil {
+			return model.CompatibilityCategory{}, err
+		}
+	}
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	apply := func(path string) bool { return applyTargets == nil || applyTargets[path] }
+	actual := currentMap(current.Items)
+	unmanaged := make(map[string]UnmanagedHook, len(current.Unmanaged))
+	for _, hook := range current.Unmanaged {
+		unmanaged[hook.Path] = hook
+	}
+	for _, item := range saved.Items {
+		if !apply(item.Path) {
+			continue
+		}
+		authority := model.CompatibilityUnchanged
+		if _, blocked := blockedByUnmanaged(item.Path, unmanaged); blocked {
+			authority = model.CompatibilityReduced
+		} else if present, ok := actual[item.Path]; ok && present.Hash != item.Hash {
+			authority = model.CompatibilityReduced
+		}
+		evidence = append(evidence, model.CompatibilityEvidence{Kind: "hook-portable-artifact", Summary: "captured Hook content and mode are represented with guarded file preconditions"})
+		findings = append(findings, model.CompatibilityFinding{Code: "hooks.lifecycle.unestablished", Target: item.Path, State: model.CompatibilityUnknown, Authority: authority, Summary: "target Omarchy Hook lifecycle cannot be established read-only"})
+	}
+	if exact {
+		for _, item := range saved.Absent {
+			if !apply(item.Path) {
+				continue
+			}
+			if _, present := actual[item.Path]; !present {
+				evidence = append(evidence, model.CompatibilityEvidence{Kind: "hook-absence", Summary: "explicitly removed Hook is already absent on target"})
+				continue
+			}
+			findings = append(findings, model.CompatibilityFinding{Code: "hooks.lifecycle.unestablished", Target: item.Path, State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "Exact Hook removal lacks authoritative current lifecycle evidence"})
+		}
+	}
+	return compatibility.BuildCategory("hooks", len(evidence)+len(findings) > 0, evidence, findings)
 }
 
 func (p Provider) detectDirectory(dir, path string) ([]DetectedHook, []UnmanagedHook, error) {

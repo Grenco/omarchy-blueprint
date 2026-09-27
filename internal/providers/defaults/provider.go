@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/pelletier/go-toml/v2"
@@ -25,6 +26,35 @@ func GeneratedOutputPaths(home string) []string {
 
 // kinds are the Omarchy-managed default applications in stable order.
 var kinds = []string{"terminal", "browser", "editor", "agent"}
+
+// RestoreCompatibility uses only values already obtained by Omarchy's
+// semantic getter. It never invokes a setter to probe whether a new choice
+// would be accepted, and it never treats the agent setter as automatic.
+func RestoreCompatibility(saved, current profile.Defaults, applyTargets map[string]bool) (model.CompatibilityCategory, error) {
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	for _, kind := range kinds {
+		desired := valueOf(saved, kind)
+		if desired == "" || applyTargets != nil && !applyTargets[kind] {
+			continue
+		}
+		finding := model.CompatibilityFinding{Code: "defaults.choice.unestablished", Target: kind, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "current Omarchy getter cannot affirm this captured setter choice"}
+		switch {
+		case !Portable(desired):
+			finding.Code, finding.Summary = "defaults.choice.nonportable", "raw desktop identifier is not an Omarchy-managed setter value"
+			finding.State, finding.Authority = model.CompatibilityIncompatible, model.CompatibilityBlocked
+			findings = append(findings, finding)
+		case desired == valueOf(current, kind):
+			evidence = append(evidence, model.CompatibilityEvidence{Kind: "omarchy-default-current", Summary: "current semantic default matches captured managed choice"})
+		case kind == "agent":
+			finding.Authority, finding.Summary = model.CompatibilityReduced, "agent setter is excluded from automatic Restore"
+			findings = append(findings, finding)
+		default:
+			findings = append(findings, finding)
+		}
+	}
+	return compatibility.BuildCategory("defaults", len(evidence)+len(findings) > 0, evidence, findings)
+}
 
 // Provider captures and restores Omarchy's semantic default applications.
 // Omarchy validates values and owns the XDG/launch wiring; Blueprint only
