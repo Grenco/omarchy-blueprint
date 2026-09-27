@@ -1743,15 +1743,18 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}
-	// Refuse before approval, journal or mutation when the machine is not
-	// ready; the user acts on the remediation and plans again (ADR 0022).
-	if len(plan.Requirements) > 0 {
+	// Compatibility and readiness share the workflow's applicability order.
+	// Render the complete plan before refusing, even when it has no operations.
+	if err := workflow.CheckRestoreApplicable(plan, true); err != nil {
 		if !opt.json {
 			fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
 		}
-		return workflow.CheckRestoreApplicable(plan, true)
+		return err
 	}
 	if len(plan.Operations) == 0 {
+		if !opt.json {
+			fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
+		}
 		verification, err := verifyRestoreProviders(ctx, d, restoreProviders, contexts)
 		if err != nil {
 			return err
@@ -1769,16 +1772,19 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		if len(providers) == 1 && providers[0].ID() == "packages" {
 			message = "All desired packages are installed. No changes applied.\n"
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlanWithOptions(plan, false, planOptions)+message)
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, message)
 	}
 	if err := requireInteractiveTerminal(plan, deps.IsTTY(), opt.json); err != nil {
 		return err
+	}
+	if !opt.json {
+		fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
 	}
 	if !yes {
 		if opt.json {
 			return errors.New("restore with --json requires --yes or --dry-run")
 		}
-		fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions), "Apply this restore? [y/N] ")
+		fmt.Fprint(deps.Out, "Apply this restore? [y/N] ")
 		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
 		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
 			return errors.New("restore cancelled")
@@ -1926,6 +1932,8 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintln(&b, "Restore plan")
 	}
 	fmt.Fprintf(&b, "Omarchy: %s → %s\n", plan.OmarchyFrom, plan.OmarchyTo)
+	b.WriteString(renderCompatibility(plan.Compatibility))
+	b.WriteString(renderRequirements(plan))
 	if len(plan.Operations) == 0 && len(plan.Skipped) == 0 {
 		fmt.Fprintln(&b, "No operations required.")
 		return b.String()
@@ -1985,7 +1993,7 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 }
 
 func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlanOptions) string {
-	rendered := renderPlan(plan, dry) + renderRequirements(plan)
+	rendered := renderPlan(plan, dry)
 	if !options.Force {
 		return rendered
 	}
@@ -1995,6 +2003,52 @@ func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlan
 		}
 	}
 	return rendered
+}
+
+// renderCompatibility presents provider evidence already normalized into the
+// authoritative plan. The profile environment is last-capture context, not a
+// source-version verdict for every desired target.
+func renderCompatibility(report model.CompatibilityReport) string {
+	if len(report.Categories) == 0 && !report.ProfileLastCapture.Known && !report.Target.Known {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Compatibility:\n")
+	fmt.Fprintf(&b, "  Profile last capture: %s\n", compatibilityEnvironment(report.ProfileLastCapture))
+	fmt.Fprintf(&b, "  Target Omarchy: %s\n", compatibilityEnvironment(report.Target))
+	for _, category := range report.Categories {
+		label := compatibilityTitle(category.Category)
+		if !category.Applies {
+			fmt.Fprintf(&b, "  %s: Not selected for Apply\n", label)
+			continue
+		}
+		fmt.Fprintf(&b, "  %s: %s · %s\n", label, compatibilityTitle(string(category.State)), compatibilityTitle(string(category.Authority)))
+		for _, finding := range category.Findings {
+			target := ""
+			if finding.Target != "" {
+				target = finding.Target + ": "
+			}
+			fmt.Fprintf(&b, "    ! %s%s [%s; %s · %s]\n", target, finding.Summary, finding.Code, compatibilityTitle(string(finding.State)), compatibilityTitle(string(finding.Authority)))
+		}
+	}
+	return b.String()
+}
+
+func compatibilityEnvironment(env model.CompatibilityEnvironment) string {
+	if !env.Known {
+		return "unknown"
+	}
+	if env.OmarchyChannel == "" {
+		return env.OmarchyVersion
+	}
+	return env.OmarchyVersion + " (" + env.OmarchyChannel + ")"
+}
+
+func compatibilityTitle(value string) string {
+	if value == "" {
+		return ""
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 // renderRequirements lists what the user must do before the plan can apply.

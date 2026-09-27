@@ -35,7 +35,7 @@ func TestScreenCatalog(t *testing.T) {
 		}
 	}
 	restore := screenInfo(ScreenRestore)
-	for _, want := range []string{"Safe", "Force", "Additive", "Exact"} {
+	for _, want := range []string{"Safe", "Force", "Additive", "Exact", "Compatibility", "Unknown", "Reduced", "Blocked", "Apply"} {
 		if !strings.Contains(restore.Long, want) {
 			t.Errorf("Restore help omits %q: %s", want, restore.Long)
 		}

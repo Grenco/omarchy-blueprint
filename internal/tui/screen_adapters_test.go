@@ -95,3 +95,17 @@ func TestNewScreensBuildsExpectedAdaptersWithSession(t *testing.T) {
 		}
 	}
 }
+
+func TestRestorePaletteUsesScreenApplyDisabledReason(t *testing.T) {
+	screen := &restoreScreen{Restore: screens.NewRestore(nil)}
+	for _, action := range screen.Actions() {
+		if action.ID != "restore.apply" {
+			continue
+		}
+		if action.Enabled || action.DisabledReason != screen.ApplyDisabledReason() || action.DisabledReason == "" {
+			t.Fatalf("palette Apply reason diverges from Restore: %+v", action)
+		}
+		return
+	}
+	t.Fatal("restore.apply missing from palette")
+}

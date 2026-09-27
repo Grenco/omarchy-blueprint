@@ -248,6 +248,17 @@ func TestRestoreWorkspaceBudgetAt80x24MatchesScreenTests(t *testing.T) {
 	}
 }
 
+// The smallest supported terminal grants Restore a 68x9 workspace after the
+// frame and two-line description. Pin this alongside the screen-level blocker
+// visibility regression so changes to the outer layout cannot hide it again.
+func TestRestoreWorkspaceBudgetAt70x18MatchesScreenTests(t *testing.T) {
+	m := updateModel(t, compactModel(t), tea.WindowSizeMsg{Width: 70, Height: 18})
+	width, height := m.screenSize(ScreenRestore)
+	if width != 68 || height != 9 {
+		t.Fatalf("Restore workspace at 70x18 = %dx%d; update restoreMinimumWidth/Height in screens/restore_compatibility_test.go", width, height)
+	}
+}
+
 // busyScreen models a screen that is loading (TransientActive) and would
 // swallow every key it is offered.
 type busyScreen struct {

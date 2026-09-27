@@ -117,6 +117,27 @@ toggles are one-run overrides and do not change the machine's saved defaults.
 Review the consequences of a plan before approving it; approval replans
 before applying, and refuses if the plan changed since you approved it.
 
+The Restore review shows **Compatibility** before Requirements and Changes,
+using the same plan as the CLI and `restore --dry-run --json`. It identifies
+the target Omarchy environment and the profile's **last Capture** environment;
+a partial Capture can preserve older desired state, so that version/channel is
+context, not proof that every target came from that runtime. Each category
+with selected Apply intent is **Supported** (affirmative evidence), **Unknown**
+(a material fact is not established), or **Incompatible** (intent is not safe
+on this target). Its separate effect is **Unchanged**, **Reduced** (some
+authority is withheld), or **Blocked** (the selected plan cannot apply).
+Findings appear beneath the affected categories. A category without selected
+Apply intent has no compatibility verdict.
+
+Even one Blocked finding disables Apply for the entire plan; Force only changes
+conflict handling and cannot override compatibility. Unknown with Reduced
+authority may leave safe work available, while uncertain Exact removal stays
+withheld. A policy Restore Skip can deliberately leave a target alone; the CLI
+can explicitly narrow Restore to one category. Otherwise address the finding
+outside Blueprint and open Restore again to replan. The compact review keeps
+blockers and their findings visible alongside the selected work item and
+indicates when expanding the workspace would show more report lines.
+
 Package changes that need administrator authentication are marked
 interactive. When you approve such a plan, the interface steps aside and the
 restore runs in the terminal so `sudo` can show its own prompt, then
