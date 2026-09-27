@@ -151,6 +151,10 @@ func TestRealConfigAdapterKeepsUnsafeApplyInCompatibilityScope(t *testing.T) {
 				if err != nil || result.Verification.OK || len(result.Verification.Missing) == 0 {
 					t.Fatalf("withheld Exact intent falsely verified: result=%+v err=%v", result, err)
 				}
+				code, output := configRun(t, deps, profileDir, "restore", "config", "--exact", "--yes")
+				if code == 0 || !strings.Contains(output, "Compatibility") || !strings.Contains(output, "Unknown · Reduced") || !strings.Contains(output, "nothing can be restored automatically") {
+					t.Fatalf("zero-operation reduced intent lost human diagnosis: code=%d output=%s", code, output)
+				}
 			} else {
 				assertBlockedCompatibility(t, plan, tc.want)
 			}

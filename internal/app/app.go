@@ -1752,6 +1752,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return err
 	}
 	if len(plan.Operations) == 0 {
+		if !opt.json {
+			fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
+		}
 		verification, err := verifyRestoreProviders(ctx, d, restoreProviders, contexts)
 		if err != nil {
 			return err
@@ -1769,7 +1772,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		if len(providers) == 1 && providers[0].ID() == "packages" {
 			message = "All desired packages are installed. No changes applied.\n"
 		}
-		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, renderPlanWithOptions(plan, false, planOptions)+message)
+		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, message)
 	}
 	if err := requireInteractiveTerminal(plan, deps.IsTTY(), opt.json); err != nil {
 		return err
