@@ -1145,7 +1145,7 @@ func (p restoreProviderAdapter) Capture(ctx context.Context, data *profile.Data,
 // CaptureContext: each category's own Plan/Verify decides for itself how to
 // consult per-target Restore decisions and the Conflicts/Convergence axes
 // (PR 4 Task 26 activates this category by category).
-func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p restoreProviderAdapter) Plan(ctx context.Context, data profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	return p.stateProvider.Plan(ctx, data, info, restoreCtx)
 }
 

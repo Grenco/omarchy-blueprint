@@ -109,8 +109,12 @@ func TestRestorePlanAndVerifyReceiveIdenticalRestoreContext(t *testing.T) {
 	if _, err := session.ApplyRestore(context.Background(), "", nil); err != nil {
 		t.Fatal(err)
 	}
+	if lastPlan.Compatibility.Category != "" || lastVerify.Compatibility.Category != "packages" {
+		t.Fatalf("Verify did not receive the planned category: Plan=%+v Verify=%+v", lastPlan.Compatibility, lastVerify.Compatibility)
+	}
+	lastVerify.Compatibility = lastPlan.Compatibility
 	if !reflect.DeepEqual(lastPlan, lastVerify) {
-		t.Fatalf("Plan context %+v != Verify context %+v; verification must judge the same effective Restore intent that planned it", lastPlan, lastVerify)
+		t.Fatalf("Plan context %+v != Verify context %+v for policy/options; verification must judge the same effective Restore intent", lastPlan, lastVerify)
 	}
 }
 

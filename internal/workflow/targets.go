@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 )
 
@@ -185,6 +186,26 @@ type RestoreContext struct {
 	Machine string
 	Options policy.RestoreOptions
 	Targets map[string]RestoreDecision
+	// Compatibility is populated from this provider's planned fragment only
+	// after Plan returns. Verify receives the exact planned category.
+	Compatibility model.CompatibilityCategory
+}
+
+func (c RestoreContext) ApplyTargets() map[string]bool {
+	result := make(map[string]bool, len(c.Targets))
+	for key, decision := range c.Targets {
+		result[key] = decision.Resolved && decision.Restore
+	}
+	return result
+}
+
+func (c RestoreContext) Applies() bool {
+	for _, decision := range c.Targets {
+		if decision.Resolved && decision.Restore {
+			return true
+		}
+	}
+	return false
 }
 
 // Lookup returns the recorded RestoreDecision for key and whether one was

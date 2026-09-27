@@ -246,8 +246,14 @@ type restoringFirefoxProvider struct {
 	plan func(RestoreContext) model.RestorePlan
 }
 
-func (p restoringFirefoxProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, rc RestoreContext) (model.RestorePlan, error) {
-	return p.plan(rc), nil
+func (p restoringFirefoxProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, rc RestoreContext) (RestoreFragment, error) {
+	plan := p.plan(rc)
+	category := model.CompatibilityCategory{Category: p.ID(), Applies: rc.Applies(), Authority: model.CompatibilityUnchanged}
+	if category.Applies {
+		category.State = model.CompatibilitySupported
+		category.Evidence = []model.CompatibilityEvidence{{Kind: "test-provider", Summary: "fixture supports this target"}}
+	}
+	return RestoreFragment{Operations: plan.Operations, Skipped: plan.Skipped, Requirements: plan.Requirements, Compatibility: category}, nil
 }
 func (restoringFirefoxProvider) Verify(context.Context, profile.Data, RestoreContext) (model.VerificationResult, error) {
 	return model.VerificationResult{OK: true}, nil

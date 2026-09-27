@@ -36,9 +36,23 @@ type stateProvider interface {
 	Captured(profile.Data) bool
 	Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
-	Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (model.RestorePlan, error)
+	Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (workflow.RestoreFragment, error)
 	Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error)
 	Check(context.Context, profile.Data) error
+}
+
+func restoreFragment(plan model.RestorePlan, category model.CompatibilityCategory) workflow.RestoreFragment {
+	return workflow.RestoreFragment{Operations: plan.Operations, Skipped: plan.Skipped, Requirements: plan.Requirements, Compatibility: category}
+}
+
+// ConfigDelete is only desired-absence work in Exact. Use this same filtered
+// view for Plan and Verify so Additive cannot execute a tombstone the
+// compatibility report deliberately excludes.
+func filterConfigForConvergence(saved profile.Configs, convergence policy.ConvergenceMode) profile.Configs {
+	if convergence == policy.ConvergenceAdditive {
+		saved.Deletes = nil
+	}
+	return saved
 }
 
 type categoryStateProvider interface {
@@ -391,25 +405,29 @@ func (p resourcesStateProvider) DiffWithGitWorkingState(ctx context.Context, d p
 // re-prefixing is needed. filterResourcesForRestoreSkip fails closed
 // (returns an error) if any desired target's Restore decision is missing
 // or unresolved, rather than letting it through as an implicit Apply.
-func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p resourcesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider(d)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, _, err := provider.Detect(ctx, d.Resources)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterResourcesForRestoreSkip(d.Resources, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	force := restoreCtx.Options.Conflicts == policy.ConflictForce
 	plan, err := provider.Plan(ctx, saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, resourcesprovider.PlanOptions{Force: force})
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
-	return recordRestoreSkips(plan, "resources", matched), nil
+	category, err := resourcesprovider.RestoreCompatibility(saved.Items, restoreCtx.ApplyTargets(), plan)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(recordRestoreSkips(plan, "resources", matched), category), nil
 }
 func (p resourcesStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
 	provider, err := p.provider(d)
@@ -937,26 +955,30 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 // filterPackagesForRestoreSkip fails closed (returns an error) if any
 // desired target's Restore decision is missing or unresolved, rather than
 // letting it through as an implicit Apply.
-func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider()
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, err := provider.Detect(ctx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, current.Preinstalls.Items)
 	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
 	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, packagesprovider.PlanOptions{Exact: exact})
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
-	return recordRestoreSkips(plan, "packages", matched), nil
+	category, err := packagesprovider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets(), exact, plan.Requirements)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(recordRestoreSkips(plan, "packages", matched), category), nil
 }
 
 // Verify excludes every Restore-Skip package/tool from the desired state it
@@ -1409,18 +1431,18 @@ func (p themesStateProvider) Diff(ctx context.Context, d profile.Data) ([]model.
 // active theme's own availability is Skip AND it is not currently
 // installed, in which case activation cannot actually be honored either
 // way and becomes its own visible "active" skip instead.
-func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider()
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, err := provider.Detect(ctx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterThemesForRestoreSkip(d.Themes, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	blockedReason, blocked := themeActivationBlockedReason(saved.Current, current, restoreCtx)
 	if blocked {
@@ -1437,7 +1459,11 @@ func (p themesStateProvider) Plan(ctx context.Context, d profile.Data, info omar
 	if blocked {
 		plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "themes", Resource: "active", Reason: blockedReason})
 	}
-	return plan, nil
+	category, err := provider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets(), exact)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(plan, category), nil
 }
 
 func (p themesStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
@@ -1796,25 +1822,29 @@ func (p pluginsStateProvider) Diff(ctx context.Context, d profile.Data) ([]model
 
 // filterPluginsForRestoreSkip fails closed (returns an error) if any
 // desired target's Restore decision is missing or unresolved.
-func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p pluginsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider()
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, err := provider.Detect(ctx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterPluginsForRestoreSkip(d.Plugins, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
 	var shellMatched []restoreSkip
 	saved, shellMatched = filterPluginsForEffectiveShellReference(p.deps, p.opt, saved, exact)
 	matched = append(matched, shellMatched...)
 	plan := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, pluginSemantics(d), pluginsprovider.PlanOptions{Exact: exact})
-	return recordRestoreSkips(plan, "plugins", matched), nil
+	category, err := pluginsprovider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets(), exact)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(recordRestoreSkips(plan, "plugins", matched), category), nil
 }
 
 func (p pluginsStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
@@ -2353,25 +2383,30 @@ func (p configStateProvider) DiffWithScan(_ context.Context, d profile.Data) ([]
 // uses as the target Key, so skips are re-prefixed before recording.
 // filterConfigForRestoreSkip fails closed (returns an error) if any
 // desired target's Restore decision is missing or unresolved.
-func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider(d)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, err := provider.Scan(d.Config)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterConfigForRestoreSkip(d.Config, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
+	saved = filterConfigForConvergence(saved, restoreCtx.Options.Convergence)
 	force := restoreCtx.Options.Conflicts == policy.ConflictForce
 	plan, err := provider.PlanOverlay(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, configprovider.PlanOptions{Force: force})
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
-	return recordRestoreSkips(plan, "config", prefixConfigSkips(matched)), nil
+	category, err := configprovider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets(), restoreCtx.Options.Convergence == policy.ConvergenceExact)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(recordRestoreSkips(plan, "config", prefixConfigSkips(matched)), category), nil
 }
 
 func (p configStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
@@ -2387,6 +2422,7 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data, restoreCt
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
+	saved = filterConfigForConvergence(saved, restoreCtx.Options.Convergence)
 	return provider.Verify(saved, current)
 }
 
@@ -2562,17 +2598,21 @@ func (p defaultsStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 // filterDefaultsForRestoreSkip fails closed (returns an error) if any
 // slot with an actual desired value has a missing or unresolved Restore
 // decision.
-func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p defaultsStateProvider) Plan(ctx context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	current, err := p.provider().Detect(ctx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterDefaultsForRestoreSkip(d.Defaults, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	plan := p.provider().Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version)
-	return recordRestoreSkips(plan, "defaults", prefixDefaultsSkips(matched)), nil
+	category, err := defaultsprovider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets())
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(recordRestoreSkips(plan, "defaults", prefixDefaultsSkips(matched)), category), nil
 }
 
 func (p defaultsStateProvider) Verify(ctx context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
@@ -2782,25 +2822,33 @@ func (p shellStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 // "state" skip entry to that otherwise-empty plan. filterShellForRestoreSkip
 // fails closed (returns an error) if Shell has a desired Hash but its
 // Restore decision is missing or unresolved.
-func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider()
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, err := provider.Detect()
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterShellForRestoreSkip(d.Shell, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
+	}
+	category, err := provider.RestoreCompatibility(saved, current, restoreCtx.Applies())
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	if category.Authority == model.CompatibilityBlocked {
+		plan := model.RestorePlan{Skipped: []model.Skipped{{Provider: "shell", Resource: "shell:config", Reason: "unsupported Shell schema; inspect compatibility findings"}}}
+		return restoreFragment(recordRestoreSkips(plan, "shell", matched), category), nil
 	}
 	force := restoreCtx.Options.Conflicts == policy.ConflictForce
 	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, shellprovider.MergeOptions{Force: force})
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
-	return recordRestoreSkips(plan, "shell", matched), nil
+	return restoreFragment(recordRestoreSkips(plan, "shell", matched), category), nil
 }
 
 func (p shellStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {
@@ -3014,25 +3062,46 @@ func (p hooksStateProvider) Diff(_ context.Context, d profile.Data) ([]model.Cha
 // as the target Key, so skips are re-prefixed before recording.
 // filterHooksForRestoreSkip fails closed (returns an error) if any desired
 // target's Restore decision is missing or unresolved.
-func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (model.RestorePlan, error) {
+func (p hooksStateProvider) Plan(_ context.Context, d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext) (workflow.RestoreFragment, error) {
 	provider, err := p.provider(d.Resources)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	current, err := provider.Detect()
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	saved, matched, err := filterHooksForRestoreSkip(d.Hooks, restoreCtx)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
 	exact := restoreCtx.Options.Convergence == policy.ConvergenceExact
-	plan, err := provider.Plan(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, hooksprovider.PlanOptions{Exact: exact})
+	category, err := hooksprovider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets(), exact)
 	if err != nil {
-		return model.RestorePlan{}, err
+		return workflow.RestoreFragment{}, err
 	}
-	return recordRestoreSkips(plan, "hooks", prefixHooksSkips(matched)), nil
+	planned := saved
+	if exact {
+		withheld := map[string]bool{}
+		for _, finding := range category.Findings {
+			if finding.Authority == model.CompatibilityReduced {
+				withheld[finding.Target] = true
+			}
+		}
+		planned.Absent = nil
+		for _, absent := range saved.Absent {
+			if withheld[absent.Path] {
+				matched = append(matched, restoreSkip{Key: absent.Path, Reason: "Hook lifecycle not established; Exact deletion withheld"})
+			} else {
+				planned.Absent = append(planned.Absent, absent)
+			}
+		}
+	}
+	plan, err := provider.Plan(planned, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, hooksprovider.PlanOptions{Exact: exact})
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	return restoreFragment(recordRestoreSkips(plan, "hooks", prefixHooksSkips(matched)), category), nil
 }
 
 func (p hooksStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx workflow.RestoreContext) (model.VerificationResult, error) {

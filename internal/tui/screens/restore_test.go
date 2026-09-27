@@ -41,8 +41,8 @@ func (restoreErrorProvider) Capture(context.Context, *profile.Data, workflow.Cap
 func (restoreErrorProvider) Diff(context.Context, profile.Data) ([]model.Change, error) {
 	return nil, nil
 }
-func (restoreErrorProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (model.RestorePlan, error) {
-	return model.RestorePlan{}, errors.New("planning exploded")
+func (restoreErrorProvider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (workflow.RestoreFragment, error) {
+	return workflow.RestoreFragment{}, errors.New("planning exploded")
 }
 func (restoreErrorProvider) Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error) {
 	return model.VerificationResult{OK: true}, nil

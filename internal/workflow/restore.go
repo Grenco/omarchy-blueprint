@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
@@ -86,6 +87,13 @@ var ErrRestorePlanChanged = errors.New("restore plan changed after approval; ins
 // not yet satisfy. Nothing has been applied.
 type UnmetRequirementsError struct{ Requirements []model.Requirement }
 
+// BlockedCompatibilityError prevents applying any part of the selected plan.
+type BlockedCompatibilityError struct{ Findings []model.CompatibilityFinding }
+
+func (e *BlockedCompatibilityError) Error() string {
+	return fmt.Sprintf("restore compatibility blocks %d selected target(s); inspect and plan again", len(e.Findings))
+}
+
 func (e *UnmetRequirementsError) Error() string {
 	parts := make([]string, 0, len(e.Requirements))
 	for _, requirement := range e.Requirements {
@@ -97,6 +105,9 @@ func (e *UnmetRequirementsError) Error() string {
 // CheckRestoreApplicable refuses, before any mutation, a plan with unmet
 // requirements or with interactive operations when no terminal is handed over.
 func CheckRestoreApplicable(plan model.RestorePlan, terminal bool) error {
+	if blocking := compatibility.BlockingFindings(plan.Compatibility); len(blocking) > 0 {
+		return &BlockedCompatibilityError{Findings: blocking}
+	}
 	if len(plan.Requirements) > 0 {
 		return &UnmetRequirementsError{Requirements: plan.Requirements}
 	}
@@ -188,18 +199,30 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 	}
 	contexts := make(map[string]RestoreContext, len(providers))
 	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
+	plan.Compatibility = model.CompatibilityReport{
+		ProfileLastCapture: model.CompatibilityEnvironment{Known: s.profile.Manifest.Omarchy.CapturedVersion != "", OmarchyVersion: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyChannel: s.profile.Manifest.Omarchy.Channel},
+		Target:             model.CompatibilityEnvironment{Known: info.Version != "", OmarchyVersion: info.Version, OmarchyChannel: info.Channel},
+	}
+	selectedIDs := make([]string, 0, len(providers))
+	targets := make(map[string]map[string]struct{}, len(providers))
 	for _, provider := range providers {
 		restoreCtx, err := s.resolveRestoreContext(ctx, provider, s.profile, s.machine.Name, resolved)
 		if err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
 		}
-		contexts[provider.ID()] = restoreCtx
+		selectedIDs = append(selectedIDs, provider.ID())
+		targets[provider.ID()] = make(map[string]struct{}, len(restoreCtx.Targets))
+		for key := range restoreCtx.Targets {
+			targets[provider.ID()][key] = struct{}{}
+		}
 		part, err := provider.Plan(ctx, s.profile, info, restoreCtx)
 		if err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
 		plan.Operations, plan.Skipped = append(plan.Operations, part.Operations...), append(plan.Skipped, part.Skipped...)
 		plan.Requirements = append(plan.Requirements, part.Requirements...)
+		plan.Compatibility.Categories = append(plan.Compatibility.Categories, part.Compatibility)
+		contexts[provider.ID()] = restoreCtx
 	}
 	if s.finalizeRestore != nil {
 		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, resolved); err != nil {
@@ -207,6 +230,15 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 		}
 	} else if err := restore.ValidatePlan(plan); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
+	}
+	plan.Compatibility = compatibility.NormalizeReport(plan.Compatibility)
+	if err := compatibility.ValidateReport(plan.Compatibility, selectedIDs, targets, plan.Requirements); err != nil {
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("validate restore compatibility: %w", err)
+	}
+	for _, category := range plan.Compatibility.Categories {
+		planned := contexts[category.Category]
+		planned.Compatibility = category
+		contexts[category.Category] = planned
 	}
 	return plan, providers, contexts, resolved, nil
 }

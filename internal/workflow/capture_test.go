@@ -39,6 +39,9 @@ type captureTestProvider struct {
 	stopManagingFail              bool
 	interactive                   bool
 	requirement                   bool
+	noCompatibility               bool
+	compatibilityState            *model.CompatibilityState
+	compatibilityEvidence         []model.CompatibilityEvidence
 }
 
 func (p captureTestProvider) ID() string               { return p.id }
@@ -60,11 +63,29 @@ func (p captureTestProvider) Capture(_ context.Context, data *profile.Data, capC
 	data.Packages.Official = append(data.Packages.Official, p.id)
 	return struct{}{}, nil, nil
 }
-func (p captureTestProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, restoreCtx RestoreContext) (model.RestorePlan, error) {
+func (p captureTestProvider) Plan(_ context.Context, _ profile.Data, _ omarchy.Info, restoreCtx RestoreContext) (RestoreFragment, error) {
 	if p.lastPlan != nil {
 		*p.lastPlan = restoreCtx
 	}
-	var plan model.RestorePlan
+	var plan RestoreFragment
+	if !p.noCompatibility {
+		plan.Compatibility = model.CompatibilityCategory{Category: p.id, Applies: restoreCtx.Applies(), Authority: model.CompatibilityUnchanged}
+		if plan.Compatibility.Applies {
+			state := model.CompatibilitySupported
+			if p.compatibilityState != nil {
+				state = *p.compatibilityState
+			}
+			plan.Compatibility.State = state
+			if state == model.CompatibilitySupported {
+				plan.Compatibility.Evidence = p.compatibilityEvidence
+				if len(plan.Compatibility.Evidence) == 0 {
+					plan.Compatibility.Evidence = []model.CompatibilityEvidence{{Kind: "test-provider", Summary: "fixture establishes category state"}}
+				}
+			} else {
+				plan.Compatibility.Findings = []model.CompatibilityFinding{{Code: "test.unknown", State: state, Authority: model.CompatibilityUnchanged, Summary: "fixture compatibility changed"}}
+			}
+		}
+	}
 	if p.interactive {
 		plan.Operations = []model.Operation{{ID: "interactive", Provider: p.id, Resource: "semantic", Command: []string{"true"}, Interactive: true}}
 	}

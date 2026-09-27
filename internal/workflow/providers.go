@@ -11,8 +11,17 @@ import (
 // RestoreProvider extends a provider with restore planning and verification.
 type RestoreProvider interface {
 	Provider
-	Plan(context.Context, profile.Data, omarchy.Info, RestoreContext) (model.RestorePlan, error)
+	Plan(context.Context, profile.Data, omarchy.Info, RestoreContext) (RestoreFragment, error)
 	Verify(context.Context, profile.Data, RestoreContext) (model.VerificationResult, error)
+}
+
+// RestoreFragment keeps one provider's effects and compatibility derived from
+// the same effective intent and detected target state.
+type RestoreFragment struct {
+	Operations    []model.Operation
+	Skipped       []model.Skipped
+	Requirements  []model.Requirement
+	Compatibility model.CompatibilityCategory
 }
 
 // Provider is the narrow shared contract for status and capture orchestration.
