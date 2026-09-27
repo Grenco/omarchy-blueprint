@@ -2,9 +2,11 @@ package screens
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -198,9 +200,6 @@ func (s *Restore) View() string {
 			Guidance:    "Capture the parts of this machine you want Blueprint to remember before using Restore.",
 		})
 	}
-	if len(s.plan().Requirements) > 0 {
-		return s.requirementsView() + "\n" + s.currentPlanView()
-	}
 	return s.currentPlanView()
 }
 func (s *Restore) DetailView() string {
@@ -267,7 +266,16 @@ func (s *Restore) refreshPlan() tea.Cmd {
 func (s *Restore) currentPlanView() string {
 	header, entries := s.layoutPlan()
 	if entries == nil {
-		return strings.Join(append(header, "", "No restore operations required."), "\n")
+		message := "No restore operations required."
+		var blocked *workflow.BlockedCompatibilityError
+		var unmet *workflow.UnmetRequirementsError
+		applicability := workflow.CheckRestoreApplicable(s.plan(), true)
+		if errors.As(applicability, &blocked) {
+			message = "Restore cannot apply; review Compatibility findings."
+		} else if errors.As(applicability, &unmet) {
+			message = "Restore cannot apply; complete Requirements and replan."
+		}
+		return strings.Join(append(header, "", message), "\n")
 	}
 	return strings.Join(append(append(header, ""), entries...), "\n")
 }
@@ -286,6 +294,9 @@ func (s *Restore) layoutPlan() (header, entries []string) {
 	width := s.widthOrDefault()
 	header = s.fullPlanHeader(width)
 	if s.currentEntryCount() == 0 {
+		if s.height > 0 && len(header)+2 > s.height {
+			header = s.compactPlanHeader(width)
+		}
 		return header, nil
 	}
 	lines := s.entryLines(width)
@@ -315,6 +326,12 @@ func (s *Restore) fullPlanHeader(width int) []string {
 	if s.options.Convergence == policy.ConvergenceExact {
 		sections = append(sections, s.wrapCurrentPlan([]string{"WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted."}))
 	}
+	if compatibility := s.compatibilityLines(width, false); len(compatibility) > 0 {
+		sections = append(sections, strings.Join(compatibility, "\n"))
+	}
+	if len(s.current.Requirements) > 0 {
+		sections = append(sections, components.SectionDivider("Requires before applying", width, s.styles)+"\n"+s.requirementsView())
+	}
 	summary := s.summaryTable.Render(
 		[]components.Column{{Title: "CREATE", MinWidth: 6}, {Title: "MODIFY", MinWidth: 6}, {Title: "REPLACE", MinWidth: 7}, {Title: "REMOVALS", MinWidth: 8}, {Title: "COMMANDS", MinWidth: 8}, {Title: "POLICY SKIPS", MinWidth: 12}, {Title: "FORCED OVERRIDES", MinWidth: 16}},
 		[]components.Row{{Cells: []string{fmt.Sprint(counts.create), fmt.Sprint(counts.modify), fmt.Sprint(counts.replace), fmt.Sprint(counts.delete), fmt.Sprint(counts.commands), fmt.Sprint(policySkipCount(s.current)), fmt.Sprint(s.forcedOverrides)}}},
@@ -338,8 +355,138 @@ func (s *Restore) compactPlanHeader(width int) []string {
 			lines = append(lines, s.styles.Warning(line))
 		}
 	}
+	requirementLines := s.compactRequirementLines(width)
 	summary := fmt.Sprintf("Plan: %d create · %d modify · %d replace · %d removals · %d commands · %d policy skips · %d forced", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides)
-	return append(lines, components.WrapText(summary, width)...)
+	summaryLines := components.WrapText(summary, width)
+	reserve := 2 // blank line and no-operations message
+	if s.currentEntryCount() > 0 {
+		reserve = 1 + 3 // blank line and selected entry viewport
+	}
+	budget := s.height - len(lines) - len(requirementLines) - len(summaryLines) - reserve
+	lines = append(lines, s.compactCompatibilityLines(width, budget)...)
+	lines = append(lines, requirementLines...)
+	return append(lines, summaryLines...)
+}
+
+func (s *Restore) compactRequirementLines(width int) []string {
+	if len(s.current.Requirements) == 0 {
+		return nil
+	}
+	first := s.current.Requirements[0]
+	remediation := components.WrapText("Run "+components.DisplayText(strings.Join(first.Remediation, " "))+" then replan: "+components.DisplayText(first.Reason), width)
+	lines := []string{s.styles.Warning("Requires before applying")}
+	lines = append(lines, remediation[0])
+	if len(s.current.Requirements) > 1 {
+		more := fmt.Sprintf("… %d more requirements (expand Restore)", len(s.current.Requirements)-1)
+		lines = append(lines, s.styles.Muted(components.WrapText(more, width)[0]))
+	} else if len(remediation) > 1 {
+		lines = append(lines, s.styles.Muted(components.WrapText("… more readiness detail (expand Restore)", width)[0]))
+	}
+	return lines
+}
+
+// compatibilityLines renders the plan's own category states. Full views keep
+// report order; compact views prioritize blocked/reduced findings so a long
+// report cannot push the reason Apply is disabled beyond the viewport.
+func (s *Restore) compatibilityLines(width int, compact bool) []string {
+	report := s.current.Compatibility
+	if len(report.Categories) == 0 && !report.Target.Known && !report.ProfileLastCapture.Known {
+		return nil
+	}
+	label := "Compatibility"
+	if compact {
+		blocked, reduced := 0, 0
+		for _, category := range report.Categories {
+			switch category.Authority {
+			case model.CompatibilityBlocked:
+				blocked++
+			case model.CompatibilityReduced:
+				reduced++
+			}
+		}
+		label = fmt.Sprintf("Compatibility · %d blocked · %d reduced", blocked, reduced)
+	}
+	lines := []string{components.SectionDivider(label, width, s.styles)}
+	context := fmt.Sprintf("Profile last capture: %s · Target Omarchy: %s", restoreCompatibilityEnvironment(report.ProfileLastCapture), restoreCompatibilityEnvironment(report.Target))
+	lines = append(lines, components.WrapText(components.DisplayText(context), width)...)
+	categories := append([]model.CompatibilityCategory(nil), report.Categories...)
+	if compact {
+		priority := func(category model.CompatibilityCategory) int {
+			switch {
+			case category.Authority == model.CompatibilityBlocked:
+				return 0
+			case category.Authority == model.CompatibilityReduced:
+				return 1
+			case category.State == model.CompatibilityUnknown:
+				return 2
+			case category.Applies:
+				return 3
+			default:
+				return 4
+			}
+		}
+		sort.SliceStable(categories, func(i, j int) bool { return priority(categories[i]) < priority(categories[j]) })
+	}
+	for _, category := range categories {
+		state := "Not selected for Apply"
+		if category.Applies {
+			state = titleMode(string(category.State)) + " · " + titleMode(string(category.Authority))
+		}
+		row := components.DisplayText(restoreCategoryLabel(category.Category) + ": " + state)
+		for _, line := range components.WrapText(row, width) {
+			switch category.Authority {
+			case model.CompatibilityBlocked:
+				lines = append(lines, s.styles.Error(line))
+			case model.CompatibilityReduced:
+				lines = append(lines, s.styles.Warning(line))
+			default:
+				lines = append(lines, line)
+			}
+		}
+		for _, finding := range category.Findings {
+			if finding.State == model.CompatibilitySupported {
+				continue
+			}
+			target := ""
+			if finding.Target != "" {
+				target = finding.Target + ": "
+			}
+			text := components.DisplayText("  " + target + finding.Summary)
+			for _, line := range components.WrapText(text, width) {
+				if finding.Authority == model.CompatibilityBlocked {
+					lines = append(lines, s.styles.Error(line))
+				} else {
+					lines = append(lines, s.styles.Warning(line))
+				}
+			}
+		}
+	}
+	return lines
+}
+
+func (s *Restore) compactCompatibilityLines(width, budget int) []string {
+	if budget <= 0 {
+		return nil
+	}
+	lines := s.compatibilityLines(width, true)
+	if len(lines) <= budget {
+		return lines
+	}
+	if budget == 1 {
+		return lines[:1]
+	}
+	more := fmt.Sprintf("… %d more compatibility lines (expand Restore)", len(lines)-budget+1)
+	return append(lines[:budget-1], s.styles.Muted(components.WrapText(more, width)[0]))
+}
+
+func restoreCompatibilityEnvironment(env model.CompatibilityEnvironment) string {
+	if !env.Known {
+		return "unknown"
+	}
+	if env.OmarchyChannel != "" {
+		return env.OmarchyVersion + " (" + env.OmarchyChannel + ")"
+	}
+	return env.OmarchyVersion
 }
 
 func (s *Restore) runSettings() (machine, conflicts, conflictMeaning, convergence, convergenceMeaning, defaults, defaultsMeaning string) {
@@ -614,7 +761,10 @@ func (s *Restore) hasInteractiveOperation() bool {
 	return false
 }
 func (s *Restore) CanApply() bool {
-	return !s.planning && len(s.plan().Operations) > 0 && len(s.plan().Requirements) == 0
+	if s.planning || s.busy || s.err != nil || len(s.plan().Operations) == 0 {
+		return false
+	}
+	return workflow.CheckRestoreApplicable(s.plan(), true) == nil
 }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }
@@ -725,9 +875,8 @@ func (s *Restore) confirmation() string {
 // requirementsView explains what the user must do before this plan applies.
 func (s *Restore) requirementsView() string {
 	var b strings.Builder
-	b.WriteString("Requires before applying:\n")
 	for _, requirement := range s.plan().Requirements {
-		fmt.Fprintf(&b, "  %s\n  Run `%s` in a terminal, then open Restore again to replan.\n", components.DisplayText(requirement.Reason), components.DisplayText(strings.Join(requirement.Remediation, " ")))
+		fmt.Fprintf(&b, "%s\nRun `%s` in a terminal, then open Restore again to replan.\n", components.DisplayText(requirement.Reason), components.DisplayText(strings.Join(requirement.Remediation, " ")))
 	}
-	return b.String()
+	return s.wrapCurrentPlan(strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n"))
 }
