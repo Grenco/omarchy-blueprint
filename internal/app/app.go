@@ -2013,7 +2013,7 @@ func renderCompatibility(report model.CompatibilityReport) string {
 	for _, category := range report.Categories {
 		label := compatibilityTitle(category.Category)
 		if !category.Applies {
-			fmt.Fprintf(&b, "  %s: Not selected (Restore Skip)\n", label)
+			fmt.Fprintf(&b, "  %s: Not selected for Apply\n", label)
 			continue
 		}
 		fmt.Fprintf(&b, "  %s: %s · %s\n", label, compatibilityTitle(string(category.State)), compatibilityTitle(string(category.Authority)))
