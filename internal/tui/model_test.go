@@ -1146,6 +1146,19 @@ func TestHelp(t *testing.T) {
 	}
 }
 
+func TestRestoreHelpExplainsCompatibilityDisabledApply(t *testing.T) {
+	m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.screens[ScreenRestore] = &restoreScreen{Restore: screens.NewRestore(nil)}
+	m.selectScreen(ScreenRestore)
+	m.openModal(modalHelp)
+	text := strings.Join(m.helpLines(), "\n")
+	for _, want := range []string{"Compatibility", "Unknown", "Reduced", "Blocked", "Apply"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Restore ? Help missing %q: %s", want, text)
+		}
+	}
+}
+
 func TestPaletteScreenAliases(t *testing.T) {
 	m := newModel(ThemeLoader{NoColor: true})
 	for query, want := range map[string]ScreenID{

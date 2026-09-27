@@ -280,6 +280,10 @@ func (s *Restore) currentPlanView() string {
 	return strings.Join(append(append(header, ""), entries...), "\n")
 }
 
+// A compact blocked plan needs a heading, category state, and finding before
+// optional provenance or summary lines.
+const restoreMinBlockerLines = 3
+
 // restoreMinEntryLines is the smallest Changes/Skipped viewport worth keeping
 // the full settings and summary tables for; below it the header compacts so
 // the actual operations stay on screen.
@@ -341,8 +345,9 @@ func (s *Restore) fullPlanHeader(width int) []string {
 	return strings.Split(strings.Join(sections, "\n\n"), "\n")
 }
 
-// compactPlanHeader keeps every run setting, the Exact warning and every
-// count, but as wrapped lines rather than tables.
+// compactPlanHeader keeps run settings and counts as wrapped lines. At the
+// smallest viewport a blocked finding takes precedence over expanded counts
+// and the Exact warning (the run line still names Exact).
 func (s *Restore) compactPlanHeader(width int) []string {
 	counts := outcomeCounts(s.current)
 	machine, conflicts, _, convergence, _, defaults, _ := s.runSettings()
@@ -363,6 +368,27 @@ func (s *Restore) compactPlanHeader(width int) []string {
 		reserve = 1 + 3 // blank line and selected entry viewport
 	}
 	budget := s.height - len(lines) - len(requirementLines) - len(summaryLines) - reserve
+	var blocked *workflow.BlockedCompatibilityError
+	if errors.As(workflow.CheckRestoreApplicable(s.plan(), true), &blocked) && budget < restoreMinBlockerLines {
+		// At the application's 70x18 minimum, the blocker and its target are
+		// more important than counts or provenance. Keep the selected work row.
+		summaryLines = components.WrapText(fmt.Sprintf("Plan: %d changes · %d skips", len(s.current.Operations), len(s.current.Skipped)), width)
+		budget = s.height - len(lines) - len(requirementLines) - len(summaryLines) - reserve
+		if budget < restoreMinBlockerLines {
+			summaryLines = nil
+			budget = s.height - len(lines) - len(requirementLines) - reserve
+		}
+		if budget < restoreMinBlockerLines && len(requirementLines) > 1 {
+			first := s.current.Requirements[0]
+			hint := "Requires: " + components.DisplayText(strings.Join(first.Remediation, " "))
+			requirementLines = []string{s.styles.Warning(components.WrapText(hint, width)[0])}
+			budget = s.height - len(lines) - len(requirementLines) - reserve
+		}
+		if budget < restoreMinBlockerLines && len(lines) > 1 {
+			lines = lines[:1] // Exact is still visible in the Run line.
+			budget = s.height - len(lines) - len(requirementLines) - reserve
+		}
+	}
 	lines = append(lines, s.compactCompatibilityLines(width, budget)...)
 	lines = append(lines, requirementLines...)
 	return append(lines, summaryLines...)
@@ -408,7 +434,10 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 	}
 	lines := []string{components.SectionDivider(label, width, s.styles)}
 	context := fmt.Sprintf("Profile last capture: %s · Target Omarchy: %s", restoreCompatibilityEnvironment(report.ProfileLastCapture), restoreCompatibilityEnvironment(report.Target))
-	lines = append(lines, components.WrapText(components.DisplayText(context), width)...)
+	contextLines := components.WrapText(components.DisplayText(context), width)
+	if !compact {
+		lines = append(lines, contextLines...)
+	}
 	categories := append([]model.CompatibilityCategory(nil), report.Categories...)
 	if compact {
 		priority := func(category model.CompatibilityCategory) int {
@@ -443,7 +472,14 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 				lines = append(lines, line)
 			}
 		}
-		for _, finding := range category.Findings {
+		findings := category.Findings
+		if compact && category.Authority == model.CompatibilityBlocked {
+			findings = append([]model.CompatibilityFinding(nil), findings...)
+			sort.SliceStable(findings, func(i, j int) bool {
+				return findings[i].Authority == model.CompatibilityBlocked && findings[j].Authority != model.CompatibilityBlocked
+			})
+		}
+		for _, finding := range findings {
 			if finding.State == model.CompatibilitySupported {
 				continue
 			}
@@ -461,6 +497,9 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 			}
 		}
 	}
+	if compact {
+		lines = append(lines, contextLines...)
+	}
 	return lines
 }
 
@@ -471,6 +510,10 @@ func (s *Restore) compactCompatibilityLines(width, budget int) []string {
 	lines := s.compatibilityLines(width, true)
 	if len(lines) <= budget {
 		return lines
+	}
+	var blocked *workflow.BlockedCompatibilityError
+	if budget <= restoreMinBlockerLines && errors.As(workflow.CheckRestoreApplicable(s.plan(), true), &blocked) {
+		return lines[:budget]
 	}
 	if budget == 1 {
 		return lines[:1]
@@ -761,10 +804,36 @@ func (s *Restore) hasInteractiveOperation() bool {
 	return false
 }
 func (s *Restore) CanApply() bool {
-	if s.planning || s.busy || s.err != nil || len(s.plan().Operations) == 0 {
-		return false
+	return s.ApplyDisabledReason() == ""
+}
+
+// ApplyDisabledReason keeps the command palette and Enter's availability in
+// sync with the workflow's first-failure applicability order.
+func (s *Restore) ApplyDisabledReason() string {
+	switch {
+	case s.planning:
+		return "restore plan is refreshing"
+	case s.busy:
+		return "restore is applying"
+	case s.err != nil:
+		return "restore plan could not be prepared"
 	}
-	return workflow.CheckRestoreApplicable(s.plan(), true) == nil
+	if err := workflow.CheckRestoreApplicable(s.plan(), true); err != nil {
+		var blocked *workflow.BlockedCompatibilityError
+		var unmet *workflow.UnmetRequirementsError
+		switch {
+		case errors.As(err, &blocked):
+			return "Compatibility blocks the selected restore plan"
+		case errors.As(err, &unmet):
+			return "Requirements must be completed before applying"
+		default:
+			return "restore plan cannot be applied yet"
+		}
+	}
+	if len(s.plan().Operations) == 0 {
+		return "current restore plan has no operations"
+	}
+	return ""
 }
 
 type restoreCounts struct{ create, modify, replace, delete, commands int }

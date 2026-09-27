@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -23,6 +24,40 @@ func compatibilityReviewPlan() model.RestorePlan {
 			},
 		},
 		Operations: []model.Operation{{Provider: "resources", Resource: "resource:notes", Action: "copy", Risk: model.RiskLow}},
+	}
+}
+
+// Pinned by tui.TestRestoreWorkspaceBudgetAt70x18MatchesScreenTests: at the
+// application's minimum 70x18 frame, Restore receives this exact interior.
+const restoreMinimumWidth, restoreMinimumHeight = 68, 9
+
+func TestRestoreCompatibilityBlockerVisibleAtMinimumApplicationSize(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.width, screen.height = restoreMinimumWidth, restoreMinimumHeight
+	screen.current = compatibilityReviewPlan()
+	view := screen.View()
+	assertWithinBudget(t, screen, view)
+	for _, want := range []string{"Compatibility", "Installed plugins", "Blocked", "plugin:clock", "first-party plugin unavailable", "resource:notes"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("minimum-size Restore hid blocker detail %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestRestoreCompatibilityMinimumSizePrioritizesBlockerWithExactAndReadiness(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.width, screen.height = restoreMinimumWidth, restoreMinimumHeight
+	screen.current = compatibilityReviewPlan()
+	screen.options.Convergence = policy.ConvergenceExact
+	screen.override = true
+	screen.current.Requirements = []model.Requirement{{ID: "packages.metadata", Reason: "package metadata unavailable", Remediation: []string{"omarchy", "update"}}}
+	screen.current.Compatibility.Categories[2].Findings = append([]model.CompatibilityFinding{{Code: "plugins.provenance.unknown", Target: "plugin:other", State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "source not established"}}, screen.current.Compatibility.Categories[2].Findings...)
+	view := screen.View()
+	assertWithinBudget(t, screen, view)
+	for _, want := range []string{"Compatibility", "Installed plugins", "plugin:clock", "first-party plugin unavailable", "Exact", "omarchy update", "resource:notes"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("minimum-size Exact/readiness review hid %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -66,6 +101,38 @@ func TestRestoreCompatibilityBlocksConfirmationWithoutSuppressingReducedWork(t *
 	}
 	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil || !screen.confirm {
 		t.Fatal("non-blocking plan did not open confirmation")
+	}
+}
+
+func TestRestoreApplyDisabledReasonMatchesSharedApplicabilityAndScreenState(t *testing.T) {
+	blocked := compatibilityReviewPlan()
+	ready := blocked
+	ready.Compatibility = model.CompatibilityReport{}
+	requiring := ready
+	requiring.Requirements = []model.Requirement{{ID: "packages.metadata", Reason: "package metadata unavailable", Remediation: []string{"omarchy", "update"}}}
+	for _, tc := range []struct {
+		name, want string
+		plan       model.RestorePlan
+		planning   bool
+		busy       bool
+		err        error
+	}{
+		{name: "blocked-with-operations", plan: blocked, want: "Compatibility blocks"},
+		{name: "unmet-requirements", plan: requiring, want: "Requirements must be completed"},
+		{name: "no-operations", plan: model.RestorePlan{}, want: "no operations"},
+		{name: "refreshing", plan: ready, planning: true, want: "plan is refreshing"},
+		{name: "applying", plan: ready, busy: true, want: "restore is applying"},
+		{name: "planning-error", plan: ready, err: errors.New("bad plan"), want: "could not be prepared"},
+		{name: "applicable", plan: ready, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			screen := NewRestore(nil)
+			screen.current, screen.planning, screen.busy, screen.err = tc.plan, tc.planning, tc.busy, tc.err
+			reason := screen.ApplyDisabledReason()
+			if !strings.Contains(reason, tc.want) || screen.CanApply() != (reason == "") {
+				t.Fatalf("reason=%q canApply=%t, want %q", reason, screen.CanApply(), tc.want)
+			}
+		})
 	}
 }
 
