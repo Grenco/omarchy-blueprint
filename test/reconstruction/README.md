@@ -108,6 +108,30 @@ exit codes and line counts as evidence. Never make this pass by refreshing
 Machine B's databases, pre-warming sudo, adding `NOPASSWD`, or running
 Blueprint as root.
 
+## CI console normalization
+
+GitHub-hosted QEMU/OVMF advertises a firmware serial console that causes
+systemd-stub to infer a kernel serial console (`console=uart,io,0x3f8`) when a
+boot entry has no explicit `console=`. The harness explicitly sets
+`console=tty0` to normalize this CI-only virtualization artifact: it is
+appended to every Limine entry of the pinned install before the pristine base is
+frozen into overlays. Firmware/bootloader serial logging remains available, and
+QEMU keeps its serial device and `serial.log` artifacts. This is not Blueprint
+desired state and not an Omarchy workaround for real machines.
+
+Each canonical guest's booted `/proc/cmdline` is kept as
+`<role>/proc-cmdline.txt` and must contain `console=tty0` and no serial kernel
+console (`console=uart…` or `console=ttyS…`). Machine A is checked after its
+first boot and Machine B after its identity reboot, before either counts as
+evidence; otherwise the run fails `INFRASTRUCTURE`.
+
+Why (PR #47, Reconstruction Boot Soak, fresh-overlay trials): early boots with a
+serial kernel console reproduced an idle hang after the initramfs resume message
+(14 of 515). Explicit `console=tty0` early boots had no failures in the measured
+sample (0 of 200). The exact kernel or userspace mechanism of the hang is not
+known. The untouched `installer` image remains available in the soak as the
+substrate control.
+
 ## Boot soak (diagnostic, never a gate)
 
 `soak.sh <cycles> [debug]`, dispatched through the separate **Reconstruction
