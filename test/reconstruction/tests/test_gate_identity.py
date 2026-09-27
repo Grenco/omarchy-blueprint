@@ -20,6 +20,15 @@ class GateIdentityTests(unittest.TestCase):
             self.assertNotIn(diagnostic, runner)
         self.assertNotIn("RA_BOOT_DEBUG", (ROOT / "vm/install-omarchy.sh").read_text())
 
+    def test_canonical_runs_install_the_normalized_image_and_verify_both_machines(self):
+        runner = (ROOT / "run.sh").read_text()
+        self.assertIn('ra_install_base "$RA_WORK"\n', runner)  # no image argument: the canonical default
+        for diagnostic in ("installer", "ttys0", "rebuilt", "debug"):
+            self.assertNotIn(diagnostic, runner.replace("install-omarchy.sh", ""))
+        self.assertIn("ra_guest_require_canonical_boot source", runner)
+        self.assertIn("ra_guest_require_canonical_boot target", (ROOT / "scenario/preflight-target.sh").read_text())
+        self.assertIn('ra_guest_require_canonical_boot "$role" post-update', (ROOT / "scenario/readiness.sh").read_text())
+
     def test_production_workflow_runs_only_the_canonical_lifecycle(self):
         workflow = (WORKFLOWS / "reconstruction-assurance.yml").read_text()
         self.assertEqual(jobs("reconstruction-assurance.yml"), ["Reconstruction Assurance"])

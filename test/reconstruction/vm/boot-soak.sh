@@ -119,13 +119,18 @@ ra_fresh_overlay_trials() {
     if [[ ! -s $RA_ARTIFACTS/soak-cmdline.txt ]]; then
       # Evidence of the boot configuration measured; a debug soak must really have it.
       ra_guest_exec "$role" 'cat /proc/cmdline' > "$RA_ARTIFACTS/soak-cmdline.txt" 2>&1 || true
+      ra_record "soak overlay serial log: $(ra_serial_observation "$RA_ARTIFACTS/$role/serial.log")"
       # Later parameters win, so the image's own quiet/loglevel=0 would silence debug output.
       if [[ $2 == debug ]] && { ! grep -q 'console=ttyS0' "$RA_ARTIFACTS/soak-cmdline.txt" ||
            grep -qE '(^| )(quiet|loglevel=0)( |$)' "$RA_ARTIFACTS/soak-cmdline.txt"; }; then
         ra_fail INFRASTRUCTURE "debug console output is not effective on the kernel command line (see soak-cmdline.txt)"
       fi
-      # A console variant must really have changed what the kernel booted with.
-      if [[ $2 == tty0-console || $2 == ttys0-console ]] && grep -q 'console=uart' "$RA_ARTIFACTS/soak-cmdline.txt"; then
+      # A console variant must really have changed what the kernel booted with;
+      # the canonical image must meet the production contract.
+      if [[ $2 == canonical ]] && ! ra_check_canonical_cmdline "$(cat "$RA_ARTIFACTS/soak-cmdline.txt")" > /dev/null; then
+        ra_fail INFRASTRUCTURE "canonical soak booted outside the normalized CI console (see soak-cmdline.txt)"
+      fi
+      if [[ $2 == ttys0-console ]] && grep -q 'console=uart' "$RA_ARTIFACTS/soak-cmdline.txt"; then
         ra_fail INFRASTRUCTURE "console=uart is still on the kernel command line (see soak-cmdline.txt)"
       fi
       if [[ $2 == ttys0-console ]] && ! grep -q 'console=ttyS0,115200' "$RA_ARTIFACTS/soak-cmdline.txt"; then

@@ -104,6 +104,7 @@ ra_check_host() {
   fi
   [[ -r /dev/kvm && -w /dev/kvm ]] || ra_fail INFRASTRUCTURE "/dev/kvm unusable"
   command -v qemu-system-x86_64 >/dev/null || ra_fail INFRASTRUCTURE "QEMU missing"
+  ra_record_substrate
 }
 
 # Samples a QEMU process over a few seconds without the guest's help: whether
@@ -145,6 +146,115 @@ with socket.socket(socket.AF_UNIX) as monitor:
         print(f"== {command}")
         print(monitor.recv(65536).decode(errors="replace"))
 PY
+}
+
+# CI virtualization normalization (not an Omarchy or Blueprint change): the
+# hosted QEMU/OVMF firmware advertises a serial console, so systemd-stub
+# infers a serial kernel console (console=uart,io,0x3f8) when a boot entry
+# has no explicit console=. Early boots with a serial kernel console were
+# measured to hang; explicit console=tty0 boots did not (PR #47).
+#
+# The canonical base builder (official ISO install and the installed
+# system's first disk boot) therefore runs with no emulated serial device,
+# so the firmware presents no serial console at all. After that first boot,
+# Omarchy's own limine-entry-tool drop-in puts console=tty0 on every Limine
+# entry, and survives later limine-update runs such as kernel upgrades.
+# Overlay guests keep QEMU's serial device and serial.log.
+RA_CANONICAL_BOOT_IMAGE=canonical
+RA_BOOT_CONSOLE_DROPIN=/etc/limine-entry-tool.d/zz-blueprint-ra-ci-console.conf
+
+# Prints the boot image to install: the canonical one unless a diagnostic
+# soak asks for another; fails for anything unknown.
+ra_resolve_boot_image() {
+  local image=${1:-$RA_CANONICAL_BOOT_IMAGE}
+  case $image in
+    canonical|installer|ttys0-console|rebuilt|debug) printf '%s\n' "$image" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Console parameters a boot image adds to the Limine entries ('' = none).
+ra_boot_console_args() {
+  case $1 in
+    canonical) echo "console=tty0" ;;
+    ttys0-console) echo "console=ttyS0,115200 console=tty0" ;;
+    installer|rebuilt|debug) echo "" ;;
+    *) return 1 ;;
+  esac
+}
+
+# QEMU serial arguments for the base-building VM, one per line: none for the
+# canonical base; the diagnostic images keep the original serial topology.
+ra_base_serial_args() {
+  local image=$1 log=$2
+  case $image in
+    canonical) printf '%s\n' -serial none ;;
+    installer|ttys0-console|rebuilt|debug) printf '%s\n' -serial "file:$log" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prints a root shell command that installs the consoles as an Omarchy
+# limine-entry-tool drop-in, regenerates the Limine configuration and fails
+# unless every generated cmdline entry carries them.
+ra_boot_console_normalize_command() {
+  local consoles=$1 conf=${2:-/boot/limine.conf} dropin=${3:-$RA_BOOT_CONSOLE_DROPIN}
+  printf 'set -e\ninstall -d -m 0755 %q\n' "${dropin%/*}"
+  printf 'printf %q > %q\n' "KERNEL_CMDLINE[default]+=\" $consoles\"\n" "$dropin"
+  printf 'limine-update\n'
+  printf 'echo "== %s"; cat %q\n' "$dropin" "$dropin"
+  printf 'echo "== %s cmdline entries"; grep "^ *cmdline:" %q\n' "$conf" "$conf"
+  printf 'if grep "^ *cmdline:" %q | grep -vE -- %q; then echo "an entry lacks %s"; exit 1; fi\n' \
+    "$conf" " $consoles( |\$)" "$consoles"
+}
+
+# Fails, printing why, if a booted kernel command line has a serial kernel
+# console (the inferred console=uart…, or an explicit console=ttyS…).
+ra_check_no_serial_console() {
+  local cmdline=" $1 "
+  if [[ $cmdline == *" console=uart"* ]]; then
+    echo "the inferred serial kernel console console=uart is present"
+    return 1
+  fi
+  if [[ $cmdline == *" console=ttyS"* ]]; then
+    echo "a serial kernel console console=ttyS* is present"
+    return 1
+  fi
+}
+
+# What a guest's serial log holds so far: its size and how many firmware boot
+# manager (BdsDxe) lines reached it.
+ra_serial_observation() {
+  local log=$1 firmware
+  [[ -f $log ]] || { echo "absent"; return 0; }
+  firmware=$(grep -ac 'BdsDxe:' "$log") || true
+  echo "$(stat -c %s "$log") bytes, ${firmware:-0} firmware boot manager lines"
+}
+
+# The normalized CI console contract for a booted kernel command line.
+ra_check_canonical_cmdline() {
+  if [[ " $1 " != *" console=tty0 "* ]]; then
+    echo "console=tty0 is missing"
+    return 1
+  fi
+  ra_check_no_serial_console "$1"
+}
+
+# Records the hosted substrate the run used, where available.
+ra_record_substrate() {
+  local out="$RA_ARTIFACTS/host/substrate.txt" azure qemu ovmf line
+  azure=$(curl -s -m 3 -H Metadata:true "${RA_IMDS_URL:-http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01}" 2>/dev/null |
+    python3 -c 'import json, sys; d = json.load(sys.stdin); print(d.get("location", "?"), d.get("vmSize", "?"))' 2>/dev/null) || azure=""
+  qemu=$(qemu-system-x86_64 --version 2>/dev/null | head -1 | sed 's/^QEMU emulator version //') || qemu=""
+  ovmf=$(dpkg-query -W -f='${Version}' ovmf 2>/dev/null) || ovmf=""
+  {
+    echo "runner_image=${ImageOS:-unknown} ${ImageVersion:-unknown}"
+    echo "runner_name=${RUNNER_NAME:-unknown}"
+    echo "azure=${azure:-unavailable}"
+    echo "qemu=${qemu:-unknown}"
+    echo "ovmf=${ovmf:-unknown}"
+  } > "$out"
+  while IFS= read -r line; do ra_record "substrate $line"; done < "$out"
 }
 
 ra_cleanup_add() {

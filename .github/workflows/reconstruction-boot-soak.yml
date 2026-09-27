@@ -16,10 +16,10 @@ on:
         description: Reboot cycles or overlay trials
         default: '30'
       boot_image:
-        description: installer (as installed), tty0-console / ttys0-console (installer image; an explicit console= appended so systemd-stub adds no console=uart), rebuilt (limine-update) or debug (regenerated with serial-console output)
+        description: canonical (production CI normalization, console=tty0), installer (untouched substrate control), ttys0-console (explicit serial kernel console), rebuilt (limine-update) or debug (regenerated with serial-console output)
         type: choice
-        options: [installer, tty0-console, ttys0-console, rebuilt, debug]
-        default: installer
+        options: [canonical, installer, ttys0-console, rebuilt, debug]
+        default: canonical
 
 permissions:
   contents: read
