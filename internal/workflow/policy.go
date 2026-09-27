@@ -144,7 +144,8 @@ func (s *Session) resolveRestoreTarget(ctx context.Context, category string, tar
 		return policy.EffectiveSetting{}, RestoreDecision{}, err
 	}
 	if !target.RestoreEligible {
-		return effective.Restore, RestoreDecision{Restore: false, Resolved: true, Reason: target.SafetyReason}, nil
+		return effective.Restore, RestoreDecision{Restore: false, Resolved: true, Reason: target.SafetyReason,
+			CompatibilityApply: effective.Restore.Enabled && target.Desired != TargetUnknown && !target.Capabilities.DropsDesiredWhenIneligible}, nil
 	}
 	if !effective.Restore.Enabled {
 		return effective.Restore, RestoreDecision{Restore: false, Resolved: true, Reason: RestoreSkipReason(effective.Restore)}, nil

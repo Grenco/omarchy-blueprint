@@ -114,6 +114,10 @@ type CaptureDecision struct {
 type RestoreDecision struct {
 	Restore  bool
 	Resolved bool
+	// CompatibilityApply preserves policy Apply intent when provider safety
+	// withholds mutation. It never grants Plan or execution authority; only
+	// compatibility assessment and Verify may use this read-only scope.
+	CompatibilityApply bool
 	// Reason is a human-readable explanation for a Restore=false decision,
 	// for a provider to attach verbatim to the model.Skipped entry it
 	// records for this target (see the design's "a target with Restore
@@ -189,6 +193,21 @@ type RestoreContext struct {
 	// Compatibility is populated from this provider's planned fragment only
 	// after Plan returns. Verify receives the exact planned category.
 	Compatibility model.CompatibilityCategory
+}
+
+// ForCompatibility retains unsafe-but-wanted intent for assessment and
+// verification, without changing the resolved decisions used by Plan.
+func (c RestoreContext) ForCompatibility() RestoreContext {
+	view := c
+	view.Targets = make(map[string]RestoreDecision, len(c.Targets))
+	for key, decision := range c.Targets {
+		if decision.CompatibilityApply {
+			decision.Restore = true
+			decision.Reason = ""
+		}
+		view.Targets[key] = decision
+	}
+	return view
 }
 
 func (c RestoreContext) ApplyTargets() map[string]bool {

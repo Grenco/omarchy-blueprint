@@ -4810,12 +4810,13 @@ func TestPluginsPlanExactFailsClosedWhenShellPathsNotConfigured(t *testing.T) {
 	}
 }
 
-func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
+func TestPluginsInspectTargetsScopesSavedBuiltinAvailability(t *testing.T) {
 	_, deps := configSandbox(t)
 	pluginDir := t.TempDir()
 	deps.PluginDir = func() (string, error) { return pluginDir, nil }
 	runner := deps.Runner.(*machineRunner)
 	runner.pluginDir = pluginDir
+	runner.plugins = map[string]bool{"current-only": true}
 	if err := os.MkdirAll(filepath.Join(pluginDir, "cool-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -4835,8 +4836,11 @@ func TestPluginsInspectTargetsReportsThirdPartySourceOnly(t *testing.T) {
 	for _, target := range targets {
 		byKey[target.Key] = target
 	}
-	if _, ok := byKey["plugin:builtin-toggle"]; ok {
-		t.Fatalf("targets = %#v, want the builtin plugin omitted", targets)
+	if got, ok := byKey["plugin:builtin-toggle"]; !ok || got.Desired != workflow.TargetPresent || got.Current != workflow.TargetAbsent || got.CaptureEligible || !got.RestoreEligible {
+		t.Fatalf("saved builtin availability target = %#v, ok=%v", got, ok)
+	}
+	if _, ok := byKey["plugin:current-only"]; ok {
+		t.Fatalf("current-only builtin became saved intent: %#v", targets)
 	}
 	if got, ok := byKey["plugin:cool-plugin"]; !ok || got.Desired != workflow.TargetUnknown || got.Current != workflow.TargetPresent {
 		t.Fatalf("plugin:cool-plugin (add) = %#v, ok=%v", got, ok)

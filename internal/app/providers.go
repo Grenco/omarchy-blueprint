@@ -1699,10 +1699,9 @@ func (p pluginsStateProvider) provider() (pluginsprovider.Provider, error) {
 	return pluginProvider(p.deps, p.opt)
 }
 
-// InspectTargets reports plugin:<id> for third-party source availability
-// only; first-party ("builtin") plugins ship with Omarchy and have no source
-// for Blueprint to capture. Plugin enablement itself is Shell's target, not
-// Plugins' (see pluginSemantics).
+// InspectTargets reports third-party source targets and availability targets
+// for only first-party plugins saved in the profile. Current-only builtins
+// are not desired intent; plugin enablement remains Shell-owned.
 func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data) ([]workflow.TargetInspection, error) {
 	provider, err := p.provider()
 	if err != nil {
@@ -1712,15 +1711,19 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	if err != nil {
 		return nil, err
 	}
-	desiredThirdParty, currentThirdParty := map[string]bool{}, map[string]bool{}
+	desiredThirdParty, desiredBuiltin, currentThirdParty, currentBuiltin := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, plugin := range d.Plugins.Items {
-		if plugin.Source != "builtin" {
+		if plugin.Source == "builtin" || plugin.Source == "" {
+			desiredBuiltin[plugin.ID] = true
+		} else {
 			desiredThirdParty[plugin.ID] = true
 		}
 	}
 	pluginFingerprints := map[string]string{}
 	for _, plugin := range current.Items {
-		if plugin.Source != "builtin" {
+		if plugin.Source == "builtin" || plugin.Source == "" {
+			currentBuiltin[plugin.ID] = true
+		} else {
 			currentThirdParty[plugin.ID] = true
 			pluginFingerprints[plugin.ID] = canonicalFingerprint(plugin)
 		}
@@ -1733,6 +1736,9 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	for id := range desiredThirdParty {
 		ids[id] = true
 	}
+	for id := range desiredBuiltin {
+		ids[id] = true
+	}
 	for id := range currentThirdParty {
 		ids[id] = true
 	}
@@ -1741,6 +1747,14 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	}
 	targets := make([]workflow.TargetInspection, 0, len(ids))
 	for _, id := range sortedKeys(ids) {
+		if desiredBuiltin[id] {
+			targets = append(targets, workflow.TargetInspection{
+				Key: "plugin:" + id, Label: id, Desired: workflow.TargetPresent,
+				Current: currentPresence(currentBuiltin[id]), RestoreEligible: true,
+				Capabilities: workflow.TargetCapabilities{SupportsRestore: true},
+			})
+			continue
+		}
 		desiredState := workflow.TargetUnknown
 		switch {
 		case absentThirdParty[id]:
@@ -1932,10 +1946,8 @@ func effectiveShellPluginReferences(deps Dependencies, opt *options) (map[string
 // two), and the subset that actually matched an Item/Absent entry -- only
 // that subset should be recorded as a visible Plan skip; a key with no
 // matching desired state was never going to produce anything regardless of
-// policy. A builtin Item is left untouched regardless: InspectTargets
-// never creates a "plugin:<id>" target for one, unlike Absent, which
-// InspectTargets always scopes a target for regardless of Source. Every
-// other desired target key is resolved via resolveRestoreSkip
+// policy. Saved builtin Items have availability targets and respect policy
+// Skip. Every desired target key is resolved via resolveRestoreSkip
 // (RestoreContext.Require), so a missing or unresolved decision fails the
 // whole call closed.
 func filterPluginsForRestoreSkip(saved profile.Plugins, restoreCtx workflow.RestoreContext) (profile.Plugins, []restoreSkip, error) {
@@ -1944,10 +1956,6 @@ func filterPluginsForRestoreSkip(saved profile.Plugins, restoreCtx workflow.Rest
 
 	items := make([]profile.Plugin, 0, len(saved.Items))
 	for _, item := range saved.Items {
-		if item.Source == "builtin" {
-			items = append(items, item)
-			continue
-		}
 		skip, entry, err := resolveRestoreSkip(restoreCtx, "plugins", "plugin:"+item.ID)
 		if err != nil {
 			return profile.Plugins{}, nil, err
@@ -2397,12 +2405,18 @@ func (p configStateProvider) Plan(_ context.Context, d profile.Data, info omarch
 		return workflow.RestoreFragment{}, err
 	}
 	saved = filterConfigForConvergence(saved, restoreCtx.Options.Convergence)
+	compatCtx := restoreCtx.ForCompatibility()
+	compatSaved, _, err := filterConfigForRestoreSkip(d.Config, compatCtx)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	compatSaved = filterConfigForConvergence(compatSaved, restoreCtx.Options.Convergence)
 	force := restoreCtx.Options.Conflicts == policy.ConflictForce
 	plan, err := provider.PlanOverlay(saved, current, d.Manifest.Schema, d.Manifest.Omarchy.CapturedVersion, info.Version, configprovider.PlanOptions{Force: force})
 	if err != nil {
 		return workflow.RestoreFragment{}, err
 	}
-	category, err := configprovider.RestoreCompatibility(saved, current, restoreCtx.ApplyTargets(), restoreCtx.Options.Convergence == policy.ConvergenceExact)
+	category, err := configprovider.RestoreCompatibility(compatSaved, current, compatCtx.ApplyTargets(), restoreCtx.Options.Convergence == policy.ConvergenceExact)
 	if err != nil {
 		return workflow.RestoreFragment{}, err
 	}
@@ -2418,7 +2432,7 @@ func (p configStateProvider) Verify(_ context.Context, d profile.Data, restoreCt
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	saved, _, err := filterConfigForRestoreSkip(d.Config, restoreCtx)
+	saved, _, err := filterConfigForRestoreSkip(d.Config, restoreCtx.ForCompatibility())
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
@@ -2835,12 +2849,20 @@ func (p shellStateProvider) Plan(_ context.Context, d profile.Data, info omarchy
 	if err != nil {
 		return workflow.RestoreFragment{}, err
 	}
-	category, err := provider.RestoreCompatibility(saved, current, restoreCtx.Applies())
+	compatCtx := restoreCtx.ForCompatibility()
+	compatSaved, _, err := filterShellForRestoreSkip(d.Shell, compatCtx)
+	if err != nil {
+		return workflow.RestoreFragment{}, err
+	}
+	category, err := provider.RestoreCompatibility(compatSaved, current, compatCtx.Applies())
 	if err != nil {
 		return workflow.RestoreFragment{}, err
 	}
 	if category.Authority == model.CompatibilityBlocked {
-		plan := model.RestorePlan{Skipped: []model.Skipped{{Provider: "shell", Resource: "shell:config", Reason: "unsupported Shell schema; inspect compatibility findings"}}}
+		plan := model.RestorePlan{}
+		if len(matched) == 0 {
+			plan.Skipped = []model.Skipped{{Provider: "shell", Resource: "shell:config", Reason: "unsupported Shell schema; inspect compatibility findings"}}
+		}
 		return restoreFragment(recordRestoreSkips(plan, "shell", matched), category), nil
 	}
 	force := restoreCtx.Options.Conflicts == policy.ConflictForce
@@ -2860,7 +2882,7 @@ func (p shellStateProvider) Verify(_ context.Context, d profile.Data, restoreCtx
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
-	saved, _, err := filterShellForRestoreSkip(d.Shell, restoreCtx)
+	saved, _, err := filterShellForRestoreSkip(d.Shell, restoreCtx.ForCompatibility())
 	if err != nil {
 		return model.VerificationResult{}, err
 	}
