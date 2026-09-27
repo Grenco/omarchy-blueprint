@@ -115,6 +115,38 @@ func TestRestoreCompatibilityOnlyExplicitTombstoneAuthorizesDeletion(t *testing.
 	}
 }
 
+func TestRestoreCompatibilityAdditiveIgnoresTombstoneOnlyIntent(t *testing.T) {
+	path := ".config/example/removed.toml"
+	saved := profile.Configs{Deletes: []profile.ConfigDelete{{Path: path, BaselineHash: "baseline"}}}
+	for _, classification := range []Classification{ConfigUnsupported, ConfigAmbiguousBaseline} {
+		got, err := RestoreCompatibility(saved, ScanSummary{Candidates: []Candidate{{Path: path, Classification: classification, UserHash: "unknown"}}}, map[string]bool{path: true}, false)
+		if err != nil || got.Applies || got.State != "" || got.Authority != model.CompatibilityUnchanged || len(got.Findings) != 0 || len(got.Evidence) != 0 {
+			t.Fatalf("Additive tombstone %s contributed authority: %+v err=%v", classification, got, err)
+		}
+	}
+}
+
+func TestRestoreCompatibilityAdditiveAssessesFilesButNotTombstones(t *testing.T) {
+	filePath, deletePath := ".config/example/config.toml", ".config/example/removed.toml"
+	saved := profile.Configs{
+		Files:   []profile.ConfigFile{{Path: filePath, Hash: "desired", BaselineHash: "baseline"}},
+		Deletes: []profile.ConfigDelete{{Path: deletePath, BaselineHash: "baseline"}},
+	}
+	scan := ScanSummary{Candidates: []Candidate{
+		{Path: filePath, Classification: ConfigUnchangedBaseline, UserHash: "baseline", BaselineHash: "baseline"},
+		{Path: deletePath, Classification: ConfigUnsupported},
+	}}
+	apply := map[string]bool{filePath: true, deletePath: true}
+	additive, err := RestoreCompatibility(saved, scan, apply, false)
+	if err != nil || !additive.Applies || additive.State != model.CompatibilitySupported || additive.Authority != model.CompatibilityUnchanged || len(additive.Findings) != 0 {
+		t.Fatalf("Additive file intent was blocked by tombstone: %+v err=%v", additive, err)
+	}
+	exact, err := RestoreCompatibility(saved, scan, apply, true)
+	if err != nil || exact.State != model.CompatibilityIncompatible || exact.Authority != model.CompatibilityBlocked || len(exact.Findings) != 1 || exact.Findings[0].Target != deletePath {
+		t.Fatalf("Exact lost incompatible deletion: %+v err=%v", exact, err)
+	}
+}
+
 func TestRestoreCompatibilityExactTombstoneSkipDoesNotVerifyConverged(t *testing.T) {
 	path, profileDir := ".config/example/default.toml", t.TempDir()
 	baseline := filepath.Join(profileDir, "config", "baseline", path)

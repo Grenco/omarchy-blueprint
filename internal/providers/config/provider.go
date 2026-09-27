@@ -138,9 +138,11 @@ func RestoreCompatibility(saved profile.Configs, scan ScanSummary, applyTargets 
 			assess(file.Path, file.Hash, file.BaselineHash, false)
 		}
 	}
-	for _, deletion := range saved.Deletes {
-		if apply(deletion.Path) {
-			assess(deletion.Path, "", deletion.BaselineHash, true)
+	if exact {
+		for _, deletion := range saved.Deletes {
+			if apply(deletion.Path) {
+				assess(deletion.Path, "", deletion.BaselineHash, true)
+			}
 		}
 	}
 	return compatibility.BuildCategory("config", len(evidence)+len(findings) > 0, evidence, findings)
