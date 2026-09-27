@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -20,6 +21,176 @@ type resourcePlanState struct {
 	ReadyOpID, Conflict string
 }
 type PlanOptions struct{ Force bool }
+
+// RestoreCompatibility derives Resource portability evidence from the same
+// captured representation and already-built plan. It performs no extra stat,
+// hash, network, or version probe and never grants Force/Exact authority.
+func RestoreCompatibility(items []profile.Resource, applyTargets map[string]bool, plan model.RestorePlan) (model.CompatibilityCategory, error) {
+	var evidence []model.CompatibilityEvidence
+	var findings []model.CompatibilityFinding
+	for _, item := range items {
+		ref := "resource:" + item.ID
+		if applyTargets != nil && !applyTargets[ref] {
+			continue
+		}
+		finding := model.CompatibilityFinding{Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged}
+		if item.Strategy != "copy" && item.Strategy != "git" && item.Strategy != "git+diff" {
+			finding.Code, finding.Summary = "resources.strategy.unsupported", "captured Resource strategy is not portable"
+			finding.State, finding.Authority = model.CompatibilityIncompatible, model.CompatibilityBlocked
+			findings = append(findings, finding)
+			continue
+		}
+		if !resourceProvenanceComplete(item) {
+			finding.Code, finding.Summary = "resources.provenance.unestablished", "captured Resource lacks required portable provenance"
+			finding.Authority = model.CompatibilityBlocked
+			findings = append(findings, finding)
+			continue
+		}
+		var ops []model.Operation
+		for _, op := range plan.Operations {
+			if op.Provider == "resources" && op.Resource == ref {
+				ops = append(ops, op)
+			}
+		}
+		unsafe := false
+		for _, op := range ops {
+			unsafe = unsafe || !safeResourceOperation(item, op)
+		}
+		if unsafe {
+			finding.Code, finding.Summary = "resources.plan.unsafe", "planned Resource effect exceeds portable safety authority"
+			finding.State, finding.Authority = model.CompatibilityIncompatible, model.CompatibilityBlocked
+			findings = append(findings, finding)
+			continue
+		}
+		if !safeResourceEffects(item, ops) {
+			finding.Code, finding.Summary = "resources.plan.unestablished", "existing Resource safety rules did not establish an applicable reconstruction effect"
+			findings = append(findings, finding)
+			continue
+		}
+		evidence = append(evidence, model.CompatibilityEvidence{Kind: "portable-resource-representation", Summary: "captured strategy and planned safe preconditions establish portable reconstruction"})
+	}
+	return compatibility.BuildCategory("resources", len(evidence)+len(findings) > 0, evidence, findings)
+}
+
+func safeResourceOperation(item profile.Resource, op model.Operation) bool {
+	if op.Action == "remove" || op.Action == "delete" || op.Delete != nil || op.Symlink != nil || (op.File != nil && op.File.ReplaceExisting) {
+		return false
+	}
+	if item.Strategy == "copy" {
+		if item.Kind == "file" {
+			return op.Action == "file" && op.File != nil && op.File.SourceHash == item.Hash && op.File.ExpectedMissing && op.File.RejectSymlinkParents
+		}
+		return op.Action == "copy" && op.Copy != nil && op.Copy.SourceHash == item.Hash && op.Copy.RejectSymlinkParents
+	}
+	switch op.Action {
+	case "directory":
+		return op.Directory != nil && op.Directory.RejectSymlinkParents
+	case "git clone":
+		if len(op.Command) >= 4 && op.Command[0] == "git" && op.Command[1] == "clone" && op.Command[2] == "--no-checkout" && op.Command[3] == item.Remote {
+			return true
+		}
+		if len(op.Command) >= 4 && op.Command[0] == "gh" && op.Command[1] == "repo" && op.Command[2] == "clone" {
+			repo, ok := githubRepo(item.Remote)
+			return ok && op.Command[3] == strings.TrimPrefix(repo, "github.com/")
+		}
+		return false
+	case "git checkout":
+		return len(op.Command) > 0 && op.Command[0] == "git" && op.Command[len(op.Command)-1] == item.Revision
+	case "apply staged Git state":
+		return item.Strategy == "git+diff" && item.IndexPatchHash != "" && op.GitPatch != nil && op.GitPatch.SourceHash == item.IndexPatchHash && op.GitPatch.ToIndex
+	case "apply unstaged Git state":
+		return item.Strategy == "git+diff" && item.WorktreePatchHash != "" && op.GitPatch != nil && op.GitPatch.SourceHash == item.WorktreePatchHash && !op.GitPatch.ToIndex
+	case "restore untracked Git file":
+		if item.Strategy != "git+diff" || op.File == nil || !op.File.ExpectedMissing || !op.File.RejectSymlinkParents {
+			return false
+		}
+		for _, file := range item.Untracked {
+			if op.File.SourceHash == file.Hash {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func resourceProvenanceComplete(item profile.Resource) bool {
+	switch item.Strategy {
+	case "copy":
+		if item.Hash == "" || (item.Kind != "file" && item.Kind != "directory") {
+			return false
+		}
+		if item.Kind == "file" {
+			_, err := parseResourceMode(item.Mode)
+			return err == nil
+		}
+		return true
+	case "git", "git+diff":
+		if item.Kind != "directory" || item.Remote == "" || item.Revision == "" {
+			return false
+		}
+		for _, file := range item.Untracked {
+			if file.Hash == "" {
+				return false
+			}
+			if _, err := parseResourceMode(file.Mode); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func safeResourceEffects(item profile.Resource, ops []model.Operation) bool {
+	if item.Strategy == "copy" {
+		for _, op := range ops {
+			if item.Kind == "file" && op.File != nil && op.Action == "file" && op.File.SourceHash == item.Hash && op.File.ExpectedMissing && op.File.RejectSymlinkParents {
+				return true
+			}
+			if item.Kind == "directory" && op.Copy != nil && op.Action == "copy" && op.Copy.SourceHash == item.Hash && op.Copy.RejectSymlinkParents {
+				return true
+			}
+		}
+		return false
+	}
+	clone, checkout := false, false
+	for _, op := range ops {
+		if op.Action == "git clone" && len(op.Command) > 0 {
+			clone = op.Command[0] == "git" || op.Command[0] == "gh"
+		}
+		if op.Action == "git checkout" && len(op.Command) > 0 && op.Command[len(op.Command)-1] == item.Revision {
+			checkout = true
+		}
+	}
+	if !clone || !checkout {
+		return false
+	}
+	if item.Strategy == "git" {
+		return true
+	}
+	for _, hash := range []string{item.IndexPatchHash, item.WorktreePatchHash} {
+		if hash == "" {
+			continue
+		}
+		found := false
+		for _, op := range ops {
+			found = found || op.GitPatch != nil && op.GitPatch.SourceHash == hash
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, file := range item.Untracked {
+		found := false
+		for _, op := range ops {
+			found = found || op.Action == "restore untracked Git file" && op.File != nil && op.File.SourceHash == file.Hash && op.File.ExpectedMissing && op.File.RejectSymlinkParents
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
 
 func (p Provider) Plan(_ context.Context, saved, current profile.Resources, schema int, from, to string, options ...PlanOptions) (model.RestorePlan, error) {
 	force := len(options) > 0 && options[0].Force
