@@ -66,6 +66,29 @@ one run, independently. `--force` and `--exact` are shorthands for Force and
 Exact. Exact only removes explicitly undesired state when its owning provider
 can do so safely; it never deletes Resource data.
 
+Each Restore plan shows **Compatibility** before requirements and operations.
+For each selected category, **Supported** means provider evidence supports its
+selected intent, **Unknown** means a material compatibility fact cannot be
+established, and **Incompatible** means the intent is not safely meaningful on
+this target. The separate authority effect is **Unchanged** (existing safety
+rules still apply), **Reduced** (some work, especially uncertain Exact removal,
+is withheld), or **Blocked** (the selected plan cannot apply). A category with
+no effective Apply intent is shown as not selected, not Supported. Findings
+identify the affected targets and explain the missing or conflicting evidence.
+
+The listed Omarchy environment from the profile is its **last Capture**
+context; a partial Capture may leave older target intent untouched, so this is
+not a source-version verdict. `restore --dry-run --json` exposes the same
+report under `plan.compatibility`, with `profile_last_capture`, `target`, and
+deterministically ordered `categories`. Unknown remains explicit in JSON.
+
+Any Blocked finding refuses the entire selected Restore scope before approval
+or mutation, even under `--force` (Force only changes conflict handling). You
+can explicitly narrow the scope with `restore <category>` or a Restore Skip
+policy for a target you intend to leave alone. Otherwise address the finding
+outside Blueprint and plan again; changing the environment or a requirement
+remediation never silently approves the old plan.
+
 Installing or removing system packages goes through Omarchy, which asks for
 administrator authentication with `sudo`. These steps are marked interactive
 in the plan and run in your terminal, where `sudo` shows its own prompt;
