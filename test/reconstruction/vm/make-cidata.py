@@ -15,7 +15,7 @@ def size(value: int) -> dict:
     return {"sector_size": {"unit": "B", "value": 512}, "unit": "B", "value": value}
 
 
-def build_configuration(custom_commands: list[str] | None = None) -> dict:
+def build_configuration() -> dict:
     partitions = [
         {"btrfs": [], "dev_path": None, "flags": ["boot", "esp"], "fs_type": "fat32",
          "mount_options": [], "mountpoint": "/boot", "obj_id": "ea21d3f2-82bb-49cc-ab5d-6f81ae94e18d",
@@ -29,7 +29,7 @@ def build_configuration(custom_commands: list[str] | None = None) -> dict:
     ]
     return {
         "app_config": None, "archinstall-language": "English", "auth_config": {},
-        "audio_config": {"audio": "pipewire"}, "bootloader": "Limine", "custom_commands": list(custom_commands or []),
+        "audio_config": {"audio": "pipewire"}, "bootloader": "Limine", "custom_commands": [],
         "disk_config": {"btrfs_options": {"snapshot_config": {"type": "Snapper"}},
                         "config_type": "default_layout", "device_modifications": [
                             {"device": "/dev/vda", "partitions": partitions, "wipe": True}]},
@@ -47,13 +47,13 @@ def build_configuration(custom_commands: list[str] | None = None) -> dict:
     }
 
 
-def write_cidata(output_dir: Path, ssh_public_key: Path, custom_commands: list[str] | None = None) -> None:
+def write_cidata(output_dir: Path, ssh_public_key: Path) -> None:
     key = ssh_public_key.read_text()
     if not key.startswith("ssh-") or not key.strip():
         raise ValueError("expected an SSH public key")
     output_dir.mkdir(parents=True, exist_ok=True)
     password_hash = subprocess.check_output(["openssl", "passwd", "-6", "spike"], text=True).strip()
-    (output_dir / "user_configuration.json").write_text(json.dumps(build_configuration(custom_commands), indent=2) + "\n")
+    (output_dir / "user_configuration.json").write_text(json.dumps(build_configuration(), indent=2) + "\n")
     (output_dir / "user_credentials.json").write_text(json.dumps({
         "root_enc_password": password_hash,
         "users": [{"enc_password": password_hash, "groups": [], "sudo": True, "username": "spike"}],
@@ -66,7 +66,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--ssh-public-key", required=True, type=Path)
-    parser.add_argument("--custom-command", action="append", default=[],
-                        help="archinstall post-install command, run in the installed system")
     args = parser.parse_args()
-    write_cidata(args.output_dir, args.ssh_public_key, args.custom_command)
+    write_cidata(args.output_dir, args.ssh_public_key)

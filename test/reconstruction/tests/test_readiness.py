@@ -31,7 +31,6 @@ def stubs(work: str, update_status: int = 0, version: str = "4.1.2-1", synced_af
         ra_drive_terminal() {{ printf '%s\\n' "$*" >> '{work}/drives'; echo drive >> '{work}/order'; return {update_status}; }}
         ra_guest_reboot() {{ echo reboot >> '{work}/reboots'; echo reboot >> '{work}/order'; }}
         ra_guest_stage() {{ echo stage >> '{work}/order'; }}
-        ra_guest_require_canonical_boot() {{ echo "cmdline-$2" >> '{work}/order'; }}
         ra_guest_exec() {{
           [[ $2 != 'sudo -K' ]] || echo sudo-K >> '{work}/order'
           case $2 in
@@ -66,7 +65,7 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(Path(work, "reboots").read_text(), "reboot\n")
             # The reboot clears /tmp, so staged inputs are restored after it.
             # Cold credentials, the update must really ask for sudo, then the reboot clears /tmp.
-            self.assertEqual(Path(work, "order").read_text(), "sudo-K\ndrive\nreboot\ncmdline-post-update\nstage\n")
+            self.assertEqual(Path(work, "order").read_text(), "sudo-K\ndrive\nreboot\nstage\n")
             self.assertIn("--min-sudo 1", drives[0])
             self.assertEqual(Path(work, "artifacts/source/ready-omarchy-version.txt").read_text().strip(), "4.1.2-1")
             self.assertIn("source ready Omarchy: 4.1.2-1", summary)

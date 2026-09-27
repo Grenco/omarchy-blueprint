@@ -156,7 +156,6 @@ PY
 # guests therefore boot with console=tty0 on every Limine entry. Firmware and
 # bootloader output still reach QEMU's serial log.
 RA_CANONICAL_BOOT_IMAGE=canonical
-RA_BOOT_CONSOLE_LOG=/var/log/blueprint-ra-boot-console.log
 
 # Prints the boot image to install: the canonical one unless a diagnostic
 # soak asks for another; fails for anything unknown.
@@ -183,33 +182,6 @@ ra_boot_console_args() {
 ra_boot_console_edit() {
   local consoles=$1 conf=${2:-/boot/limine.conf}
   printf "sed -i '/^ *cmdline:/ { / %s\$/! s#\$# %s# }' %q" "$consoles" "$consoles" "$conf"
-}
-
-# The unattended installer's post-install custom command (archinstall runs it
-# in the installed system before the installer reboots): applies the console
-# edit and fails the install unless every Limine cmdline entry now ends with
-# the consoles. Its log is evidence that it ran before the first disk boot.
-ra_boot_console_install_command() {
-  local consoles=$1 conf=${2:-/boot/limine.conf} log=${3:-$RA_BOOT_CONSOLE_LOG}
-  printf 'set -eu\nexec >> %q 2>&1\n' "$log"
-  printf 'echo "blueprint-ra: normalizing Limine consoles before first disk boot at $(date -u +%%FT%%TZ)"\n'
-  printf 'ls -l --time-style=full-iso %q; ls /etc/limine-entry-tool.d 2>/dev/null || true\n' "$conf"
-  printf '%s\n' "$(ra_boot_console_edit "$consoles" "$conf")"
-  printf 'grep "^ *cmdline:" %q\n' "$conf"
-  printf 'if grep "^ *cmdline:" %q | grep -v -- %q; then echo "an entry lacks the consoles"; exit 1; fi\n' \
-    "$conf" " $consoles\$"
-  printf 'echo "blueprint-ra: every Limine cmdline entry ends with: %s"\n' "$consoles"
-}
-
-# Writes the unattended installer inputs for a boot image: images with
-# console arguments carry the post-install custom command; the others
-# (the untouched installer control included) carry none.
-ra_write_cidata() {
-  local out=$1 key=$2 consoles
-  consoles=$(ra_boot_console_args "$3") || return 1
-  local args=(--output-dir "$out" --ssh-public-key "$key")
-  [[ -n $consoles ]] && args+=(--custom-command "$(ra_boot_console_install_command "$consoles")")
-  python3 "$RA_ROOT/vm/make-cidata.py" "${args[@]}"
 }
 
 # The normalized CI console contract for a booted kernel command line.

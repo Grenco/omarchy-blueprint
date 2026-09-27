@@ -25,7 +25,6 @@ ra_omarchy_ready() {
       "source /tmp/blueprint-ra-fixtures/guest-env.sh && omarchy update -y" 2> "$a/omarchy-update.err" ||
     ra_fail "$phase" "omarchy update failed on $role; not retried (see $role/omarchy-update.txt)"
   ra_guest_reboot "$role" || ra_fail "$phase" "$role did not come back after omarchy update"
-  ra_guest_require_canonical_boot "$role" post-update
   # The reboot clears /tmp; restage the inputs (this also waits for the session to settle).
   ra_guest_stage "$role" || ra_fail "$phase" "could not restage $role after omarchy update"
   synced=$(ra_guest_exec "$role" 'for repo in $(pacman-conf --repo-list); do

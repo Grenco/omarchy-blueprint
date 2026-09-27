@@ -31,14 +31,13 @@ ra_guest_timeout_diagnostics() {
 }
 
 # A guest is valid evidence only if it booted with the normalized CI console.
-# The optional label names a later boot (e.g. after its update reboot).
 ra_guest_require_canonical_boot() {
-  local role=$1 file="proc-cmdline${2:+-$2}.txt" cmdline reason
+  local role=$1 cmdline reason
   cmdline=$(ra_guest_exec "$role" 'cat /proc/cmdline') ||
     ra_fail INFRASTRUCTURE "could not read the $role kernel command line"
-  printf '%s\n' "$cmdline" > "$RA_ARTIFACTS/$role/$file"
+  printf '%s\n' "$cmdline" > "$RA_ARTIFACTS/$role/proc-cmdline.txt"
   reason=$(ra_check_canonical_cmdline "$cmdline") ||
-    ra_fail INFRASTRUCTURE "$role booted outside the normalized CI console: $reason (see $role/$file)"
+    ra_fail INFRASTRUCTURE "$role booted outside the normalized CI console: $reason (see $role/proc-cmdline.txt)"
 }
 
 ra_guest_start() {

@@ -113,35 +113,24 @@ Blueprint as root.
 GitHub-hosted QEMU/OVMF advertises a firmware serial console that causes
 systemd-stub to infer a kernel serial console (`console=uart,io,0x3f8`) when a
 boot entry has no explicit `console=`. The harness explicitly sets
-`console=tty0` to normalize this CI-only virtualization artifact, through the
-unattended installer's supported archinstall `custom_commands`: a post-install
-command, run in the installed system before the installer reboots, ends every
-Limine `cmdline:` entry with `console=tty0` and fails the install unless every
-entry does. The installed base's very first disk boot is therefore already
-normalized; nothing edits the boot configuration over SSH afterwards.
-Firmware/bootloader serial logging remains available, and QEMU keeps its serial
-device and `serial.log` artifacts. This is not Blueprint desired state and not
-an Omarchy workaround for real machines.
+`console=tty0` to normalize this CI-only virtualization artifact: it is
+appended to every Limine entry of the pinned install before the pristine base is
+frozen into overlays. Firmware/bootloader serial logging remains available, and
+QEMU keeps its serial device and `serial.log` artifacts. This is not Blueprint
+desired state and not an Omarchy workaround for real machines.
 
-The booted `/proc/cmdline` must contain `console=tty0` and no serial kernel
-console (`console=uart…` or `console=ttyS…`) at every stage, or the run fails
-`INFRASTRUCTURE`:
-
-- the installed base's first disk boot, before it is frozen
-  (`base/first-boot-cmdline.txt`, with the custom command's log in
-  `base/boot-console.log`);
-- Machine A after its first boot and Machine B after its identity reboot
-  (`<role>/proc-cmdline.txt`);
-- each machine after its `omarchy update` reboot
-  (`<role>/proc-cmdline-post-update.txt`).
+Each canonical guest's booted `/proc/cmdline` is kept as
+`<role>/proc-cmdline.txt` and must contain `console=tty0` and no serial kernel
+console (`console=uart…` or `console=ttyS…`). Machine A is checked after its
+first boot and Machine B after its identity reboot, before either counts as
+evidence; otherwise the run fails `INFRASTRUCTURE`.
 
 Why (PR #47, Reconstruction Boot Soak, fresh-overlay trials): early boots with a
 serial kernel console reproduced an idle hang after the initramfs resume message
 (14 of 515). Explicit `console=tty0` early boots had no failures in the measured
 sample (0 of 200). The exact kernel or userspace mechanism of the hang is not
-known. The soak keeps the untouched `installer` image (no custom commands) as
-the substrate control, and `ttys0-console` applies the same install-time rule
-with an explicit serial kernel console.
+known. The untouched `installer` image remains available in the soak as the
+substrate control.
 
 ## Boot soak (diagnostic, never a gate)
 
