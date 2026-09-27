@@ -41,15 +41,26 @@ class CanonicalBootImageTests(unittest.TestCase):
                 self.assertEqual(result.stdout.strip(), consoles)
         self.assertNotEqual(bash("ra_resolve_boot_image tty0-typo").returncode, 0)
 
-    def test_console_edit_appends_to_every_boot_entry_once(self):
+    def test_installer_command_normalizes_every_boot_entry_once_and_records_evidence(self):
         with tempfile.TemporaryDirectory() as work:
-            conf = Path(work, "limine.conf")
+            conf, log = Path(work, "limine.conf"), Path(work, "console.log")
             conf.write_text("timeout: 3\n/+Omarchy\n  //linux\n  cmdline: root=x quiet\n  //fallback\n  cmdline: root=x\n")
+            script = Path(work, "command.sh")
+            result = bash(f"ra_boot_console_install_command 'console=tty0' '{conf}' '{log}' > '{script}'", work)
+            self.assertEqual(result.returncode, 0, result.stderr)
             for _ in range(2):  # idempotent
-                result = bash(f"eval \"$(ra_boot_console_edit 'console=tty0' '{conf}')\"", work)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                run = subprocess.run(["bash", str(script)], capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
             lines = [line for line in conf.read_text().splitlines() if "cmdline:" in line]
             self.assertEqual(lines, ["  cmdline: root=x quiet console=tty0", "  cmdline: root=x console=tty0"])
+            self.assertIn("before first disk boot", log.read_text())
+
+    def test_installer_command_fails_without_boot_entries(self):
+        with tempfile.TemporaryDirectory() as work:
+            conf, script = Path(work, "limine.conf"), Path(work, "command.sh")
+            conf.write_text("timeout: 3\n")
+            bash(f"ra_boot_console_install_command 'console=tty0' '{conf}' '{work}/log' > '{script}'", work)
+            self.assertNotEqual(subprocess.run(["bash", str(script)], capture_output=True).returncode, 0)
 
     def test_cmdline_contract_requires_tty0_and_rejects_serial_kernel_consoles(self):
         self.assertEqual(bash(f"ra_check_canonical_cmdline '{TTY0}'").returncode, 0)
@@ -78,6 +89,62 @@ class CanonicalBootImageTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("phase: INFRASTRUCTURE", summary)
                     self.assertIn("console=uart", summary)
+
+
+def cidata(image: str) -> dict:
+    import json
+    with tempfile.TemporaryDirectory() as work:
+        Path(work, "key.pub").write_text("ssh-ed25519 fixture-key\n")
+        result = bash(f"ra_write_cidata '{work}/out' '{work}/key.pub' {image}", work)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return json.loads(Path(work, "out/user_configuration.json").read_text())
+
+
+class InstallTimeNormalizationTests(unittest.TestCase):
+    def test_canonical_install_normalizes_before_the_first_disk_boot(self):
+        commands = cidata("canonical")["custom_commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertIn("console=tty0", commands[0])
+        self.assertIn("cmdline:", commands[0])
+        self.assertNotIn("ttyS0", commands[0])
+
+    def test_installer_control_keeps_no_custom_commands(self):
+        self.assertEqual(cidata("installer")["custom_commands"], [])
+
+    def test_serial_diagnostic_uses_the_same_install_time_rule(self):
+        self.assertIn("console=ttyS0,115200 console=tty0", cidata("ttys0-console")["custom_commands"][0])
+
+    def test_canonical_first_boot_is_checked_and_never_edited_over_ssh(self):
+        for cmdline, ok in ((TTY0, True), (INSTALLER, False)):
+            with self.subTest(ok=ok), tempfile.TemporaryDirectory() as work:
+                Path(work, "artifacts/base").mkdir(parents=True)
+                result = bash(f"""trap 'ra_finish "$?"' EXIT
+                    source '{ROOT}/vm/install-omarchy.sh'
+                    ra_ssh() {{ echo '{cmdline}'; }}
+                    ra_ssh_sudo() {{ printf '%s\\n' "$1" >> '{work}/sudo.log'; echo 'installer custom command log'; }}
+                    ra_phase OMARCHY_INSTALL
+                    ra_base_after_first_boot canonical
+                    ra_pass OMARCHY_INSTALL""", work)
+                summary = Path(work, "artifacts/summary.txt").read_text()
+                self.assertEqual(Path(work, "artifacts/base/first-boot-cmdline.txt").read_text().strip(), cmdline)
+                sudo = Path(work, "sudo.log").read_text() if Path(work, "sudo.log").exists() else ""
+                self.assertNotIn("sed -i", sudo)  # the first boot must already be normalized
+                if ok:
+                    self.assertEqual(result.returncode, 0, summary)
+                else:
+                    self.assertIn("phase: INFRASTRUCTURE", summary)
+                    self.assertIn("console=uart", summary)
+
+    def test_installer_control_first_boot_is_recorded_not_enforced(self):
+        with tempfile.TemporaryDirectory() as work:
+            Path(work, "artifacts/base").mkdir(parents=True)
+            result = bash(f"""source '{ROOT}/vm/install-omarchy.sh'
+                ra_ssh() {{ echo '{INSTALLER}'; }}
+                ra_ssh_sudo() {{ :; }}
+                ra_base_after_first_boot installer""", work)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("console=uart", Path(work, "artifacts/base/first-boot-cmdline.txt").read_text())
 
 
 class WorkflowModeTests(unittest.TestCase):
