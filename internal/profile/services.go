@@ -46,11 +46,14 @@ type ServiceUnit struct {
 	ObservedActive       bool                        `json:"observed_active" toml:"observed_active"`
 	// Definition names an exact authored file below services/units/. Empty
 	// means the base is external: an overlay must never acquire that base.
-	Definition     string            `json:"definition,omitempty" toml:"definition,omitempty"`
-	DefinitionHash string            `json:"definition_hash,omitempty" toml:"definition_hash,omitempty"`
-	DropIns        []ServiceArtifact `json:"drop_ins,omitempty" toml:"drop_in,omitempty"`
-	Instances      []ServiceInstance `json:"instances,omitempty" toml:"instance,omitempty"`
-	LinkedSource   string            `json:"linked_source,omitempty" toml:"linked_source,omitempty"`
+	Definition     string `json:"definition,omitempty" toml:"definition,omitempty"`
+	DefinitionHash string `json:"definition_hash,omitempty" toml:"definition_hash,omitempty"`
+	// Mask is a selected user-level mask artifact. Explicit absence removes
+	// only a previously managed mask, never the external base definition.
+	Mask         *ServiceMask      `json:"mask,omitempty" toml:"mask,omitempty"`
+	DropIns      []ServiceArtifact `json:"drop_ins,omitempty" toml:"drop_in,omitempty"`
+	Instances    []ServiceInstance `json:"instances,omitempty" toml:"instance,omitempty"`
+	LinkedSource string            `json:"linked_source,omitempty" toml:"linked_source,omitempty"`
 }
 
 // ServiceArtifact retains an exact managed drop-in's identity and provenance.
@@ -62,6 +65,10 @@ type ServiceArtifact struct {
 	Mode     string          `json:"mode,omitempty" toml:"mode,omitempty"`
 }
 
+type ServiceMask struct {
+	Presence ServicePresence `json:"presence" toml:"presence"`
+}
+
 // An instance has independent persistent intent but no duplicate template
 // definition. Instance-specific drop-ins remain exact managed artifacts.
 type ServiceInstance struct {
@@ -70,6 +77,7 @@ type ServiceInstance struct {
 	StartIntent          ServiceStartIntent          `json:"start_intent" toml:"start_intent"`
 	ActivationPreference ServiceActivationPreference `json:"activation_preference,omitempty" toml:"activation_preference,omitempty"`
 	ObservedActive       bool                        `json:"observed_active" toml:"observed_active"`
+	Mask                 *ServiceMask                `json:"mask,omitempty" toml:"mask,omitempty"`
 	DropIns              []ServiceArtifact           `json:"drop_ins,omitempty" toml:"drop_in,omitempty"`
 }
 
@@ -96,6 +104,12 @@ func validateServicesDesiredState(services Services) error {
 		}
 		if unit.Management == ServiceManagementCustomization && (unit.Definition != "" || unit.DefinitionHash != "") {
 			return fmt.Errorf("external service %q cannot own its base definition", unit.Name)
+		}
+		if unit.Management == ServiceManagementCustomization && unit.Presence == ServiceAbsent {
+			return fmt.Errorf("external service %q cannot be desired-absent; select an exact managed overlay artifact", unit.Name)
+		}
+		if err := validateServiceMask(unit.Name, unit.Mask, unit.StartIntent); err != nil {
+			return err
 		}
 		if unit.Management == ServiceManagementDefinition && unit.Definition == "" {
 			return fmt.Errorf("managed service %q has no authored definition", unit.Name)
@@ -128,10 +142,26 @@ func validateServicesDesiredState(services Services) error {
 			if err := validateServiceIntent(instance.Name, instance.Presence, instance.StartIntent, instance.ActivationPreference); err != nil {
 				return err
 			}
+			if err := validateServiceMask(instance.Name, instance.Mask, instance.StartIntent); err != nil {
+				return err
+			}
 			if err := validateServiceDropIns(instance.Name, instance.DropIns); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validateServiceMask(name string, mask *ServiceMask, start ServiceStartIntent) error {
+	if mask == nil {
+		return nil
+	}
+	if mask.Presence != ServicePresent && mask.Presence != ServiceAbsent {
+		return fmt.Errorf("service %q has invalid managed mask presence %q", name, mask.Presence)
+	}
+	if mask.Presence == ServicePresent && start != ServiceStartMasked || mask.Presence == ServiceAbsent && start == ServiceStartMasked {
+		return fmt.Errorf("service %q has conflicting managed mask and persistent start intent", name)
 	}
 	return nil
 }

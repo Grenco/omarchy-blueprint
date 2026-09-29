@@ -76,6 +76,20 @@ func TestServicesExternalCustomizationDoesNotRequireBaseDefinition(t *testing.T)
 	}
 }
 
+func TestServicesExternalMaskAbsenceDoesNotAcquireBase(t *testing.T) {
+	dir := t.TempDir()
+	d := New("test", time.Unix(1, 0))
+	d.Manifest.Capture.Services = true
+	d.Services.Units = []ServiceUnit{{Name: "vendor-agent.service", Kind: "service", Management: ServiceManagementCustomization, Presence: ServicePresent, StartIntent: ServiceStartNotManaged, Mask: &ServiceMask{Presence: ServiceAbsent}}}
+	if err := Save(dir, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil || len(got.Services.Units) != 1 || got.Services.Units[0].Mask == nil || got.Services.Units[0].Mask.Presence != ServiceAbsent || got.Services.Units[0].Definition != "" {
+		t.Fatalf("mask absence acquired an external base: %+v err=%v", got.Services, err)
+	}
+}
+
 func TestServicesTemplateDefinitionStoredOnce(t *testing.T) {
 	dir := t.TempDir()
 	d := New("test", time.Unix(1, 0))
@@ -99,6 +113,8 @@ func TestServicesDesiredAbsenceCannotAlsoBePresent(t *testing.T) {
 		{"drop-in", []ServiceUnit{{Name: "backup.service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup.service", DropIns: []ServiceArtifact{{Path: "units/backup.service.d/10-custom.conf", Presence: ServicePresent}, {Path: "units/backup.service.d/10-custom.conf", Presence: ServiceAbsent}}}}},
 		{"instance", []ServiceUnit{{Name: "backup@.service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup@.service", Instances: []ServiceInstance{{Name: "backup@photos.service", Presence: ServicePresent}, {Name: "backup@photos.service", Presence: ServiceAbsent}}}}},
 		{"external-base", []ServiceUnit{{Name: "pipewire.service", Management: ServiceManagementCustomization, Presence: ServicePresent, Definition: "units/pipewire.service"}}},
+		{"external-base-absence", []ServiceUnit{{Name: "pipewire.service", Management: ServiceManagementCustomization, Presence: ServiceAbsent, StartIntent: ServiceStartNotManaged}}},
+		{"mask-conflict", []ServiceUnit{{Name: "pipewire.service", Management: ServiceManagementCustomization, Presence: ServicePresent, StartIntent: ServiceStartMasked, Mask: &ServiceMask{Presence: ServiceAbsent}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := New("test", time.Unix(1, 0))
