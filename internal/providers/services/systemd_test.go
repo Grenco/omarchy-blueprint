@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 type fixtureRunner struct {
 	files, loaded string
 	show          map[string]string
+	cat           map[string]string
 	calls         []string
 }
 
@@ -83,7 +85,15 @@ func (f *fixtureRunner) Run(_ context.Context, name string, args ...string) (str
 		return f.loaded, nil
 	case "show":
 		unit := args[len(args)-1]
+		if strings.Contains(unit, "@.") {
+			return "", fmt.Errorf("Unit name %s is neither a valid invocation ID nor unit name", unit)
+		}
 		if value, ok := f.show[unit]; ok {
+			return value, nil
+		}
+	case "cat":
+		unit := args[len(args)-1]
+		if value, ok := f.cat[unit]; ok {
 			return value, nil
 		}
 	}
@@ -125,13 +135,42 @@ func TestInspectSeparatesRuntimeGeneratedFromPersistentSources(t *testing.T) {
 }
 
 func TestInspectTemplateAndInstances(t *testing.T) {
-	f := &fixtureRunner{files: "backup@.service indirect -\nbackup@photos.service enabled -\n", show: map[string]string{
-		"backup@.service":       "Id=backup@.service\nUnitFileState=indirect\nFragmentPath=/home/test/.config/systemd/user/backup@.service\n",
+	f := &fixtureRunner{files: "backup@.service indirect -\nbackup@photos.service enabled -\n", cat: map[string]string{
+		"backup@.service": "# /home/test/.config/systemd/user/backup@.service\n[Service]\nExecStart=/usr/bin/true\n\n# /home/test/.config/systemd/user/backup@.service.d/10-env.conf\n[Service]\nEnvironment=MODE=photos\n",
+	}, show: map[string]string{
 		"backup@photos.service": "Id=backup@photos.service\nUnitFileState=enabled\nFragmentPath=/home/test/.config/systemd/user/backup@.service\nActiveState=inactive\n",
 	}}
 	got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background())
-	if err != nil || len(got) != 2 || !got[0].Template || got[0].StartIntent != profile.ServiceStartIndirect || got[1].InstanceOf != "backup@.service" || got[1].ObservedActive {
+	if err != nil || len(got) != 2 || !got[0].Template || !got[0].Persistent || got[0].StartIntent != profile.ServiceStartIndirect || got[0].FragmentPath != "/home/test/.config/systemd/user/backup@.service" || !reflect.DeepEqual(got[0].DropInPaths, []string{"/home/test/.config/systemd/user/backup@.service.d/10-env.conf"}) || got[1].InstanceOf != "backup@.service" || got[1].ObservedActive {
 		t.Fatalf("template and instance = %+v err=%v", got, err)
+	}
+	for _, call := range f.calls {
+		if strings.Contains(call, "show") && strings.HasSuffix(call, "backup@.service") {
+			t.Fatalf("naked template was passed to systemctl show: %q", call)
+		}
+	}
+	if want := "systemctl --user cat --no-pager -- backup@.service"; !slices.Contains(f.calls, want) {
+		t.Fatalf("template did not use read-only systemctl cat: %v", f.calls)
+	}
+}
+
+func TestInspectMaskedTemplateUsesCatalogWithoutInventingDefinition(t *testing.T) {
+	f := &fixtureRunner{files: "vendor@.service masked -\n"}
+	got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background())
+	if err != nil || len(got) != 1 || !got[0].Template || !got[0].Persistent || got[0].StartIntent != profile.ServiceStartMasked || got[0].FragmentPath != "/dev/null" {
+		t.Fatalf("masked template evidence = %+v err=%v", got, err)
+	}
+	if len(f.calls) != 2 {
+		t.Fatalf("masked template was asked to expose a hidden definition: %v", f.calls)
+	}
+}
+
+func TestInspectTemplateWithoutAuthoritativeSourceFailsClosed(t *testing.T) {
+	f := &fixtureRunner{files: "backup@.service static -\n", cat: map[string]string{
+		"backup@.service": "[Service]\nExecStart=/usr/bin/true\n",
+	}}
+	if got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background()); err == nil || len(got) != 0 || !strings.Contains(err.Error(), "no authoritative source") {
+		t.Fatalf("template without source was accepted: %+v err=%v", got, err)
 	}
 }
 

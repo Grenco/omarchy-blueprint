@@ -70,6 +70,14 @@ func (s Systemctl) InspectUserUnits(ctx context.Context) ([]ObservedUnit, error)
 	sort.Strings(names)
 	byID := make(map[string]ObservedUnit, len(names))
 	for _, name := range names {
+		if strings.Contains(name, "@.") {
+			unit, err := s.inspectTemplate(ctx, name, identities[name])
+			if err != nil {
+				return nil, fmt.Errorf("inspect user template %q: %w", name, err)
+			}
+			byID[unit.Name] = unit
+			continue
+		}
 		output, err := s.inspect(ctx, "show", "--all", "--no-pager", "--property="+userUnitProperties, "--", name)
 		if err != nil {
 			return nil, fmt.Errorf("inspect user unit %q: %w", name, err)
@@ -90,6 +98,54 @@ func (s Systemctl) InspectUserUnits(ctx context.Context) ([]ObservedUnit, error)
 		result = append(result, byID[name])
 	}
 	return result, nil
+}
+
+// An uninstantiated template has no runnable unit object for `systemctl show`.
+// `cat` resolves its effective persistent source and drop-ins without loading
+// a fabricated instance or changing user-manager state. The unit-file catalog
+// supplies the template's raw enablement state.
+func (s Systemctl) inspectTemplate(ctx context.Context, name, catalogState string) (ObservedUnit, error) {
+	if catalogState == "masked" || catalogState == "masked-runtime" {
+		// A mask hides the underlying definition from cat. Its catalog state is
+		// authoritative, but it does not grant ownership of that definition.
+		return normalizeObservedUnit(name, catalogState, map[string]string{"FragmentPath": "/dev/null"}), nil
+	}
+	output, err := s.inspect(ctx, "cat", "--no-pager", "--", name)
+	if err != nil {
+		return ObservedUnit{}, err
+	}
+	fragment, dropIns, err := templateSources(name, output)
+	if err != nil {
+		return ObservedUnit{}, err
+	}
+	return normalizeObservedUnit(name, catalogState, map[string]string{
+		"FragmentPath": fragment,
+		"DropInPaths":  strings.Join(dropIns, " "),
+	}), nil
+}
+
+func templateSources(name, output string) (string, []string, error) {
+	var fragment string
+	var dropIns []string
+	for _, line := range strings.Split(output, "\n") {
+		candidate, ok := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "# ")
+		if !ok || !filepath.IsAbs(candidate) || candidate != filepath.Clean(candidate) {
+			continue
+		}
+		switch {
+		case filepath.Base(candidate) == name:
+			if fragment != "" && fragment != candidate {
+				return "", nil, fmt.Errorf("template %q has ambiguous source files", name)
+			}
+			fragment = candidate
+		case filepath.Base(filepath.Dir(candidate)) == name+".d" && filepath.Ext(candidate) == ".conf":
+			dropIns = append(dropIns, candidate)
+		}
+	}
+	if fragment == "" {
+		return "", nil, fmt.Errorf("template %q has no authoritative source in systemctl cat output", name)
+	}
+	return fragment, sortedUnitNames(dropIns), nil
 }
 
 func parseUnitProperties(output string) map[string]string {
