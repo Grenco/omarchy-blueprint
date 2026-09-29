@@ -662,6 +662,11 @@ may acquire desired-absence intent.
 
 Unmanaged missing candidates never become tombstones.
 
+Record the prior managed definition hash and drop-in hash/mode with each
+reviewed absence. A previously selected mask/instance needs equally explicit
+managed identity evidence. Schema 14 may load an incomplete historical or
+hand-edited tombstone, but its presence alone is not deletion proof.
+
 - [ ] **Step 7: Pin approval-change behavior**
 
 Add test:
@@ -801,6 +806,7 @@ func TestPlanForceMayReplaceSafeUserOwnedManagedConflict(t *testing.T)
 func TestPlanForceCannotReplaceExternalBase(t *testing.T)
 func TestPlanAdditiveDoesNotApplyDesiredAbsence(t *testing.T)
 func TestPlanExactRemovesOnlyExplicitManagedAbsence(t *testing.T)
+func TestPlanExactMissingTombstoneProvenanceWithholdsRemoval(t *testing.T)
 func TestPlanExactNeverDeletesUnmanagedUnit(t *testing.T)
 func TestPlanExternalOverlayNeverCopiesOrDeletesBase(t *testing.T)
 func TestPlanInvalidProposedUnitBlocksBeforeMutation(t *testing.T)
@@ -861,6 +867,11 @@ masked
 Desired absence is removal authority only under Exact.
 
 Deletion target must match an exact previously Blueprint-managed service artifact.
+Missing prior definition hash or drop-in hash/mode, or unproved mask/instance
+ownership, grants **zero** Exact deletion authority: keep a visible skip and
+leave Verify non-converged when the selected exact target is still present.
+An already-absent target needs no deletion authority. Do not infer proof from
+a tombstone's existence or from a matching filename.
 
 - [ ] **Step 6: Plan semantic systemd operations**
 
