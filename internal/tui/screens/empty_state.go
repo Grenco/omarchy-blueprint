@@ -51,6 +51,7 @@ func profileHasCapturedState(data profile.Data) bool {
 		captured.Defaults ||
 		captured.Shell ||
 		captured.Hooks ||
+		captured.Services ||
 		captured.Resources
 }
 
@@ -110,6 +111,10 @@ func providerEmptyState(id string, status workflow.ProviderStatus, tab string) (
 				Guidance:    "Having no hooks is completely normal. There is nothing to set up here.",
 			}, true
 		}
+	case profile.Services:
+		if len(value.Units) == 0 {
+			return emptyStateCopy{Heading: "No Services managed by this profile", Explanation: "Services can preserve selected persistent user-service definitions and customizations.", Guidance: "Use reviewed Capture to choose a service before Blueprint manages it."}, true
+		}
 	}
 
 	return emptyStateCopy{}, false
@@ -156,6 +161,8 @@ func uncapturedProviderCopy(id string) (emptyStateCopy, bool) {
 			Explanation: "Hooks are scripts Omarchy runs automatically at supported events. Blueprint can carry those scripts so the same automation is available when you rebuild another machine.",
 			Guidance:    "Capture Hooks only when you want Blueprint to remember them.",
 		}, true
+	case "services":
+		return emptyStateCopy{Heading: "No Services saved in this profile", Explanation: "Blueprint can show persistent user-service candidates without taking ownership of them.", Guidance: "Open Capture review and select the exact Services you want Blueprint to manage."}, true
 	default:
 		return emptyStateCopy{}, false
 	}

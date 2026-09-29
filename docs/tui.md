@@ -203,6 +203,18 @@ screen shows which hook files Blueprint has saved and whether this machine
 differs. Hook source is stored as written, so credentials and secrets should
 stay outside the scripts.
 
+### Services
+
+Services shows persistent user-service candidates alongside any definitions or
+customisations already saved. Discovery does not grant ownership. In Capture
+review, new candidates begin unselected; `Space` selects a candidate for that
+review and recommends related custom units, which you can deselect individually.
+Press `v` to reveal additional advanced unit candidates before choosing one.
+This choice does not change Capture policy. An external service can contribute
+a selected user-owned drop-in or mask without its base definition becoming
+Blueprint-managed. Services Restore planning follows in the next Services
+milestone.
+
 ### Resources
 
 Resources are things outside Blueprint's normal categories that you

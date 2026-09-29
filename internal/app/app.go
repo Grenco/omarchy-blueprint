@@ -27,6 +27,7 @@ import (
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
+	servicesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/services"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 	"github.com/Grenco/omarchy-blueprint/internal/tui"
@@ -50,6 +51,8 @@ type Dependencies struct {
 	HomeDir           func() (string, error)
 	Hostname          func() (string, error)
 	ResourceLinkRoots func(string) []resourcesprovider.LinkSearchRoot
+	ServicesSystemd   servicesprovider.Systemd
+	ServicesRoots     func() servicesprovider.Roots
 	IsTTY             func() bool
 	RunTUI            func(context.Context, tui.Options, tui.Dependencies) error
 }
@@ -1356,6 +1359,8 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			if len(result.Profile.Hooks.Items) > 0 {
 				data[id] = result.Profile.Hooks
 			}
+		case "services":
+			data[id] = result.Profile.Services
 		}
 	}
 	data["changes"] = result.Changes

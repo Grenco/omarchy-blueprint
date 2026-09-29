@@ -109,6 +109,8 @@ func providerSnapshot(data profile.Data, id string) any {
 		return data.Shell
 	case "hooks":
 		return data.Hooks
+	case "services":
+		return data.Services
 	default:
 		return nil
 	}
@@ -128,6 +130,8 @@ func CaptureRequiredError(id string) error {
 		return fmt.Errorf("shell state has not been captured; run capture shell first")
 	case "hooks":
 		return fmt.Errorf("hooks state has not been captured; run capture hooks first")
+	case "services":
+		return fmt.Errorf("services state has not been captured; select a service in capture --review services first")
 	case "resources":
 		return fmt.Errorf("resources state has not been captured; track a resource or run capture resources first")
 	default:

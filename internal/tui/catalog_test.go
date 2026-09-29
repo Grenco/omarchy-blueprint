@@ -11,7 +11,7 @@ func TestScreenCatalog(t *testing.T) {
 		ScreenOverview,
 		ScreenCapture, ScreenRestore,
 		ScreenPackages, ScreenThemes, ScreenPlugins, ScreenDefaults,
-		ScreenConfig, ScreenShell, ScreenHooks, ScreenResources,
+		ScreenConfig, ScreenShell, ScreenHooks, ScreenServices, ScreenResources,
 		ScreenMachines, ScreenSync,
 	}
 	if got := orderedScreenIDs(); !slices.Equal(got, want) {

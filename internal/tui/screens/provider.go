@@ -578,8 +578,38 @@ func savedRows(snapshot any) []providerRow {
 			hooks = append(hooks, item.Path)
 		}
 		group("Saved hooks", hooks, &rows)
+	case profile.Services:
+		definitions, customizations := []string{}, []string{}
+		for _, unit := range value.Units {
+			label := unit.Name + " · " + serviceStartLabel(unit.StartIntent)
+			if unit.Presence == profile.ServiceAbsent {
+				label = unit.Name + " · Remembered absent"
+			}
+			if unit.Management == profile.ServiceManagementCustomization {
+				customizations = append(customizations, label)
+			} else {
+				definitions = append(definitions, label)
+			}
+		}
+		group("Managed user services", definitions, &rows)
+		group("Managed customizations", customizations, &rows)
 	}
 	return rows
+}
+
+func serviceStartLabel(value profile.ServiceStartIntent) string {
+	switch value {
+	case profile.ServiceStartEnabled:
+		return "Starts automatically"
+	case profile.ServiceStartDisabled:
+		return "Available but not automatic"
+	case profile.ServiceStartMasked:
+		return "Blocked from starting"
+	case profile.ServiceStartIndirect:
+		return "Started by another service"
+	default:
+		return "Persistent customization"
+	}
 }
 func valueSuffix(values ...string) string {
 	for _, value := range values {
@@ -609,6 +639,13 @@ func (s *Provider) refresh() tea.Cmd {
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, s.id)
 		if err != nil && !providerCaptured(s.session.Profile(), s.id) {
+			if s.id == "services" {
+				targets, inspectErr := s.session.PolicyTargets(s.ctx, s.id)
+				if inspectErr != nil {
+					return providerStatusMsg{requestID: requestID, err: inspectErr}
+				}
+				return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}, targets: targets}
+			}
 			return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}}
 		}
 		if err != nil {
@@ -854,6 +891,8 @@ func providerCaptured(data profile.Data, id string) bool {
 		return data.Manifest.Capture.Shell
 	case "hooks":
 		return data.Manifest.Capture.Hooks
+	case "services":
+		return data.Manifest.Capture.Services
 	case "defaults":
 		return data.Manifest.Capture.Defaults
 	default:

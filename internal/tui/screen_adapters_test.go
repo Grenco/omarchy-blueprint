@@ -85,7 +85,7 @@ func TestNewScreensBuildsExpectedAdaptersWithSession(t *testing.T) {
 
 	for _, id := range []ScreenID{
 		ScreenPackages, ScreenThemes, ScreenPlugins,
-		ScreenShell, ScreenHooks, ScreenDefaults,
+		ScreenShell, ScreenHooks, ScreenServices, ScreenDefaults,
 	} {
 		if got[id].ID() != id {
 			t.Fatalf("%s adapter returned ID %s", id, got[id].ID())
