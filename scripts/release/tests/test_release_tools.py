@@ -3,6 +3,7 @@
 import hashlib
 import os
 from pathlib import Path
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -10,6 +11,9 @@ import unittest
 
 
 RELEASE = Path(__file__).resolve().parents[1]
+REPO = RELEASE.parents[1]
+SHA = "0123456789abcdef" * 4
+URL = "https://github.com/Grenco/omarchy-blueprint/releases/download/v0.1.0/omarchy-blueprint-0.1.0.tar.gz"
 FIXED_DATE = "2026-09-29T12:00:00+00:00"
 
 
@@ -155,6 +159,92 @@ class SourceArchiveTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((out / "omarchy-blueprint-0.1.0.tar.gz").read_bytes(), original)
             self.assertEqual(sorted(p.name for p in out.iterdir()), ["SHA256SUMS", "omarchy-blueprint-0.1.0.tar.gz"])
+
+
+def render(out: Path, **overrides: str) -> subprocess.CompletedProcess:
+    values = {"version": "0.1.0", "pkgrel": "1", "source-url": URL, "sha256": SHA,
+              "maintainer-name": "Blueprint Maintainer", "maintainer-email": "maintainer@example.test", **overrides}
+    args = ["python3", str(RELEASE / "render-aur-package.py")]
+    for key, value in values.items():
+        args += [f"--{key}", value]
+    return run(*args, "--output-dir", str(out), cwd=REPO, check=False)
+
+
+def rendered(**overrides: str) -> str:
+    with tempfile.TemporaryDirectory() as tmp:
+        result = render(Path(tmp), **overrides)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return Path(tmp, "PKGBUILD").read_text()
+
+
+def shell_array(pkgbuild: str, name: str) -> str:
+    match = re.search(rf"^{name}=\((.*?)\)$", pkgbuild, re.M | re.S)
+    return match.group(1) if match else ""
+
+
+class AurRenderTests(unittest.TestCase):
+    def test_render_aur_package_pins_release_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = render(Path(tmp))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["LICENSE", "PKGBUILD"])
+            self.assertEqual(Path(tmp, "LICENSE").read_bytes(), (REPO / "packaging/aur/LICENSE").read_bytes())
+            pkgbuild = Path(tmp, "PKGBUILD").read_text()
+        for line in ("pkgname=omarchy-blueprint", "pkgver=0.1.0", "pkgrel=1", "arch=('x86_64')",
+                     "license=('MIT')", "makedepends=('go')", "checkdepends=('git')",
+                     "# Maintainer: Blueprint Maintainer <maintainer@example.test>",
+                     f"sha256sums=('{SHA}')"):
+            with self.subTest(line=line):
+                self.assertIn(line + "\n", pkgbuild)
+        self.assertIn(f'source=("omarchy-blueprint-${{pkgver}}.tar.gz::{URL}")', pkgbuild)
+        self.assertIn("omarchy-blueprint-0.1.0.tar.gz", URL)
+        self.assertNotRegex(pkgbuild, r"@@[A-Z_]+@@")
+
+    def test_render_aur_package_rejects_bad_version_pkgrel_url_or_sha(self):
+        bad = {
+            "version": ["v0.1.0", "0.1", "01.0.0", "0.1.0-rc1", "0.1.0\npkgrel=9", ""],
+            "pkgrel": ["0", "-1", "01", "1.1", "x", "1\n", ""],
+            "source-url": ["http://example.test/omarchy-blueprint-0.1.0.tar.gz",
+                           "https://example.test/other-0.1.0.tar.gz",
+                           "https://example.test/$(id)/omarchy-blueprint-0.1.0.tar.gz",
+                           "https://example.test/a b/omarchy-blueprint-0.1.0.tar.gz",
+                           "https://example.test/\"/omarchy-blueprint-0.1.0.tar.gz",
+                           "https://example.test/omarchy-blueprint-0.1.0.tar.gz\n", ""],
+            "sha256": ["SKIP", SHA.upper(), SHA[:-1], SHA + "0", "g" * 64, ""],
+            "maintainer-name": ["", "Name\nsha256sums=('SKIP')", "Tab\there", "Name <x@y>"],
+            "maintainer-email": ["", "not-an-email", "a@b\nc", "a b@example.test", "<a@b.test>"],
+        }
+        for key, values in bad.items():
+            for value in values:
+                with self.subTest(key=key, value=value), tempfile.TemporaryDirectory() as tmp:
+                    result = render(Path(tmp), **{key: value})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_render_aur_package_never_uses_skip_checksum(self):
+        self.assertNotIn("SKIP", rendered())
+        self.assertNotIn("SKIP", (REPO / "packaging/aur/PKGBUILD.template").read_text())
+
+    def test_render_aur_package_injects_linker_version(self):
+        pkgbuild = rendered()
+        self.assertIn("-X github.com/Grenco/omarchy-blueprint/internal/buildinfo.Version=${pkgver}", pkgbuild)
+        self.assertIn('GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"', pkgbuild)
+        self.assertIn("go test ./...", pkgbuild)
+        self.assertIn('install -Dm755 build/omarchy-blueprint "${pkgdir}/usr/bin/omarchy-blueprint"', pkgbuild)
+        self.assertIn('install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"', pkgbuild)
+        self.assertNotIn("/usr/local", pkgbuild)
+
+    def test_render_aur_package_keeps_omarchy_as_documented_runtime_not_invented_dependency(self):
+        pkgbuild = rendered()
+        for array in ("depends", "makedepends", "checkdepends", "optdepends"):
+            with self.subTest(array=array):
+                self.assertNotRegex(shell_array(pkgbuild, array), r"'omarchy[<>=:']")
+        self.assertIn("Omarchy 4", pkgbuild)
+        self.assertEqual(shell_array(pkgbuild, "depends"), "'git'")
+
+    def test_render_aur_package_output_is_byte_stable(self):
+        self.assertEqual(rendered(), rendered())
 
 
 if __name__ == "__main__":
