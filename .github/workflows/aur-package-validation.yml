@@ -1,0 +1,50 @@
+# Pre-release validation of the AUR package recipe on reviewed code. It
+# renders packaging/aur/PKGBUILD.template as synthetic version 0.0.0 from a
+# locally built source archive, then builds, checks, inspects and installs
+# it. It is not publication evidence: no release, tag or AUR credential is
+# involved.
+#
+# The clean build environment is a fresh official archlinux:base-devel job
+# container, discarded after the run; makepkg runs as an unprivileged user.
+# It is not the full devtools systemd-nspawn clean chroot.
+name: AUR Package Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Arch Package Validation
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 30
+    steps:
+      - name: Install validation tools
+        run: pacman -Syu --noconfirm --needed git go namcap python
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run release tooling tests
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -m unittest discover -s scripts/release/tests -p 'test_*.py' -v
+      - name: Build the synthetic 0.0.0 source archive
+        run: bash scripts/release/make-source-archive.sh HEAD 0.0.0 "$RUNNER_TEMP/dist"
+      - name: Render the package
+        run: |
+          sha256=$(cut -d' ' -f1 "$RUNNER_TEMP/dist/SHA256SUMS")
+          python3 scripts/release/render-aur-package.py \
+            --version 0.0.0 --pkgrel 1 \
+            --source-url https://example.invalid/omarchy-blueprint/releases/omarchy-blueprint-0.0.0.tar.gz \
+            --sha256 "$sha256" \
+            --maintainer-name "Package Validation" --maintainer-email validation@example.invalid \
+            --output-dir "$RUNNER_TEMP/package"
+          # Seed the source so makepkg uses the local archive, not the dummy URL.
+          cp "$RUNNER_TEMP/dist/omarchy-blueprint-0.0.0.tar.gz" "$RUNNER_TEMP/package/"
+      - name: Build, check, inspect and install the package
+        run: bash scripts/release/validate-arch-package.sh "$RUNNER_TEMP/package" 0.0.0 1
