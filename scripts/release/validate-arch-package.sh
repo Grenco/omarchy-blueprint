@@ -79,8 +79,10 @@ pacman -U --noconfirm "$package"
   fail "installed package is not omarchy-blueprint $pkgver-$pkgrel"
 [[ $(pacman -Qoq /usr/bin/omarchy-blueprint) == omarchy-blueprint ]] ||
   fail "/usr/bin/omarchy-blueprint is not owned by omarchy-blueprint"
-[[ $(command -v omarchy-blueprint) == /usr/bin/omarchy-blueprint ]] ||
-  fail "omarchy-blueprint on PATH is not the packaged binary"
+# Resolve symlinks: on Arch /usr/sbin (often earlier on PATH) links to bin.
+on_path=$(command -v omarchy-blueprint) || fail "omarchy-blueprint is not on PATH"
+[[ $(readlink -f "$on_path") == "$(readlink -f /usr/bin/omarchy-blueprint)" ]] ||
+  fail "omarchy-blueprint on PATH ($on_path) is not the packaged binary"
 version=$(cd / && as_builder omarchy-blueprint --version)
 [[ $version == "omarchy-blueprint version $pkgver" ]] || fail "installed binary reports: $version"
 echo "$version"
