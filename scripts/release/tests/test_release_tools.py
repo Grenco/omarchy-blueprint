@@ -247,5 +247,99 @@ class AurRenderTests(unittest.TestCase):
         self.assertEqual(rendered(), rendered())
 
 
+def srcinfo(pkgver: str, pkgrel: str) -> str:
+    return (f"pkgbase = omarchy-blueprint\n\tpkgver = {pkgver}\n\tpkgrel = {pkgrel}\n"
+            "\tarch = x86_64\n\npkgname = omarchy-blueprint\n")
+
+
+def publication(root: Path, pkgver: str = "0.1.0", pkgrel: str = "1", pkgbuild: str = "PKGBUILD body\n") -> Path:
+    out = root / "publication"
+    out.mkdir()
+    (out / "PKGBUILD").write_text(pkgbuild)
+    (out / ".SRCINFO").write_text(srcinfo(pkgver, pkgrel))
+    (out / "LICENSE").write_text("0BSD\n")
+    return out
+
+
+def aur_checkout(root: Path, files: dict[str, str] | None = None) -> Path:
+    checkout = root / "aur"
+    checkout.mkdir()
+    git(checkout, "init", "-q", "-b", "master")
+    for name, text in (files or {}).items():
+        (checkout / name).write_text(text)
+    return checkout
+
+
+def status(pub: Path, checkout: Path, pkgver: str = "0.1.0", pkgrel: str = "1") -> subprocess.CompletedProcess:
+    return run("bash", str(RELEASE / "aur-content-status.sh"), str(pub), str(checkout), pkgver, pkgrel,
+               cwd=pub.parent, check=False)
+
+
+def published(pkgver: str, pkgrel: str, pkgbuild: str = "PKGBUILD body\n") -> dict[str, str]:
+    return {"PKGBUILD": pkgbuild, ".SRCINFO": srcinfo(pkgver, pkgrel), "LICENSE": "0BSD\n"}
+
+
+class AurContentStatusTests(unittest.TestCase):
+    def test_aur_content_status_new_for_empty_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = status(publication(Path(tmp)), aur_checkout(Path(tmp)))
+            self.assertEqual((result.returncode, result.stdout), (0, "new\n"), result.stderr)
+
+    def test_aur_content_status_same_for_identical_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = status(publication(Path(tmp)), aur_checkout(Path(tmp), published("0.1.0", "1")))
+            self.assertEqual((result.returncode, result.stdout), (0, "same\n"), result.stderr)
+
+    def test_aur_content_status_update_for_older_revision(self):
+        for older in (("0.0.9", "3"), ("0.1.0", "1")):
+            with self.subTest(older=older), tempfile.TemporaryDirectory() as tmp:
+                pub = publication(Path(tmp), "0.1.0", "2") if older == ("0.1.0", "1") else publication(Path(tmp))
+                pkgrel = "2" if older == ("0.1.0", "1") else "1"
+                result = status(pub, aur_checkout(Path(tmp), published(*older, "old body\n")), "0.1.0", pkgrel)
+                self.assertEqual((result.returncode, result.stdout), (0, "update\n"), result.stderr)
+
+    def test_aur_content_status_rejects_same_revision_different_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = status(publication(Path(tmp)), aur_checkout(Path(tmp), published("0.1.0", "1", "other body\n")))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("0.1.0-1", result.stderr)
+
+    def test_aur_content_status_rejects_a_newer_published_revision(self):
+        for newer in (("0.1.0", "2"), ("0.2.0", "1"), ("0.1.10", "1")):
+            with self.subTest(newer=newer), tempfile.TemporaryDirectory() as tmp:
+                result = status(publication(Path(tmp), "0.1.9"), aur_checkout(Path(tmp), published(*newer)), "0.1.9")
+                if newer == ("0.1.0", "2"):
+                    self.assertEqual(result.stdout, "update\n", result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+
+    def test_aur_content_status_rejects_unexpected_publication_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pub = publication(Path(tmp))
+            (pub / "id_ed25519").write_text("not a publication file\n")
+            result = status(pub, aur_checkout(Path(tmp)))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+        with tempfile.TemporaryDirectory() as tmp:
+            pub = publication(Path(tmp))
+            (pub / "LICENSE").unlink()
+            self.assertNotEqual(status(pub, aur_checkout(Path(tmp))).returncode, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            files = {**published("0.0.9", "1"), "notes.txt": "extra\n"}
+            self.assertNotEqual(status(publication(Path(tmp)), aur_checkout(Path(tmp), files)).returncode, 0)
+
+    def test_aur_content_status_rejects_inconsistent_or_malformed_inputs(self):
+        cases = [("0.1.0", "2"), ("v0.1.0", "1"), ("0.1.0", "0"), ("0.1.0", "1; rm -rf /")]
+        for pkgver, pkgrel in cases:
+            with self.subTest(pkgver=pkgver, pkgrel=pkgrel), tempfile.TemporaryDirectory() as tmp:
+                result = status(publication(Path(tmp)), aur_checkout(Path(tmp)), pkgver, pkgrel)
+                self.assertNotEqual(result.returncode, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            files = {"PKGBUILD": "x\n", "LICENSE": "0BSD\n"}  # no .SRCINFO to read the revision from
+            self.assertNotEqual(status(publication(Path(tmp)), aur_checkout(Path(tmp), files)).returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
