@@ -17,7 +17,7 @@ import (
 )
 
 // Schema is the profile schema version written by Save.
-const Schema = 13
+const Schema = 14
 
 // The schema version that introduced each provider's profile state. Loader
 // thresholds must use these — not Schema — so older profiles keep loading
@@ -34,6 +34,7 @@ const (
 	machineOverlaySchema = 11
 	policySchema         = 12
 	preinstallSchema     = 13
+	servicesSchema       = 14
 )
 
 type Manifest struct {
@@ -63,6 +64,7 @@ type CaptureMeta struct {
 	Shell     bool `toml:"shell"`
 	Hooks     bool `toml:"hooks"`
 	Resources bool `toml:"resources"`
+	Services  bool `toml:"services"`
 }
 
 type Packages struct {
@@ -291,6 +293,7 @@ type Data struct {
 	Defaults  Defaults  `json:"defaults"`
 	Shell     Shell     `json:"shell"`
 	Hooks     Hooks     `json:"hooks"`
+	Services  Services  `json:"services"`
 	// Policy is the portable profile's sparse Capture/Restore overrides.
 	// Missing records mean inherit from the provider default.
 	Policy policy.Rules `json:"policy"`
@@ -453,6 +456,22 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
+	if loadedSchema >= servicesSchema {
+		services, err := os.ReadFile(filepath.Join(dir, "services", "services.toml"))
+		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Services {
+			return d, errors.New("services state marked captured but services/services.toml is missing")
+		}
+		if err == nil {
+			if err := toml.Unmarshal(services, &d.Services); err != nil {
+				return d, fmt.Errorf("parse services/services.toml: %w", err)
+			}
+			if err := validateServicesDesiredState(d.Services); err != nil {
+				return d, fmt.Errorf("services: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return d, err
+		}
+	}
 	if loadedSchema >= machineOverlaySchema {
 		if err := loadMachines(filepath.Join(dir, "machines"), &d.Machines); err != nil {
 			return d, err
@@ -524,6 +543,9 @@ func Save(dir string, d Data) error {
 	if err := os.MkdirAll(filepath.Join(dir, "resources"), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "services"), 0o755); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "machines"), 0o755); err != nil {
 		return err
 	}
@@ -569,6 +591,10 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
+	services, err := toml.Marshal(d.Services)
+	if err != nil {
+		return err
+	}
 	writes := []struct {
 		path string
 		data []byte
@@ -584,6 +610,7 @@ func Save(dir string, d Data) error {
 		{filepath.Join(dir, "shell", "shell.toml"), shellState},
 		{filepath.Join(dir, "hooks", "hooks.toml"), hooks},
 		{filepath.Join(dir, "resources", "resources.toml"), resources},
+		{filepath.Join(dir, "services", "services.toml"), services},
 	}
 	for _, w := range writes {
 		if err := atomicWrite(w.path, w.data); err != nil {

@@ -17,6 +17,7 @@ var ManagedTopLevelPaths = []string{
 	"shell",
 	"hooks",
 	"resources",
+	"services",
 	"machines",
 	"policy",
 }

@@ -110,8 +110,8 @@ plugins = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(savedManifest), "schema = 13\n") {
-		t.Fatalf("saved profile.toml = %q, want schema 13", savedManifest)
+	if !strings.Contains(string(savedManifest), "schema = 14\n") {
+		t.Fatalf("saved profile.toml = %q, want schema 14", savedManifest)
 	}
 }
 
@@ -422,13 +422,13 @@ func TestLoaderThresholdsUseIntroductionVersions(t *testing.T) {
 	// Loader thresholds must reference the schema version that introduced a
 	// provider's state, never the latest Schema constant, so future schema
 	// bumps do not silently drop existing provider state.
-	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 || configOverlaySchema != 8 || preinstallSchema != 13 {
+	if configSchema != 2 || defaultsSchema != 3 || shellSchema != 4 || hooksSchema != 5 || misePackagesSchema != 6 || resourcesSchema != 7 || configOverlaySchema != 8 || preinstallSchema != 13 || servicesSchema != 14 {
 		t.Fatalf(
 			"introduction versions = config:%d defaults:%d shell:%d hooks:%d mise:%d resources:%d",
 			configSchema, defaultsSchema, shellSchema, hooksSchema, misePackagesSchema, resourcesSchema,
 		)
 	}
-	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema || configOverlaySchema > Schema || preinstallSchema > Schema {
+	if configSchema > Schema || defaultsSchema > Schema || shellSchema > Schema || hooksSchema > Schema || misePackagesSchema > Schema || resourcesSchema > Schema || configOverlaySchema > Schema || preinstallSchema > Schema || servicesSchema > Schema {
 		t.Fatalf(
 			"introduction versions must not exceed current schema %d",
 			Schema,
@@ -774,8 +774,8 @@ func TestSaveLoadMachinesRoundTripInCanonicalOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), "schema = 13\n") {
-		t.Fatalf("profile.toml = %q, want schema 13", manifest)
+	if !strings.Contains(string(manifest), "schema = 14\n") {
+		t.Fatalf("profile.toml = %q, want schema 14", manifest)
 	}
 	framework, err := os.ReadFile(filepath.Join(dir, "machines", "framework.toml"))
 	if err != nil {

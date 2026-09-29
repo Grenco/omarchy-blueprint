@@ -65,6 +65,9 @@ func validateProviderDesiredState(d Data) error {
 	if err := validateHooksDesiredState(d.Hooks); err != nil {
 		return fmt.Errorf("hooks: %w", err)
 	}
+	if err := validateServicesDesiredState(d.Services); err != nil {
+		return fmt.Errorf("services: %w", err)
+	}
 	return nil
 }
 
@@ -163,4 +166,5 @@ func sortProviderDesiredState(d *Data) {
 	sort.Slice(d.Themes.Absent, func(i, j int) bool { return d.Themes.Absent[i].ID < d.Themes.Absent[j].ID })
 	sort.Slice(d.Plugins.Absent, func(i, j int) bool { return d.Plugins.Absent[i].ID < d.Plugins.Absent[j].ID })
 	sort.Slice(d.Hooks.Absent, func(i, j int) bool { return d.Hooks.Absent[i].Path < d.Hooks.Absent[j].Path })
+	sortServices(&d.Services)
 }

@@ -4,19 +4,22 @@ import "testing"
 
 func TestIsManagedRepositoryPath(t *testing.T) {
 	cases := map[string]bool{
-		"profile.toml":              true,
-		"resources/resources.toml":  true,
-		"machines/desktop.toml":     true,
-		"policy/policy.toml":        true,
-		"config/hypr/bindings.lua":  true,
-		"README.md":                 false,
-		".git/config":               false,
-		"../outside":                false,
-		"resources/../profile.toml": false,
-		"resources//resources.toml": false,
-		"resources\\resources.toml": false,
-		"/resources/resources.toml": false,
-		"":                          false,
+		"profile.toml":                  true,
+		"resources/resources.toml":      true,
+		"machines/desktop.toml":         true,
+		"policy/policy.toml":            true,
+		"config/hypr/bindings.lua":      true,
+		"services/services.toml":        true,
+		"services/units/backup.service": true,
+		"services/../outside":           false,
+		"README.md":                     false,
+		".git/config":                   false,
+		"../outside":                    false,
+		"resources/../profile.toml":     false,
+		"resources//resources.toml":     false,
+		"resources\\resources.toml":     false,
+		"/resources/resources.toml":     false,
+		"":                              false,
 	}
 	for path, want := range cases {
 		if got := IsManagedRepositoryPath(path); got != want {
