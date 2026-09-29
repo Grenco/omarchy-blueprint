@@ -10,11 +10,11 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-var _ workflow.RestoreProvider = Provider{}
+var _ workflow.RestoreProvider = (*Provider)(nil)
 
 func TestServicesProviderSkeletonFailsClosedUntilDiscoveryAndRestore(t *testing.T) {
 	p := Provider{}
-	if p.ID() != "services" || p.CategoryEnabled() || p.Captured(profile.Data{}) {
+	if p.ID() != "services" || !p.CategoryEnabled() || p.Captured(profile.Data{}) {
 		t.Fatalf("premature Services authority: %+v", p)
 	}
 	if _, err := p.InspectTargets(context.Background(), profile.Data{}); err == nil {

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,12 @@ import (
 )
 
 type discoverySystemd struct{ units []ObservedUnit }
+
+type unavailableSystemd struct{ discoverySystemd }
+
+func (unavailableSystemd) InspectUserUnits(context.Context) ([]ObservedUnit, error) {
+	return nil, errors.New("user manager unavailable")
+}
 
 func (d discoverySystemd) InspectUserUnits(context.Context) ([]ObservedUnit, error) {
 	return d.units, nil
@@ -72,6 +79,26 @@ func TestDiscoveryExternalBaseWithUserDropInOffersCustomization(t *testing.T) {
 	got := Discover([]ObservedUnit{unit}, profile.Services{}, roots)
 	if len(got) != 1 || got[0].Management != profile.ServiceManagementCustomization || !got[0].Eligible || got[0].Managed || !strings.Contains(got[0].Reason, "Managed customization") {
 		t.Fatalf("external base/drop-in boundary lost: %+v", got)
+	}
+}
+
+func TestDiscoveryBroadUserDropInCannotBeRehomedToOneUnit(t *testing.T) {
+	roots := discoveryRoots(t)
+	unit := observedService("pipewire.service", "/usr/lib/systemd/user/pipewire.service")
+	unit.DropInPaths = []string{filepath.Join(roots.UserConfigDir, "service.d", "10-shared.conf")}
+	got := Discover([]ObservedUnit{unit}, profile.Services{}, roots)
+	if len(got) != 1 || got[0].Eligible || got[0].Provenance != ProvenanceUnknown {
+		t.Fatalf("shared drop-in was offered as unit-specific ownership: %+v", got)
+	}
+}
+
+func TestDiscoveryInstanceDoesNotDuplicateItsTemplateDefinition(t *testing.T) {
+	roots := discoveryRoots(t)
+	unit := observedService("backup@photos.service", filepath.Join(roots.UserConfigDir, "backup@.service"))
+	unit.InstanceOf = "backup@.service"
+	got := Discover([]ObservedUnit{unit}, profile.Services{}, roots)
+	if len(got) != 1 || got[0].Eligible || got[0].Provenance != ProvenanceUnknown {
+		t.Fatalf("instance was offered a duplicate template definition: %+v", got)
 	}
 }
 
@@ -184,7 +211,7 @@ func TestInspectTargetsFingerprintsExactSelectedSourceChanges(t *testing.T) {
 	p := Provider{Systemd: discoverySystemd{units: []ObservedUnit{unit}}, Roots: roots}
 	d := profile.New("test", time.Unix(1, 0))
 	first, err := p.InspectTargets(context.Background(), d)
-	if err != nil || len(first) != 1 || first[0].Key != "backup.service" || first[0].Current != workflow.TargetPresent || first[0].Desired != workflow.TargetUnknown || first[0].Fingerprint == "" {
+	if err != nil || len(first) != 1 || first[0].Key != "backup.service" || first[0].Current != workflow.TargetPresent || first[0].Desired != workflow.TargetUnknown || !first[0].RequiresSelection || first[0].Fingerprint == "" {
 		t.Fatalf("first inspected candidate = %+v err=%v", first, err)
 	}
 	if err := os.WriteFile(path, []byte("[Service]\nExecStart=/usr/bin/false\n"), 0o644); err != nil {
@@ -221,13 +248,71 @@ func TestInspectTargetsFingerprintsManagedDropInChanges(t *testing.T) {
 	}
 }
 
+func TestInspectTargetsFingerprintsManagedDropInModeChanges(t *testing.T) {
+	roots := discoveryRoots(t)
+	dropIn := filepath.Join(roots.UserConfigDir, "pipewire.service.d", "10-custom.conf")
+	if err := os.MkdirAll(filepath.Dir(dropIn), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dropIn, []byte("[Service]\nEnvironment=MODE=custom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unit := observedService("pipewire.service", "/usr/lib/systemd/user/pipewire.service")
+	unit.DropInPaths = []string{dropIn}
+	p := Provider{Systemd: discoverySystemd{units: []ObservedUnit{unit}}, Roots: roots}
+	first, err := p.InspectTargets(context.Background(), profile.New("test", time.Unix(1, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dropIn, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.InspectTargets(context.Background(), profile.New("test", time.Unix(1, 0)))
+	if err != nil || first[0].Fingerprint == second[0].Fingerprint {
+		t.Fatalf("mode changed without invalidating review: first=%+v second=%+v err=%v", first, second, err)
+	}
+}
+
+func TestInspectTargetsRecommendsOnlyEligibleCustomDependencies(t *testing.T) {
+	roots := discoveryRoots(t)
+	if err := os.MkdirAll(roots.UserConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"backup.timer", "backup.service"} {
+		if err := os.WriteFile(filepath.Join(roots.UserConfigDir, name), []byte("[Unit]\nDescription=backup\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	timer := observedService("backup.timer", filepath.Join(roots.UserConfigDir, "backup.timer"))
+	timer.RelatedUnits = []string{"network.target", "backup.service"}
+	p := Provider{Systemd: discoverySystemd{units: []ObservedUnit{timer, observedService("backup.service", filepath.Join(roots.UserConfigDir, "backup.service")), observedService("network.target", "/usr/lib/systemd/user/network.target")}}, Roots: roots}
+	targets, err := p.InspectTargets(context.Background(), profile.New("test", time.Unix(1, 0)))
+	if err != nil || len(targets) != 3 || len(targets[1].RecommendedDependencies) != 1 || targets[1].RecommendedDependencies[0] != "backup.service" {
+		t.Fatalf("external dependency gained ownership recommendation: %+v err=%v", targets, err)
+	}
+}
+
 func TestDiscoveryKeepsMissingManagedUnitVisibleWithoutUnreviewedAbsence(t *testing.T) {
 	d := profile.Services{Units: []profile.ServiceUnit{{Name: "backup.service", Kind: "service", Management: profile.ServiceManagementDefinition, Presence: profile.ServicePresent, Definition: "units/backup.service"}}}
 	p := Provider{Systemd: discoverySystemd{}, Roots: discoveryRoots(t)}
 	data := profile.New("test", time.Unix(1, 0))
 	data.Services = d
 	targets, err := p.InspectTargets(context.Background(), data)
-	if err != nil || len(targets) != 1 || targets[0].Desired != workflow.TargetPresent || targets[0].Current != workflow.TargetAbsent || !targets[0].CaptureEligible {
+	if err != nil || len(targets) != 1 || targets[0].Desired != workflow.TargetPresent || targets[0].Current != workflow.TargetAbsent || !targets[0].CaptureEligible || !targets[0].RequiresSelection {
 		t.Fatalf("missing managed target was forgotten: %+v err=%v", targets, err)
+	}
+}
+
+func TestInspectUnavailableUserManagerPreservesUncapturedAndFailsClosedWhenManaged(t *testing.T) {
+	p := Provider{Systemd: unavailableSystemd{}, Roots: discoveryRoots(t)}
+	data := profile.New("test", time.Unix(1, 0))
+	targets, err := p.InspectTargets(context.Background(), data)
+	if err != nil || len(targets) != 1 || targets[0].CaptureEligible || !strings.Contains(targets[0].SafetyReason, "unavailable") {
+		t.Fatalf("uncaptured Services unavailable state was hidden or fatal: %+v err=%v", targets, err)
+	}
+	data.Manifest.Capture.Services = true
+	data.Services.Units = []profile.ServiceUnit{{Name: "backup.service", Kind: "service", Management: profile.ServiceManagementDefinition, Presence: profile.ServicePresent, Definition: "units/backup.service"}}
+	if _, err := p.InspectTargets(context.Background(), data); err == nil {
+		t.Fatal("captured Services intent was silently omitted without a user manager")
 	}
 }

@@ -79,6 +79,15 @@ func userMask(name string, roots Roots) bool {
 	return err == nil && link == "/dev/null"
 }
 
+func hasUnrepresentableDropIn(unit ObservedUnit, roots Roots) bool {
+	for _, path := range unit.DropInPaths {
+		if withinUserRoot(path, roots.UserConfigDir) && (filepath.Base(filepath.Dir(path)) != unit.Name+".d" || filepath.Ext(path) != ".conf") {
+			return true
+		}
+	}
+	return false
+}
+
 func classifyUnit(unit ObservedUnit, roots Roots) Candidate {
 	candidate := Candidate{Unit: unit, Advanced: unit.Kind != "service" && unit.Kind != "timer"}
 	switch {
@@ -86,6 +95,10 @@ func classifyUnit(unit ObservedUnit, roots Roots) Candidate {
 		candidate.Provenance, candidate.Reason = ProvenanceRuntime, "Runtime or generated user service is not portable"
 	case !unit.TopologyKnown:
 		candidate.Provenance, candidate.Reason = ProvenanceUnknown, "Source and customizations not established read-only"
+	case unit.InstanceOf != "" && filepath.Base(unit.FragmentPath) != unit.Name:
+		candidate.Provenance, candidate.Reason = ProvenanceUnknown, "Instance uses a template definition; capture the template once after its source is established"
+	case hasUnrepresentableDropIn(unit, roots):
+		candidate.Provenance, candidate.Reason = ProvenanceUnknown, "Shared or alias drop-in cannot be managed as a unit-specific customization"
 	case unit.RawUnitFileState == "masked" && userMask(unit.Name, roots):
 		candidate.Provenance, candidate.Management, candidate.Eligible = ProvenanceUserConfig, profile.ServiceManagementCustomization, true
 		candidate.Reason = "Blocked from starting by a persistent user mask"
@@ -127,7 +140,15 @@ func Discover(units []ObservedUnit, saved profile.Services, roots Roots) []Candi
 		}
 		seen[unit.Name] = true
 		candidate := classifyUnit(unit, roots)
-		_, candidate.Managed = wants[unit.Name]
+		prior, managed := wants[unit.Name]
+		candidate.Managed = managed
+		if managed && prior.Management == profile.ServiceManagementCustomization && candidate.Provenance == ProvenanceExternal && unit.TopologyKnown {
+			candidate.Management, candidate.Eligible = profile.ServiceManagementCustomization, true
+			candidate.Reason = "Managed customization; external base remains outside Blueprint"
+		}
+		if managed && !candidate.Missing && candidate.Eligible && managedServiceArtifactMissing(prior, candidate, roots) {
+			candidate.Reason = "Previously managed service artifact is missing; review before recording its removal"
+		}
 		if candidate.Provenance == ProvenanceRuntime && !candidate.Managed {
 			continue
 		}
@@ -153,6 +174,9 @@ func (p Provider) discovered(ctx context.Context, saved profile.Services) ([]Can
 	}
 	units, err := p.Systemd.InspectUserUnits(ctx)
 	if err != nil {
+		if len(saved.Units) == 0 {
+			return []Candidate{{Unit: ObservedUnit{Name: "user-manager", Kind: "service"}, Provenance: ProvenanceUnknown, Reason: "User service manager unavailable; Services cannot be inspected: " + err.Error()}}, nil
+		}
 		return nil, err
 	}
 	return Discover(units, saved, p.Roots), nil
@@ -166,6 +190,10 @@ func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]work
 	wants := make(map[string]profile.ServiceUnit, len(data.Services.Units))
 	for _, unit := range data.Services.Units {
 		wants[unit.Name] = unit
+	}
+	byName := make(map[string]Candidate, len(candidates))
+	for _, candidate := range candidates {
+		byName[candidate.Unit.Name] = candidate
 	}
 	targets := make([]workflow.TargetInspection, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -188,10 +216,21 @@ func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]work
 		if safeReason != "" {
 			reason = safeReason
 		}
+		var recommended []string
+		for _, name := range candidate.Unit.RelatedUnits {
+			if child, found := byName[name]; found && child.Eligible && !child.Managed && child.Provenance == ProvenanceUserConfig {
+				recommended = append(recommended, name)
+			}
+		}
+		sort.Strings(recommended)
+		needsRemovalReview := managed && managedServiceArtifactMissing(want, candidate, p.Roots)
 		targets = append(targets, workflow.TargetInspection{
 			Key: candidate.Unit.Name, Label: candidate.Unit.Name + " · " + candidate.Reason,
 			Desired: desired, Current: current, CaptureEligible: eligible,
 			RestoreEligible: eligible && managed, SafetyReason: map[bool]string{true: "", false: reason}[eligible],
+			RequiresSelection: candidate.Missing && managed || needsRemovalReview && eligible || eligible && !managed,
+			ReviewRemoval:     candidate.Missing && managed || needsRemovalReview,
+			Advanced:          candidate.Advanced, RecommendedDependencies: recommended,
 			Fingerprint: fingerprint, Capabilities: workflow.TargetCapabilities{
 				SupportsCapture: true, SupportsRestore: true, SupportsDesiredAbsence: managed,
 				SupportsExactRemoval: managed, PreservesMissingDesired: !managed,
@@ -201,8 +240,24 @@ func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]work
 	return targets, nil
 }
 
+func managedServiceArtifactMissing(saved profile.ServiceUnit, candidate Candidate, roots Roots) bool {
+	if candidate.Missing {
+		return true
+	}
+	current := map[string]bool{}
+	for _, path := range candidate.Unit.DropInPaths {
+		current[path] = true
+	}
+	for _, dropIn := range saved.DropIns {
+		if dropIn.Presence == profile.ServicePresent && !current[filepath.Join(roots.UserConfigDir, saved.Name+".d", filepath.Base(dropIn.Path))] {
+			return true
+		}
+	}
+	return saved.Mask != nil && saved.Mask.Presence == profile.ServicePresent && !userMask(saved.Name, roots)
+}
+
 func (p Provider) candidateFingerprint(candidate Candidate) (string, string) {
-	type artifact struct{ Path, Hash string }
+	type artifact struct{ Path, Hash, Mode string }
 	var artifacts []artifact
 	if candidate.Eligible && !candidate.Missing {
 		paths := []string{}
@@ -226,7 +281,11 @@ func (p Provider) candidateFingerprint(candidate Candidate) (string, string) {
 			if err != nil {
 				return "", "Service source cannot be read safely"
 			}
-			artifacts = append(artifacts, artifact{Path: path, Hash: hash})
+			info, err := os.Lstat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				return "", "Service source mode cannot be established safely"
+			}
+			artifacts = append(artifacts, artifact{Path: path, Hash: hash, Mode: fmt.Sprintf("%04o", info.Mode().Perm())})
 		}
 	}
 	value, err := json.Marshal(struct {

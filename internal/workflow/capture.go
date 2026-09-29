@@ -81,6 +81,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		if err != nil {
 			return CaptureResult{}, err
 		}
+		fresh = replayCaptureSelections(fresh, *approved)
 		if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
 			return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
 		}
