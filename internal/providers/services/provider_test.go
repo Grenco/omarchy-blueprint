@@ -17,8 +17,8 @@ func TestServicesProviderSkeletonFailsClosedUntilDiscoveryAndRestore(t *testing.
 	if p.ID() != "services" || p.CategoryEnabled() || p.Captured(profile.Data{}) {
 		t.Fatalf("premature Services authority: %+v", p)
 	}
-	if _, err := p.InspectTargets(context.Background(), profile.Data{}); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("unimplemented Services inspection returned %v", err)
+	if _, err := p.InspectTargets(context.Background(), profile.Data{}); err == nil {
+		t.Fatal("Services inspection accepted a missing user systemd source")
 	}
 	if _, err := p.Plan(context.Background(), profile.Data{}, omarchy.Info{}, workflow.RestoreContext{}); !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("unimplemented Services Restore planned anything: %v", err)

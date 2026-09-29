@@ -15,16 +15,17 @@ var ErrNotImplemented = errors.New("services discovery, capture and restore are 
 // Provider is intentionally unregistered and disabled in PR A. Later tasks
 // install deliberate discovery, reviewed ownership, planning and compatibility
 // before the application exposes Services as a category.
-type Provider struct{ Systemd Systemd }
+type Provider struct {
+	Systemd    Systemd
+	Roots      Roots
+	ProfileDir string
+}
 
 var _ workflow.RestoreProvider = Provider{}
 
 func (Provider) ID() string                   { return "services" }
 func (Provider) CategoryEnabled() bool        { return false }
 func (Provider) Captured(d profile.Data) bool { return d.Manifest.Capture.Services }
-func (Provider) InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error) {
-	return nil, ErrNotImplemented
-}
 func (Provider) Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error) {
 	return nil, nil, ErrNotImplemented
 }
