@@ -357,11 +357,22 @@ class AurContentStatusTests(unittest.TestCase):
             self.assertNotEqual(status(publication(Path(tmp)), aur_checkout(Path(tmp), files)).returncode, 0)
 
 
-# A stand-in for the GitHub CLI's release commands, backed by a directory:
-# <state>/<tag>/draft holds "true" or "false", <state>/<tag>/assets/ the assets.
+# A stand-in for the GitHub CLI, backed by a directory: <state>/<tag>/draft
+# holds "true" or "false" and <state>/<tag>/assets/ the release assets;
+# <state>/refs/<tag> and <state>/tagobjs/<sha> hold "<type> <sha>" for the
+# Git refs API. FAKE_GH_MOVE_ON_CREATE moves the tag while a release is created.
 FAKE_GH = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_STATE/calls.log"
+if [[ $1 == api ]]; then
+  case $2 in
+    */git/ref/tags/*) file="$FAKE_GH_STATE/refs/${2##*/}" ;;
+    */git/tags/*) file="$FAKE_GH_STATE/tagobjs/${2##*/}" ;;
+    *) exit 2 ;;
+  esac
+  [[ -f $file ]] || { echo "HTTP 404" >&2; exit 1; }
+  cat "$file"; exit 0
+fi
 [[ $1 == release ]] || exit 2
 action=$2 tag=$3; shift 3
 rel="$FAKE_GH_STATE/$tag"
@@ -375,7 +386,9 @@ case $action in
   create)
     [[ ! -d $rel ]] || { echo "already exists" >&2; exit 1; }
     mkdir -p "$rel/assets"; echo true > "$rel/draft"
-    for arg in "$@"; do [[ -f $arg ]] && cp "$arg" "$rel/assets/"; done; true ;;
+    for arg in "$@"; do [[ -f $arg ]] && cp "$arg" "$rel/assets/"; done
+    [[ -z ${FAKE_GH_MOVE_ON_CREATE:-} ]] || echo "commit $FAKE_GH_MOVE_ON_CREATE" > "$FAKE_GH_STATE/refs/$tag"
+    true ;;
   upload)
     for arg in "$@"; do
       [[ $arg == --clobber ]] && exit 3
@@ -406,10 +419,29 @@ class DraftReleaseTests(unittest.TestCase):
         repo = fixture_repo(self.tmp)
         self.dist = self.tmp / "dist"
         self.assertEqual(make_archive(repo, "v0.1.0", "0.1.0", self.dist).returncode, 0)
+        # GitHub's view of v0.1.0: an annotated tag object peeling to the verified commit.
+        self.commit = git(repo, "rev-parse", "v0.1.0^{commit}")
+        self.other = git(repo, "rev-parse", "side")
+        self.set_tag(annotated=True)
 
-    def prepare(self, tag: str = "v0.1.0", version: str = "0.1.0") -> subprocess.CompletedProcess:
-        return subprocess.run(["bash", str(RELEASE / "prepare-draft-release.sh"), tag, version, str(self.dist)],
+    def set_tag(self, commit: str = "", annotated: bool = False) -> None:
+        commit = commit or self.commit
+        for directory in ("refs", "tagobjs"):
+            (self.state / directory).mkdir(exist_ok=True)
+        if annotated:
+            (self.state / "refs" / "v0.1.0").write_text("tag " + "a" * 40 + "\n")
+            (self.state / "tagobjs" / ("a" * 40)).write_text(f"commit {commit}\n")
+        else:
+            (self.state / "refs" / "v0.1.0").write_text(f"commit {commit}\n")
+
+    def prepare(self, tag: str = "v0.1.0", version: str = "0.1.0", commit: str = "") -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(RELEASE / "prepare-draft-release.sh"), tag, version,
+                               commit or self.commit, str(self.dist)],
                               capture_output=True, text=True, env=self.env, timeout=60)
+
+    def mutations(self) -> list[str]:
+        return [line for line in self.calls().splitlines()
+                if re.match(r"release (create|upload|edit|delete)", line)]
 
     def existing(self, draft: bool, assets: dict[str, bytes]) -> Path:
         rel = self.state / "v0.1.0"
@@ -441,7 +473,7 @@ class DraftReleaseTests(unittest.TestCase):
         self.existing(True, self.verified())
         result = self.prepare()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("already holds the verified assets", result.stdout)
+        self.assertIn("holds the verified assets", result.stdout)
         self.assertNotRegex(self.calls(), r"release (create|upload)")
 
     def test_draft_missing_an_asset_gets_only_that_asset_uploaded(self):
@@ -476,6 +508,44 @@ class DraftReleaseTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotRegex(self.calls(), r"release (create|upload|edit|delete)")
 
+    def test_lightweight_tag_at_the_verified_commit_is_accepted(self):
+        self.set_tag()
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.commit, result.stdout)
+
+    def test_tag_moved_since_verification_changes_nothing(self):
+        for annotated in (True, False):
+            with self.subTest(annotated=annotated):
+                self.set_tag(self.other, annotated)
+                result = self.prepare()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("not the verified commit", result.stderr)
+                self.assertEqual(self.mutations(), [])
+        (self.state / "refs" / "v0.1.0").unlink()
+        self.assertNotEqual(self.prepare().returncode, 0)
+        self.assertEqual(self.mutations(), [])
+
+    def test_existing_draft_whose_tag_moved_gets_no_upload(self):
+        self.existing(True, {"SHA256SUMS": self.verified()["SHA256SUMS"]})
+        self.set_tag(self.other)
+        self.assertNotEqual(self.prepare().returncode, 0)
+        self.assertEqual(self.mutations(), [])
+
+    def test_tag_moved_while_creating_the_draft_is_reported(self):
+        self.env["FAKE_GH_MOVE_ON_CREATE"] = self.other
+        result = self.prepare()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not the verified commit", result.stderr)
+
+    def test_missing_archive_with_divergent_checksums_fails_with_zero_uploads(self):
+        rel = self.existing(True, {"SHA256SUMS": b"divergent\n"})
+        result = self.prepare()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("never replaced", result.stderr)
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(sorted(p.name for p in (rel / "assets").iterdir()), ["SHA256SUMS"])
+
     def test_rejects_bad_inputs_before_calling_github(self):
         for tag, version in (("v0.1", "0.1"), ("v0.1.0", "0.1.1"), ("0.1.0", "0.1.0"), ("v0.1.0-rc1", "0.1.0-rc1")):
             with self.subTest(tag=tag, version=version):
@@ -483,6 +553,9 @@ class DraftReleaseTests(unittest.TestCase):
         (self.dist / "extra").write_text("x\n")
         self.assertNotEqual(self.prepare().returncode, 0)
         (self.dist / "extra").unlink()
+        for commit in ("abc123", self.commit.upper(), self.commit + "0"):
+            with self.subTest(commit=commit):
+                self.assertNotEqual(self.prepare(commit=commit).returncode, 0)
         (self.dist / "omarchy-blueprint-0.1.0.tar.gz").write_bytes(b"tampered")
         self.assertNotEqual(self.prepare().returncode, 0)
         self.assertEqual(self.calls(), "")
@@ -525,6 +598,11 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("needs: verify", draft_job)
         self.assertIn("verify-release-tag.sh", text)
         self.assertIn("prepare-draft-release.sh", draft_job)
+        # The verified commit, not just the version, reaches the write-capable job.
+        self.assertIn("commit: ${{ steps.tag.outputs.commit }}", text)
+        self.assertIn("COMMIT: ${{ needs.verify.outputs.commit }}", draft_job)
+        self.assertIn('prepare-draft-release.sh "$TAG" "$VERSION" "$COMMIT" dist', draft_job)
+        self.assertIn('make-source-archive.sh "$COMMIT"', text)
         for publish in ("--draft=false", "gh release edit", "gh release create"):
             self.assertNotIn(publish, text)
 
