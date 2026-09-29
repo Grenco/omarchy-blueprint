@@ -241,7 +241,7 @@ class AurRenderTests(unittest.TestCase):
             with self.subTest(array=array):
                 self.assertNotRegex(shell_array(pkgbuild, array), r"'omarchy[<>=:']")
         self.assertIn("Omarchy 4", pkgbuild)
-        self.assertEqual(shell_array(pkgbuild, "depends"), "'git'")
+        self.assertEqual(shell_array(pkgbuild, "depends"), "'glibc' 'git'")  # PIE + external linker: dynamically linked against libc
 
     def test_render_aur_package_output_is_byte_stable(self):
         self.assertEqual(rendered(), rendered())
