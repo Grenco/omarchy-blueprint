@@ -81,6 +81,9 @@ func userMask(name string, roots Roots) bool {
 
 func hasUnrepresentableDropIn(unit ObservedUnit, roots Roots) bool {
 	for _, path := range unit.DropInPaths {
+		if withinUserRoot(path, roots.UserDataDir) {
+			return true
+		}
 		if withinUserRoot(path, roots.UserConfigDir) && (filepath.Base(filepath.Dir(path)) != unit.Name+".d" || filepath.Ext(path) != ".conf") {
 			return true
 		}
@@ -98,7 +101,7 @@ func classifyUnit(unit ObservedUnit, roots Roots) Candidate {
 	case unit.InstanceOf != "" && filepath.Base(unit.FragmentPath) != unit.Name:
 		candidate.Provenance, candidate.Reason = ProvenanceUnknown, "Instance uses a template definition; capture the template once after its source is established"
 	case hasUnrepresentableDropIn(unit, roots):
-		candidate.Provenance, candidate.Reason = ProvenanceUnknown, "Shared or alias drop-in cannot be managed as a unit-specific customization"
+		candidate.Provenance, candidate.Reason = ProvenanceUnknown, "Effective drop-in cannot be safely represented as a unit-specific customization"
 	case unit.RawUnitFileState == "masked" && userMask(unit.Name, roots):
 		candidate.Provenance, candidate.Management, candidate.Eligible = ProvenanceUserConfig, profile.ServiceManagementCustomization, true
 		candidate.Reason = "Blocked from starting by a persistent user mask"

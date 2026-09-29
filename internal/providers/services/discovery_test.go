@@ -92,6 +92,16 @@ func TestDiscoveryBroadUserDropInCannotBeRehomedToOneUnit(t *testing.T) {
 	}
 }
 
+func TestDiscoveryUserDataDropInCannotBeSilentlyOmitted(t *testing.T) {
+	roots := discoveryRoots(t)
+	unit := observedService("backup.service", filepath.Join(roots.UserConfigDir, "backup.service"))
+	unit.DropInPaths = []string{filepath.Join(roots.UserDataDir, "backup.service.d", "10-app.conf")}
+	got := Discover([]ObservedUnit{unit}, profile.Services{}, roots)
+	if len(got) != 1 || got[0].Eligible || got[0].Provenance != ProvenanceUnknown {
+		t.Fatalf("effective user-data drop-in would be omitted on Capture: %+v", got)
+	}
+}
+
 func TestDiscoveryInstanceDoesNotDuplicateItsTemplateDefinition(t *testing.T) {
 	roots := discoveryRoots(t)
 	unit := observedService("backup@photos.service", filepath.Join(roots.UserConfigDir, "backup@.service"))
