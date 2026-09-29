@@ -12,6 +12,7 @@ import unittest
 
 RELEASE = Path(__file__).resolve().parents[1]
 REPO = RELEASE.parents[1]
+WORKFLOWS = REPO / ".github" / "workflows"
 SHA = "0123456789abcdef" * 4
 URL = "https://github.com/Grenco/omarchy-blueprint/releases/download/v0.1.0/omarchy-blueprint-0.1.0.tar.gz"
 FIXED_DATE = "2026-09-29T12:00:00+00:00"
@@ -246,6 +247,21 @@ class AurRenderTests(unittest.TestCase):
     def test_render_aur_package_output_is_byte_stable(self):
         self.assertEqual(rendered(), rendered())
 
+    def test_packaging_template_can_render_pr_validation_version(self):
+        # Pre-release validation renders reviewed code as 0.0.0 from a local
+        # archive: no public release has to exist.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = fixture_repo(Path(tmp))
+            self.assertEqual(make_archive(repo, "HEAD", "0.0.0", Path(tmp, "dist")).returncode, 0)
+            digest = Path(tmp, "dist", "SHA256SUMS").read_text().split()[0]
+            url = "https://example.invalid/omarchy-blueprint/releases/omarchy-blueprint-0.0.0.tar.gz"
+            result = render(Path(tmp, "package"), version="0.0.0", sha256=digest, **{"source-url": url})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pkgbuild = Path(tmp, "package", "PKGBUILD").read_text()
+        self.assertIn("pkgver=0.0.0\n", pkgbuild)
+        self.assertIn(f"sha256sums=('{digest}')\n", pkgbuild)
+        self.assertIn(f"::{url}\")", pkgbuild)
+
 
 def srcinfo(pkgver: str, pkgrel: str) -> str:
     return (f"pkgbase = omarchy-blueprint\n\tpkgver = {pkgver}\n\tpkgrel = {pkgrel}\n"
@@ -339,6 +355,189 @@ class AurContentStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             files = {"PKGBUILD": "x\n", "LICENSE": "0BSD\n"}  # no .SRCINFO to read the revision from
             self.assertNotEqual(status(publication(Path(tmp)), aur_checkout(Path(tmp), files)).returncode, 0)
+
+
+# A stand-in for the GitHub CLI's release commands, backed by a directory:
+# <state>/<tag>/draft holds "true" or "false", <state>/<tag>/assets/ the assets.
+FAKE_GH = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_GH_STATE/calls.log"
+[[ $1 == release ]] || exit 2
+action=$2 tag=$3; shift 3
+rel="$FAKE_GH_STATE/$tag"
+case $action in
+  view)
+    [[ -d $rel ]] || { echo "release not found" >&2; exit 1; }
+    case $* in
+      *isDraft*) cat "$rel/draft" ;;
+      *assets*) ls "$rel/assets" ;;
+    esac ;;
+  create)
+    [[ ! -d $rel ]] || { echo "already exists" >&2; exit 1; }
+    mkdir -p "$rel/assets"; echo true > "$rel/draft"
+    for arg in "$@"; do [[ -f $arg ]] && cp "$arg" "$rel/assets/"; done; true ;;
+  upload)
+    for arg in "$@"; do
+      [[ $arg == --clobber ]] && exit 3
+      [[ -f $arg && ! -e $rel/assets/${arg##*/} ]] && cp "$arg" "$rel/assets/"
+    done; true ;;
+  download)
+    dir="" pattern=""
+    while (( $# )); do
+      case $1 in --dir) dir=$2; shift ;; --pattern) pattern=$2; shift ;; esac; shift
+    done
+    cp "$rel/assets/$pattern" "$dir/" ;;
+  *) exit 2 ;;
+esac
+"""
+
+
+class DraftReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)]))
+        self.state = self.tmp / "github"
+        self.state.mkdir()
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(FAKE_GH)
+        (bin_dir / "gh").chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_GH_STATE": str(self.state)}
+        repo = fixture_repo(self.tmp)
+        self.dist = self.tmp / "dist"
+        self.assertEqual(make_archive(repo, "v0.1.0", "0.1.0", self.dist).returncode, 0)
+
+    def prepare(self, tag: str = "v0.1.0", version: str = "0.1.0") -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(RELEASE / "prepare-draft-release.sh"), tag, version, str(self.dist)],
+                              capture_output=True, text=True, env=self.env, timeout=60)
+
+    def existing(self, draft: bool, assets: dict[str, bytes]) -> Path:
+        rel = self.state / "v0.1.0"
+        (rel / "assets").mkdir(parents=True)
+        (rel / "draft").write_text("true\n" if draft else "false\n")
+        for name, data in assets.items():
+            (rel / "assets" / name).write_bytes(data)
+        return rel
+
+    def verified(self) -> dict[str, bytes]:
+        return {p.name: p.read_bytes() for p in self.dist.iterdir()}
+
+    def calls(self) -> str:
+        log = self.state / "calls.log"
+        return log.read_text() if log.exists() else ""
+
+    def test_creates_a_draft_with_both_assets_when_no_release_exists(self):
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Created draft release v0.1.0", result.stdout)
+        self.assertEqual((self.state / "v0.1.0" / "draft").read_text().strip(), "true")
+        self.assertEqual({p.name: p.read_bytes() for p in (self.state / "v0.1.0" / "assets").iterdir()}, self.verified())
+        create = [line for line in self.calls().splitlines() if line.startswith("release create")]
+        self.assertEqual(len(create), 1)
+        self.assertIn("--draft", create[0])
+        self.assertIn("--verify-tag", create[0])
+
+    def test_rerun_on_a_matching_draft_changes_nothing(self):
+        self.existing(True, self.verified())
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already holds the verified assets", result.stdout)
+        self.assertNotRegex(self.calls(), r"release (create|upload)")
+
+    def test_draft_missing_an_asset_gets_only_that_asset_uploaded(self):
+        verified = self.verified()
+        rel = self.existing(True, {"SHA256SUMS": verified["SHA256SUMS"]})
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((rel / "assets" / "omarchy-blueprint-0.1.0.tar.gz").read_bytes(),
+                         verified["omarchy-blueprint-0.1.0.tar.gz"])
+        self.assertNotIn("--clobber", self.calls())
+
+    def test_draft_with_different_bytes_fails_without_replacing_them(self):
+        rel = self.existing(True, {**self.verified(), "omarchy-blueprint-0.1.0.tar.gz": b"other bytes"})
+        result = self.prepare()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("never replaced", result.stderr)
+        self.assertEqual((rel / "assets" / "omarchy-blueprint-0.1.0.tar.gz").read_bytes(), b"other bytes")
+        self.assertNotRegex(self.calls(), r"release (create|upload)")
+
+    def test_published_release_is_never_modified(self):
+        self.existing(False, self.verified())
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already published", result.stdout)
+        for assets in ({"SHA256SUMS": self.verified()["SHA256SUMS"]},
+                       {**self.verified(), "SHA256SUMS": b"different\n"}):
+            with self.subTest(assets=sorted(assets)):
+                subprocess.run(["rm", "-rf", str(self.state / "v0.1.0")])
+                (self.state / "calls.log").unlink(missing_ok=True)
+                self.existing(False, assets)
+                result = self.prepare()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotRegex(self.calls(), r"release (create|upload|edit|delete)")
+
+    def test_rejects_bad_inputs_before_calling_github(self):
+        for tag, version in (("v0.1", "0.1"), ("v0.1.0", "0.1.1"), ("0.1.0", "0.1.0"), ("v0.1.0-rc1", "0.1.0-rc1")):
+            with self.subTest(tag=tag, version=version):
+                self.assertNotEqual(self.prepare(tag, version).returncode, 0)
+        (self.dist / "extra").write_text("x\n")
+        self.assertNotEqual(self.prepare().returncode, 0)
+        (self.dist / "extra").unlink()
+        (self.dist / "omarchy-blueprint-0.1.0.tar.gz").write_bytes(b"tampered")
+        self.assertNotEqual(self.prepare().returncode, 0)
+        self.assertEqual(self.calls(), "")
+
+
+def workflow(name: str) -> str:
+    return (WORKFLOWS / name).read_text()
+
+
+class WorkflowBoundaryTests(unittest.TestCase):
+    def test_no_workflow_uses_pull_request_target_or_disables_host_checking(self):
+        for path in WORKFLOWS.glob("*.yml"):
+            with self.subTest(workflow=path.name):
+                text = path.read_text()
+                self.assertNotIn("pull_request_target", text)
+                self.assertNotIn("StrictHostKeyChecking=no", text)
+
+    def test_release_and_package_validation_never_reference_aur_credentials(self):
+        for name in ("release.yml", "aur-package-validation.yml"):
+            with self.subTest(workflow=name):
+                self.assertNotIn("AUR_", workflow(name))
+                self.assertNotIn("secrets.", workflow(name))
+
+    def test_release_workflow_actions_are_pinned_to_full_commit_shas(self):
+        for name in ("release.yml", "aur-package-validation.yml"):
+            uses = re.findall(r"uses:\s*(\S+)", workflow(name))
+            self.assertTrue(uses)
+            for action in uses:
+                with self.subTest(workflow=name, action=action):
+                    self.assertRegex(action, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
+
+    def test_release_workflow_only_prepares_a_draft_with_least_privilege(self):
+        text = workflow("release.yml")
+        self.assertRegex(text, r"(?m)^on:\n  push:\n    tags: \[\"v\*\"\]\n\n")
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
+        self.assertEqual(text.count("contents: write"), 1)
+        draft_job = text.split("\n  draft:\n", 1)[1]
+        self.assertIn("contents: write", draft_job)
+        self.assertNotIn("contents: write", text.split("\n  draft:\n", 1)[0])
+        self.assertIn("needs: verify", draft_job)
+        self.assertIn("verify-release-tag.sh", text)
+        self.assertIn("prepare-draft-release.sh", draft_job)
+        for publish in ("--draft=false", "gh release edit", "gh release create"):
+            self.assertNotIn(publish, text)
+
+    def test_package_validation_is_read_only_and_builds_in_a_fresh_arch_container(self):
+        text = workflow("aur-package-validation.yml")
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
+        self.assertNotIn("contents: write", text)
+        self.assertIn("container: archlinux:base-devel", text)
+        self.assertIn("validate-arch-package.sh", text)
+        script = (RELEASE / "validate-arch-package.sh").read_text()
+        self.assertIn("runuser -u builder -- \"$@\"", script)
+        self.assertRegex(script, r"as_builder makepkg --cleanbuild --check")
+        self.assertIn("namcap", script)
 
 
 if __name__ == "__main__":
