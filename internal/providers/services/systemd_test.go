@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -107,7 +106,7 @@ func TestInspectNormalizesFragmentDropInsEnablementAndActiveState(t *testing.T) 
 		t.Fatalf("InspectUserUnits = %+v err=%v", got, err)
 	}
 	unit := got[0]
-	if unit.Name != "backup.service" || unit.Kind != "service" || unit.FragmentPath != "/home/test/.config/systemd/user/backup.service" || unit.StartIntent != profile.ServiceStartEnabled || !unit.ObservedActive || !unit.Persistent || len(unit.DropInPaths) != 2 || !reflect.DeepEqual(unit.RelatedUnits, []string{"backup.timer", "network.target"}) {
+	if unit.Name != "backup.service" || unit.Kind != "service" || unit.FragmentPath != "/home/test/.config/systemd/user/backup.service" || unit.StartIntent != profile.ServiceStartEnabled || !unit.ObservedActive || !unit.Persistent || !unit.TopologyKnown || len(unit.DropInPaths) != 2 || !reflect.DeepEqual(unit.RelatedUnits, []string{"backup.timer", "network.target"}) {
 		t.Fatalf("normalized user unit = %+v", unit)
 	}
 	if len(f.calls) != 3 {
@@ -136,28 +135,28 @@ func TestInspectSeparatesRuntimeGeneratedFromPersistentSources(t *testing.T) {
 
 func TestInspectTemplateAndInstances(t *testing.T) {
 	f := &fixtureRunner{files: "backup@.service indirect -\nbackup@photos.service enabled -\n", cat: map[string]string{
-		"backup@.service": "# /home/test/.config/systemd/user/backup@.service\n[Service]\nExecStart=/usr/bin/true\n\n# /home/test/.config/systemd/user/backup@.service.d/10-env.conf\n[Service]\nEnvironment=MODE=photos\n",
+		"backup@.service": "# /home/test/.config/systemd/user/backup@.service\n[Service]\n# /home/test/private/backup@.service.d/not-really-a-dropin.conf\nExecStart=/usr/bin/true\n\n# /home/test/.config/systemd/user/service.d/10-effective.conf\n[Service]\nEnvironment=MODE=photos\n",
 	}, show: map[string]string{
 		"backup@photos.service": "Id=backup@photos.service\nUnitFileState=enabled\nFragmentPath=/home/test/.config/systemd/user/backup@.service\nActiveState=inactive\n",
 	}}
 	got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background())
-	if err != nil || len(got) != 2 || !got[0].Template || !got[0].Persistent || got[0].StartIntent != profile.ServiceStartIndirect || got[0].FragmentPath != "/home/test/.config/systemd/user/backup@.service" || !reflect.DeepEqual(got[0].DropInPaths, []string{"/home/test/.config/systemd/user/backup@.service.d/10-env.conf"}) || got[1].InstanceOf != "backup@.service" || got[1].ObservedActive {
+	if err != nil || len(got) != 2 || !got[0].Template || got[0].TopologyKnown || got[0].RawUnitFileState != "indirect" || got[0].StartIntent != profile.ServiceStartIndirect || got[0].FragmentPath != "" || len(got[0].DropInPaths) != 0 || got[1].InstanceOf != "backup@.service" || !got[1].TopologyKnown || got[1].ObservedActive || got[1].FragmentPath != "/home/test/.config/systemd/user/backup@.service" {
 		t.Fatalf("template and instance = %+v err=%v", got, err)
 	}
 	for _, call := range f.calls {
-		if strings.Contains(call, "show") && strings.HasSuffix(call, "backup@.service") {
-			t.Fatalf("naked template was passed to systemctl show: %q", call)
+		if strings.HasSuffix(call, "backup@.service") {
+			t.Fatalf("unresolved naked template was passed to show/cat: %q", call)
 		}
 	}
-	if want := "systemctl --user cat --no-pager -- backup@.service"; !slices.Contains(f.calls, want) {
-		t.Fatalf("template did not use read-only systemctl cat: %v", f.calls)
+	if len(f.calls) != 3 {
+		t.Fatalf("unresolved template introduced extra probes: %v", f.calls)
 	}
 }
 
 func TestInspectMaskedTemplateUsesCatalogWithoutInventingDefinition(t *testing.T) {
 	f := &fixtureRunner{files: "vendor@.service masked -\n"}
 	got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background())
-	if err != nil || len(got) != 1 || !got[0].Template || !got[0].Persistent || got[0].StartIntent != profile.ServiceStartMasked || got[0].FragmentPath != "/dev/null" {
+	if err != nil || len(got) != 1 || !got[0].Template || got[0].TopologyKnown || !got[0].Persistent || got[0].StartIntent != profile.ServiceStartMasked || got[0].FragmentPath != "" {
 		t.Fatalf("masked template evidence = %+v err=%v", got, err)
 	}
 	if len(f.calls) != 2 {
@@ -165,12 +164,41 @@ func TestInspectMaskedTemplateUsesCatalogWithoutInventingDefinition(t *testing.T
 	}
 }
 
-func TestInspectTemplateWithoutAuthoritativeSourceFailsClosed(t *testing.T) {
+func TestInspectTemplateWithoutAuthoritativeSourceRemainsUnresolved(t *testing.T) {
 	f := &fixtureRunner{files: "backup@.service static -\n", cat: map[string]string{
 		"backup@.service": "[Service]\nExecStart=/usr/bin/true\n",
 	}}
-	if got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background()); err == nil || len(got) != 0 || !strings.Contains(err.Error(), "no authoritative source") {
-		t.Fatalf("template without source was accepted: %+v err=%v", got, err)
+	if got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background()); err != nil || len(got) != 1 || !got[0].Template || got[0].TopologyKnown || got[0].FragmentPath != "" || len(got[0].DropInPaths) != 0 || len(f.calls) != 2 {
+		t.Fatalf("template with unknown source aborted inventory or guessed paths: %+v calls=%v err=%v", got, f.calls, err)
+	}
+}
+
+func TestInspectTemplateAliasesAndBroadDropInsRemainUnknown(t *testing.T) {
+	f := &fixtureRunner{files: "alias@.service alias -\nbackup@.service static -\n", cat: map[string]string{
+		"alias@.service":  "# /home/test/.config/systemd/user/alias@.service\n[Service]\n# /home/test/private/alias@.service.d/fake.conf\n",
+		"backup@.service": "# /home/test/.config/systemd/user/backup@.service\n[Service]\n# /home/test/.config/systemd/user/service.d/10-effective.conf\n",
+	}}
+	got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background())
+	if err != nil || len(got) != 2 || got[0].RawUnitFileState != "alias" || got[1].RawUnitFileState != "static" {
+		t.Fatalf("alias/template inventory = %+v err=%v", got, err)
+	}
+	for _, unit := range got {
+		if unit.TopologyKnown || unit.FragmentPath != "" || len(unit.DropInPaths) != 0 {
+			t.Fatalf("authored comments or incomplete drop-in rules invented topology: %+v", unit)
+		}
+	}
+	if len(f.calls) != 2 {
+		t.Fatalf("template alias/hierarchy caused extra probes: %v", f.calls)
+	}
+}
+
+func TestInspectShowWithoutSourceKeepsTopologyUnknown(t *testing.T) {
+	f := &fixtureRunner{files: "alias.service alias -\n", show: map[string]string{
+		"alias.service": "Id=alias.service\nUnitFileState=alias\nFragmentPath=\nDropInPaths=\n",
+	}}
+	got, err := (Systemctl{Runner: f}).InspectUserUnits(context.Background())
+	if err != nil || len(got) != 1 || got[0].TopologyKnown || got[0].FragmentPath != "" || len(got[0].DropInPaths) != 0 {
+		t.Fatalf("ID-only show was treated as resolved topology: %+v err=%v", got, err)
 	}
 }
 

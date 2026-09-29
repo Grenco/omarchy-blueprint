@@ -367,6 +367,14 @@ relevant systemd-unit dependency names
 
 Do not put ownership decisions into the command adapter.
 
+An uninstantiated template is visible in `list-unit-files` but cannot be
+passed to `systemctl show`. Task 2 records its unit-file state and identity
+with `TopologyKnown=false`; an empty fragment/drop-in list here is **unknown**,
+not proof of no persistent source. Do not parse `systemctl cat` filename
+comments as structured topology: authored unit comments have the same shape.
+Task 3 must resolve effective template sources/drop-ins authoritatively before
+offering ownership or Capture.
+
 - [ ] **Step 5: Implement provider skeleton**
 
 `Provider.ID()` returns:
@@ -455,6 +463,9 @@ func TestDiscoveryGeneratedAndRuntimeUnitsAreExcluded(t *testing.T)
 func TestDiscoveryAdvancedKindsAreMarkedAdvanced(t *testing.T)
 func TestDiscoveryScopesDevicesMountsAndUnknownKindsAreExcluded(t *testing.T)
 func TestDiscoveryLinkedUnitRecordsExternalSource(t *testing.T)
+func TestDiscoveryUnresolvedTemplateCannotBeAdopted(t *testing.T)
+func TestDiscoveryTemplateCommentsCannotInventDropIns(t *testing.T)
+func TestDiscoveryTemplateAliasesAndBroadDropInsRemainUnknownUntilResolved(t *testing.T)
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -490,6 +501,16 @@ Classification may use:
 - link/source relationships.
 
 Path alone is evidence, not proof.
+
+For `TopologyKnown=false` templates, resolve effective source/drop-in paths
+using structured systemd metadata or another independently authoritative
+read-only mechanism that covers aliases, instance/template drop-ins,
+dash-prefix rules and type-wide directories. Never infer topology from
+authored `# /path` comments, and never treat an empty unresolved list as
+evidence that no drop-ins exist. If a safe resolver is unavailable, keep
+the template visible as Unknown/ineligible for first adoption without
+aborting the whole Services inventory; loaded instances may still use their
+own structured `show` evidence.
 
 - [ ] **Step 4: Map discovered units to stable workflow targets**
 

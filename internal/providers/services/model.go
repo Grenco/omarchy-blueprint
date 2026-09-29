@@ -7,13 +7,15 @@ import (
 )
 
 // ObservedUnit describes effective user-manager state without deciding
-// Blueprint ownership. In particular, Persistent is a source classification,
-// not permission to capture a discovered unit.
+// Blueprint ownership. TopologyKnown distinguishes an unresolved catalogue
+// template from a confirmed absent/runtime source. Persistent never grants
+// permission to capture a discovered unit.
 type ObservedUnit struct {
 	Name             string
 	Kind             string
 	FragmentPath     string
 	DropInPaths      []string
+	TopologyKnown    bool
 	RawUnitFileState string
 	StartIntent      profile.ServiceStartIntent
 	ObservedActive   bool
