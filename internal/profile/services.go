@@ -5,6 +5,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 type ServiceManagementMode string
@@ -167,7 +168,7 @@ func validateServiceMask(name string, mask *ServiceMask, start ServiceStartInten
 }
 
 func validateServiceName(name string) error {
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\ \t\n\r") || strings.HasPrefix(name, ".") {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\ \t\n\r") || strings.IndexFunc(name, unicode.IsControl) >= 0 || strings.HasPrefix(name, ".") {
 		return fmt.Errorf("invalid service unit name %q", name)
 	}
 	switch path.Ext(name) {
@@ -201,7 +202,7 @@ func validateServiceIntent(name string, presence ServicePresence, start ServiceS
 func validateServiceDropIns(unit string, dropIns []ServiceArtifact) error {
 	seen := map[string]bool{}
 	for _, artifact := range dropIns {
-		if artifact.Path == "" || path.Clean(artifact.Path) != artifact.Path || !strings.HasPrefix(artifact.Path, "units/"+unit+".d/") || strings.Contains(artifact.Path, "\\") || strings.Contains(strings.TrimPrefix(artifact.Path, "units/"+unit+".d/"), "/") {
+		if artifact.Path == "" || path.Clean(artifact.Path) != artifact.Path || !strings.HasPrefix(artifact.Path, "units/"+unit+".d/") || strings.Contains(artifact.Path, "\\") || strings.Contains(strings.TrimPrefix(artifact.Path, "units/"+unit+".d/"), "/") || strings.HasPrefix(path.Base(artifact.Path), ".") || path.Ext(artifact.Path) != ".conf" {
 			return fmt.Errorf("invalid drop-in path %q for %q", artifact.Path, unit)
 		}
 		if seen[artifact.Path] {

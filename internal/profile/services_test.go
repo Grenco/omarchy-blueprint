@@ -135,6 +135,8 @@ func TestServicesRejectsUnownedOrEscapingArtifacts(t *testing.T) {
 		{"definition-traversal", ServiceUnit{Name: "backup.service", Kind: "service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/../outside.service"}},
 		{"drop-in-traversal", ServiceUnit{Name: "backup.service", Kind: "service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup.service", DropIns: []ServiceArtifact{{Path: "units/backup.service.d/../../other.conf", Presence: ServicePresent}}}},
 		{"unsupported-kind", ServiceUnit{Name: "backup.mount", Kind: "mount", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup.mount"}},
+		{"control-in-name", ServiceUnit{Name: "backup\x1b.service", Kind: "service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup\x1b.service"}},
+		{"non-drop-in-file", ServiceUnit{Name: "backup.service", Kind: "service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup.service", DropIns: []ServiceArtifact{{Path: "units/backup.service.d/README.md", Presence: ServicePresent}}}},
 		{"invalid-start", ServiceUnit{Name: "backup.service", Kind: "service", Management: ServiceManagementDefinition, Presence: ServicePresent, Definition: "units/backup.service", StartIntent: "enabled-runtime"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
