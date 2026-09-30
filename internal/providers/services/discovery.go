@@ -188,7 +188,14 @@ func Discover(units []ObservedUnit, saved profile.Services, roots Roots) []Candi
 	return candidates
 }
 
-func (p Provider) discovered(ctx context.Context, saved profile.Services) ([]Candidate, error) {
+func (p *Provider) discovered(ctx context.Context, saved profile.Services) ([]Candidate, error) {
+	if p.ResolveRoots != nil {
+		roots, err := p.ResolveRoots()
+		if err != nil {
+			return nil, fmt.Errorf("resolve user-service source roots: %w", err)
+		}
+		p.Roots = roots
+	}
 	if p.Systemd == nil {
 		return nil, fmt.Errorf("Services needs a user systemd inspection source")
 	}

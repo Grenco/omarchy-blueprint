@@ -16,10 +16,11 @@ var ErrNotImplemented = errors.New("services persistent Restore and compatibilit
 // Provider keeps Capture behind reviewed ownership. Persistent Restore and
 // compatibility remain fail-closed until their separate PR C boundary.
 type Provider struct {
-	Systemd    Systemd
-	Roots      Roots
-	ProfileDir string
-	prepared   *preparedCapture
+	Systemd      Systemd
+	Roots        Roots
+	ResolveRoots func() (Roots, error)
+	ProfileDir   string
+	prepared     *preparedCapture
 }
 
 var _ workflow.RestoreProvider = (*Provider)(nil)

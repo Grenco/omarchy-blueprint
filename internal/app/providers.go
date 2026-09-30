@@ -98,22 +98,26 @@ func servicesStateProvider(deps Dependencies, opt *options) *servicesprovider.Pr
 	if systemd == nil {
 		systemd = servicesprovider.Systemctl{Runner: deps.Runner}
 	}
-	roots := servicesprovider.Roots{}
-	if deps.ServicesRoots != nil {
-		roots = deps.ServicesRoots()
-	} else if deps.HomeDir != nil {
-		if home, err := deps.HomeDir(); err == nil {
-			configRoot, dataRoot := os.Getenv("XDG_CONFIG_HOME"), os.Getenv("XDG_DATA_HOME")
-			if configRoot == "" {
-				configRoot = filepath.Join(home, ".config")
-			}
-			if dataRoot == "" {
-				dataRoot = filepath.Join(home, ".local", "share")
-			}
-			roots = servicesprovider.Roots{UserConfigDir: filepath.Join(configRoot, "systemd", "user"), UserDataDir: filepath.Join(dataRoot, "systemd", "user")}
+	return &servicesprovider.Provider{Systemd: systemd, ProfileDir: opt.profileDir, ResolveRoots: func() (servicesprovider.Roots, error) {
+		if deps.ServicesRoots != nil {
+			return deps.ServicesRoots(), nil
 		}
-	}
-	return &servicesprovider.Provider{Systemd: systemd, Roots: roots, ProfileDir: opt.profileDir}
+		if deps.HomeDir == nil {
+			return servicesprovider.Roots{}, errors.New("home directory is unavailable for user-service inspection")
+		}
+		home, err := deps.HomeDir()
+		if err != nil {
+			return servicesprovider.Roots{}, err
+		}
+		configRoot, dataRoot := os.Getenv("XDG_CONFIG_HOME"), os.Getenv("XDG_DATA_HOME")
+		if configRoot == "" {
+			configRoot = filepath.Join(home, ".config")
+		}
+		if dataRoot == "" {
+			dataRoot = filepath.Join(home, ".local", "share")
+		}
+		return servicesprovider.Roots{UserConfigDir: filepath.Join(configRoot, "systemd", "user"), UserDataDir: filepath.Join(dataRoot, "systemd", "user")}, nil
+	}}
 }
 
 func categoryProviderIDs(providers []stateProvider) []string {

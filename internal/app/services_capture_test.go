@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	servicesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/services"
@@ -41,6 +42,21 @@ func servicesCLIFixture(t *testing.T) (string, Dependencies, servicesprovider.Ro
 	deps.ServicesRoots = func() servicesprovider.Roots { return roots }
 	deps.IsTTY = func() bool { return true }
 	return profileDir, deps, roots
+}
+
+func TestServicesRootsAreResolvedOnlyWhenInspected(t *testing.T) {
+	calls := 0
+	deps := Dependencies{Runner: &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}, HomeDir: func() (string, error) {
+		calls++
+		return "", errors.New("home unavailable")
+	}}
+	p := servicesStateProvider(deps, &options{profileDir: t.TempDir()})
+	if calls != 0 {
+		t.Fatal("provider construction touched HomeDir")
+	}
+	if _, err := p.InspectTargets(context.Background(), profile.New("test", time.Now())); err == nil || calls != 1 {
+		t.Fatalf("Services inspection did not fail closed on unavailable home: calls=%d err=%v", calls, err)
+	}
 }
 
 func appService(name, path string) servicesprovider.ObservedUnit {
