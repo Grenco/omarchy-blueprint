@@ -229,3 +229,21 @@ func TestCaptureManagedOverlayNewMaskRequiresReview(t *testing.T) {
 	}
 	_ = p.RollbackCapture()
 }
+
+func TestCaptureNewMaskPreservesStillPresentManagedDropIn(t *testing.T) {
+	p, d, _, _ := captureFixture(t)
+	seedManagedOverlay(t, p, d)
+	maskPath := filepath.Join(p.Roots.UserConfigDir, "pipewire.service")
+	if err := os.Symlink("/dev/null", maskPath); err != nil {
+		t.Fatal(err)
+	}
+	unit := observedService("pipewire.service", "/dev/null")
+	unit.RawUnitFileState, unit.StartIntent = "masked", profile.ServiceStartMasked
+	// A masked unit need not report the still-present customization as effective.
+	p.Systemd = discoverySystemd{units: []ObservedUnit{unit}}
+	prior := d.Services.Units[0].DropIns[0]
+	if _, _, err := p.Capture(context.Background(), d, captureContext(map[string]workflow.CaptureDecision{"pipewire.service": {Capture: true, Resolved: true, Selected: true}})); err != nil || d.Services.Units[0].Mask == nil || len(d.Services.Units[0].DropIns) != 1 || d.Services.Units[0].DropIns[0] != prior {
+		t.Fatalf("new mask turned a present managed drop-in into absence: %+v err=%v", d.Services, err)
+	}
+	_ = p.RollbackCapture()
+}

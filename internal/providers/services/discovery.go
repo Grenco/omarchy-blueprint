@@ -264,16 +264,29 @@ func managedServiceArtifactMissing(saved profile.ServiceUnit, candidate Candidat
 	if candidate.Missing {
 		return true
 	}
-	current := map[string]bool{}
-	for _, path := range candidate.Unit.DropInPaths {
-		current[path] = true
-	}
 	for _, dropIn := range saved.DropIns {
-		if dropIn.Presence == profile.ServicePresent && !current[filepath.Join(roots.UserConfigDir, saved.Name+".d", filepath.Base(dropIn.Path))] {
+		if dropIn.Presence == profile.ServicePresent && !managedDropInPresent(saved.Name, dropIn, candidate.Unit, roots) {
 			return true
 		}
 	}
 	return saved.Mask != nil && saved.Mask.Presence == profile.ServicePresent && !userMask(saved.Name, roots)
+}
+
+func managedDropInPresent(name string, artifact profile.ServiceArtifact, unit ObservedUnit, roots Roots) bool {
+	path := filepath.Join(roots.UserConfigDir, name+".d", filepath.Base(artifact.Path))
+	for _, effective := range unit.DropInPaths {
+		if effective == path {
+			return true
+		}
+	}
+	// A persistent user mask may hide effective drop-ins without deleting the
+	// still-owned file. Physical presence here prevents a false tombstone; it
+	// does not grant authority to capture an unlisted, new drop-in.
+	if unit.RawUnitFileState == "masked" && userMask(name, roots) {
+		info, err := os.Lstat(path)
+		return err == nil && info.Mode().IsRegular()
+	}
+	return false
 }
 
 func newManagedDropIn(saved profile.ServiceUnit, candidate Candidate, roots Roots) bool {

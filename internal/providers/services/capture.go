@@ -197,7 +197,7 @@ func (p Provider) projectServiceUnit(candidate Candidate, old profile.ServiceUni
 	}
 	for _, item := range old.DropIns {
 		if _, ok := artifacts[item.Path]; !ok && managed {
-			if selected && item.Presence == profile.ServicePresent {
+			if selected && item.Presence == profile.ServicePresent && !managedDropInPresent(name, item, candidate.Unit, p.Roots) {
 				item.Presence = profile.ServiceAbsent
 			}
 			unit.DropIns = append(unit.DropIns, item)
