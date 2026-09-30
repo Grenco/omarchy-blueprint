@@ -1,0 +1,194 @@
+# Final AUR validation and protected AUR publication (ADR 0025).
+#
+# Starts when a maintainer publishes a GitHub Release (pkgrel 1), or by
+# manual dispatch from main for a packaging-only revision (pkgrel >= 2) of an
+# existing published release, bound to the dispatch event's commit. Validation downloads the immutable release
+# source from its public URL, rebuilds it from the release tag to prove the
+# bytes match, renders the final PKGBUILD, and builds, checks, inspects and
+# installs it in a fresh Arch container. None of that sees AUR credentials.
+#
+# Only the publish job reads the AUR SSH key. It runs in the protected
+# aur-release environment, so it waits for a required reviewer, and only
+# after validation succeeds. It pushes the validated files without
+# rendering or building anything, never force-pushes, and is a no-op when
+# the AUR already holds the identical revision.
+name: AUR Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing published release version (MAJOR.MINOR.PATCH, no leading v)
+        required: true
+      pkgrel:
+        description: Packaging-only pkgrel (2 or higher)
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: aur-publish
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve the AUR revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.revision.outputs.version }}
+      pkgrel: ${{ steps.revision.outputs.pkgrel }}
+      tag: ${{ steps.revision.outputs.tag }}
+      ref: ${{ steps.revision.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - id: revision
+        name: Resolve the revision from the event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+          DRAFT: ${{ github.event.release.draft }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          VERSION: ${{ inputs.version }}
+          PKGREL: ${{ inputs.pkgrel }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          if [[ $EVENT == release ]]; then
+            bash scripts/release/resolve-aur-revision.sh release "$TAG" "$DRAFT" "$PRERELEASE" | tee -a "$GITHUB_OUTPUT"
+          else
+            bash scripts/release/resolve-aur-revision.sh dispatch "$VERSION" "$PKGREL" "$DISPATCH_REF" "$DISPATCH_SHA" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    name: Validate the final AUR package
+    needs: resolve
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.recipe.outputs.commit }}
+    steps:
+      - name: Install validation tools
+        run: pacman -Syu --noconfirm --needed git go namcap python
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: recipe
+        name: Record the package recipe commit and verify the release tag
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          RECIPE_REF: ${{ needs.resolve.outputs.ref }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          bash scripts/release/verify-release-tag.sh "$TAG" origin/main
+          # The recipe is the resolved immutable ref: the release tag, or the
+          # dispatch event's commit, never a branch that may have moved.
+          [[ $(git rev-parse HEAD) == $(git rev-parse "$RECIPE_REF^{commit}") ]]
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Download and verify the published release source
+        env:
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          url=$(bash scripts/release/fetch-release-source.sh "$REPOSITORY" "$VERSION" "$RUNNER_TEMP/release")
+          echo "SOURCE_URL=$url" >> "$GITHUB_ENV"
+          # The tag cannot move (ruleset), and this proves it: the release
+          # asset must hold exactly what the tag's commit archives to. The tar
+          # streams are compared, since gzip versions may compress differently.
+          bash scripts/release/make-source-archive.sh "refs/tags/$TAG" "$VERSION" "$RUNNER_TEMP/rebuilt"
+          cmp <(gzip -dc "$RUNNER_TEMP/release/omarchy-blueprint-$VERSION.tar.gz") \
+            <(gzip -dc "$RUNNER_TEMP/rebuilt/omarchy-blueprint-$VERSION.tar.gz")
+      - name: Render the final package
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PKGREL: ${{ needs.resolve.outputs.pkgrel }}
+          MAINTAINER_NAME: ${{ vars.AUR_MAINTAINER_NAME }}
+          MAINTAINER_EMAIL: ${{ vars.AUR_MAINTAINER_EMAIL }}
+        run: |
+          python3 scripts/release/render-aur-package.py \
+            --version "$VERSION" --pkgrel "$PKGREL" \
+            --source-url "$SOURCE_URL" \
+            --sha256 "$(cut -d' ' -f1 "$RUNNER_TEMP/release/SHA256SUMS")" \
+            --maintainer-name "$MAINTAINER_NAME" --maintainer-email "$MAINTAINER_EMAIL" \
+            --output-dir "$RUNNER_TEMP/package"
+      - name: Build from the public URL, check, inspect and install
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PKGREL: ${{ needs.resolve.outputs.pkgrel }}
+        # No local source is seeded: makepkg must fetch the public URL and
+        # match the release checksum.
+        run: bash scripts/release/validate-arch-package.sh "$RUNNER_TEMP/package" "$VERSION" "$PKGREL"
+      - name: Assemble the validated publication
+        run: |
+          mkdir publication
+          cp "$RUNNER_TEMP/package/PKGBUILD" "$RUNNER_TEMP/package/.SRCINFO" "$RUNNER_TEMP/package/LICENSE" publication/
+          (cd publication && sha256sum PKGBUILD .SRCINFO LICENSE > PUBLICATION_SHA256SUMS)
+          cat publication/PUBLICATION_SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aur-publication
+          path: publication/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to the AUR
+    needs: [resolve, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: aur-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aur-publication
+          path: publication
+      - name: Configure the AUR SSH identity
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_KNOWN_HOSTS: ${{ vars.AUR_KNOWN_HOSTS }}
+        run: |
+          [[ -n $AUR_SSH_PRIVATE_KEY ]] || { echo "AUR_SSH_PRIVATE_KEY is not configured"; exit 1; }
+          [[ $AUR_KNOWN_HOSTS == *aur.archlinux.org* ]] || { echo "AUR_KNOWN_HOSTS is not configured"; exit 1; }
+          install -d -m 0700 "$RUNNER_TEMP/aur-ssh"
+          (umask 077 && printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/aur-ssh/id")
+          printf '%s\n' "$AUR_KNOWN_HOSTS" > "$RUNNER_TEMP/aur-ssh/known_hosts"
+      - name: Publish the validated files
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PKGREL: ${{ needs.resolve.outputs.pkgrel }}
+          GIT_AUTHOR_NAME: ${{ vars.AUR_MAINTAINER_NAME }}
+          GIT_AUTHOR_EMAIL: ${{ vars.AUR_MAINTAINER_EMAIL }}
+          GIT_COMMITTER_NAME: ${{ vars.AUR_MAINTAINER_NAME }}
+          GIT_COMMITTER_EMAIL: ${{ vars.AUR_MAINTAINER_EMAIL }}
+        run: |
+          export GIT_SSH_COMMAND="ssh -F /dev/null -i $RUNNER_TEMP/aur-ssh/id -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/aur-ssh/known_hosts"
+          summary=$(bash scripts/release/publish-aur.sh publication \
+            ssh://aur@aur.archlinux.org/omarchy-blueprint.git "$RUNNER_TEMP/aur" "$VERSION" "$PKGREL")
+          printf '%s\n' "$summary"
+          printf '## AUR publication\n\n%s\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove the AUR SSH identity
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/aur-ssh"
