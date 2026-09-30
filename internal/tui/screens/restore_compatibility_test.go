@@ -66,6 +66,7 @@ func TestRestoreCompatibilityRendersSamePlanAtWideAndCompactSizes(t *testing.T) 
 		screen := NewRestore(nil)
 		screen.width, screen.height = size.width, size.height
 		screen.current = compatibilityReviewPlan()
+		screen.compatibilityExpanded = true
 		view := screen.View()
 		assertWithinBudget(t, screen, view)
 		for _, want := range []string{"Compatibility", "Profile last capture: unknown", "Target Omarchy: 4.2.0", "Installed plugins", "Incompatible · Blocked", "plugin:clock", "first-party plugin unavailable", "Hooks", "Unknown · Reduced", "lifecycle not established", "Resources", "Supported · Unchanged", "Config", "Not selected", "resource:notes"} {
@@ -76,6 +77,41 @@ func TestRestoreCompatibilityRendersSamePlanAtWideAndCompactSizes(t *testing.T) 
 		if strings.Index(view, "Compatibility") > strings.Index(view, "Changes") || strings.Index(view, "Incompatible · Blocked") > strings.Index(view, "first-party plugin unavailable") {
 			t.Fatalf("compatibility or finding shown after work:\n%s", view)
 		}
+	}
+}
+
+func TestRestoreCompatibilityDefaultCondensesInformationalUncertainty(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.SetSize(78, 16)
+	screen.current = compatibilityReviewPlan()
+	screen.current.Compatibility.Categories[2].Applies = false
+	for i := range screen.current.Compatibility.Categories {
+		screen.current.Compatibility.Categories[i].Authority = model.CompatibilityUnchanged
+	}
+	view := screen.View()
+	assertWithinBudget(t, screen, view)
+	if !strings.Contains(view, "Compatibility: Ready") || strings.Contains(view, "lifecycle not established") || strings.Contains(view, "Profile last capture") || !strings.Contains(view, "resource:notes") {
+		t.Fatalf("default compatibility swamped operation table:\n%s", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'v'})
+	if details := screen.DetailView(); !strings.Contains(details, "lifecycle not established") || !strings.Contains(details, "Profile last capture") {
+		t.Fatalf("expanded report lost evidence: %s", details)
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'v'})
+	if screen.compatibilityExpanded {
+		t.Fatal("compatibility did not collapse")
+	}
+}
+
+func TestRestoreCompatibilityReducedSummarizesWithheldAuthority(t *testing.T) {
+	screen := NewRestore(nil)
+	screen.SetSize(78, 16)
+	screen.current = compatibilityReviewPlan()
+	screen.current.Compatibility.Categories[2].Applies = false
+	view := screen.View()
+	assertWithinBudget(t, screen, view)
+	if !strings.Contains(view, "1 limited") || !strings.Contains(view, "some operations withheld") || strings.Contains(view, "lifecycle not established") {
+		t.Fatalf("reduced compatibility did not summarize:\n%s", view)
 	}
 }
 

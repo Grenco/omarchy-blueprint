@@ -109,3 +109,16 @@ func TestRestorePaletteUsesScreenApplyDisabledReason(t *testing.T) {
 	}
 	t.Fatal("restore.apply missing from palette")
 }
+
+func TestRestoreAdapterOffersCompatibilityExpansion(t *testing.T) {
+	screen := &restoreScreen{Restore: screens.NewRestore(nil)}
+	if result := screen.HandleKey(tea.KeyPressMsg{Code: 'v'}); !result.Consumed {
+		t.Fatal("Restore did not consume compatibility expansion key")
+	}
+	for _, binding := range screen.Bindings() {
+		if binding.Key == "v" && binding.ActionID == "restore.compatibility" {
+			return
+		}
+	}
+	t.Fatal("compatibility expansion missing from contextual bindings")
+}
