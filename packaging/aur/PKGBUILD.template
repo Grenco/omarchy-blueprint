@@ -1,0 +1,56 @@
+# Maintainer: @@MAINTAINER@@
+#
+# Rendered by scripts/release/render-aur-package.py from the Omarchy Blueprint
+# repository (packaging/aur/PKGBUILD.template); edit the template there, not
+# this file. These package-source files are 0BSD licensed; Omarchy Blueprint
+# itself is MIT licensed.
+#
+# Omarchy Blueprint requires Omarchy 4 or newer at runtime. No pacman package
+# represents that requirement, so it is documented rather than declared.
+
+pkgname=omarchy-blueprint
+pkgver=@@VERSION@@
+pkgrel=@@PKGREL@@
+pkgdesc='Portable capture and restore for Omarchy'
+arch=('x86_64')
+url='https://github.com/Grenco/omarchy-blueprint'
+license=('MIT')
+depends=('glibc' 'git')
+makedepends=('go')
+checkdepends=('git')
+optdepends=('github-cli: restore GitHub-hosted resources with gh'
+            'mise: restore mise-managed tools')
+source=("omarchy-blueprint-${pkgver}.tar.gz::@@SOURCE_URL@@")
+sha256sums=('@@SHA256@@')
+
+prepare() {
+  cd "omarchy-blueprint-${pkgver}"
+  export GOPATH="${srcdir}"
+  go mod download -modcacherw
+}
+
+build() {
+  cd "omarchy-blueprint-${pkgver}"
+  export CGO_CPPFLAGS="${CPPFLAGS}"
+  export CGO_CFLAGS="${CFLAGS}"
+  export CGO_CXXFLAGS="${CXXFLAGS}"
+  export CGO_LDFLAGS="${LDFLAGS}"
+  export GOPATH="${srcdir}"
+  export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+  go build -o build/omarchy-blueprint \
+    -ldflags "-linkmode=external -X github.com/Grenco/omarchy-blueprint/internal/buildinfo.Version=${pkgver}" \
+    ./cmd/omarchy-blueprint
+}
+
+check() {
+  cd "omarchy-blueprint-${pkgver}"
+  export GOPATH="${srcdir}"
+  export GOFLAGS="-trimpath -mod=readonly -modcacherw"
+  go test ./...
+}
+
+package() {
+  cd "omarchy-blueprint-${pkgver}"
+  install -Dm755 build/omarchy-blueprint "${pkgdir}/usr/bin/omarchy-blueprint"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

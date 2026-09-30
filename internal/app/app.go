@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/Grenco/omarchy-blueprint/internal/buildinfo"
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -136,7 +137,7 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 
 func newRoot(deps Dependencies) *cobra.Command {
 	opt := &options{}
-	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", Version: buildinfo.Version, SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		if flag := cmd.Root().PersistentFlags().Lookup("profile"); flag != nil {
 			opt.profileExplicit = flag.Changed
 		}
