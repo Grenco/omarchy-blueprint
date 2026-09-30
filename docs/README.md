@@ -15,4 +15,5 @@ Blueprint use without requiring the architecture or implementation history.
 - [Roadmap](../ROADMAP.md) — working product specification and longer-term direction.
 - [Architecture decisions](adr/) — technical decisions and historical context.
 - [Manual test checklist](manual-test-checklist.md) — maintainer acceptance journeys.
+- [Releasing](releasing.md) — maintainer runbook for tagged releases and AUR publication.
 - [Contributing](../CONTRIBUTING.md) — repository contribution and verification basics.
