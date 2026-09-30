@@ -126,8 +126,11 @@ with selected Apply intent is **Supported** (affirmative evidence), **Unknown**
 (a material fact is not established), or **Incompatible** (intent is not safe
 on this target). Its separate effect is **Unchanged**, **Reduced** (some
 authority is withheld), or **Blocked** (the selected plan cannot apply).
-Findings appear beneath the affected categories. A category without selected
-Apply intent has no compatibility verdict.
+The default review summarizes readiness and withheld authority, leaving space
+for the actual Restore operations. Press `v` to expand or collapse the full
+category report and provenance; while expanded, the scrollable Details pane
+also contains the complete report. A category without selected Apply intent
+has no compatibility verdict.
 
 Even one Blocked finding disables Apply for the entire plan; Force only changes
 conflict handling and cannot override compatibility. Unknown with Reduced
@@ -136,7 +139,9 @@ withheld. A policy Restore Skip can deliberately leave a target alone; the CLI
 can explicitly narrow Restore to one category. Otherwise address the finding
 outside Blueprint and open Restore again to replan. The compact review keeps
 blockers and their findings visible alongside the selected work item and
-indicates when expanding the workspace would show more report lines.
+indicates when more report lines are available. Blocked authority is red and
+always visible, Reduced authority is summarized in yellow, and uncertainty
+that leaves authority Unchanged is muted information rather than a warning.
 
 Package changes that need administrator authentication are marked
 interactive. When you approve such a plan, the interface steps aside and the

@@ -25,6 +25,7 @@ type Restore struct {
 	width, height, selected int
 	styles                  components.Styles
 	confirm                 bool
+	compatibilityExpanded   bool
 	busy                    bool
 	planning                bool
 	err                     error
@@ -144,6 +145,9 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	switch key.String() {
+	case "v":
+		s.compatibilityExpanded = !s.compatibilityExpanded
+		s.layoutPlan()
 	case "j", "down":
 		if s.selected < s.currentEntryCount()-1 {
 			s.selected++
@@ -203,6 +207,9 @@ func (s *Restore) View() string {
 	return s.currentPlanView()
 }
 func (s *Restore) DetailView() string {
+	if s.compatibilityExpanded {
+		return strings.Join(s.compatibilityReportLines(s.widthOrDefault(), false), "\n")
+	}
 	if s.selected < len(s.current.Operations) {
 		op := s.current.Operations[s.selected]
 		return fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive)
@@ -415,6 +422,46 @@ func (s *Restore) compactRequirementLines(width int) []string {
 // report order; compact views prioritize blocked/reduced findings so a long
 // report cannot push the reason Apply is disabled beyond the viewport.
 func (s *Restore) compatibilityLines(width int, compact bool) []string {
+	if s.compatibilityExpanded {
+		return s.compatibilityReportLines(width, compact)
+	}
+	report := s.current.Compatibility
+	if len(report.Categories) == 0 && !report.Target.Known && !report.ProfileLastCapture.Known {
+		return nil
+	}
+	limited := 0
+	blocked := []model.CompatibilityCategory{}
+	for _, category := range report.Categories {
+		if !category.Applies {
+			continue
+		}
+		if category.Authority == model.CompatibilityReduced {
+			limited++
+		}
+		if category.Authority == model.CompatibilityBlocked {
+			blocked = append(blocked, category)
+		}
+	}
+	if len(blocked) == 0 {
+		if limited > 0 {
+			return components.WrapText(s.styles.Warning(fmt.Sprintf("Compatibility: %d limited — some operations withheld (v details)", limited)), width)
+		}
+		return components.WrapText(s.styles.Muted("Compatibility: Ready · no compatibility blockers (v details)"), width)
+	}
+	lines := []string{s.styles.Error(fmt.Sprintf("Compatibility: Blocked · %d categories (v details)", len(blocked)))}
+	for _, category := range blocked {
+		lines = append(lines, components.WrapText(s.styles.Error(components.DisplayText(restoreCategoryLabel(category.Category)+": "+titleMode(string(category.State))+" · Blocked")), width)...)
+		for _, finding := range category.Findings {
+			if finding.Authority != model.CompatibilityBlocked {
+				continue
+			}
+			lines = append(lines, components.WrapText(s.styles.Error(components.DisplayText(finding.Target+": "+finding.Summary)), width)...)
+		}
+	}
+	return lines
+}
+
+func (s *Restore) compatibilityReportLines(width int, compact bool) []string {
 	report := s.current.Compatibility
 	if len(report.Categories) == 0 && !report.Target.Known && !report.ProfileLastCapture.Known {
 		return nil
@@ -469,7 +516,7 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 			case model.CompatibilityReduced:
 				lines = append(lines, s.styles.Warning(line))
 			default:
-				lines = append(lines, line)
+				lines = append(lines, s.styles.Muted(line))
 			}
 		}
 		findings := category.Findings
@@ -491,8 +538,10 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 			for _, line := range components.WrapText(text, width) {
 				if finding.Authority == model.CompatibilityBlocked {
 					lines = append(lines, s.styles.Error(line))
-				} else {
+				} else if finding.Authority == model.CompatibilityReduced {
 					lines = append(lines, s.styles.Warning(line))
+				} else {
+					lines = append(lines, s.styles.Muted(line))
 				}
 			}
 		}

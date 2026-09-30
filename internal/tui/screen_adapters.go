@@ -162,7 +162,7 @@ func (s *machinesScreen) Bindings() []Binding {
 
 func (s *restoreScreen) ID() ScreenID { return ScreenRestore }
 func (s *restoreScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
-	if !s.TransientActive() && !screenKey(key.String()) {
+	if !s.TransientActive() && key.String() != "v" && !screenKey(key.String()) {
 		return KeyResult{}
 	}
 	return KeyResult{Consumed: true, Cmd: s.Update(key)}
@@ -170,13 +170,14 @@ func (s *restoreScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
 func (s *restoreScreen) Actions() []Action {
 	reason := s.ApplyDisabledReason()
 	return []Action{
+		{ID: "restore.compatibility", Label: "Expand/collapse compatibility details", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'v'}) }},
 		{ID: "restore.conflicts", Label: "Toggle Safe/Force for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }},
 		{ID: "restore.convergence", Label: "Toggle Additive/Exact for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
 		{ID: "restore.apply", Label: "Restore current plan", Group: "Restore", Enabled: reason == "", Visible: true, DisabledReason: reason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
 	}
 }
 func (s *restoreScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "restore.conflicts", Key: "f"}, {ActionID: "restore.convergence", Key: "e"}, {ActionID: "restore.apply", Key: "enter"}}
+	return []Binding{{ActionID: "restore.conflicts", Key: "f"}, {ActionID: "restore.convergence", Key: "e"}, {ActionID: "restore.compatibility", Key: "v"}, {ActionID: "restore.apply", Key: "enter"}}
 }
 
 func (s *syncScreen) ID() ScreenID { return ScreenSync }
