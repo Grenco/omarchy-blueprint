@@ -59,6 +59,53 @@ func TestServicesRootsAreResolvedOnlyWhenInspected(t *testing.T) {
 	}
 }
 
+func TestCapturedServicesCoexistWithAggregateRestore(t *testing.T) {
+	profileDir, deps, roots := servicesCLIFixture(t)
+	miseConfig := filepath.Join(t.TempDir(), "mise.toml")
+	deps.MiseGlobalConfig = func() (string, error) { return miseConfig, nil }
+	live := filepath.Join(roots.UserConfigDir, "backup.service")
+	if err := os.WriteFile(live, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.ServicesSystemd = appServicesSystemd{units: []servicesprovider.ObservedUnit{appService("backup.service", live)}}
+	deps.In = strings.NewReader("yes\nyes\n")
+	if code, output := configRun(t, deps, profileDir, "capture", "services", "--review"); code != 0 {
+		t.Fatal(output)
+	}
+	if code, output := configRun(t, deps, profileDir, "capture", "packages"); code != 0 {
+		t.Fatal(output)
+	}
+	delete(deps.Runner.(*machineRunner).official, "zoxide")
+	session, err := openWorkflow(deps, &options{profileDir: profileDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := session.PlanRestore(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageWork, serviceSkip, reduced := false, false, false
+	for _, op := range plan.Operations {
+		if op.Provider == "services" {
+			t.Fatalf("Services mutation planned: %+v", op)
+		}
+		packageWork = packageWork || op.Provider == "packages"
+	}
+	for _, skip := range plan.Skipped {
+		serviceSkip = serviceSkip || skip.Provider == "services" && skip.Resource == "backup.service"
+	}
+	for _, category := range plan.Compatibility.Categories {
+		reduced = reduced || category.Category == "services" && category.State == "unknown" && category.Authority == "reduced"
+	}
+	if !packageWork || !serviceSkip || !reduced {
+		t.Fatalf("aggregate Restore lost work or Services reduction: %+v", plan)
+	}
+	result, err := session.ApplyRestore(context.Background(), "services", nil)
+	if err != nil || !result.Verification.OK || len(result.Plan.Operations) != 0 {
+		t.Fatalf("deliberately skipped Services failed no-op Verify: %+v err=%v", result, err)
+	}
+}
+
 func appService(name, path string) servicesprovider.ObservedUnit {
 	return servicesprovider.ObservedUnit{Name: name, Kind: strings.TrimPrefix(filepath.Ext(name), "."), FragmentPath: path, TopologyKnown: true, Persistent: true, StartIntent: profile.ServiceStartDisabled}
 }
@@ -94,7 +141,7 @@ func TestServicesCLIReviewedCaptureIsOnlyFirstAdoption(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(profileDir, "services", "units", "backup.service")); err != nil {
 		t.Fatal(err)
 	}
-	if code, output := configRun(t, deps, profileDir, "restore", "services", "--dry-run"); code == 0 || !strings.Contains(output, "persistent Restore and compatibility are not implemented") {
+	if code, output := configRun(t, deps, profileDir, "restore", "services", "--dry-run"); code != 0 || !strings.Contains(output, "Unknown · Reduced") || !strings.Contains(output, "Services Restore is not available") {
 		t.Fatalf("Services Restore claimed premature authority: code=%d output=%s", code, output)
 	}
 	if code, output := configRun(t, deps, profileDir, "--json", "capture", "services"); code != 0 || !strings.Contains(output, `"services": {`) || !strings.Contains(output, `"backup.service"`) {
@@ -193,7 +240,7 @@ func TestServicesCLIAndTUIShareCandidateTargetIdentity(t *testing.T) {
 	screen := tuiscreens.NewProvider(session, "services")
 	screen.SetSize(100, 22)
 	screen.Update(screen.Init()())
-	if view := screen.View(); !strings.Contains(view, "backup.service") || !strings.Contains(view, "Custom user service") {
+	if view := screen.View(); !strings.Contains(view, "backup.service") || strings.Contains(view, "review before managing") {
 		t.Fatalf("TUI candidate inventory differs from CLI: %s", view)
 	}
 	if code, output := configRun(t, deps, profileDir, "policy", "show", "services", "backup.service", "--scope", "profile"); code != 0 || !strings.Contains(output, "backup.service") {

@@ -69,7 +69,11 @@ func NewProvider(session *workflow.Session, id string) *Provider {
 	return NewProviderContext(context.Background(), session, id)
 }
 func NewProviderContext(ctx context.Context, session *workflow.Session, id string) *Provider {
-	return &Provider{ctx: ctx, session: session, id: id, tab: "State", policyScope: initialPolicyScope(session)}
+	s := &Provider{ctx: ctx, session: session, id: id, tab: "State", policyScope: initialPolicyScope(session)}
+	if id == "services" {
+		s.collapsed = map[string]bool{"Other detected services": true}
+	}
+	return s
 }
 func (s *Provider) Refresh() tea.Cmd { return s.refresh() }
 
@@ -96,6 +100,9 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.status, s.targets, s.effective, s.err, s.busy = msg.status, msg.targets, msg.effective, msg.err, false
+		if s.id == "services" {
+			sort.SliceStable(s.targets, func(i, j int) bool { return servicePrimaryTarget(s.targets[i]) && !servicePrimaryTarget(s.targets[j]) })
+		}
 		s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 		return nil
@@ -420,7 +427,7 @@ func (s *Provider) visibleGroupRows(rows []providerRow) []providerRow {
 func (s *Provider) targetStateRows() []providerRow {
 	rows := make([]providerRow, 0, len(s.targets))
 	lastGroup := ""
-	for _, target := range s.targets {
+	for _, target := range s.inventoryTargets() {
 		group := providerTargetGroup(s.id, target)
 		if group != lastGroup {
 			rows = append(rows, providerRow{group: group})
@@ -437,7 +444,7 @@ func (s *Provider) targetStateRows() []providerRow {
 func (s *Provider) policyRows() []providerRow {
 	rows := make([]providerRow, 0, len(s.targets))
 	lastGroup := ""
-	for _, target := range s.targets {
+	for _, target := range s.inventoryTargets() {
 		group := providerTargetGroup(s.id, target)
 		if group != lastGroup {
 			rows = append(rows, providerRow{group: group})
@@ -456,6 +463,17 @@ func (s *Provider) policyRows() []providerRow {
 	}
 	return s.visibleGroupRows(rows)
 }
+func servicePrimaryTarget(target workflow.TargetInspection) bool {
+	return target.Desired != workflow.TargetUnknown || target.Recommended && !target.Advanced
+}
+func (s *Provider) inventoryTargets() []workflow.TargetInspection {
+	if s.id != "services" {
+		return s.targets
+	}
+	targets := append([]workflow.TargetInspection(nil), s.targets...)
+	sort.SliceStable(targets, func(i, j int) bool { return servicePrimaryTarget(targets[i]) && !servicePrimaryTarget(targets[j]) })
+	return targets
+}
 func providerTargetGroup(id string, target workflow.TargetInspection) string {
 	if id != "packages" {
 		switch id {
@@ -472,6 +490,11 @@ func providerTargetGroup(id string, target workflow.TargetInspection) string {
 			return "Shell customization"
 		case "hooks":
 			return "Hooks"
+		case "services":
+			if servicePrimaryTarget(target) {
+				return "Custom & managed services"
+			}
+			return "Other detected services"
 		case "resources":
 			return "Resources (Exact never deletes resource data)"
 		default:
@@ -789,9 +812,14 @@ func (s *Provider) targetDetail(title string, row providerRow) string {
 	effective := s.effective[row.key]
 	captureBlocked := !row.target.CaptureEligible
 	restoreBlocked := !row.target.RestoreEligible
-	return fmt.Sprintf("%s target\nTarget: %s\nDesired: %s\nCurrent: %s\nCapture policy: %s\nCapture source: %s\nCapture source is %s\nCapture source machine: %s\nCapture source category: %s\nCapture source target: %s\nRestore policy: %s\nRestore source: %s\nRestore source is %s\nRestore source machine: %s\nRestore source category: %s\nRestore source target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t",
+	why := ""
+	if row.target.Description != "" {
+		why = "\nWhy: " + components.DisplayText(row.target.Description)
+	}
+	return fmt.Sprintf("%s target\nTarget: %s%s\nDesired: %s\nCurrent: %s\nCapture policy: %s\nCapture source: %s\nCapture source is %s\nCapture source machine: %s\nCapture source category: %s\nCapture source target: %s\nRestore policy: %s\nRestore source: %s\nRestore source is %s\nRestore source machine: %s\nRestore source category: %s\nRestore source target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t",
 		title,
 		components.DisplayText(row.key),
+		why,
 		stateValue(string(row.target.Desired)),
 		currentStateValue(row.target.Current),
 		policyDetailDecision("Capture", effective.Capture, captureBlocked, row.target.SafetyReason),

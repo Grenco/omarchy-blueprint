@@ -795,6 +795,9 @@ func (s *Capture) reviewDetail() string {
 	if target.Inspection.SafetyReason != "" {
 		lines = append(lines, "Safety: "+components.DisplayText(target.Inspection.SafetyReason))
 	}
+	if target.Inspection.Description != "" {
+		lines = append(lines, "Why: "+components.DisplayText(target.Inspection.Description))
+	}
 	if target.Inspection.RequiresSelection && !blocked {
 		choice := "space selects or deselects this unit for this review; x leaves it unmanaged."
 		if target.Inspection.ReviewRemoval {

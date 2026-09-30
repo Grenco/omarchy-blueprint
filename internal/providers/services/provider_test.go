@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
@@ -20,7 +19,7 @@ func TestServicesProviderSkeletonFailsClosedUntilDiscoveryAndRestore(t *testing.
 	if _, err := p.InspectTargets(context.Background(), profile.Data{}); err == nil {
 		t.Fatal("Services inspection accepted a missing user systemd source")
 	}
-	if _, err := p.Plan(context.Background(), profile.Data{}, omarchy.Info{}, workflow.RestoreContext{}); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("unimplemented Services Restore planned anything: %v", err)
+	if fragment, err := p.Plan(context.Background(), profile.Data{}, omarchy.Info{}, workflow.RestoreContext{}); err != nil || len(fragment.Operations) != 0 || fragment.Compatibility.Applies {
+		t.Fatalf("empty Services Restore gained authority: %+v err=%v", fragment, err)
 	}
 }

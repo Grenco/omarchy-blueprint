@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -43,9 +44,29 @@ func (Provider) ChangeTargetKey(change model.Change) (string, bool) {
 	}
 	return "", false
 }
-func (Provider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (workflow.RestoreFragment, error) {
-	return workflow.RestoreFragment{}, ErrNotImplemented
+func (Provider) Plan(_ context.Context, data profile.Data, _ omarchy.Info, restore workflow.RestoreContext) (workflow.RestoreFragment, error) {
+	fragment := workflow.RestoreFragment{}
+	var findings []model.CompatibilityFinding
+	for _, unit := range data.Services.Units {
+		decision, err := restore.Require(unit.Name)
+		if err != nil {
+			return workflow.RestoreFragment{}, err
+		}
+		reason := decision.Reason
+		if reason == "" {
+			reason = "Services Restore is not available in this build; service left untouched"
+		}
+		fragment.Skipped = append(fragment.Skipped, model.Skipped{Provider: "services", Resource: unit.Name, Reason: reason})
+		if decision.Restore || decision.CompatibilityApply {
+			findings = append(findings, model.CompatibilityFinding{Code: "services.restore.unavailable", Target: unit.Name, State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "Services Restore is not available in this build; no service mutations planned"})
+		}
+	}
+	category, err := compatibility.BuildCategory("services", len(findings) > 0, nil, findings)
+	fragment.Compatibility = category
+	return fragment, err
 }
 func (Provider) Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error) {
-	return model.VerificationResult{}, ErrNotImplemented
+	// PR B promises no Services effects. PR C replaces both this no-op plan
+	// and verification with persistent reconstruction of the selected intent.
+	return model.VerificationResult{OK: true}, nil
 }

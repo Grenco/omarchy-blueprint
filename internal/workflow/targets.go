@@ -87,6 +87,8 @@ type TargetInspection struct {
 	// Non-hierarchical providers leave this nil.
 	Ancestors       []string
 	Label           string
+	Description     string
+	Recommended     bool
 	Desired         TargetState
 	Current         TargetState
 	CaptureEligible bool

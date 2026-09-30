@@ -252,7 +252,7 @@ func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]work
 		sort.Strings(recommended)
 		needsRemovalReview := managed && managedServiceArtifactMissing(want, candidate, p.Roots)
 		targets = append(targets, workflow.TargetInspection{
-			Key: candidate.Unit.Name, Label: candidate.Unit.Name + " · " + candidate.Reason,
+			Key: candidate.Unit.Name, Label: candidate.Unit.Name, Description: candidate.Reason, Recommended: candidate.Recommended,
 			Desired: desired, Current: current, CaptureEligible: eligible,
 			RestoreEligible: eligible && managed, SafetyReason: map[bool]string{true: "", false: reason}[eligible],
 			RequiresSelection: candidate.Missing && managed || needsRemovalReview && eligible || eligible && !managed || eligible && (candidate.OwnershipExpansion || candidate.NewOverlayArtifact),

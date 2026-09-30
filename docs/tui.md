@@ -212,8 +212,12 @@ review and recommends related custom units, which you can deselect individually.
 Press `v` to reveal additional advanced unit candidates before choosing one.
 This choice does not change Capture policy. An external service can contribute
 a selected user-owned drop-in or mask without its base definition becoming
-Blueprint-managed. Services Restore planning follows in the next Services
-milestone.
+Blueprint-managed. The Services inventory keeps custom and managed units first,
+with other detected services collapsed by default; Enter expands that group.
+Discovery explanations appear in Details rather than crowding the name column.
+Services Restore currently shows explicit skips and Unknown/Reduced compatibility
+while other categories remain available. Persistent Services reconstruction
+follows in the next milestone.
 
 ### Resources
 

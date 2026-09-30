@@ -44,7 +44,9 @@ Services are discovered as candidates, not silently adopted. Preview them with
 optionally decline recommended custom dependencies. A plain `capture services`
 updates already-managed Services intent but does not adopt new units or record
 an unreviewed removal. External base definitions remain outside the profile.
-Services Restore planning follows in the next Services milestone.
+Services Restore currently leaves saved units untouched with visible skips and
+Unknown/Reduced compatibility, so other captured categories can still restore.
+Persistent Services reconstruction follows in the next Services milestone.
 
 ## Check, status, and diff
 

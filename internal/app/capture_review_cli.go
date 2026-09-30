@@ -17,6 +17,7 @@ type capturePreviewTarget struct {
 	Category                string                  `json:"category"`
 	Key                     string                  `json:"key"`
 	Label                   string                  `json:"label"`
+	Description             string                  `json:"description,omitempty"`
 	Desired                 workflow.TargetState    `json:"desired"`
 	Current                 workflow.TargetState    `json:"current"`
 	CaptureEligible         bool                    `json:"capture_eligible"`
@@ -72,6 +73,7 @@ func capturePreviewCommand(ctx context.Context, deps Dependencies, opt *options,
 		for _, target := range section.Targets {
 			item := capturePreviewTarget{Category: target.Category, Key: target.Inspection.Key, Label: target.Inspection.Label, Desired: target.Inspection.Desired, Current: target.Inspection.Current, CaptureEligible: target.Inspection.CaptureEligible, RequiresSelection: target.Inspection.RequiresSelection, ReviewRemoval: target.Inspection.ReviewRemoval, Selected: target.Selected, Declined: target.Declined, Advanced: target.Inspection.Advanced, RecommendedDependencies: target.Inspection.RecommendedDependencies, SafetyReason: target.Inspection.SafetyReason, Policy: effectivePolicyValue(policy.AxisCapture, target.Policy), Outcome: target.Outcome}
 			output.Targets = append(output.Targets, item)
+			output.Targets[len(output.Targets)-1].Description = target.Inspection.Description
 			fmt.Fprintf(&human, "  %s/%s: %s", item.Category, item.Key, target.Outcome.Label())
 			if item.SafetyReason != "" {
 				fmt.Fprintf(&human, " (%s)", item.SafetyReason)
@@ -145,7 +147,7 @@ func chooseCaptureCandidates(out io.Writer, reader *bufio.Reader, inspection wor
 		if defaultYes {
 			hint = "[Y/n]"
 		}
-		fmt.Fprintf(out, "%s\n%s %s/%s? %s ", target.Inspection.Label, verb, candidate.category, candidate.key, hint)
+		fmt.Fprintf(out, "%s\n%s\n%s %s/%s? %s ", target.Inspection.Label, target.Inspection.Description, verb, candidate.category, candidate.key, hint)
 		answer, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
 			return workflow.CaptureInspection{}, err
