@@ -618,5 +618,264 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("namcap", script)
 
 
+def fake_bin(root: Path, name: str, body: str) -> Path:
+    bin_dir = root / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / name).write_text(body)
+    (bin_dir / name).chmod(0o755)
+    return bin_dir
+
+
+class ResolveAurRevisionTests(unittest.TestCase):
+    def resolve(self, *args: str, release_state: str | None = None) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as tmp:
+            reply = f'echo "{release_state}"' if release_state else 'echo "HTTP 404" >&2; exit 1'
+            bin_dir = fake_bin(Path(tmp), "gh", f"#!/usr/bin/env bash\necho \"$*\" >> {tmp}/calls\n{reply}\n")
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+            return subprocess.run(["bash", str(RELEASE / "resolve-aur-revision.sh"), *args],
+                                  capture_output=True, text=True, env=env, timeout=30)
+
+    def test_published_release_resolves_to_pkgrel_1_from_its_tag(self):
+        result = self.resolve("release", "v0.1.0", "false", "false")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "version=0.1.0\npkgrel=1\ntag=v0.1.0\nref=refs/tags/v0.1.0\n")
+
+    def test_draft_prerelease_and_malformed_releases_are_rejected(self):
+        for args in (("v0.1.0", "true", "false"), ("v0.1.0", "false", "true"), ("v0.1", "false", "false"),
+                     ("0.1.0", "false", "false"), ("v0.1.0-rc1", "false", "false"), ("v0.1.0", "", "")):
+            with self.subTest(args=args):
+                result = self.resolve("release", *args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+
+    def test_packaging_only_revision_of_a_published_release_from_main(self):
+        result = self.resolve("dispatch", "0.1.0", "2", "refs/heads/main", release_state="false false")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "version=0.1.0\npkgrel=2\ntag=v0.1.0\nref=refs/heads/main\n")
+
+    def test_packaging_only_revision_rejects_pkgrel_1_other_refs_and_unpublished_releases(self):
+        cases = [(("0.1.0", "1", "refs/heads/main"), "false false"), (("0.1.0", "0", "refs/heads/main"), "false false"),
+                 (("0.1.0", "02", "refs/heads/main"), "false false"), (("v0.1.0", "2", "refs/heads/main"), "false false"),
+                 (("0.1.0", "2", "refs/heads/feature"), "false false"), (("0.1.0", "2", "refs/heads/main"), None),
+                 (("0.1.0", "2", "refs/heads/main"), "true false"), (("0.1.0", "2", "refs/heads/main"), "false true")]
+        for args, state in cases:
+            with self.subTest(args=args, state=state):
+                result = self.resolve("dispatch", *args, release_state=state)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+
+
+class FetchReleaseSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)]))
+        repo = fixture_repo(self.tmp)
+        self.served = self.tmp / "served"
+        self.assertEqual(make_archive(repo, "v0.1.0", "0.1.0", self.served).returncode, 0)
+        # Serves <served>/<asset> for any URL, logging every invocation.
+        curl = f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {self.tmp}/curl.log
+out="" url=""
+while (( $# )); do case $1 in --output) out=$2; shift ;; https://*) url=$1 ;; esac; shift; done
+cp "{self.served}/${{url##*/}}" "$out"
+"""
+        self.env = {**os.environ, "PATH": f"{fake_bin(self.tmp, 'curl', curl)}:{os.environ['PATH']}"}
+
+    def fetch(self, repo: str = "Grenco/omarchy-blueprint", version: str = "0.1.0") -> subprocess.CompletedProcess:
+        out = self.tmp / "release"
+        subprocess.run(["rm", "-rf", str(out)])
+        return subprocess.run(["bash", str(RELEASE / "fetch-release-source.sh"), repo, version, str(out)],
+                              capture_output=True, text=True, env=self.env, timeout=30)
+
+    def test_downloads_from_the_constructed_release_url_and_verifies(self):
+        result = self.fetch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        base = "https://github.com/Grenco/omarchy-blueprint/releases/download/v0.1.0"
+        self.assertEqual(result.stdout, f"{base}/omarchy-blueprint-0.1.0.tar.gz\n")
+        log = (self.tmp / "curl.log").read_text().splitlines()
+        self.assertEqual(len(log), 2)
+        for line in log:
+            self.assertIn("--proto =https", line)
+            self.assertIn("--fail", line)
+            self.assertTrue(line.endswith(f"{base}/omarchy-blueprint-0.1.0.tar.gz") or line.endswith(f"{base}/SHA256SUMS"))
+
+    def test_rejects_tampered_or_ambiguous_assets(self):
+        archive = self.served / "omarchy-blueprint-0.1.0.tar.gz"
+        sums = self.served / "SHA256SUMS"
+        original = sums.read_text()
+        for content in (original + original, original.replace("omarchy-blueprint-0.1.0", "other-0.1.0"),
+                        "0" * 64 + "  omarchy-blueprint-0.1.0.tar.gz\n", ""):
+            with self.subTest(content=content[:30]):
+                sums.write_text(content)
+                self.assertNotEqual(self.fetch().returncode, 0)
+        sums.write_text(original)
+        archive.write_bytes(b"tampered")
+        self.assertNotEqual(self.fetch().returncode, 0)
+
+    def test_rejects_malformed_inputs_before_downloading(self):
+        for repo, version in (("Grenco/omarchy-blueprint", "v0.1.0"), ("Grenco/omarchy-blueprint", "0.1"),
+                              ("Grenco", "0.1.0"), ("evil.example/x/y", "0.1.0"), ("a/b c", "0.1.0")):
+            with self.subTest(repo=repo, version=version):
+                self.assertNotEqual(self.fetch(repo, version).returncode, 0)
+        self.assertFalse((self.tmp / "curl.log").exists())
+
+
+class PublishAurTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)]))
+        self.remote = self.tmp / "aur.git"
+        run("git", "init", "-q", "--bare", "-b", "master", str(self.remote), cwd=self.tmp)
+        identity = {"GIT_AUTHOR_NAME": "AUR Maintainer", "GIT_AUTHOR_EMAIL": "aur@example.test",
+                    "GIT_COMMITTER_NAME": "AUR Maintainer", "GIT_COMMITTER_EMAIL": "aur@example.test"}
+        self.env = {**os.environ, **identity, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        self.runs = 0
+
+    def publication(self, pkgver: str = "0.1.0", pkgrel: str = "1", body: str = "PKGBUILD body\n") -> Path:
+        self.runs += 1
+        pub = self.tmp / f"publication-{self.runs}"
+        pub.mkdir()
+        (pub / "PKGBUILD").write_text(body)
+        (pub / ".SRCINFO").write_text(srcinfo(pkgver, pkgrel))
+        (pub / "LICENSE").write_text("0BSD\n")
+        run("bash", "-c", "sha256sum PKGBUILD .SRCINFO LICENSE > PUBLICATION_SHA256SUMS", cwd=pub)
+        return pub
+
+    def publish(self, pub: Path, pkgver: str = "0.1.0", pkgrel: str = "1") -> subprocess.CompletedProcess:
+        work = self.tmp / f"work-{self.runs}-{pkgrel}"
+        subprocess.run(["rm", "-rf", str(work)])
+        return subprocess.run(["bash", str(RELEASE / "publish-aur.sh"), str(pub), str(self.remote), str(work),
+                               pkgver, pkgrel], capture_output=True, text=True, env=self.env, timeout=60)
+
+    def history(self) -> list[str]:
+        result = subprocess.run(["git", "--git-dir", str(self.remote), "log", "--format=%H %s", "master"],
+                                capture_output=True, text=True)
+        return result.stdout.splitlines() if result.returncode == 0 else []
+
+    def tree(self) -> list[str]:
+        return run("git", "--git-dir", str(self.remote), "ls-tree", "--name-only", "master", cwd=self.tmp).stdout.split()
+
+    def test_first_publication_commits_exactly_the_three_files_to_master(self):
+        result = self.publish(self.publication())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(new)", result.stdout)
+        self.assertEqual([line.split(" ", 1)[1] for line in self.history()], ["omarchy-blueprint 0.1.0-1"])
+        self.assertEqual(sorted(self.tree()), [".SRCINFO", "LICENSE", "PKGBUILD"])
+
+    def test_retry_of_an_identical_revision_is_a_no_op(self):
+        self.assertEqual(self.publish(self.publication()).returncode, 0)
+        before = self.history()
+        result = self.publish(self.publication())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nothing to publish", result.stdout)
+        self.assertEqual(self.history(), before)
+
+    def test_update_appends_history_without_rewriting_it(self):
+        self.assertEqual(self.publish(self.publication()).returncode, 0)
+        first = self.history()
+        result = self.publish(self.publication("0.1.0", "2", "fixed body\n"), "0.1.0", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("(update)", result.stdout)
+        history = self.history()
+        self.assertEqual(history[1:], first)
+        self.assertEqual(history[0].split(" ", 1)[1], "omarchy-blueprint 0.1.0-2")
+
+    def test_same_revision_with_different_content_fails_without_pushing(self):
+        self.assertEqual(self.publish(self.publication()).returncode, 0)
+        before = self.history()
+        result = self.publish(self.publication(body="different body\n"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.history(), before)
+
+    def test_invalid_publication_artifacts_fail_before_touching_the_remote(self):
+        pub = self.publication()
+        (pub / "PKGBUILD").write_text("tampered after validation\n")
+        self.assertNotEqual(self.publish(pub).returncode, 0)
+        pub = self.publication()
+        (pub / "id_ed25519").write_text("key\n")
+        self.assertNotEqual(self.publish(pub).returncode, 0)
+        pub = self.publication()
+        run("bash", "-c", "sha256sum PKGBUILD LICENSE > PUBLICATION_SHA256SUMS", cwd=pub)
+        self.assertNotEqual(self.publish(pub).returncode, 0)
+        self.assertEqual(self.history(), [])
+
+    def test_unexpected_files_in_the_aur_repository_stop_publication(self):
+        seed = self.tmp / "seed"
+        run("git", "clone", "-q", str(self.remote), str(seed), cwd=self.tmp)
+        for name, text in {**published("0.0.9", "1"), "notes.txt": "extra\n"}.items():
+            (seed / name).write_text(text)
+        git(seed, "add", ".")
+        git(seed, "commit", "-q", "-m", "seed")
+        git(seed, "push", "-q", "origin", "HEAD:master")
+        before = self.history()
+        self.assertNotEqual(self.publish(self.publication()).returncode, 0)
+        self.assertEqual(self.history(), before)
+
+    def test_requires_the_maintainer_commit_identity(self):
+        del self.env["GIT_AUTHOR_EMAIL"]
+        self.assertNotEqual(self.publish(self.publication()).returncode, 0)
+        self.assertEqual(self.history(), [])
+
+
+def job(text: str, name: str) -> str:
+    """The body of one job in a workflow file (up to the next job)."""
+    after = text.split(f"\n  {name}:\n", 1)[1]
+    return re.split(r"\n  [a-z-]+:\n", after, maxsplit=1)[0]
+
+
+class AurPublishBoundaryTests(unittest.TestCase):
+    def test_only_the_protected_publish_job_reads_the_aur_key(self):
+        for path in WORKFLOWS.glob("*.yml"):
+            text = path.read_text()
+            count = text.count("AUR_SSH_PRIVATE_KEY")
+            with self.subTest(workflow=path.name):
+                if path.name != "aur-publish.yml":
+                    self.assertEqual(count, 0)
+        text = workflow("aur-publish.yml")
+        publish = job(text, "publish")
+        self.assertIn("secrets.AUR_SSH_PRIVATE_KEY", publish)
+        self.assertEqual(text.count("secrets."), publish.count("secrets."))
+        self.assertIn("environment: aur-release", publish)
+        self.assertIn("needs: [resolve, validate]", publish)
+        for name in ("resolve", "validate"):
+            with self.subTest(job=name):
+                self.assertNotIn("secrets.", job(text, name))
+                self.assertNotIn("environment:", job(text, name))
+
+    def test_publication_is_triggered_only_by_published_releases_and_manual_dispatch(self):
+        text = workflow("aur-publish.yml")
+        self.assertRegex(text, r"(?m)^on:\n  release:\n    types: \[published\]\n  workflow_dispatch:\n")
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
+        self.assertNotIn("contents: write", text)
+
+    def test_host_checking_stays_on_and_nothing_force_pushes(self):
+        text = workflow("aur-publish.yml") + (RELEASE / "publish-aur.sh").read_text()
+        self.assertIn("StrictHostKeyChecking=yes", text)
+        self.assertIn("UserKnownHostsFile=", text)
+        self.assertNotIn("ssh-keyscan", text)
+        for forced in ("--force", "push -f", "+HEAD", "+refs/", "--mirror"):
+            self.assertNotIn(forced, text.replace("+refs/heads/main:refs/remotes/origin/main", ""))
+
+    def test_validation_uses_the_public_release_url_and_no_seeded_source(self):
+        validate = job(workflow("aur-publish.yml"), "validate")
+        self.assertIn("container: archlinux:base-devel", validate)
+        self.assertIn("fetch-release-source.sh", validate)
+        self.assertIn('--source-url "$SOURCE_URL"', validate)
+        self.assertIn("make-source-archive.sh \"refs/tags/$TAG\"", validate)
+        self.assertNotRegex(validate, r"cp [^\n]*omarchy-blueprint-[^\n]*package")
+
+    def test_publish_job_only_pushes_validated_files(self):
+        publish = job(workflow("aur-publish.yml"), "publish")
+        for build in ("render-aur-package", "makepkg", "validate-arch-package", "make-source-archive", "go "):
+            self.assertNotIn(build, publish)
+        self.assertIn("ref: ${{ needs.validate.outputs.commit }}", publish)
+        self.assertIn("publish-aur.sh publication", publish)
+
+    def test_aur_publication_actions_are_pinned_to_full_commit_shas(self):
+        for action in re.findall(r"uses:\s*(\S+)", workflow("aur-publish.yml")):
+            with self.subTest(action=action):
+                self.assertRegex(action, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
+
+
 if __name__ == "__main__":
     unittest.main()
