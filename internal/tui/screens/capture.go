@@ -740,6 +740,8 @@ func (s *Capture) reviewCells(target workflow.CaptureTarget, selected bool) []st
 		decision = "Not selected"
 		if target.Selected {
 			decision = "Selected"
+		} else if target.Declined {
+			decision = "Declined"
 		}
 		return []string{title(target.Category), components.DisplayText(label), outcome, styledDecision(s.styles, decision, selected)}
 	}

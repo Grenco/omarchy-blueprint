@@ -107,6 +107,36 @@ func TestServicesCLIReviewCanDeclineRecommendedDependency(t *testing.T) {
 	}
 }
 
+func TestServicesCLIDeclinedDependencyStaysDeclinedWhenParentChosenLater(t *testing.T) {
+	profileDir, deps, roots := servicesCLIFixture(t)
+	names := []string{"backup.timer", "backup.service", "helper-a.service", "helper-b.service"}
+	units := make([]servicesprovider.ObservedUnit, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(roots.UserConfigDir, name)
+		if err := os.WriteFile(path, []byte("[Unit]\nDescription=backup\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		unit := appService(name, path)
+		switch name {
+		case "backup.timer":
+			unit.RelatedUnits = []string{"backup.service"}
+		case "backup.service":
+			unit.RelatedUnits = []string{"helper-a.service", "helper-b.service"}
+		}
+		units = append(units, unit)
+	}
+	deps.ServicesSystemd = appServicesSystemd{units: units}
+	deps.In = strings.NewReader("no\nyes\nno\nno\nyes\n") // child, parent, helpers, approval
+	code, output := configRun(t, deps, profileDir, "capture", "services", "--review")
+	if code != 0 || !strings.Contains(output, "backup.service: Not selected") {
+		t.Fatalf("explicitly declined child was reselected: code=%d output=%s", code, output)
+	}
+	got, err := profile.Load(profileDir)
+	if err != nil || len(got.Services.Units) != 1 || got.Services.Units[0].Name != "backup.timer" {
+		t.Fatalf("later parent selected the refused child: %+v err=%v", got.Services, err)
+	}
+}
+
 func TestAggregateCLIReviewLeavesNewServicesUnselected(t *testing.T) {
 	profileDir, deps, roots := servicesCLIFixture(t)
 	live := filepath.Join(roots.UserConfigDir, "backup.service")

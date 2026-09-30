@@ -64,6 +64,7 @@ type CaptureTarget struct {
 	Policy     policy.EffectiveSetting
 	Decision   CaptureDecision
 	Selected   bool
+	Declined   bool
 	Outcome    CaptureOutcome
 	// differs is whether Diff attributed a difference from saved state to
 	// this target when it was inspected.
@@ -100,6 +101,7 @@ func (i CaptureInspection) SelectCandidate(category, key string, include bool) (
 	}
 	set := func(n int, selected bool) {
 		targets[n].Selected = selected
+		targets[n].Declined = !selected
 		targets[n].Decision.Selected = selected
 		targets[n].Outcome = captureOutcomeFor(targets[n].Inspection, targets[n].Decision, targets[n].differs)
 	}
@@ -107,7 +109,7 @@ func (i CaptureInspection) SelectCandidate(category, key string, include bool) (
 	if include {
 		for _, dependency := range targets[index].Inspection.RecommendedDependencies {
 			for n := range targets {
-				if targets[n].Inspection.Key == dependency && targets[n].Inspection.RequiresSelection && targets[n].Inspection.CaptureEligible && targets[n].Decision.Capture {
+				if targets[n].Inspection.Key == dependency && !targets[n].Declined && targets[n].Inspection.RequiresSelection && targets[n].Inspection.CaptureEligible && targets[n].Decision.Capture {
 					set(n, true)
 				}
 			}
@@ -120,17 +122,23 @@ func (i CaptureInspection) SelectCandidate(category, key string, include bool) (
 // replayCaptureSelections applies only explicitly reviewed choices to a fresh
 // inspection. Its live facts and policy still come from reinspection.
 func replayCaptureSelections(fresh, approved CaptureInspection) CaptureInspection {
-	selected := map[string]map[string]bool{}
+	type choice struct{ selected, declined bool }
+	selected := map[string]map[string]choice{}
 	for category, targets := range approved.Categories {
-		selected[category] = map[string]bool{}
+		selected[category] = map[string]choice{}
 		for _, target := range targets {
-			selected[category][target.Inspection.Key] = target.Selected
+			selected[category][target.Inspection.Key] = choice{target.Selected, target.Declined}
 		}
 	}
 	for category, targets := range fresh.Categories {
 		for n := range targets {
 			target := &targets[n]
-			if !selected[category][target.Inspection.Key] || !target.Inspection.RequiresSelection || !target.Inspection.CaptureEligible || !target.Decision.Capture {
+			choice := selected[category][target.Inspection.Key]
+			if !target.Inspection.RequiresSelection {
+				continue
+			}
+			target.Declined = choice.declined
+			if !choice.selected || !target.Inspection.CaptureEligible || !target.Decision.Capture {
 				continue
 			}
 			target.Selected, target.Decision.Selected = true, true
@@ -234,12 +242,15 @@ func (s *Session) recheckCapture(ctx context.Context, ids []string, authority Ca
 			if hadPrior && sameLiveValue(prior.Inspection, target) {
 				differs = prior.differs
 			}
-			if hadPrior && prior.Selected && target.RequiresSelection && target.CaptureEligible && decision.Capture {
-				decision.Selected = true
+			if hadPrior && target.RequiresSelection {
+				// A refusal remains part of this approved review, not policy.
+				if prior.Selected && target.CaptureEligible && decision.Capture {
+					decision.Selected = true
+				}
 			}
 			items = append(items, CaptureTarget{
 				Category: id, Inspection: target, Policy: effective, Decision: decision,
-				Selected: decision.Selected, Outcome: captureOutcomeFor(target, decision, differs), differs: differs,
+				Selected: decision.Selected, Declined: hadPrior && prior.Declined && target.RequiresSelection, Outcome: captureOutcomeFor(target, decision, differs), differs: differs,
 			})
 		}
 		if len(items) > 0 {
@@ -510,10 +521,10 @@ func (i CaptureInspection) captureContexts(machine string, ids []string) map[str
 // would write are material.
 func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 	type entry struct {
-		label, fingerprint                      string
-		outcome                                 CaptureOutcome
-		selected, reviewable, removal, advanced bool
-		recommended                             []string
+		label, fingerprint                                string
+		outcome                                           CaptureOutcome
+		selected, declined, reviewable, removal, advanced bool
+		recommended                                       []string
 	}
 	index := func(inspection CaptureInspection) map[string]entry {
 		entries := map[string]entry{}
@@ -528,6 +539,7 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 					outcome:     target.Outcome,
 					fingerprint: target.Inspection.Fingerprint,
 					selected:    target.Selected,
+					declined:    target.Declined,
 					reviewable:  target.Inspection.RequiresSelection,
 					removal:     target.Inspection.ReviewRemoval,
 					advanced:    target.Inspection.Advanced,
@@ -570,6 +582,8 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 			changes = append(changes, fmt.Sprintf("%s: %s → %s", label, from.Label(), to.Label()))
 		case was.selected != now.selected:
 			changes = append(changes, fmt.Sprintf("%s: reviewed selection changed", label))
+		case was.declined != now.declined:
+			changes = append(changes, fmt.Sprintf("%s: reviewed refusal changed", label))
 		case was.reviewable != now.reviewable || was.removal != now.removal || was.advanced != now.advanced || !slices.Equal(was.recommended, now.recommended):
 			changes = append(changes, fmt.Sprintf("%s: reviewed candidate facts changed", label))
 		case dependsOnLiveValue(to) && was.fingerprint != now.fingerprint:

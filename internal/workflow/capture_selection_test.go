@@ -97,3 +97,21 @@ func TestCaptureApprovalRejectsChangedServiceRecommendations(t *testing.T) {
 		t.Fatalf("changed dependency recommendation retained approval: err=%v capture=%v", err, order)
 	}
 }
+
+func TestCaptureExplicitlyDeclinedDependencySurvivesLaterParentSelection(t *testing.T) {
+	s := newCaptureSession(t, profile.New("test", time.Unix(1, 0)))
+	var order []string
+	s.SetProviders([]Provider{captureTestProvider{id: "services", order: &order, targets: selectionTargets()}})
+	inspection, err := s.InspectCaptureMany(context.Background(), []string{"services"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err = inspection.SelectCandidate("services", "backup.service", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err = inspection.SelectCandidate("services", "backup.timer", true)
+	if err != nil || inspection.Categories["services"][1].Selected || !inspection.Categories["services"][0].Selected {
+		t.Fatalf("later parent recommendation overrode an explicit refusal: %+v err=%v", inspection, err)
+	}
+}
