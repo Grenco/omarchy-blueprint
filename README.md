@@ -11,6 +11,28 @@ Blueprint captures that meaningful intent into a portable, readable profile
 you can version-control and restore onto another Omarchy machine — preferring
 to reconstruct things natively rather than blindly snapshot bytes.
 
+## Installation
+
+Blueprint requires Omarchy 4 or newer on x86_64.
+
+Blueprint releases are tagged `vMAJOR.MINOR.PATCH`, and each one publishes a
+source archive and its `SHA256SUMS` on GitHub Releases. The intended
+installation channel is the source-built `omarchy-blueprint` package in the
+Arch User Repository (AUR), which follows each published release. It is not
+on the AUR yet.
+
+Until then, build from source with Go 1.25 or newer:
+
+```sh
+git clone https://github.com/Grenco/omarchy-blueprint.git
+cd omarchy-blueprint
+go build -trimpath -o omarchy-blueprint ./cmd/omarchy-blueprint
+```
+
+A source build reports its version as `dev`; a release or package build
+reports the release version. Include the output of
+`omarchy-blueprint --version` when you report an issue.
+
 ## Quick start
 
 ```sh
