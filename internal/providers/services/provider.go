@@ -3,38 +3,70 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-var ErrNotImplemented = errors.New("services discovery, capture and restore are not implemented yet")
+var ErrNotImplemented = errors.New("services persistent Restore and compatibility are not implemented yet")
 
-// Provider is intentionally unregistered and disabled in PR A. Later tasks
-// install deliberate discovery, reviewed ownership, planning and compatibility
-// before the application exposes Services as a category.
-type Provider struct{ Systemd Systemd }
+// Provider keeps Capture behind reviewed ownership. Persistent Restore and
+// compatibility remain fail-closed until their separate PR C boundary.
+type Provider struct {
+	Systemd      Systemd
+	Roots        Roots
+	ResolveRoots func() (Roots, error)
+	ProfileDir   string
+	prepared     *preparedCapture
+}
 
-var _ workflow.RestoreProvider = Provider{}
+var _ workflow.RestoreProvider = (*Provider)(nil)
 
 func (Provider) ID() string                   { return "services" }
-func (Provider) CategoryEnabled() bool        { return false }
+func (Provider) CategoryEnabled() bool        { return true }
 func (Provider) Captured(d profile.Data) bool { return d.Manifest.Capture.Services }
-func (Provider) InspectTargets(context.Context, profile.Data) ([]workflow.TargetInspection, error) {
-	return nil, ErrNotImplemented
+func (Provider) ValidateTarget(target string) (string, error) {
+	if target == "user-manager" {
+		return target, nil
+	}
+	if err := profile.ValidateServiceUnitName(target); err != nil {
+		return "", fmt.Errorf("services target: %w", err)
+	}
+	return target, nil
 }
-func (Provider) Capture(context.Context, *profile.Data, workflow.CaptureContext) (any, []model.Change, error) {
-	return nil, nil, ErrNotImplemented
+func (Provider) ChangeTargetKey(change model.Change) (string, bool) {
+	if change.Provider == "services" && change.Kind == "user-service" && change.Name != "" {
+		return change.Name, true
+	}
+	return "", false
 }
-func (Provider) Diff(context.Context, profile.Data) ([]model.Change, error) {
-	return nil, ErrNotImplemented
-}
-func (Provider) Plan(context.Context, profile.Data, omarchy.Info, workflow.RestoreContext) (workflow.RestoreFragment, error) {
-	return workflow.RestoreFragment{}, ErrNotImplemented
+func (Provider) Plan(_ context.Context, data profile.Data, _ omarchy.Info, restore workflow.RestoreContext) (workflow.RestoreFragment, error) {
+	fragment := workflow.RestoreFragment{}
+	var findings []model.CompatibilityFinding
+	for _, unit := range data.Services.Units {
+		decision, err := restore.Require(unit.Name)
+		if err != nil {
+			return workflow.RestoreFragment{}, err
+		}
+		reason := decision.Reason
+		if reason == "" {
+			reason = "Services Restore is not available in this build; service left untouched"
+		}
+		fragment.Skipped = append(fragment.Skipped, model.Skipped{Provider: "services", Resource: unit.Name, Reason: reason})
+		if decision.Restore || decision.CompatibilityApply {
+			findings = append(findings, model.CompatibilityFinding{Code: "services.restore.unavailable", Target: unit.Name, State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "Services Restore is not available in this build; no service mutations planned"})
+		}
+	}
+	category, err := compatibility.BuildCategory("services", len(findings) > 0, nil, findings)
+	fragment.Compatibility = category
+	return fragment, err
 }
 func (Provider) Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error) {
-	return model.VerificationResult{}, ErrNotImplemented
+	// PR B promises no Services effects. PR C replaces both this no-op plan
+	// and verification with persistent reconstruction of the selected intent.
+	return model.VerificationResult{OK: true}, nil
 }
-func (Provider) Check(context.Context, profile.Data) error { return ErrNotImplemented }

@@ -22,6 +22,7 @@ const (
 	ScreenPlugins   ScreenID = "plugins"
 	ScreenShell     ScreenID = "shell"
 	ScreenHooks     ScreenID = "hooks"
+	ScreenServices  ScreenID = "services"
 	ScreenDefaults  ScreenID = "defaults"
 	ScreenMachines  ScreenID = "machines"
 	ScreenSync      ScreenID = "sync"

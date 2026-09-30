@@ -87,12 +87,20 @@ type TargetInspection struct {
 	// Non-hierarchical providers leave this nil.
 	Ancestors       []string
 	Label           string
+	Description     string
+	Recommended     bool
 	Desired         TargetState
 	Current         TargetState
 	CaptureEligible bool
 	RestoreEligible bool
 	Capabilities    TargetCapabilities
 	SafetyReason    string
+	// RequiresSelection is a reviewed first-adoption or removal choice. The
+	// default Capture path cannot turn policy Include into ownership by itself.
+	RequiresSelection       bool
+	ReviewRemoval           bool
+	Advanced                bool
+	RecommendedDependencies []string
 	// Fingerprint is an opaque, canonical digest of the complete value
 	// Capture would persist for this target, derived from the same
 	// detection object Capture consumes, so an approved Capture can tell
@@ -107,6 +115,7 @@ type TargetInspection struct {
 type CaptureDecision struct {
 	Capture  bool
 	Resolved bool
+	Selected bool
 }
 
 // RestoreDecision is the resolved, immutable Restore outcome for one

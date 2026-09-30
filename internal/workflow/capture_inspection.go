@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,6 +31,7 @@ const (
 	// empty captured value is not a remembered absence, it is simply
 	// unmanaged).
 	CaptureOutcomeStopManaging CaptureOutcome = "stop-managing"
+	CaptureOutcomeUnselected   CaptureOutcome = "unselected"
 )
 
 // Label names the outcome for people.
@@ -47,6 +49,8 @@ func (o CaptureOutcome) Label() string {
 		return "Blocked"
 	case CaptureOutcomeStopManaging:
 		return "Stop managing"
+	case CaptureOutcomeUnselected:
+		return "Not selected"
 	default:
 		return "No change"
 	}
@@ -59,6 +63,8 @@ type CaptureTarget struct {
 	Inspection TargetInspection
 	Policy     policy.EffectiveSetting
 	Decision   CaptureDecision
+	Selected   bool
+	Declined   bool
 	Outcome    CaptureOutcome
 	// differs is whether Diff attributed a difference from saved state to
 	// this target when it was inspected.
@@ -69,6 +75,77 @@ type CaptureTarget struct {
 // provider category.
 type CaptureInspection struct {
 	Categories map[string][]CaptureTarget
+}
+
+// SelectCandidate changes a reviewed choice without changing Capture policy.
+// Selecting a parent recommends eligible custom dependencies; each remains
+// independently selectable and may be deselected before approval.
+func (i CaptureInspection) SelectCandidate(category, key string, include bool) (CaptureInspection, error) {
+	updated := CaptureInspection{Categories: make(map[string][]CaptureTarget, len(i.Categories))}
+	for name, targets := range i.Categories {
+		updated.Categories[name] = append([]CaptureTarget(nil), targets...)
+	}
+	targets, ok := updated.Categories[category]
+	if !ok {
+		return CaptureInspection{}, fmt.Errorf("capture candidate category %q was not inspected", category)
+	}
+	index := -1
+	for n := range targets {
+		if targets[n].Inspection.Key == key {
+			index = n
+			break
+		}
+	}
+	if index < 0 || !targets[index].Inspection.RequiresSelection || !targets[index].Inspection.CaptureEligible || !targets[index].Decision.Capture {
+		return CaptureInspection{}, fmt.Errorf("capture candidate %s/%s is not selectable", category, key)
+	}
+	set := func(n int, selected bool) {
+		targets[n].Selected = selected
+		targets[n].Declined = !selected
+		targets[n].Decision.Selected = selected
+		targets[n].Outcome = captureOutcomeFor(targets[n].Inspection, targets[n].Decision, targets[n].differs)
+	}
+	set(index, include)
+	if include {
+		for _, dependency := range targets[index].Inspection.RecommendedDependencies {
+			for n := range targets {
+				if targets[n].Inspection.Key == dependency && !targets[n].Declined && targets[n].Inspection.RequiresSelection && targets[n].Inspection.CaptureEligible && targets[n].Decision.Capture {
+					set(n, true)
+				}
+			}
+		}
+	}
+	updated.Categories[category] = targets
+	return updated, nil
+}
+
+// replayCaptureSelections applies only explicitly reviewed choices to a fresh
+// inspection. Its live facts and policy still come from reinspection.
+func replayCaptureSelections(fresh, approved CaptureInspection) CaptureInspection {
+	type choice struct{ selected, declined bool }
+	selected := map[string]map[string]choice{}
+	for category, targets := range approved.Categories {
+		selected[category] = map[string]choice{}
+		for _, target := range targets {
+			selected[category][target.Inspection.Key] = choice{target.Selected, target.Declined}
+		}
+	}
+	for category, targets := range fresh.Categories {
+		for n := range targets {
+			target := &targets[n]
+			choice := selected[category][target.Inspection.Key]
+			if !target.Inspection.RequiresSelection {
+				continue
+			}
+			target.Declined = choice.declined
+			if !choice.selected || !target.Inspection.CaptureEligible || !target.Decision.Capture {
+				continue
+			}
+			target.Selected, target.Decision.Selected = true, true
+			target.Outcome = captureOutcomeFor(target.Inspection, target.Decision, target.differs)
+		}
+	}
+	return fresh
 }
 
 // InspectCapture previews what a Capture run would do without mutating the
@@ -161,12 +238,19 @@ func (s *Session) recheckCapture(ctx context.Context, ids []string, authority Ca
 				return CaptureInspection{}, fmt.Errorf("resolve %s policy for %s: %w", id, target.Key, err)
 			}
 			differs := true
-			if prior, ok := before[target.Key]; ok && sameLiveValue(prior.Inspection, target) {
+			prior, hadPrior := before[target.Key]
+			if hadPrior && sameLiveValue(prior.Inspection, target) {
 				differs = prior.differs
+			}
+			if hadPrior && target.RequiresSelection {
+				// A refusal remains part of this approved review, not policy.
+				if prior.Selected && target.CaptureEligible && decision.Capture {
+					decision.Selected = true
+				}
 			}
 			items = append(items, CaptureTarget{
 				Category: id, Inspection: target, Policy: effective, Decision: decision,
-				Outcome: captureOutcomeFor(target, decision, differs), differs: differs,
+				Selected: decision.Selected, Declined: hadPrior && prior.Declined && target.RequiresSelection, Outcome: captureOutcomeFor(target, decision, differs), differs: differs,
 			})
 		}
 		if len(items) > 0 {
@@ -177,7 +261,7 @@ func (s *Session) recheckCapture(ctx context.Context, ids []string, authority Ca
 }
 
 func sameLiveValue(a, b TargetInspection) bool {
-	return a.Current == b.Current && a.Desired == b.Desired && a.CaptureEligible == b.CaptureEligible && a.Fingerprint == b.Fingerprint
+	return a.Current == b.Current && a.Desired == b.Desired && a.CaptureEligible == b.CaptureEligible && a.RequiresSelection == b.RequiresSelection && a.ReviewRemoval == b.ReviewRemoval && a.Advanced == b.Advanced && slices.Equal(a.RecommendedDependencies, b.RecommendedDependencies) && a.Fingerprint == b.Fingerprint
 }
 
 // captureOutcome mirrors the Capture merge transitions PR 3 implements
@@ -225,6 +309,9 @@ func captureOutcomeFor(target TargetInspection, decision CaptureDecision, differ
 	}
 	if !decision.Capture {
 		return CaptureOutcomePreserve
+	}
+	if target.RequiresSelection && !decision.Selected {
+		return CaptureOutcomeUnselected
 	}
 	// NoActionableUpdate means the classification is baseline-derived, not
 	// real user customization, regardless of whether the previously desired
@@ -319,19 +406,22 @@ func targetDifferences(ctx context.Context, provider Provider, data profile.Data
 type CaptureReviewGroup string
 
 const (
-	CaptureReviewChanges   CaptureReviewGroup = "Changes"
-	CaptureReviewPreserved CaptureReviewGroup = "Preserved by policy"
-	CaptureReviewBlocked   CaptureReviewGroup = "Blocked"
-	CaptureReviewNoAction  CaptureReviewGroup = "No action needed"
+	CaptureReviewCandidates CaptureReviewGroup = "Candidates to review"
+	CaptureReviewChanges    CaptureReviewGroup = "Changes"
+	CaptureReviewPreserved  CaptureReviewGroup = "Preserved by policy"
+	CaptureReviewBlocked    CaptureReviewGroup = "Blocked"
+	CaptureReviewNoAction   CaptureReviewGroup = "No action needed"
 )
 
-var captureReviewOrder = []CaptureReviewGroup{CaptureReviewChanges, CaptureReviewPreserved, CaptureReviewBlocked, CaptureReviewNoAction}
+var captureReviewOrder = []CaptureReviewGroup{CaptureReviewCandidates, CaptureReviewChanges, CaptureReviewPreserved, CaptureReviewBlocked, CaptureReviewNoAction}
 
 // ReviewGroup places a target in the review. Preserve is only "by policy"
 // when Capture policy disabled it; a provider keeping missing desired state
 // on its own (Resources) needs no action rather than a policy explanation.
 func (t CaptureTarget) ReviewGroup() CaptureReviewGroup {
 	switch t.Outcome {
+	case CaptureOutcomeUnselected:
+		return CaptureReviewCandidates
 	case CaptureOutcomeAdd, CaptureOutcomeUpdate, CaptureOutcomeAbsent, CaptureOutcomeStopManaging:
 		return CaptureReviewChanges
 	case CaptureOutcomePreserve:
@@ -431,9 +521,10 @@ func (i CaptureInspection) captureContexts(machine string, ids []string) map[str
 // would write are material.
 func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 	type entry struct {
-		label       string
-		outcome     CaptureOutcome
-		fingerprint string
+		label, fingerprint                                string
+		outcome                                           CaptureOutcome
+		selected, declined, reviewable, removal, advanced bool
+		recommended                                       []string
 	}
 	index := func(inspection CaptureInspection) map[string]entry {
 		entries := map[string]entry{}
@@ -447,6 +538,12 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 					label:       strings.ToUpper(category[:1]) + category[1:] + " " + label,
 					outcome:     target.Outcome,
 					fingerprint: target.Inspection.Fingerprint,
+					selected:    target.Selected,
+					declined:    target.Declined,
+					reviewable:  target.Inspection.RequiresSelection,
+					removal:     target.Inspection.ReviewRemoval,
+					advanced:    target.Inspection.Advanced,
+					recommended: target.Inspection.RecommendedDependencies,
 				}
 			}
 		}
@@ -483,6 +580,12 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 		switch {
 		case from != to:
 			changes = append(changes, fmt.Sprintf("%s: %s → %s", label, from.Label(), to.Label()))
+		case was.selected != now.selected:
+			changes = append(changes, fmt.Sprintf("%s: reviewed selection changed", label))
+		case was.declined != now.declined:
+			changes = append(changes, fmt.Sprintf("%s: reviewed refusal changed", label))
+		case was.reviewable != now.reviewable || was.removal != now.removal || was.advanced != now.advanced || !slices.Equal(was.recommended, now.recommended):
+			changes = append(changes, fmt.Sprintf("%s: reviewed candidate facts changed", label))
 		case dependsOnLiveValue(to) && was.fingerprint != now.fingerprint:
 			changes = append(changes, fmt.Sprintf("%s: changed since the review (%s)", label, to.Label()))
 		}
@@ -496,5 +599,5 @@ func (i CaptureInspection) ChangesFrom(fresh CaptureInspection) []string {
 // absent (Config tombstones record the Omarchy baseline) and No change
 // (whose "unchanged" judgement is itself about the live value), does not.
 func dependsOnLiveValue(outcome CaptureOutcome) bool {
-	return outcome != CaptureOutcomePreserve && outcome != CaptureOutcomeBlocked
+	return outcome != CaptureOutcomePreserve && outcome != CaptureOutcomeBlocked && outcome != CaptureOutcomeUnselected
 }

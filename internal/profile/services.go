@@ -179,6 +179,10 @@ func validateServiceName(name string) error {
 	}
 }
 
+// ValidateServiceUnitName is the shared structural shape for Services profile
+// metadata and machine/profile policy targets; it never implies ownership.
+func ValidateServiceUnitName(name string) error { return validateServiceName(name) }
+
 func validateServiceIntent(name string, presence ServicePresence, start ServiceStartIntent, activation ServiceActivationPreference) error {
 	if presence != ServicePresent && presence != ServiceAbsent {
 		return fmt.Errorf("service %q has invalid presence %q", name, presence)

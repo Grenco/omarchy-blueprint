@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	pluginsprovider "github.com/Grenco/omarchy-blueprint/internal/providers/plugins"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
+	servicesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/services"
 	shellprovider "github.com/Grenco/omarchy-blueprint/internal/providers/shell"
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
@@ -87,7 +89,35 @@ func stateProviders(deps Dependencies, opt *options) []stateProvider {
 		defaultsStateProvider{deps: deps, opt: opt},
 		shellStateProvider{deps: deps, opt: opt},
 		&hooksStateProvider{deps: deps, opt: opt},
+		servicesStateProvider(deps, opt),
 	}
+}
+
+func servicesStateProvider(deps Dependencies, opt *options) *servicesprovider.Provider {
+	systemd := deps.ServicesSystemd
+	if systemd == nil {
+		systemd = servicesprovider.Systemctl{Runner: deps.Runner}
+	}
+	return &servicesprovider.Provider{Systemd: systemd, ProfileDir: opt.profileDir, ResolveRoots: func() (servicesprovider.Roots, error) {
+		if deps.ServicesRoots != nil {
+			return deps.ServicesRoots(), nil
+		}
+		if deps.HomeDir == nil {
+			return servicesprovider.Roots{}, errors.New("home directory is unavailable for user-service inspection")
+		}
+		home, err := deps.HomeDir()
+		if err != nil {
+			return servicesprovider.Roots{}, err
+		}
+		configRoot, dataRoot := os.Getenv("XDG_CONFIG_HOME"), os.Getenv("XDG_DATA_HOME")
+		if configRoot == "" {
+			configRoot = filepath.Join(home, ".config")
+		}
+		if dataRoot == "" {
+			dataRoot = filepath.Join(home, ".local", "share")
+		}
+		return servicesprovider.Roots{UserConfigDir: filepath.Join(configRoot, "systemd", "user"), UserDataDir: filepath.Join(dataRoot, "systemd", "user")}, nil
+	}}
 }
 
 func categoryProviderIDs(providers []stateProvider) []string {
@@ -531,6 +561,8 @@ func captureRequiredError(id string) error {
 		return errors.New("hooks state has not been captured; run capture hooks first")
 	case "resources":
 		return errors.New("resources state has not been captured; track a resource or run capture resources first")
+	case "services":
+		return errors.New("services state has not been captured; select a service in capture --review services first")
 	}
 	return fmt.Errorf("%s state has not been %s", id, verb)
 }
@@ -565,6 +597,8 @@ func providerStateLabel(ids []string) string {
 			labels = append(labels, "hooks")
 		case "resources":
 			labels = append(labels, "portable resources")
+		case "services":
+			labels = append(labels, "user services")
 		default:
 			labels = append(labels, id)
 		}
@@ -600,6 +634,8 @@ func providerCheckLabel(id string) string {
 		return "hooks state valid"
 	case "resources":
 		return "portable resource state valid"
+	case "services":
+		return "managed user-service state valid"
 	default:
 		return id + " discovery available"
 	}

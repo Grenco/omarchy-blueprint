@@ -38,6 +38,16 @@ without saving and asks you to review again. `--json capture --review` emits
 the preview only; it never prompts or applies. Plain `capture` remains useful
 for scripts that intentionally capture immediately.
 
+Services are discovered as candidates, not silently adopted. Preview them with
+`capture services --dry-run` or `--json capture services --review`, then use
+`capture services --review` in a terminal to select specific user services and
+optionally decline recommended custom dependencies. A plain `capture services`
+updates already-managed Services intent but does not adopt new units or record
+an unreviewed removal. External base definitions remain outside the profile.
+Services Restore currently leaves saved units untouched with visible skips and
+Unknown/Reduced compatibility, so other captured categories can still restore.
+Persistent Services reconstruction follows in the next Services milestone.
+
 ## Check, status, and diff
 
 ```sh

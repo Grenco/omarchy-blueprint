@@ -33,6 +33,7 @@ func newScreens(ctx context.Context, session *workflow.Session) map[ScreenID]scr
 		ScreenPlugins,
 		ScreenShell,
 		ScreenHooks,
+		ScreenServices,
 		ScreenDefaults,
 	} {
 		screenMap[id] = &providerScreen{

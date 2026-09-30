@@ -69,7 +69,11 @@ func NewProvider(session *workflow.Session, id string) *Provider {
 	return NewProviderContext(context.Background(), session, id)
 }
 func NewProviderContext(ctx context.Context, session *workflow.Session, id string) *Provider {
-	return &Provider{ctx: ctx, session: session, id: id, tab: "State", policyScope: initialPolicyScope(session)}
+	s := &Provider{ctx: ctx, session: session, id: id, tab: "State", policyScope: initialPolicyScope(session)}
+	if id == "services" {
+		s.collapsed = map[string]bool{"Other detected services": true}
+	}
+	return s
 }
 func (s *Provider) Refresh() tea.Cmd { return s.refresh() }
 
@@ -96,6 +100,9 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.status, s.targets, s.effective, s.err, s.busy = msg.status, msg.targets, msg.effective, msg.err, false
+		if s.id == "services" {
+			sort.SliceStable(s.targets, func(i, j int) bool { return servicePrimaryTarget(s.targets[i]) && !servicePrimaryTarget(s.targets[j]) })
+		}
 		s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 		return nil
@@ -420,7 +427,7 @@ func (s *Provider) visibleGroupRows(rows []providerRow) []providerRow {
 func (s *Provider) targetStateRows() []providerRow {
 	rows := make([]providerRow, 0, len(s.targets))
 	lastGroup := ""
-	for _, target := range s.targets {
+	for _, target := range s.inventoryTargets() {
 		group := providerTargetGroup(s.id, target)
 		if group != lastGroup {
 			rows = append(rows, providerRow{group: group})
@@ -437,7 +444,7 @@ func (s *Provider) targetStateRows() []providerRow {
 func (s *Provider) policyRows() []providerRow {
 	rows := make([]providerRow, 0, len(s.targets))
 	lastGroup := ""
-	for _, target := range s.targets {
+	for _, target := range s.inventoryTargets() {
 		group := providerTargetGroup(s.id, target)
 		if group != lastGroup {
 			rows = append(rows, providerRow{group: group})
@@ -456,6 +463,17 @@ func (s *Provider) policyRows() []providerRow {
 	}
 	return s.visibleGroupRows(rows)
 }
+func servicePrimaryTarget(target workflow.TargetInspection) bool {
+	return target.Desired != workflow.TargetUnknown || target.Recommended && !target.Advanced
+}
+func (s *Provider) inventoryTargets() []workflow.TargetInspection {
+	if s.id != "services" {
+		return s.targets
+	}
+	targets := append([]workflow.TargetInspection(nil), s.targets...)
+	sort.SliceStable(targets, func(i, j int) bool { return servicePrimaryTarget(targets[i]) && !servicePrimaryTarget(targets[j]) })
+	return targets
+}
 func providerTargetGroup(id string, target workflow.TargetInspection) string {
 	if id != "packages" {
 		switch id {
@@ -472,6 +490,11 @@ func providerTargetGroup(id string, target workflow.TargetInspection) string {
 			return "Shell customization"
 		case "hooks":
 			return "Hooks"
+		case "services":
+			if servicePrimaryTarget(target) {
+				return "Custom & managed services"
+			}
+			return "Other detected services"
 		case "resources":
 			return "Resources (Exact never deletes resource data)"
 		default:
@@ -578,8 +601,38 @@ func savedRows(snapshot any) []providerRow {
 			hooks = append(hooks, item.Path)
 		}
 		group("Saved hooks", hooks, &rows)
+	case profile.Services:
+		definitions, customizations := []string{}, []string{}
+		for _, unit := range value.Units {
+			label := unit.Name + " · " + serviceStartLabel(unit.StartIntent)
+			if unit.Presence == profile.ServiceAbsent {
+				label = unit.Name + " · Remembered absent"
+			}
+			if unit.Management == profile.ServiceManagementCustomization {
+				customizations = append(customizations, label)
+			} else {
+				definitions = append(definitions, label)
+			}
+		}
+		group("Managed user services", definitions, &rows)
+		group("Managed customizations", customizations, &rows)
 	}
 	return rows
+}
+
+func serviceStartLabel(value profile.ServiceStartIntent) string {
+	switch value {
+	case profile.ServiceStartEnabled:
+		return "Starts automatically"
+	case profile.ServiceStartDisabled:
+		return "Available but not automatic"
+	case profile.ServiceStartMasked:
+		return "Blocked from starting"
+	case profile.ServiceStartIndirect:
+		return "Started by another service"
+	default:
+		return "Persistent customization"
+	}
 }
 func valueSuffix(values ...string) string {
 	for _, value := range values {
@@ -609,6 +662,13 @@ func (s *Provider) refresh() tea.Cmd {
 	return func() tea.Msg {
 		report, err := s.session.Status(s.ctx, s.id)
 		if err != nil && !providerCaptured(s.session.Profile(), s.id) {
+			if s.id == "services" {
+				targets, inspectErr := s.session.PolicyTargets(s.ctx, s.id)
+				if inspectErr != nil {
+					return providerStatusMsg{requestID: requestID, err: inspectErr}
+				}
+				return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}, targets: targets}
+			}
 			return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}}
 		}
 		if err != nil {
@@ -752,9 +812,14 @@ func (s *Provider) targetDetail(title string, row providerRow) string {
 	effective := s.effective[row.key]
 	captureBlocked := !row.target.CaptureEligible
 	restoreBlocked := !row.target.RestoreEligible
-	return fmt.Sprintf("%s target\nTarget: %s\nDesired: %s\nCurrent: %s\nCapture policy: %s\nCapture source: %s\nCapture source is %s\nCapture source machine: %s\nCapture source category: %s\nCapture source target: %s\nRestore policy: %s\nRestore source: %s\nRestore source is %s\nRestore source machine: %s\nRestore source category: %s\nRestore source target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t",
+	why := ""
+	if row.target.Description != "" {
+		why = "\nWhy: " + components.DisplayText(row.target.Description)
+	}
+	return fmt.Sprintf("%s target\nTarget: %s%s\nDesired: %s\nCurrent: %s\nCapture policy: %s\nCapture source: %s\nCapture source is %s\nCapture source machine: %s\nCapture source category: %s\nCapture source target: %s\nRestore policy: %s\nRestore source: %s\nRestore source is %s\nRestore source machine: %s\nRestore source category: %s\nRestore source target: %s\nCapture eligible: %t\nRestore eligible: %t\nSupports capture: %t\nSupports restore: %t\nSupports desired absence: %t\nSupports Exact removal: %t\nHierarchical: %t",
 		title,
 		components.DisplayText(row.key),
+		why,
 		stateValue(string(row.target.Desired)),
 		currentStateValue(row.target.Current),
 		policyDetailDecision("Capture", effective.Capture, captureBlocked, row.target.SafetyReason),
@@ -854,6 +919,8 @@ func providerCaptured(data profile.Data, id string) bool {
 		return data.Manifest.Capture.Shell
 	case "hooks":
 		return data.Manifest.Capture.Hooks
+	case "services":
+		return data.Manifest.Capture.Services
 	case "defaults":
 		return data.Manifest.Capture.Defaults
 	default:

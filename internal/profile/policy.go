@@ -26,6 +26,7 @@ var policyCategories = map[string]bool{
 	"shell":     true,
 	"hooks":     true,
 	"resources": true,
+	"services":  true,
 }
 
 // loadPolicy reads the portable policy overrides. A missing file means no
@@ -77,6 +78,11 @@ func validateRuleAxis(rules []policy.Rule) error {
 		}
 		if err := policy.ValidateSetting(rule.Setting); err != nil {
 			return err
+		}
+		if rule.Category == "services" && rule.Target != "" && rule.Target != "user-manager" {
+			if err := ValidateServiceUnitName(rule.Target); err != nil {
+				return err
+			}
 		}
 		key := rule.Category + "\x00" + rule.Target
 		if seen[key] {
