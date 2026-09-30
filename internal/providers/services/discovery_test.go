@@ -233,6 +233,22 @@ func TestInspectTargetsFingerprintsExactSelectedSourceChanges(t *testing.T) {
 	}
 }
 
+func TestInspectTargetsSensitiveSourceIsBlockedBeforeApproval(t *testing.T) {
+	roots := discoveryRoots(t)
+	if err := os.MkdirAll(roots.UserConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(roots.UserConfigDir, "backup.service")
+	if err := os.WriteFile(path, []byte("[Service]\nEnvironment=api_token=abcdefghijklmnopqrstuvwx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{Systemd: discoverySystemd{units: []ObservedUnit{observedService("backup.service", path)}}, Roots: roots}
+	targets, err := p.InspectTargets(context.Background(), profile.New("test", time.Unix(1, 0)))
+	if err != nil || len(targets) != 1 || targets[0].CaptureEligible || !strings.Contains(strings.ToLower(targets[0].SafetyReason), "sensitive") {
+		t.Fatalf("sensitive source was offered as eligible Capture: targets=%+v err=%v", targets, err)
+	}
+}
+
 func TestInspectTargetsFingerprintsManagedDropInChanges(t *testing.T) {
 	roots := discoveryRoots(t)
 	dropIn := filepath.Join(roots.UserConfigDir, "pipewire.service.d", "10-custom.conf")

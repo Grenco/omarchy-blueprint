@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
@@ -82,7 +83,7 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 		if !managed && (!candidate.Eligible || !decision.Capture || !decision.Selected) {
 			continue
 		}
-		if managed && (!decision.Capture || !candidate.Eligible || managedServiceArtifactMissing(old, candidate, p.Roots) && !decision.Selected) {
+		if managed && (!decision.Capture || !candidate.Eligible || (managedServiceArtifactMissing(old, candidate, p.Roots) || candidate.OwnershipExpansion || candidate.NewOverlayArtifact) && !decision.Selected) {
 			next.Units = append(next.Units, old)
 			continue
 		}
@@ -110,65 +111,12 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 			changes = append(changes, serviceChange(model.ChangeRemove, name, "Remember reviewed service removal"))
 			continue
 		}
-		unit := profile.ServiceUnit{
-			Name: name, Kind: candidate.Unit.Kind, Management: candidate.Management, Presence: profile.ServicePresent,
-			StartIntent: candidate.Unit.StartIntent, ActivationPreference: profile.ServiceActivationPersistentOnly,
-			ObservedActive: candidate.Unit.ObservedActive, LinkedSource: candidate.Unit.LinkedSource,
+		unit, artifacts, err := p.projectServiceUnit(candidate, old, managed, decision.Selected)
+		if err != nil {
+			return nil, nil, err
 		}
-		if unit.StartIntent == "" {
-			unit.StartIntent = profile.ServiceStartNotManaged
-		}
-		if unit.Management == profile.ServiceManagementCustomization {
-			unit.StartIntent = profile.ServiceStartNotManaged
-			if candidate.Unit.RawUnitFileState == "masked" && userMask(name, p.Roots) {
-				unit.StartIntent, unit.Mask = profile.ServiceStartMasked, &profile.ServiceMask{Presence: profile.ServicePresent}
-			}
-		}
-		if unit.Management == profile.ServiceManagementDefinition {
-			unit.Definition = "units/" + name
-			file, err := readServiceFile(candidate.Unit.FragmentPath)
-			if err != nil {
-				return nil, nil, fmt.Errorf("capture service %q definition: %w", name, err)
-			}
-			unit.DefinitionHash, fresh[unit.Definition] = file.hash, file
-		}
-		managedDropIns := map[string]bool{}
-		for _, item := range old.DropIns {
-			managedDropIns[item.Path] = true
-		}
-		for _, path := range candidate.Unit.DropInPaths {
-			if !withinUserRoot(path, p.Roots.UserConfigDir) {
-				continue
-			}
-			rel := "units/" + name + ".d/" + filepath.Base(path)
-			if managed && !managedDropIns[rel] {
-				continue // Update must not adopt a new drop-in implicitly.
-			}
-			file, err := readServiceFile(path)
-			if err != nil {
-				return nil, nil, fmt.Errorf("capture service %q drop-in: %w", name, err)
-			}
-			unit.DropIns = append(unit.DropIns, profile.ServiceArtifact{Path: rel, Presence: profile.ServicePresent, Hash: file.hash, Mode: file.mode})
-			fresh[rel] = file
-		}
-		for _, item := range old.DropIns {
-			if _, ok := fresh[item.Path]; !ok && managed {
-				if decision.Selected && item.Presence == profile.ServicePresent {
-					item.Presence = profile.ServiceAbsent
-				}
-				unit.DropIns = append(unit.DropIns, item)
-			}
-		}
-		if managed && old.Mask != nil && unit.Mask == nil {
-			unit.Mask = old.Mask
-			if decision.Selected && old.Mask.Presence == profile.ServicePresent && !userMask(name, p.Roots) {
-				unit.Mask = &profile.ServiceMask{Presence: profile.ServiceAbsent}
-			} else if old.Mask.Presence == profile.ServicePresent {
-				unit.StartIntent = profile.ServiceStartMasked
-			}
-		}
-		if managed {
-			unit.Instances = old.Instances
+		for path, file := range artifacts {
+			fresh[path] = file
 		}
 		next.Units = append(next.Units, unit)
 		kind := model.ChangeAdd
@@ -195,6 +143,79 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 
 func serviceChange(kind model.ChangeType, name, summary string) model.Change {
 	return model.Change{Type: kind, Provider: "services", Kind: "user-service", Name: name, Summary: summary + ": " + name}
+}
+
+// projectServiceUnit is the exact semantic metadata Capture would persist for
+// an available unit. Diff uses this same projection instead of guessing which
+// fields might change, so approved previews include every captured effect.
+func (p Provider) projectServiceUnit(candidate Candidate, old profile.ServiceUnit, managed, selected bool) (profile.ServiceUnit, map[string]capturedFile, error) {
+	name := candidate.Unit.Name
+	artifacts := map[string]capturedFile{}
+	unit := profile.ServiceUnit{
+		Name: name, Kind: candidate.Unit.Kind, Management: candidate.Management, Presence: profile.ServicePresent,
+		StartIntent: candidate.Unit.StartIntent, ActivationPreference: profile.ServiceActivationPersistentOnly,
+		ObservedActive: candidate.Unit.ObservedActive, LinkedSource: candidate.Unit.LinkedSource,
+	}
+	if managed {
+		unit.ActivationPreference = old.ActivationPreference
+	}
+	if unit.StartIntent == "" {
+		unit.StartIntent = profile.ServiceStartNotManaged
+	}
+	if unit.Management == profile.ServiceManagementCustomization {
+		unit.StartIntent = profile.ServiceStartNotManaged
+		if candidate.Unit.RawUnitFileState == "masked" && userMask(name, p.Roots) {
+			unit.StartIntent, unit.Mask = profile.ServiceStartMasked, &profile.ServiceMask{Presence: profile.ServicePresent}
+		}
+	}
+	if unit.Management == profile.ServiceManagementDefinition {
+		unit.Definition = "units/" + name
+		file, err := readServiceFile(candidate.Unit.FragmentPath)
+		if err != nil {
+			return profile.ServiceUnit{}, nil, fmt.Errorf("capture service %q definition: %w", name, err)
+		}
+		unit.DefinitionHash, artifacts[unit.Definition] = file.hash, file
+	}
+	managedDropIns := map[string]bool{}
+	for _, item := range old.DropIns {
+		managedDropIns[item.Path] = true
+	}
+	for _, path := range candidate.Unit.DropInPaths {
+		if !withinUserRoot(path, p.Roots.UserConfigDir) {
+			continue
+		}
+		rel := "units/" + name + ".d/" + filepath.Base(path)
+		if managed && !managedDropIns[rel] && old.Management == profile.ServiceManagementCustomization && !selected {
+			continue // A new overlay artifact needs reviewed ownership.
+		}
+		file, err := readServiceFile(path)
+		if err != nil {
+			return profile.ServiceUnit{}, nil, fmt.Errorf("capture service %q drop-in: %w", name, err)
+		}
+		unit.DropIns = append(unit.DropIns, profile.ServiceArtifact{Path: rel, Presence: profile.ServicePresent, Hash: file.hash, Mode: file.mode})
+		artifacts[rel] = file
+	}
+	for _, item := range old.DropIns {
+		if _, ok := artifacts[item.Path]; !ok && managed {
+			if selected && item.Presence == profile.ServicePresent {
+				item.Presence = profile.ServiceAbsent
+			}
+			unit.DropIns = append(unit.DropIns, item)
+		}
+	}
+	if managed && old.Mask != nil && unit.Mask == nil {
+		unit.Mask = old.Mask
+		if selected && old.Mask.Presence == profile.ServicePresent && !userMask(name, p.Roots) {
+			unit.Mask = &profile.ServiceMask{Presence: profile.ServiceAbsent}
+		} else if old.Mask.Presence == profile.ServicePresent {
+			unit.StartIntent = profile.ServiceStartMasked
+		}
+	}
+	if managed {
+		unit.Instances = old.Instances
+	}
+	sort.Slice(unit.DropIns, func(i, j int) bool { return unit.DropIns[i].Path < unit.DropIns[j].Path })
+	return unit, artifacts, nil
 }
 
 func (p *Provider) stageServiceFiles(next profile.Services, fresh map[string]capturedFile) (string, error) {
@@ -330,38 +351,25 @@ func (p Provider) Diff(ctx context.Context, d profile.Data) ([]model.Change, err
 			continue
 		}
 		saved := savedByName[candidate.Unit.Name]
-		changed := false
-		switch {
-		case candidate.Missing && saved.Presence == profile.ServicePresent,
-			!candidate.Missing && saved.Presence == profile.ServiceAbsent,
-			!candidate.Missing && saved.StartIntent != profile.ServiceStartNotManaged && saved.StartIntent != candidate.Unit.StartIntent:
-			changed = true
-		case saved.Presence == profile.ServicePresent && saved.Definition != "" && !candidate.Missing:
-			hash, err := content.HashRegularFile(candidate.Unit.FragmentPath)
-			if err != nil || hash != saved.DefinitionHash {
-				changed = true
+		if candidate.Missing {
+			if saved.Presence == profile.ServicePresent {
+				changes = append(changes, serviceChange(model.ChangeModify, saved.Name, "Managed service is missing"))
 			}
+			continue
 		}
-		currentDropIns := map[string]bool{}
-		for _, path := range candidate.Unit.DropInPaths {
-			currentDropIns[path] = true
+		if saved.Management != candidate.Management || managedServiceArtifactMissing(saved, candidate, p.Roots) || candidate.NewOverlayArtifact || !candidate.Eligible {
+			changes = append(changes, serviceChange(model.ChangeModify, saved.Name, "Managed service state differs"))
+			continue
 		}
-		for _, item := range saved.DropIns {
-			path := filepath.Join(p.Roots.UserConfigDir, saved.Name+".d", filepath.Base(item.Path))
-			if item.Presence == profile.ServiceAbsent {
-				changed = changed || currentDropIns[path]
-				continue
-			}
-			hash, err := content.HashRegularFile(path)
-			if !currentDropIns[path] || err != nil || hash != item.Hash {
-				changed = true
-			}
+		projected, _, err := p.projectServiceUnit(candidate, saved, true, false)
+		if err != nil {
+			changes = append(changes, serviceChange(model.ChangeWarn, saved.Name, "Managed service cannot be safely inspected"))
+			continue
 		}
-		if saved.Mask != nil {
-			masked := userMask(saved.Name, p.Roots)
-			changed = changed || saved.Mask.Presence == profile.ServicePresent && !masked || saved.Mask.Presence == profile.ServiceAbsent && masked
-		}
-		if changed {
+		prior := saved
+		prior.DropIns = append([]profile.ServiceArtifact(nil), saved.DropIns...)
+		sort.Slice(prior.DropIns, func(i, j int) bool { return prior.DropIns[i].Path < prior.DropIns[j].Path })
+		if !reflect.DeepEqual(prior, projected) {
 			changes = append(changes, serviceChange(model.ChangeModify, saved.Name, "Managed service state differs"))
 		}
 	}

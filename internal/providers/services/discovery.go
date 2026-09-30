@@ -13,6 +13,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/sensitive"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -38,15 +39,17 @@ const (
 // Candidate describes one detected unit and the management scope it could
 // receive after reviewed selection. Managed is derived only from saved state.
 type Candidate struct {
-	Unit        ObservedUnit
-	Provenance  ProvenanceClass
-	Management  profile.ServiceManagementMode
-	Recommended bool
-	Advanced    bool
-	Eligible    bool
-	Managed     bool
-	Missing     bool
-	Reason      string
+	Unit               ObservedUnit
+	Provenance         ProvenanceClass
+	Management         profile.ServiceManagementMode
+	Recommended        bool
+	Advanced           bool
+	Eligible           bool
+	Managed            bool
+	Missing            bool
+	OwnershipExpansion bool
+	NewOverlayArtifact bool
+	Reason             string
 }
 
 func supportedServiceKind(kind string) bool {
@@ -149,6 +152,20 @@ func Discover(units []ObservedUnit, saved profile.Services, roots Roots) []Candi
 			candidate.Management, candidate.Eligible = profile.ServiceManagementCustomization, true
 			candidate.Reason = "Managed customization; external base remains outside Blueprint"
 		}
+		if managed && prior.Management != candidate.Management {
+			switch {
+			case prior.Management == profile.ServiceManagementCustomization && candidate.Management == profile.ServiceManagementDefinition && candidate.Eligible:
+				candidate.OwnershipExpansion = true
+				candidate.Reason = "New user definition would expand Blueprint ownership; select it only after review"
+			default:
+				candidate.Eligible = false
+				candidate.Reason = "Previously managed definition changed ownership; review explicit removal before adopting an external customization"
+			}
+		}
+		if managed && prior.Management == profile.ServiceManagementCustomization && candidate.Eligible && (newManagedDropIn(prior, candidate, roots) || prior.Mask == nil && unit.RawUnitFileState == "masked" && userMask(unit.Name, roots)) {
+			candidate.NewOverlayArtifact = true
+			candidate.Reason = "New user-owned drop-in or mask would expand the managed customization; select it only after review"
+		}
 		if managed && !candidate.Missing && candidate.Eligible && managedServiceArtifactMissing(prior, candidate, roots) {
 			candidate.Reason = "Previously managed service artifact is missing; review before recording its removal"
 		}
@@ -231,7 +248,7 @@ func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]work
 			Key: candidate.Unit.Name, Label: candidate.Unit.Name + " · " + candidate.Reason,
 			Desired: desired, Current: current, CaptureEligible: eligible,
 			RestoreEligible: eligible && managed, SafetyReason: map[bool]string{true: "", false: reason}[eligible],
-			RequiresSelection: candidate.Missing && managed || needsRemovalReview && eligible || eligible && !managed,
+			RequiresSelection: candidate.Missing && managed || needsRemovalReview && eligible || eligible && !managed || eligible && (candidate.OwnershipExpansion || candidate.NewOverlayArtifact),
 			ReviewRemoval:     candidate.Missing && managed || needsRemovalReview,
 			Advanced:          candidate.Advanced, RecommendedDependencies: recommended,
 			Fingerprint: fingerprint, Capabilities: workflow.TargetCapabilities{
@@ -259,6 +276,22 @@ func managedServiceArtifactMissing(saved profile.ServiceUnit, candidate Candidat
 	return saved.Mask != nil && saved.Mask.Presence == profile.ServicePresent && !userMask(saved.Name, roots)
 }
 
+func newManagedDropIn(saved profile.ServiceUnit, candidate Candidate, roots Roots) bool {
+	prior := make(map[string]bool, len(saved.DropIns))
+	for _, item := range saved.DropIns {
+		prior[item.Path] = true
+	}
+	for _, path := range candidate.Unit.DropInPaths {
+		if !withinUserRoot(path, roots.UserConfigDir) {
+			continue
+		}
+		if !prior["units/"+saved.Name+".d/"+filepath.Base(path)] {
+			return true
+		}
+	}
+	return false
+}
+
 func (p Provider) candidateFingerprint(candidate Candidate) (string, string) {
 	type artifact struct{ Path, Hash, Mode string }
 	var artifacts []artifact
@@ -279,6 +312,13 @@ func (p Provider) candidateFingerprint(candidate Candidate) (string, string) {
 			resolved, err := filepath.EvalSymlinks(path)
 			if err != nil || resolved != filepath.Clean(path) {
 				return "", "Service source passes through a link; leave it external"
+			}
+			inspection, err := sensitive.ScanRegularFile(path, maxAuthoredUnitBytes)
+			if err != nil {
+				return "", "Service source cannot be inspected safely"
+			}
+			if inspection.Sensitive {
+				return "", "Service source contains sensitive content; Capture is blocked"
 			}
 			hash, err := content.HashRegularFile(path)
 			if err != nil {
