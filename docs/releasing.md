@@ -154,9 +154,12 @@ does not.
    `main` with the existing `version` (e.g. `0.1.0`) and the next `pkgrel`
    (e.g. `2`).
 3. The workflow checks that published release `v<version>` exists. It reuses
-   and verifies its immutable source archive, renders `main`'s recipe, and
-   runs the same final validation. It then waits for `aur-release` approval
-   **(human authorization)**.
+   and verifies its immutable source archive, and renders the recipe at the
+   exact commit `main` pointed to when you dispatched. Later pushes to `main`
+   do not change what that run validates or publishes. It runs the same final
+   validation, then waits for `aur-release` approval **(human
+   authorization)**. Before approving, check that the run's commit is the
+   one you meant.
 
 The GitHub Release is never created or changed by this path. Application
 changes always need a new upstream version, which resets `pkgrel` to 1.

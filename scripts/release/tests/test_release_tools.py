@@ -648,16 +648,26 @@ class ResolveAurRevisionTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
 
-    def test_packaging_only_revision_of_a_published_release_from_main(self):
-        result = self.resolve("dispatch", "0.1.0", "2", "refs/heads/main", release_state="false false")
+    def test_packaging_only_revision_is_bound_to_the_dispatch_commit_not_the_branch(self):
+        result = self.resolve("dispatch", "0.1.0", "2", "refs/heads/main", "a" * 40, release_state="false false")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "version=0.1.0\npkgrel=2\ntag=v0.1.0\nref=refs/heads/main\n")
+        self.assertEqual(result.stdout, f"version=0.1.0\npkgrel=2\ntag=v0.1.0\nref={'a' * 40}\n")
+        self.assertNotIn("refs/heads/main", result.stdout)
 
     def test_packaging_only_revision_rejects_pkgrel_1_other_refs_and_unpublished_releases(self):
-        cases = [(("0.1.0", "1", "refs/heads/main"), "false false"), (("0.1.0", "0", "refs/heads/main"), "false false"),
-                 (("0.1.0", "02", "refs/heads/main"), "false false"), (("v0.1.0", "2", "refs/heads/main"), "false false"),
-                 (("0.1.0", "2", "refs/heads/feature"), "false false"), (("0.1.0", "2", "refs/heads/main"), None),
-                 (("0.1.0", "2", "refs/heads/main"), "true false"), (("0.1.0", "2", "refs/heads/main"), "false true")]
+        sha = "a" * 40
+        cases = [(("0.1.0", "1", "refs/heads/main", sha), "false false"),
+                 (("0.1.0", "0", "refs/heads/main", sha), "false false"),
+                 (("0.1.0", "02", "refs/heads/main", sha), "false false"),
+                 (("v0.1.0", "2", "refs/heads/main", sha), "false false"),
+                 (("0.1.0", "2", "refs/heads/feature", sha), "false false"),
+                 (("0.1.0", "2", "refs/heads/main", sha), None),
+                 (("0.1.0", "2", "refs/heads/main", sha), "true false"),
+                 (("0.1.0", "2", "refs/heads/main", sha), "false true"),
+                 (("0.1.0", "2", "refs/heads/main", ""), "false false"),
+                 (("0.1.0", "2", "refs/heads/main", "refs/heads/main"), "false false"),
+                 (("0.1.0", "2", "refs/heads/main", sha.upper()), "false false"),
+                 (("0.1.0", "2", "refs/heads/main"), "false false")]
         for args, state in cases:
             with self.subTest(args=args, state=state):
                 result = self.resolve("dispatch", *args, release_state=state)
@@ -863,6 +873,17 @@ class AurPublishBoundaryTests(unittest.TestCase):
         self.assertIn('--source-url "$SOURCE_URL"', validate)
         self.assertIn("make-source-archive.sh \"refs/tags/$TAG\"", validate)
         self.assertNotRegex(validate, r"cp [^\n]*omarchy-blueprint-[^\n]*package")
+
+    def test_dispatch_is_bound_to_the_event_commit_through_validation(self):
+        text = workflow("aur-publish.yml")
+        resolve, validate = job(text, "resolve"), job(text, "validate")
+        self.assertIn("DISPATCH_SHA: ${{ github.sha }}", resolve)
+        self.assertIn('"$DISPATCH_REF" "$DISPATCH_SHA"', resolve)
+        self.assertIn("ref: ${{ needs.resolve.outputs.ref }}", validate)
+        self.assertIn('RECIPE_REF: ${{ needs.resolve.outputs.ref }}', validate)
+        self.assertIn('[[ $(git rev-parse HEAD) == $(git rev-parse "$RECIPE_REF^{commit}") ]]', validate)
+        self.assertNotIn("refs/heads/main", resolve + validate.replace(
+            "+refs/heads/main:refs/remotes/origin/main", ""))
 
     def test_publish_job_only_pushes_validated_files(self):
         publish = job(workflow("aur-publish.yml"), "publish")

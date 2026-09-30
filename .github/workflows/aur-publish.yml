@@ -2,7 +2,7 @@
 #
 # Starts when a maintainer publishes a GitHub Release (pkgrel 1), or by
 # manual dispatch from main for a packaging-only revision (pkgrel >= 2) of an
-# existing published release. Validation downloads the immutable release
+# existing published release, bound to the dispatch event's commit. Validation downloads the immutable release
 # source from its public URL, rebuilds it from the release tag to prove the
 # bytes match, renders the final PKGBUILD, and builds, checks, inspects and
 # installs it in a fresh Arch container. None of that sees AUR credentials.
@@ -63,12 +63,13 @@ jobs:
           PRERELEASE: ${{ github.event.release.prerelease }}
           VERSION: ${{ inputs.version }}
           PKGREL: ${{ inputs.pkgrel }}
-          GITHUB_REF_INPUT: ${{ github.ref }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
         run: |
           if [[ $EVENT == release ]]; then
             bash scripts/release/resolve-aur-revision.sh release "$TAG" "$DRAFT" "$PRERELEASE" | tee -a "$GITHUB_OUTPUT"
           else
-            bash scripts/release/resolve-aur-revision.sh dispatch "$VERSION" "$PKGREL" "$GITHUB_REF_INPUT" | tee -a "$GITHUB_OUTPUT"
+            bash scripts/release/resolve-aur-revision.sh dispatch "$VERSION" "$PKGREL" "$DISPATCH_REF" "$DISPATCH_SHA" | tee -a "$GITHUB_OUTPUT"
           fi
 
   validate:
@@ -91,10 +92,14 @@ jobs:
         name: Record the package recipe commit and verify the release tag
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
+          RECIPE_REF: ${{ needs.resolve.outputs.ref }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           bash scripts/release/verify-release-tag.sh "$TAG" origin/main
+          # The recipe is the resolved immutable ref: the release tag, or the
+          # dispatch event's commit, never a branch that may have moved.
+          [[ $(git rev-parse HEAD) == $(git rev-parse "$RECIPE_REF^{commit}") ]]
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Download and verify the published release source
         env:
