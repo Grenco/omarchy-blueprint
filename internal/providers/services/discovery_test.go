@@ -338,7 +338,7 @@ func TestInspectUnavailableUserManagerPreservesUncapturedAndFailsClosedWhenManag
 	}
 	data.Manifest.Capture.Services = true
 	data.Services.Units = []profile.ServiceUnit{{Name: "backup.service", Kind: "service", Management: profile.ServiceManagementDefinition, Presence: profile.ServicePresent, Definition: "units/backup.service"}}
-	if _, err := p.InspectTargets(context.Background(), data); err == nil {
-		t.Fatal("captured Services intent was silently omitted without a user manager")
+	if targets, err := p.InspectTargets(context.Background(), data); err != nil || len(targets) != 1 || !targets[0].RestoreEligible || targets[0].CaptureEligible {
+		t.Fatalf("captured Services readiness did not preserve Restore scope: %+v err=%v", targets, err)
 	}
 }

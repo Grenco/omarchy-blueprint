@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,15 @@ var _ Systemd = Systemctl{}
 const inspectionOutputLimit = 4 << 20
 
 const userUnitProperties = "Id,LoadState,UnitFileState,ActiveState,FragmentPath,DropInPaths,SourcePath,Transient,Requires,Wants,BindsTo,PartOf,Triggers,TriggeredBy"
+
+// ValidationUnavailableError distinguishes missing inspection capability from
+// affirmative rejection of a proposed effective unit set.
+type ValidationUnavailableError struct{ Err error }
+
+func (e *ValidationUnavailableError) Error() string {
+	return "systemd unit verification is unavailable: " + e.Err.Error()
+}
+func (e *ValidationUnavailableError) Unwrap() error { return e.Err }
 
 func (s Systemctl) inspect(ctx context.Context, args ...string) (string, error) {
 	if s.Runner == nil {
@@ -133,6 +143,7 @@ func normalizeObservedUnit(name, catalogState string, p map[string]string) Obser
 		Name: name, Kind: strings.TrimPrefix(filepath.Ext(name), "."),
 		FragmentPath: fragment, DropInPaths: sortedUnitNames(strings.Fields(p["DropInPaths"])),
 		TopologyKnown:    fragment != "" || p["DropInPaths"] != "",
+		LoadState:        p["LoadState"],
 		RawUnitFileState: state, StartIntent: normalizeStartIntent(state),
 		ObservedActive: p["ActiveState"] == "active", Generated: generated, Transient: transient, Runtime: runtime,
 		Persistent: !generated && !transient && !runtimeSource && (fragment != "" || state == "masked") && state != "masked-runtime",
@@ -202,7 +213,7 @@ func (s Systemctl) VerifyUnitSet(ctx context.Context, proposed ProposedUnitSet) 
 	if err != nil {
 		return fmt.Errorf("resolve proposed user-service validation root: %w", err)
 	}
-	args := []string{"--user", "verify"}
+	args := []string{"SYSTEMD_UNIT_PATH=" + root + ":", "XDG_RUNTIME_DIR=" + root, "systemd-analyze", "--user", "--generators=no", "--man=no", "verify"}
 	for _, file := range proposed.Files {
 		rel, err := filepath.Rel(proposed.Root, file)
 		if !filepath.IsAbs(file) || err != nil || filepath.IsAbs(rel) || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -225,7 +236,11 @@ func (s Systemctl) VerifyUnitSet(ctx context.Context, proposed ProposedUnitSet) 
 		}
 		args = append(args, file)
 	}
-	if _, err := s.Runner.Run(ctx, "systemd-analyze", args...); err != nil {
+	if _, err := s.Runner.Run(ctx, "env", args...); err != nil {
+		var execution *command.RunError
+		if errors.As(err, &execution) && (execution.ExitCode == 127 || execution.ExitCode < 0) {
+			return &ValidationUnavailableError{Err: err}
+		}
 		return fmt.Errorf("verify proposed user-service definitions: %w", err)
 	}
 	return nil

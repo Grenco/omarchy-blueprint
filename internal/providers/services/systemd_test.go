@@ -37,7 +37,7 @@ func TestVerifyUnitSetStaysReadOnlyAndWithinIsolatedTree(t *testing.T) {
 	if err := os.WriteFile(file, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.VerifyUnitSet(context.Background(), ProposedUnitSet{Root: root, Files: []string{file}}); err != nil || !reflect.DeepEqual(r.calls, []string{"systemd-analyze --user verify " + file}) {
+	if err := s.VerifyUnitSet(context.Background(), ProposedUnitSet{Root: root, Files: []string{file}}); err != nil || !reflect.DeepEqual(r.calls, []string{"env SYSTEMD_UNIT_PATH=" + root + ": XDG_RUNTIME_DIR=" + root + " systemd-analyze --user --generators=no --man=no verify " + file}) {
 		t.Fatalf("validation was not an isolated read-only command: calls=%v err=%v", r.calls, err)
 	}
 	escape := filepath.Join(root, "linked.service")

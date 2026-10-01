@@ -44,9 +44,29 @@ Services are discovered as candidates, not silently adopted. Preview them with
 optionally decline recommended custom dependencies. A plain `capture services`
 updates already-managed Services intent but does not adopt new units or record
 an unreviewed removal. External base definitions remain outside the profile.
-Services Restore currently leaves saved units untouched with visible skips and
-Unknown/Reduced compatibility, so other captured categories can still restore.
-Persistent Services reconstruction follows in the next Services milestone.
+`restore services --dry-run` previews persistent reconstruction of selected
+definitions, unit-specific drop-ins, enablement, and user masks. Authored file
+changes are guarded, then systemd refreshes definitions before persistent
+state changes. Services never starts, stops, or restarts processes in this
+milestone; previously active evidence does not grant activation authority.
+
+Safe keeps conflicting user files; Force can replace a supported user-controlled
+conflict with a backup, but cannot acquire an external base, cross linked paths,
+or bypass compatibility. Exact removes only explicit managed absence with
+matching prior content (and drop-in mode) provenance. Unknown dependencies or
+missing provenance withhold removal and remain non-converged if the target is
+still present. External bases are validated as dependencies, not copied into
+the profile or target. A missing user manager or verifier appears as a
+Requirement; satisfy it externally and calculate a new plan.
+
+Existing uninstantiated templates with unresolved topology and broader/alias
+drop-in scopes remain Unknown/Reduced. A persistent mask hiding the underlying
+base must be resolved externally before changing that base. Masking a managed
+definition in the same user configuration path would replace its authored file,
+so that effect is withheld. Exact mask/instance removals without prior managed
+identity evidence are also withheld. A new owned template can be installed once
+with separately configured instance state; template/instance Capture adoption
+still needs authoritative source resolution before Services v1 is complete.
 
 ## Check, status, and diff
 

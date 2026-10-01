@@ -59,11 +59,14 @@ type DirectoryCreate struct {
 }
 
 type SymlinkWrite struct {
-	Destination          string                  `json:"destination"`
-	Target               string                  `json:"target"`
-	ExpectedMissing      bool                    `json:"expected_missing"`
-	ReplaceExisting      bool                    `json:"replace_existing,omitempty"`
-	ExpectedExisting     *FilesystemPrecondition `json:"expected_existing,omitempty"`
+	Destination      string                  `json:"destination"`
+	Target           string                  `json:"target"`
+	ExpectedMissing  bool                    `json:"expected_missing"`
+	ReplaceExisting  bool                    `json:"replace_existing,omitempty"`
+	ExpectedExisting *FilesystemPrecondition `json:"expected_existing,omitempty"`
+	// ExpectedTarget optionally guards an existing external regular-file source
+	// before a linked Services definition is installed. It is approval data.
+	ExpectedTarget       *FilesystemPrecondition `json:"expected_target,omitempty"`
 	Backup               bool                    `json:"backup,omitempty"`
 	RejectSymlinkParents bool                    `json:"reject_symlink_parents,omitempty"`
 }

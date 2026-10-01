@@ -1,21 +1,15 @@
 package services
 
 import (
-	"context"
-	"errors"
 	"fmt"
 
-	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
-	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
-var ErrNotImplemented = errors.New("services persistent Restore and compatibility are not implemented yet")
-
-// Provider keeps Capture behind reviewed ownership. Persistent Restore and
-// compatibility remain fail-closed until their separate PR C boundary.
+// Provider keeps Capture behind reviewed ownership and derives persistent
+// Restore effects, compatibility, and Verify from the same selected intent.
 type Provider struct {
 	Systemd      Systemd
 	Roots        Roots
@@ -44,29 +38,16 @@ func (Provider) ChangeTargetKey(change model.Change) (string, bool) {
 	}
 	return "", false
 }
-func (Provider) Plan(_ context.Context, data profile.Data, _ omarchy.Info, restore workflow.RestoreContext) (workflow.RestoreFragment, error) {
-	fragment := workflow.RestoreFragment{}
-	var findings []model.CompatibilityFinding
-	for _, unit := range data.Services.Units {
-		decision, err := restore.Require(unit.Name)
-		if err != nil {
-			return workflow.RestoreFragment{}, err
-		}
-		reason := decision.Reason
-		if reason == "" {
-			reason = "Services Restore is not available in this build; service left untouched"
-		}
-		fragment.Skipped = append(fragment.Skipped, model.Skipped{Provider: "services", Resource: unit.Name, Reason: reason})
-		if decision.Restore || decision.CompatibilityApply {
-			findings = append(findings, model.CompatibilityFinding{Code: "services.restore.unavailable", Target: unit.Name, State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "Services Restore is not available in this build; no service mutations planned"})
-		}
+
+func (Provider) RestoreOperationTargetKeys(op model.Operation) ([]string, bool) {
+	if op.Provider != "services" {
+		return nil, false
 	}
-	category, err := compatibility.BuildCategory("services", len(findings) > 0, nil, findings)
-	fragment.Compatibility = category
-	return fragment, err
-}
-func (Provider) Verify(context.Context, profile.Data, workflow.RestoreContext) (model.VerificationResult, error) {
-	// PR B promises no Services effects. PR C replaces both this no-op plan
-	// and verification with persistent reconstruction of the selected intent.
-	return model.VerificationResult{OK: true}, nil
+	if op.Action == "daemon-reload" && op.Resource == "" {
+		return nil, true
+	}
+	if err := profile.ValidateServiceUnitName(op.Resource); err != nil {
+		return nil, false
+	}
+	return []string{op.Resource}, true
 }
