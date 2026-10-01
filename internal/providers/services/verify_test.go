@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -144,7 +145,9 @@ func TestVerifyTemplateInstanceIntentDoesNotDuplicateDefinition(t *testing.T) {
 	instance := observedService("backup@photos.service", path)
 	instance.InstanceOf = "backup@.service"
 	instance.StartIntent = profile.ServiceStartEnabled
-	s.units = []ObservedUnit{{Name: "backup@.service", Kind: "service", Template: true, StartIntent: profile.ServiceStartIndirect}, instance}
+	template := observedService("backup@.service", path)
+	template.Template, template.StartIntent = true, profile.ServiceStartIndirect
+	s.units = []ObservedUnit{template, instance}
 	result, err := p.Verify(context.Background(), *data, planContext(*data, false, false))
 	if err != nil || !result.OK {
 		t.Fatalf("template/instance persistent Verify failed: %+v err=%v", result, err)
@@ -163,5 +166,44 @@ func TestVerifyTemplateInstanceIntentDoesNotDuplicateDefinition(t *testing.T) {
 	result, err = p.Verify(context.Background(), *data, planContext(*data, false, false))
 	if err != nil || result.OK {
 		t.Fatalf("disabled configured instance falsely converged: %+v err=%v", result, err)
+	}
+}
+
+func TestVerifyUnresolvedTemplateTopologyDoesNotConverge(t *testing.T) {
+	p, data, s, _ := persistentTemplateFixture(t)
+	s.units[0].TopologyKnown = false
+	s.units[0].FragmentPath = ""
+	fragment := persistentPlan(t, p, *data, false, true)
+	if fragment.Compatibility.State != model.CompatibilityUnknown || fragment.Compatibility.Authority != model.CompatibilityReduced || len(fragment.Operations) != 0 {
+		t.Fatalf("unresolved template gained planning authority: %+v", fragment)
+	}
+	result, err := p.Verify(context.Background(), *data, planContext(*data, false, true))
+	if err != nil || result.OK || len(result.Missing) != 1 || result.Missing[0] != "backup@.service" || s.validations != 0 {
+		t.Fatalf("unresolved template topology falsely converged from file bytes: %+v validations=%d err=%v", result, s.validations, err)
+	}
+}
+
+func TestVerifyPresentManagedDefinitionRequiresEffectiveManagerVisibility(t *testing.T) {
+	for _, state := range []string{"not-listed", "not-found", "unknown-topology", "different-source"} {
+		t.Run(state, func(t *testing.T) {
+			p, data, s, _ := persistentPlanFixture(t)
+			// No selected enablement intent: file presence cannot be rescued by
+			// a coincidentally matching start-state observation.
+			data.Services.Units[0].StartIntent = profile.ServiceStartNotManaged
+			switch state {
+			case "not-listed":
+				s.units = nil
+			case "not-found":
+				s.units[0] = ObservedUnit{Name: "backup.service", Kind: "service", LoadState: "not-found"}
+			case "unknown-topology":
+				s.units[0].TopologyKnown = false
+			case "different-source":
+				s.units[0].FragmentPath = "/external/backup.service"
+			}
+			result, err := p.Verify(context.Background(), *data, planContext(*data, false, false))
+			if err != nil || result.OK || len(result.Missing) != 1 || result.Missing[0] != "backup.service" || s.validations != 0 {
+				t.Fatalf("definition falsely converged without effective manager visibility: %+v validations=%d err=%v", result, s.validations, err)
+			}
+		})
 	}
 }

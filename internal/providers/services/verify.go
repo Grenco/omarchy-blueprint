@@ -72,7 +72,7 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 	for _, saved := range selected {
 		actual, found := current[saved.Name]
 		satisfied := true
-		if saved.Presence == profile.ServicePresent && found && (actual.Generated || actual.Transient || actual.Runtime && !actual.Persistent) {
+		if saved.Presence == profile.ServicePresent && found && (actual.Generated || actual.Transient || actual.Runtime && !actual.Persistent || !actual.TopologyKnown) {
 			satisfied = false
 		}
 		if saved.Presence == profile.ServicePresent && found && actual.LoadState != "" && actual.LoadState != "loaded" && saved.StartIntent != profile.ServiceStartMasked {
@@ -82,7 +82,7 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 			path := filepath.Join(p.Roots.UserConfigDir, saved.Name)
 			satisfied = serviceFileMatches(path, saved.DefinitionHash, "", saved.Presence == profile.ServiceAbsent) && satisfied
 			if saved.Presence == profile.ServicePresent && satisfied {
-				if found && (!actual.TopologyKnown && !actual.Template || actual.TopologyKnown && actual.FragmentPath != path) {
+				if !found || !actual.TopologyKnown || actual.FragmentPath != path {
 					satisfied = false
 				} else if file, err := readServiceFile(path); err != nil {
 					satisfied = false

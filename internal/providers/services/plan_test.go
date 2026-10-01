@@ -58,6 +58,24 @@ func persistentPlanFixture(t *testing.T) (*Provider, *profile.Data, *planSystemd
 	p.Systemd = s
 	return p, data, s, live
 }
+func persistentTemplateFixture(t *testing.T) (*Provider, *profile.Data, *planSystemd, string) {
+	t.Helper()
+	p, data, s, live := persistentPlanFixture(t)
+	unit := &data.Services.Units[0]
+	snapshot := filepath.Join(p.ProfileDir, "services", filepath.FromSlash(unit.Definition))
+	unit.Name, unit.Definition, unit.StartIntent = "backup@.service", "units/backup@.service", profile.ServiceStartIndirect
+	if err := os.Rename(snapshot, filepath.Join(p.ProfileDir, "services", filepath.FromSlash(unit.Definition))); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(p.Roots.UserConfigDir, unit.Name)
+	if err := os.Rename(live, path); err != nil {
+		t.Fatal(err)
+	}
+	template := observedService(unit.Name, path)
+	template.Template, template.StartIntent = true, profile.ServiceStartIndirect
+	s.units = []ObservedUnit{template}
+	return p, data, s, path
+}
 func planContext(data profile.Data, force, exact bool) workflow.RestoreContext {
 	rc := workflow.RestoreContext{Options: policy.DefaultRestoreOptions(), Targets: map[string]workflow.RestoreDecision{}}
 	if force {
@@ -175,14 +193,53 @@ func TestPlanExactUnprovedMaskAndInstanceRemovalWithheld(t *testing.T) {
 				s.units[0] = observedService("backup.service", "/dev/null")
 				s.units[0].StartIntent, s.units[0].RawUnitFileState = profile.ServiceStartMasked, "masked"
 			} else {
-				data.Services.Units[0].Name = "backup@.service"
-				data.Services.Units[0].Definition = "units/backup@.service"
+				p, data, s, live = persistentTemplateFixture(t)
 				data.Services.Units[0].Instances = []profile.ServiceInstance{{Name: "backup@photos.service", Presence: profile.ServiceAbsent, StartIntent: profile.ServiceStartNotManaged}}
-				s.units = []ObservedUnit{{Name: "backup@.service", Kind: "service", Template: true}}
+				instance := observedService("backup@photos.service", live)
+				instance.InstanceOf, instance.StartIntent = "backup@.service", profile.ServiceStartEnabled
+				s.units = append(s.units, instance)
 			}
 			fragment := persistentPlan(t, p, *data, true, true)
 			if len(fragment.Operations) != 0 || fragment.Compatibility.Authority != model.CompatibilityReduced {
 				t.Fatalf("unproved %s removal retained mutation authority: %+v", kind, fragment)
+			}
+			wantCode := "services.exact." + kind
+			if len(fragment.Compatibility.Findings) != 1 || fragment.Compatibility.Findings[0].Code != wantCode {
+				t.Fatalf("unproved %s removal was withheld for the wrong reason: %+v", kind, fragment.Compatibility.Findings)
+			}
+		})
+	}
+}
+func TestPlanExactAlreadyAbsentInstanceNeedsNoRemovalAuthority(t *testing.T) {
+	for _, state := range []string{"not-listed", "disabled"} {
+		t.Run(state, func(t *testing.T) {
+			p, data, s, live := persistentTemplateFixture(t)
+			data.Services.Units[0].Instances = []profile.ServiceInstance{{Name: "backup@photos.service", Presence: profile.ServiceAbsent, StartIntent: profile.ServiceStartNotManaged}}
+			if state == "disabled" {
+				instance := observedService("backup@photos.service", live)
+				instance.InstanceOf = "backup@.service"
+				s.units = append(s.units, instance)
+			}
+			converged := persistentPlan(t, p, *data, false, true)
+			if len(converged.Operations) != 0 || converged.Compatibility.State != model.CompatibilitySupported || converged.Compatibility.Authority != model.CompatibilityUnchanged || len(converged.Skipped) != 0 {
+				t.Fatalf("converged instance tombstone required removal authority: %+v", converged)
+			}
+			result, err := p.Verify(context.Background(), *data, planContext(*data, false, true))
+			if err != nil || !result.OK {
+				t.Fatalf("already-absent instance failed Verify: %+v err=%v", result, err)
+			}
+			if err := os.Remove(live); err != nil {
+				t.Fatal(err)
+			}
+			// Keep authoritative parent topology but require independent Safe
+			// definition work: the instance tombstone must not suppress it.
+			validations := s.validations
+			fragment := persistentPlan(t, p, *data, false, true)
+			if fragment.Compatibility.State != model.CompatibilitySupported || fragment.Compatibility.Authority != model.CompatibilityUnchanged || len(fragment.Skipped) != 0 {
+				t.Fatalf("already-absent instance reduced parent authority: %+v", fragment)
+			}
+			if len(fragment.Operations) != 2 || fragment.Operations[0].File == nil || fragment.Operations[0].File.Destination != live || !fragment.Operations[0].File.ExpectedMissing || !hasCommand(fragment, "daemon-reload") || s.validations != validations+1 {
+				t.Fatalf("already-absent instance suppressed independent parent work: %+v", fragment)
 			}
 		})
 	}

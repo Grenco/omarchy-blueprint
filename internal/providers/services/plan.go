@@ -419,7 +419,7 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 		effects.states = append(effects.states, states...)
 		for _, instance := range saved.Instances {
 			if instance.Presence == profile.ServiceAbsent {
-				if exact {
+				if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
 					return failure("services.exact.instance", "Exact instance removal lacks recorded managed enablement provenance", false)
 				}
 				continue
