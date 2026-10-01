@@ -32,6 +32,10 @@ func planActivation(saved profile.ServiceUnit, current map[string]ObservedUnit, 
 			reason = "Will not start during Restore: this run restores Persistent state only."
 		case preference == profile.ServiceActivationReview && rc.Options.ActivationMode() == policy.ActivationRestoreWorkingState:
 			reason = "Activation requires interactive activation review; working mode does not approve this target."
+		case strings.HasSuffix(name, ".slice"):
+			reason = "Activation withheld: slices are resource-control groups, not generic working-process entry points."
+		case strings.HasSuffix(name, ".service") && (actual.Name == "" || !actual.TopologyKnown):
+			reason = "Activation withheld: standalone service entry-point relationships are not established on this destination; restore persistent state, then inspect and replan."
 		case start == profile.ServiceStartMasked || actual.StartIntent == profile.ServiceStartMasked:
 			reason = "Activation withheld: unit is blocked from starting by a mask."
 		case actual.ObservedActive:

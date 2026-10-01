@@ -66,6 +66,11 @@ targets you want considered for activation. Persistent-only preferences never
 start under either run mode. Every start also requires captured-active evidence,
 safe effective topology, parser validation, and compatibility/readiness. Timers,
 sockets and paths activate their entry point, not the triggered service directly.
+On fresh destinations, direct service activation is withheld until the manager
+establishes its effective source and entry-point relationships; persistent
+reconstruction can still apply, followed by inspection and a new activation plan.
+Slices never receive generic working-state activation. Independent approved
+starts share persistent-work prerequisites without depending on sibling starts.
 Already-running processes are never restarted. Approved activation is verified
 using this run's successful job receipt plus manager state; completed successful
 oneshots need not remain active.

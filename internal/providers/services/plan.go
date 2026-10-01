@@ -218,10 +218,12 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 	}
 	fragment.Compatibility, err = assessment.category(true)
 	if err == nil {
+		persistentIDs := make([]string, 0, len(fragment.Operations))
+		for _, persistent := range fragment.Operations {
+			persistentIDs = append(persistentIDs, persistent.ID)
+		}
 		for _, candidate := range activationOps {
-			for _, persistent := range fragment.Operations {
-				candidate.DependsOn = append(candidate.DependsOn, persistent.ID)
-			}
+			candidate.DependsOn = append(candidate.DependsOn, persistentIDs...)
 			fragment.Operations = append(fragment.Operations, candidate)
 		}
 	}

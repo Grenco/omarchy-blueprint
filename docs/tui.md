@@ -229,6 +229,10 @@ replans before the ordinary Apply confirmation. Candidates begin unselected.
 Working mode never includes a saved Review preference; saved Persistent-only
 preferences never activate in either mode. Both surfaces use the same candidates,
 authority intersection, plan, and execution-bound Verify.
+Fresh services without established manager source/relationship evidence remain
+unstarted until persistent reconstruction and a new inspection/plan. Slices are
+excluded from generic activation. A failed independent start does not block an
+individually approved sibling start once persistent prerequisites have succeeded.
 Services never stops, restarts, or reloads processes: changes beneath an already-running service are
 accompanied by a no-restart notice. Conflicts, unresolved source topology, and
 Exact removals without matching provenance remain visibly withheld rather than
