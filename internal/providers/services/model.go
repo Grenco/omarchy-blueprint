@@ -16,6 +16,7 @@ type ObservedUnit struct {
 	FragmentPath     string
 	DropInPaths      []string
 	TopologyKnown    bool
+	LoadState        string
 	RawUnitFileState string
 	StartIntent      profile.ServiceStartIntent
 	ObservedActive   bool

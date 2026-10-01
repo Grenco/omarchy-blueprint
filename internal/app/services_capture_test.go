@@ -23,7 +23,7 @@ func (s appServicesSystemd) InspectUserUnits(context.Context) ([]servicesprovide
 	return s.units, nil
 }
 func (appServicesSystemd) VerifyUnitSet(context.Context, servicesprovider.ProposedUnitSet) error {
-	return errors.New("not part of Capture")
+	return nil
 }
 func (appServicesSystemd) DaemonReload(context.Context) error       { panic("Capture mutated systemd") }
 func (appServicesSystemd) Enable(context.Context, ...string) error  { panic("Capture enabled unit") }
@@ -84,21 +84,18 @@ func TestCapturedServicesCoexistWithAggregateRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	packageWork, serviceSkip, reduced := false, false, false
+	packageWork, supported := false, false
 	for _, op := range plan.Operations {
 		if op.Provider == "services" {
 			t.Fatalf("Services mutation planned: %+v", op)
 		}
 		packageWork = packageWork || op.Provider == "packages"
 	}
-	for _, skip := range plan.Skipped {
-		serviceSkip = serviceSkip || skip.Provider == "services" && skip.Resource == "backup.service"
-	}
 	for _, category := range plan.Compatibility.Categories {
-		reduced = reduced || category.Category == "services" && category.State == "unknown" && category.Authority == "reduced"
+		supported = supported || category.Category == "services" && category.State == "supported" && category.Authority == "unchanged"
 	}
-	if !packageWork || !serviceSkip || !reduced {
-		t.Fatalf("aggregate Restore lost work or Services reduction: %+v", plan)
+	if !packageWork || !supported {
+		t.Fatalf("aggregate Restore lost package work or Services assessment: %+v", plan)
 	}
 	result, err := session.ApplyRestore(context.Background(), "services", nil)
 	if err != nil || !result.Verification.OK || len(result.Plan.Operations) != 0 {
@@ -141,8 +138,8 @@ func TestServicesCLIReviewedCaptureIsOnlyFirstAdoption(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(profileDir, "services", "units", "backup.service")); err != nil {
 		t.Fatal(err)
 	}
-	if code, output := configRun(t, deps, profileDir, "restore", "services", "--dry-run"); code != 0 || !strings.Contains(output, "Unknown · Reduced") || !strings.Contains(output, "Services Restore is not available") {
-		t.Fatalf("Services Restore claimed premature authority: code=%d output=%s", code, output)
+	if code, output := configRun(t, deps, profileDir, "restore", "services", "--dry-run"); code != 0 || !strings.Contains(output, "Supported · Unchanged") || strings.Contains(output, "Services Restore is not available") {
+		t.Fatalf("Services Restore failed persistent assessment: code=%d output=%s", code, output)
 	}
 	if code, output := configRun(t, deps, profileDir, "--json", "capture", "services"); code != 0 || !strings.Contains(output, `"services": {`) || !strings.Contains(output, `"backup.service"`) {
 		t.Fatalf("managed Services JSON capture output missing: code=%d output=%s", code, output)

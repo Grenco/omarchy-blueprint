@@ -212,6 +212,16 @@ func (p *Provider) discovered(ctx context.Context, saved profile.Services) ([]Ca
 func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]workflow.TargetInspection, error) {
 	candidates, err := p.discovered(ctx, data.Services)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if len(data.Services.Units) > 0 && p.Systemd != nil && filepath.IsAbs(p.Roots.UserConfigDir) {
+			var targets []workflow.TargetInspection
+			for _, unit := range data.Services.Units {
+				targets = append(targets, workflow.TargetInspection{Key: unit.Name, Label: unit.Name, Description: "User service manager unavailable; Restore requires a usable user login session", Desired: workflow.TargetPresent, Current: workflow.TargetUnknown, RestoreEligible: true, SafetyReason: "User service manager unavailable; Capture cannot refresh saved intent", Capabilities: workflow.TargetCapabilities{SupportsCapture: true, SupportsRestore: true}})
+			}
+			return targets, nil
+		}
 		return nil, err
 	}
 	wants := make(map[string]profile.ServiceUnit, len(data.Services.Units))
@@ -254,7 +264,7 @@ func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]work
 		targets = append(targets, workflow.TargetInspection{
 			Key: candidate.Unit.Name, Label: candidate.Unit.Name, Description: candidate.Reason, Recommended: candidate.Recommended,
 			Desired: desired, Current: current, CaptureEligible: eligible,
-			RestoreEligible: eligible && managed, SafetyReason: map[bool]string{true: "", false: reason}[eligible],
+			RestoreEligible: managed, SafetyReason: map[bool]string{true: "", false: reason}[eligible],
 			RequiresSelection: candidate.Missing && managed || needsRemovalReview && eligible || eligible && !managed || eligible && (candidate.OwnershipExpansion || candidate.NewOverlayArtifact),
 			ReviewRemoval:     candidate.Missing && managed || needsRemovalReview,
 			Advanced:          candidate.Advanced, RecommendedDependencies: recommended,
