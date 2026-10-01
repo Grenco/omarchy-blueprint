@@ -417,68 +417,74 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 			return failure("services.state.withheld", reason, false)
 		}
 		effects.states = append(effects.states, states...)
-		for _, instance := range saved.Instances {
-			if instance.Presence == profile.ServiceAbsent {
-				if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
-					return failure("services.exact.instance", "Exact instance removal lacks recorded managed enablement provenance", false)
-				}
+	}
+	for _, instance := range saved.Instances {
+		if instance.Presence == profile.ServiceAbsent {
+			if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
+				return failure("services.exact.instance", "Exact instance removal lacks recorded managed enablement provenance", false)
 			}
-			if instance.Mask != nil && instance.Mask.Presence == profile.ServiceAbsent && exact && userMask(instance.Name, p.Roots) {
-				return failure("services.exact.mask", "Exact instance unmask lacks recorded prior managed mask identity provenance", false)
+		}
+		if instance.Mask != nil && instance.Mask.Presence == profile.ServiceAbsent && exact && userMask(instance.Name, p.Roots) {
+			return failure("services.exact.mask", "Exact instance unmask lacks recorded prior managed mask identity provenance", false)
+		}
+		if instance.Presence == profile.ServicePresent {
+			if saved.Presence != profile.ServicePresent {
+				return failure("services.instance.base.unavailable", "Configured instance requires a present template; mutation withheld", true)
 			}
-			if instance.Presence == profile.ServicePresent {
-				instanceActual := current[instance.Name]
-				expectedSource := actual.FragmentPath
-				if saved.Management == profile.ServiceManagementDefinition {
-					expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
-				} else if saved.LinkedSource != "" {
-					expectedSource = saved.LinkedSource
-				}
-				if instance.StartIntent != profile.ServiceStartMasked && instanceActual.Name != "" && instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
-					return failure("services.instance.owner.external", "Configured instance resolves to a different external definition; Force cannot acquire it", true)
-				}
-				states, reason := p.planStartIntent(instance.Name, instance.StartIntent, instanceActual, instanceActual.Name != "", force, saved.Name)
-				if reason != "" {
-					return failure("services.state.withheld", reason, false)
-				}
-				effects.states = append(effects.states, states...)
+			instanceActual := current[instance.Name]
+			expectedSource := actual.FragmentPath
+			if saved.Management == profile.ServiceManagementDefinition {
+				expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
+			} else if saved.LinkedSource != "" {
+				expectedSource = saved.LinkedSource
 			}
-			// Configured-state absence does not erase independent managed
-			// mask/drop-in intent for this instance.
-			if base, exists := effects.proposed[saved.Name]; exists {
-				effects.proposed[instance.Name] = base
+			if instance.StartIntent != profile.ServiceStartMasked && instanceActual.Name != "" && instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
+				return failure("services.instance.owner.external", "Configured instance resolves to a different external definition; Force cannot acquire it", true)
 			}
-			for _, dropIn := range instance.DropIns {
-				if dropIn.Presence == profile.ServiceAbsent && !exact {
-					continue
+			states, reason := p.planStartIntent(instance.Name, instance.StartIntent, instanceActual, instanceActual.Name != "", force, saved.Name)
+			if reason != "" {
+				return failure("services.state.withheld", reason, false)
+			}
+			effects.states = append(effects.states, states...)
+		}
+		// Configured-state absence does not erase independent managed
+		// mask/drop-in intent for this instance.
+		if base, exists := effects.proposed[saved.Name]; exists {
+			effects.proposed[instance.Name] = base
+		}
+		for _, dropIn := range instance.DropIns {
+			if dropIn.Presence == profile.ServiceAbsent && !exact {
+				continue
+			}
+			file := capturedFile{hash: dropIn.Hash, mode: dropIn.Mode}
+			destination := filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path))
+			if dropIn.Presence == profile.ServicePresent {
+				if _, hasBase := effects.proposed[instance.Name]; !hasBase {
+					return failure("services.base.unavailable", "Managed instance drop-in requires a parsed present template base", true)
 				}
-				file := capturedFile{hash: dropIn.Hash, mode: dropIn.Mode}
-				destination := filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path))
-				if dropIn.Presence == profile.ServicePresent {
-					var err error
-					file, err = p.desiredServiceFile(dropIn.Path, dropIn.Hash, dropIn.Mode)
-					if err != nil {
-						return effects, "", "", false, err
-					}
-					effects.proposed[instance.Name+".d/"+filepath.Base(dropIn.Path)] = file.data
-				} else {
-					delete(effects.proposed, instance.Name+".d/"+filepath.Base(dropIn.Path))
-					if dropIn.Hash == "" || dropIn.Mode == "" {
-						if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
-							return failure("services.exact.provenance", "Exact instance drop-in removal lacks prior content/mode", false)
-						}
-					}
-				}
-				op, reason, err := p.planArtifact(saved.Name, dropIn.Path, destination, file, force, dropIn.Presence == profile.ServiceAbsent)
+				var err error
+				file, err = p.desiredServiceFile(dropIn.Path, dropIn.Hash, dropIn.Mode)
 				if err != nil {
 					return effects, "", "", false, err
 				}
-				if reason != "" {
-					return failure("services.artifact.withheld", reason, false)
+				effects.proposed[instance.Name+".d/"+filepath.Base(dropIn.Path)] = file.data
+			} else {
+				delete(effects.proposed, instance.Name+".d/"+filepath.Base(dropIn.Path))
+				if dropIn.Hash == "" || dropIn.Mode == "" {
+					if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+						return failure("services.exact.provenance", "Exact instance drop-in removal lacks prior content/mode", false)
+					}
 				}
-				if op.ID != "" {
-					effects.files = append(effects.files, op)
-				}
+			}
+			op, reason, err := p.planArtifact(saved.Name, dropIn.Path, destination, file, force, dropIn.Presence == profile.ServiceAbsent)
+			if err != nil {
+				return effects, "", "", false, err
+			}
+			if reason != "" {
+				return failure("services.artifact.withheld", reason, false)
+			}
+			if op.ID != "" {
+				effects.files = append(effects.files, op)
 			}
 		}
 	}

@@ -146,50 +146,57 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 			if !persistentStartMatches(saved.StartIntent, actual, found) {
 				satisfied = false
 			}
-			for _, instance := range saved.Instances {
-				if instance.Presence == profile.ServiceAbsent {
-					if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
-						satisfied = false
-					}
-				} else {
-					if !persistentStartMatches(instance.StartIntent, current[instance.Name], current[instance.Name].Name != "") {
-						satisfied = false
-					}
-					instanceActual := current[instance.Name]
-					if instance.StartIntent != profile.ServiceStartMasked {
-						if instanceActual.LoadState != "" && instanceActual.LoadState != "loaded" {
-							satisfied = false
-						}
-						expectedSource := actual.FragmentPath
-						if saved.Management == profile.ServiceManagementDefinition {
-							expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
-						} else if saved.LinkedSource != "" {
-							expectedSource = saved.LinkedSource
-						}
-						if instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
-							satisfied = false
-						}
-					}
-				}
-				if instance.Mask != nil && (instance.Mask.Presence == profile.ServicePresent || exact) && userMask(instance.Name, p.Roots) != (instance.Mask.Presence == profile.ServicePresent) {
+		}
+		for _, instance := range saved.Instances {
+			if instance.Presence == profile.ServiceAbsent {
+				if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
 					satisfied = false
 				}
-				if base, exists := proposed[saved.Name]; exists {
-					proposed[instance.Name] = base
+			} else {
+				if saved.Presence != profile.ServicePresent {
+					satisfied = false
 				}
-				for _, dropIn := range instance.DropIns {
-					if dropIn.Presence == profile.ServiceAbsent && !exact {
+				if !persistentStartMatches(instance.StartIntent, current[instance.Name], current[instance.Name].Name != "") {
+					satisfied = false
+				}
+				instanceActual := current[instance.Name]
+				if instance.StartIntent != profile.ServiceStartMasked {
+					if instanceActual.LoadState != "" && instanceActual.LoadState != "loaded" {
+						satisfied = false
+					}
+					expectedSource := actual.FragmentPath
+					if saved.Management == profile.ServiceManagementDefinition {
+						expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
+					} else if saved.LinkedSource != "" {
+						expectedSource = saved.LinkedSource
+					}
+					if instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
+						satisfied = false
+					}
+				}
+			}
+			if instance.Mask != nil && (instance.Mask.Presence == profile.ServicePresent || exact) && userMask(instance.Name, p.Roots) != (instance.Mask.Presence == profile.ServicePresent) {
+				satisfied = false
+			}
+			if base, exists := proposed[saved.Name]; exists {
+				proposed[instance.Name] = base
+			}
+			for _, dropIn := range instance.DropIns {
+				if dropIn.Presence == profile.ServiceAbsent && !exact {
+					continue
+				}
+				if !serviceFileMatches(filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path)), dropIn.Hash, dropIn.Mode, dropIn.Presence == profile.ServiceAbsent) {
+					satisfied = false
+				} else if dropIn.Presence == profile.ServicePresent {
+					if _, hasBase := proposed[instance.Name]; !hasBase {
+						satisfied = false
 						continue
 					}
-					if !serviceFileMatches(filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path)), dropIn.Hash, dropIn.Mode, dropIn.Presence == profile.ServiceAbsent) {
+					file, err := readServiceFile(filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path)))
+					if err != nil {
 						satisfied = false
-					} else if dropIn.Presence == profile.ServicePresent {
-						file, err := readServiceFile(filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path)))
-						if err != nil {
-							satisfied = false
-						} else {
-							proposed[instance.Name+".d/"+filepath.Base(dropIn.Path)] = file.data
-						}
+					} else {
+						proposed[instance.Name+".d/"+filepath.Base(dropIn.Path)] = file.data
 					}
 				}
 			}
