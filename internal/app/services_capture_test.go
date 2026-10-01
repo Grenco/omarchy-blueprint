@@ -44,6 +44,25 @@ func servicesCLIFixture(t *testing.T) (string, Dependencies, servicesprovider.Ro
 	return profileDir, deps, roots
 }
 
+func TestCheckServicesUsesSelectedProfileDir(t *testing.T) {
+	profileDir, deps, roots := servicesCLIFixture(t)
+	live := filepath.Join(roots.UserConfigDir, "backup.service")
+	if err := os.WriteFile(live, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.ServicesSystemd = appServicesSystemd{units: []servicesprovider.ObservedUnit{appService("backup.service", live)}}
+	deps.In = strings.NewReader("yes\nyes\n")
+	if code, output := configRun(t, deps, profileDir, "capture", "services", "--review"); code != 0 {
+		t.Fatal(output)
+	}
+	// Check must resolve artifacts from --profile, never the process cwd or
+	// the default profile root captured when Cobra commands are constructed.
+	t.Chdir(t.TempDir())
+	if code, output := configRun(t, deps, profileDir, "check"); code != 0 {
+		t.Fatalf("public check lost the selected Services profile directory: code=%d output=%s", code, output)
+	}
+}
+
 func TestServicesRootsAreResolvedOnlyWhenInspected(t *testing.T) {
 	calls := 0
 	deps := Dependencies{Runner: &machineRunner{official: map[string]bool{}, aur: map[string]bool{}}, HomeDir: func() (string, error) {
