@@ -151,24 +151,24 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 					if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
 						satisfied = false
 					}
-					continue
-				}
-				if !persistentStartMatches(instance.StartIntent, current[instance.Name], current[instance.Name].Name != "") {
-					satisfied = false
-				}
-				instanceActual := current[instance.Name]
-				if instance.StartIntent != profile.ServiceStartMasked {
-					if instanceActual.LoadState != "" && instanceActual.LoadState != "loaded" {
+				} else {
+					if !persistentStartMatches(instance.StartIntent, current[instance.Name], current[instance.Name].Name != "") {
 						satisfied = false
 					}
-					expectedSource := actual.FragmentPath
-					if saved.Management == profile.ServiceManagementDefinition {
-						expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
-					} else if saved.LinkedSource != "" {
-						expectedSource = saved.LinkedSource
-					}
-					if instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
-						satisfied = false
+					instanceActual := current[instance.Name]
+					if instance.StartIntent != profile.ServiceStartMasked {
+						if instanceActual.LoadState != "" && instanceActual.LoadState != "loaded" {
+							satisfied = false
+						}
+						expectedSource := actual.FragmentPath
+						if saved.Management == profile.ServiceManagementDefinition {
+							expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
+						} else if saved.LinkedSource != "" {
+							expectedSource = saved.LinkedSource
+						}
+						if instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
+							satisfied = false
+						}
 					}
 				}
 				if instance.Mask != nil && (instance.Mask.Presence == profile.ServicePresent || exact) && userMask(instance.Name, p.Roots) != (instance.Mask.Presence == profile.ServicePresent) {

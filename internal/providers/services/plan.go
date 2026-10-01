@@ -422,26 +422,29 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 				if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
 					return failure("services.exact.instance", "Exact instance removal lacks recorded managed enablement provenance", false)
 				}
-				continue
 			}
 			if instance.Mask != nil && instance.Mask.Presence == profile.ServiceAbsent && exact && userMask(instance.Name, p.Roots) {
 				return failure("services.exact.mask", "Exact instance unmask lacks recorded prior managed mask identity provenance", false)
 			}
-			instanceActual := current[instance.Name]
-			expectedSource := actual.FragmentPath
-			if saved.Management == profile.ServiceManagementDefinition {
-				expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
-			} else if saved.LinkedSource != "" {
-				expectedSource = saved.LinkedSource
+			if instance.Presence == profile.ServicePresent {
+				instanceActual := current[instance.Name]
+				expectedSource := actual.FragmentPath
+				if saved.Management == profile.ServiceManagementDefinition {
+					expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
+				} else if saved.LinkedSource != "" {
+					expectedSource = saved.LinkedSource
+				}
+				if instance.StartIntent != profile.ServiceStartMasked && instanceActual.Name != "" && instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
+					return failure("services.instance.owner.external", "Configured instance resolves to a different external definition; Force cannot acquire it", true)
+				}
+				states, reason := p.planStartIntent(instance.Name, instance.StartIntent, instanceActual, instanceActual.Name != "", force, saved.Name)
+				if reason != "" {
+					return failure("services.state.withheld", reason, false)
+				}
+				effects.states = append(effects.states, states...)
 			}
-			if instance.StartIntent != profile.ServiceStartMasked && instanceActual.Name != "" && instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
-				return failure("services.instance.owner.external", "Configured instance resolves to a different external definition; Force cannot acquire it", true)
-			}
-			states, reason := p.planStartIntent(instance.Name, instance.StartIntent, current[instance.Name], current[instance.Name].Name != "", force, saved.Name)
-			if reason != "" {
-				return failure("services.state.withheld", reason, false)
-			}
-			effects.states = append(effects.states, states...)
+			// Configured-state absence does not erase independent managed
+			// mask/drop-in intent for this instance.
 			if base, exists := effects.proposed[saved.Name]; exists {
 				effects.proposed[instance.Name] = base
 			}
@@ -450,6 +453,7 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 					continue
 				}
 				file := capturedFile{hash: dropIn.Hash, mode: dropIn.Mode}
+				destination := filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path))
 				if dropIn.Presence == profile.ServicePresent {
 					var err error
 					file, err = p.desiredServiceFile(dropIn.Path, dropIn.Hash, dropIn.Mode)
@@ -457,10 +461,15 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 						return effects, "", "", false, err
 					}
 					effects.proposed[instance.Name+".d/"+filepath.Base(dropIn.Path)] = file.data
-				} else if dropIn.Hash == "" || dropIn.Mode == "" {
-					return failure("services.exact.provenance", "Exact instance drop-in removal lacks prior content/mode", false)
+				} else {
+					delete(effects.proposed, instance.Name+".d/"+filepath.Base(dropIn.Path))
+					if dropIn.Hash == "" || dropIn.Mode == "" {
+						if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+							return failure("services.exact.provenance", "Exact instance drop-in removal lacks prior content/mode", false)
+						}
+					}
 				}
-				op, reason, err := p.planArtifact(saved.Name, dropIn.Path, filepath.Join(p.Roots.UserConfigDir, instance.Name+".d", filepath.Base(dropIn.Path)), file, force, dropIn.Presence == profile.ServiceAbsent)
+				op, reason, err := p.planArtifact(saved.Name, dropIn.Path, destination, file, force, dropIn.Presence == profile.ServiceAbsent)
 				if err != nil {
 					return effects, "", "", false, err
 				}
