@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -13,9 +14,10 @@ import (
 )
 
 type serviceEffectRunner struct {
-	calls []string
-	t     *testing.T
-	live  string
+	calls     []string
+	t         *testing.T
+	live      string
+	failState bool
 }
 
 func (r *serviceEffectRunner) Run(_ context.Context, name string, args ...string) (string, error) {
@@ -23,7 +25,29 @@ func (r *serviceEffectRunner) Run(_ context.Context, name string, args ...string
 		r.t.Fatalf("semantic command ran before required definition: %v", err)
 	}
 	r.calls = append(r.calls, name+" "+strings.Join(args, " "))
+	if r.failState && len(args) > 1 && args[1] == "disable" {
+		return "", errors.New("disable failed")
+	}
 	return "", nil
+}
+
+func TestServicesExecutionStateFailureBlocksFinalRefresh(t *testing.T) {
+	p, data, s, live := persistentPlanFixture(t)
+	if err := os.Remove(live); err != nil {
+		t.Fatal(err)
+	}
+	s.units = nil
+	fragment := persistentPlan(t, p, *data, false, false)
+	journal, err := restore.NewJournal(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	runner := &serviceEffectRunner{t: t, live: live, failState: true}
+	result, err := restore.Execute(context.Background(), runner, model.RestorePlan{Operations: fragment.Operations}, journal, time.Now, time.Second, nil)
+	if err != nil || len(result.Failed) != 1 || len(result.Blocked) != 1 || result.Blocked[0].Operation.ID != "services.state-daemon-reload" {
+		t.Fatalf("state failure retained refresh authority: result=%+v calls=%v err=%v", result, runner.calls, err)
+	}
 }
 func TestServicesExecutionFileFailureBlocksReloadAndStateCommands(t *testing.T) {
 	p, data, s, live := persistentPlanFixture(t)
@@ -63,7 +87,7 @@ func TestServicesExecutionPersistentOrderingNeverActivates(t *testing.T) {
 	defer journal.Close()
 	runner := &serviceEffectRunner{t: t, live: live}
 	result, err := restore.Execute(context.Background(), runner, model.RestorePlan{Operations: fragment.Operations}, journal, time.Now, time.Second, nil)
-	if err != nil || len(result.Failed) > 0 || len(runner.calls) != 2 || runner.calls[0] != "systemctl --user daemon-reload" || runner.calls[1] != "systemctl --user disable --no-reload -- backup.service" {
+	if err != nil || len(result.Failed) > 0 || len(runner.calls) != 3 || runner.calls[0] != "systemctl --user daemon-reload" || runner.calls[1] != "systemctl --user disable --no-reload -- backup.service" || runner.calls[2] != "systemctl --user daemon-reload" {
 		t.Fatalf("persistent effects ordered incorrectly: calls=%v result=%+v err=%v", runner.calls, result, err)
 	}
 }

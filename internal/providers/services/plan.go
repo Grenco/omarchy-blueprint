@@ -203,6 +203,14 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 		}
 	}
 	fragment.Operations = append(fragment.Operations, stateOps...)
+	if len(stateOps) > 0 {
+		refresh := serviceCommand("daemon-reload", "", "")
+		refresh.ID = "services.state-daemon-reload"
+		for _, state := range stateOps {
+			refresh.DependsOn = append(refresh.DependsOn, state.ID)
+		}
+		fragment.Operations = append(fragment.Operations, refresh)
+	}
 	fragment.Compatibility, err = assessment.category(true)
 	return fragment, err
 }
