@@ -105,7 +105,15 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 			}
 			absent.Instances = append([]profile.ServiceInstance(nil), old.Instances...)
 			for n := range absent.Instances {
-				absent.Instances[n].Presence, absent.Instances[n].StartIntent = profile.ServiceAbsent, profile.ServiceStartNotManaged
+				instance := &absent.Instances[n]
+				instance.Presence, instance.StartIntent = profile.ServiceAbsent, profile.ServiceStartNotManaged
+				instance.DropIns = append([]profile.ServiceArtifact(nil), instance.DropIns...)
+				for j := range instance.DropIns {
+					instance.DropIns[j].Presence = profile.ServiceAbsent
+				}
+				if instance.Mask != nil {
+					instance.Mask = &profile.ServiceMask{Presence: profile.ServiceAbsent}
+				}
 			}
 			next.Units = append(next.Units, absent)
 			changes = append(changes, serviceChange(model.ChangeRemove, name, "Remember reviewed service removal"))
