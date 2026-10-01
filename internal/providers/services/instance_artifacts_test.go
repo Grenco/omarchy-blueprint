@@ -224,3 +224,103 @@ func TestAbsentInstanceStillChecksManagedMaskTombstone(t *testing.T) {
 		t.Fatalf("already-absent mask failed Verify: %+v err=%v", result, err)
 	}
 }
+
+func absentInstancePresentDropInFixture(t *testing.T) (*Provider, *profile.Data, *planSystemd, string) {
+	t.Helper()
+	p, data, s, path := absentInstanceDropInFixture(t)
+	artifact := &data.Services.Units[0].Instances[0].DropIns[0]
+	artifact.Presence = profile.ServicePresent
+	snapshot := filepath.Join(p.ProfileDir, "services", filepath.FromSlash(artifact.Path))
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(snapshot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshot, bytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	actual := observedService("backup@photos.service", s.units[0].FragmentPath)
+	actual.InstanceOf, actual.DropInPaths = "backup@.service", []string{path}
+	s.units = append(s.units, actual)
+	return p, data, s, path
+}
+
+func TestPlanAbsentInstancePresentDropInRejectsExternalInstanceOverride(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		p, data, s, path := absentInstancePresentDropInFixture(t)
+		s.units[1].FragmentPath = "/usr/lib/systemd/user/backup@photos.service"
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		fragment := persistentPlan(t, p, *data, force, true)
+		if len(fragment.Operations) != 0 || fragment.Compatibility.Authority != model.CompatibilityBlocked || len(fragment.Compatibility.Findings) != 1 || fragment.Compatibility.Findings[0].Code != "services.instance.owner.external" || s.validations != 0 {
+			t.Fatalf("positive customization acquired external instance base: force=%v fragment=%+v", force, fragment)
+		}
+	}
+}
+
+func TestPlanAbsentInstancePresentDropInWithholdsUnknownTopology(t *testing.T) {
+	p, data, s, path := absentInstancePresentDropInFixture(t)
+	s.units[1].TopologyKnown = false
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	fragment := persistentPlan(t, p, *data, true, true)
+	if len(fragment.Operations) != 0 || fragment.Compatibility.State != model.CompatibilityUnknown || fragment.Compatibility.Authority != model.CompatibilityReduced || len(fragment.Compatibility.Findings) != 1 || fragment.Compatibility.Findings[0].Code != "services.instance.topology.unestablished" || s.validations != 0 {
+		t.Fatalf("positive customization used unestablished instance topology: %+v", fragment)
+	}
+}
+
+func TestVerifyAbsentInstancePresentDropInRequiresExpectedEffectiveBase(t *testing.T) {
+	for _, source := range []string{"external", "unknown", "empty", "expected", "not-listed"} {
+		t.Run(source, func(t *testing.T) {
+			p, data, s, _ := absentInstancePresentDropInFixture(t)
+			switch source {
+			case "external":
+				s.units[1].FragmentPath = "/usr/lib/systemd/user/backup@photos.service"
+			case "unknown":
+				s.units[1].TopologyKnown = false
+			case "empty":
+				s.units[1].FragmentPath = ""
+			case "not-listed":
+				s.units = s.units[:1]
+			}
+			want := source == "expected" || source == "not-listed"
+			fragment := persistentPlan(t, p, *data, false, true)
+			if (fragment.Compatibility.Authority == model.CompatibilityUnchanged) != want || len(fragment.Operations) != 0 {
+				t.Fatalf("planner accepted wrong effective base: source=%s fragment=%+v", source, fragment)
+			}
+			result, err := p.Verify(context.Background(), *data, planContext(*data, false, true))
+			if err != nil || result.OK != want || !want && (len(result.Missing) != 1 || result.Missing[0] != "backup@.service") {
+				t.Fatalf("Verify used template bytes instead of effective instance evidence: %+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestAbsentInstanceDropInTombstoneDoesNotRequireMatchingBase(t *testing.T) {
+	for _, source := range []string{"external", "unknown"} {
+		t.Run(source, func(t *testing.T) {
+			p, data, s, path := absentInstanceDropInFixture(t)
+			actual := observedService("backup@photos.service", "/usr/lib/systemd/user/backup@photos.service")
+			actual.InstanceOf = "backup@.service"
+			if source == "unknown" {
+				actual.TopologyKnown = false
+			}
+			s.units = append(s.units, actual)
+			fragment := persistentPlan(t, p, *data, false, true)
+			if fragment.Compatibility.Authority != model.CompatibilityUnchanged || len(fragment.Operations) != 2 || fragment.Operations[0].Delete == nil || fragment.Operations[0].Delete.Destination != path || fragment.Operations[0].Delete.ExpectedExisting == nil {
+				t.Fatalf("new base suppressed exact owned artifact removal: %+v", fragment)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			result, err := p.Verify(context.Background(), *data, planContext(*data, false, true))
+			if err != nil || !result.OK {
+				t.Fatalf("cleared tombstone required authority over current base: %+v err=%v", result, err)
+			}
+		})
+	}
+}

@@ -419,6 +419,21 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 		effects.states = append(effects.states, states...)
 	}
 	for _, instance := range saved.Instances {
+		instanceActual, instanceFound := current[instance.Name]
+		expectedSource := actual.FragmentPath
+		if saved.Management == profile.ServiceManagementDefinition {
+			expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
+		} else if saved.LinkedSource != "" {
+			expectedSource = saved.LinkedSource
+		}
+		if hasPresentDropIn(instance.DropIns) && instanceFound {
+			if !instanceActual.TopologyKnown {
+				return failure("services.instance.topology.unestablished", "Effective instance source topology is unknown; positive customization withheld", false)
+			}
+			if expectedSource == "" || instanceActual.FragmentPath != expectedSource {
+				return failure("services.instance.owner.external", "Instance customization resolves to a different or unavailable base; Force cannot acquire it", true)
+			}
+		}
 		if instance.Presence == profile.ServiceAbsent {
 			if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
 				return failure("services.exact.instance", "Exact instance removal lacks recorded managed enablement provenance", false)
@@ -430,13 +445,6 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 		if instance.Presence == profile.ServicePresent {
 			if saved.Presence != profile.ServicePresent {
 				return failure("services.instance.base.unavailable", "Configured instance requires a present template; mutation withheld", true)
-			}
-			instanceActual := current[instance.Name]
-			expectedSource := actual.FragmentPath
-			if saved.Management == profile.ServiceManagementDefinition {
-				expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
-			} else if saved.LinkedSource != "" {
-				expectedSource = saved.LinkedSource
 			}
 			if instance.StartIntent != profile.ServiceStartMasked && instanceActual.Name != "" && instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
 				return failure("services.instance.owner.external", "Configured instance resolves to a different external definition; Force cannot acquire it", true)

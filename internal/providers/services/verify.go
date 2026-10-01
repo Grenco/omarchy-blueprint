@@ -148,6 +148,16 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 			}
 		}
 		for _, instance := range saved.Instances {
+			instanceActual, instanceFound := current[instance.Name]
+			expectedSource := actual.FragmentPath
+			if saved.Management == profile.ServiceManagementDefinition {
+				expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
+			} else if saved.LinkedSource != "" {
+				expectedSource = saved.LinkedSource
+			}
+			if hasPresentDropIn(instance.DropIns) && instanceFound && (!instanceActual.TopologyKnown || expectedSource == "" || instanceActual.FragmentPath != expectedSource) {
+				satisfied = false
+			}
 			if instance.Presence == profile.ServiceAbsent {
 				if exact && current[instance.Name].Name != "" && current[instance.Name].StartIntent != profile.ServiceStartDisabled {
 					satisfied = false
@@ -159,16 +169,9 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 				if !persistentStartMatches(instance.StartIntent, current[instance.Name], current[instance.Name].Name != "") {
 					satisfied = false
 				}
-				instanceActual := current[instance.Name]
 				if instance.StartIntent != profile.ServiceStartMasked {
 					if instanceActual.LoadState != "" && instanceActual.LoadState != "loaded" {
 						satisfied = false
-					}
-					expectedSource := actual.FragmentPath
-					if saved.Management == profile.ServiceManagementDefinition {
-						expectedSource = filepath.Join(p.Roots.UserConfigDir, saved.Name)
-					} else if saved.LinkedSource != "" {
-						expectedSource = saved.LinkedSource
 					}
 					if instanceActual.TopologyKnown && instanceActual.FragmentPath != "" && instanceActual.FragmentPath != expectedSource {
 						satisfied = false
