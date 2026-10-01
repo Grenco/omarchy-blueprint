@@ -3,6 +3,7 @@ package restore
 import (
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -90,6 +91,14 @@ func validateOperationAction(op model.Operation) error {
 	}
 	if op.GitPatch != nil {
 		return validateGitPatch(op.ID, *op.GitPatch)
+	}
+	if op.Symlink != nil && op.Symlink.ExpectedTarget != nil {
+		if !filepath.IsAbs(op.Symlink.Target) || op.Symlink.ExpectedTarget.Type != "file" || len(op.Symlink.ExpectedTarget.Hash) != 64 {
+			return fmt.Errorf("symlink source precondition must identify an absolute regular file: %s", op.ID)
+		}
+		if _, err := hex.DecodeString(op.Symlink.ExpectedTarget.Hash); err != nil {
+			return fmt.Errorf("symlink source precondition hash is invalid: %s", op.ID)
+		}
 	}
 	return nil
 }

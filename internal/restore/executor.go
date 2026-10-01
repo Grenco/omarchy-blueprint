@@ -607,6 +607,14 @@ func executeSymlinkWriteWithJournal(operation string, action model.SymlinkWrite,
 	if action.ExpectedMissing == action.ReplaceExisting {
 		return fmt.Errorf("symlink write requires exactly one destination precondition: %s", action.Destination)
 	}
+	if action.ExpectedTarget != nil {
+		if err := validateSymlinkParents(action.Target); err != nil {
+			return err
+		}
+		if err := validateFilesystemPrecondition(action.Target, *action.ExpectedTarget); err != nil {
+			return fmt.Errorf("linked source changed: %w", err)
+		}
+	}
 	if action.RejectSymlinkParents {
 		if err := validateSymlinkParents(action.Destination); err != nil {
 			return err
@@ -669,6 +677,11 @@ func executeSymlinkWriteWithJournal(operation string, action model.SymlinkWrite,
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if action.ExpectedTarget != nil {
+		if err := validateFilesystemPrecondition(action.Target, *action.ExpectedTarget); err != nil {
+			return fmt.Errorf("linked source changed: %w", err)
+		}
+	}
 	return os.Symlink(action.Target, action.Destination)
 }
 
@@ -729,6 +742,11 @@ func reserveSiblingBackupPath(destination string) (string, error) {
 }
 
 func installSymlinkAtomic(action model.SymlinkWrite) error {
+	if action.ExpectedTarget != nil {
+		if err := validateFilesystemPrecondition(action.Target, *action.ExpectedTarget); err != nil {
+			return fmt.Errorf("linked source changed: %w", err)
+		}
+	}
 	if action.RejectSymlinkParents {
 		if err := validateSymlinkParents(action.Destination); err != nil {
 			return err
