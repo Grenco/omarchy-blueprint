@@ -196,9 +196,13 @@ func (c CaptureContext) Require(key string) (CaptureDecision, error) {
 // decision (see Session.resolveRestoreTarget) for every planned target; a
 // target absent from Targets means no orchestration ever considered it.
 type RestoreContext struct {
-	Machine string
-	Options policy.RestoreOptions
-	Targets map[string]RestoreDecision
+	// PlannedOperations and CompletedOperations bind runtime verification to
+	// this exact run, never to a recalculated activation decision.
+	PlannedOperations   []model.Operation
+	CompletedOperations []model.Operation
+	Machine             string
+	Options             policy.RestoreOptions
+	Targets             map[string]RestoreDecision
 	// Compatibility is populated from this provider's planned fragment only
 	// after Plan returns. Verify receives the exact planned category.
 	Compatibility model.CompatibilityCategory

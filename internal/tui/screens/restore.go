@@ -25,6 +25,9 @@ type Restore struct {
 	width, height, selected int
 	styles                  components.Styles
 	confirm                 bool
+	reviewingActivation     bool
+	activationSelected      int
+	activationChoices       []string
 	compatibilityExpanded   bool
 	busy                    bool
 	planning                bool
@@ -107,7 +110,7 @@ func (s *Restore) Init() tea.Cmd {
 	}
 	return s.refreshPlan()
 }
-func (s *Restore) TransientActive() bool { return s.confirm }
+func (s *Restore) TransientActive() bool { return s.confirm || s.reviewingActivation }
 
 func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -129,6 +132,9 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	if !ok {
 		return nil
 	}
+	if s.reviewingActivation {
+		return s.updateActivationReview(key.String())
+	}
 	if s.confirm {
 		switch key.String() {
 		case "esc":
@@ -145,6 +151,19 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	switch key.String() {
+	case "a":
+		s.ensureOptions()
+		switch s.options.ActivationMode() {
+		case policy.ActivationPersistentOnly:
+			s.options.Activation = policy.ActivationRestoreWorkingState
+		case policy.ActivationRestoreWorkingState:
+			s.options.Activation = policy.ActivationReview
+		default:
+			s.options.Activation = policy.ActivationPersistentOnly
+		}
+		s.options.ReviewActivation = nil
+		s.override = true
+		return s.refreshPlan()
 	case "v":
 		s.compatibilityExpanded = !s.compatibilityExpanded
 		s.layoutPlan()
@@ -177,6 +196,10 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		s.override = true
 		return s.refreshPlan()
 	case "enter":
+		if s.options.ActivationMode() == policy.ActivationReview && s.options.ReviewActivation == nil && len(s.current.ActivationReview) > 0 && workflow.CheckRestoreApplicable(s.current, true) == nil {
+			s.reviewingActivation, s.activationSelected, s.activationChoices = true, 0, nil
+			return nil
+		}
 		if s.CanApply() {
 			s.confirm = true
 			return func() tea.Msg {
@@ -188,6 +211,9 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (s *Restore) View() string {
+	if s.reviewingActivation {
+		return s.activationReviewView()
+	}
 	if s.err != nil {
 		return "Unable to prepare restore: " + components.DisplayText(s.err.Error())
 	}
@@ -212,7 +238,7 @@ func (s *Restore) DetailView() string {
 	}
 	if s.selected < len(s.current.Operations) {
 		op := s.current.Operations[s.selected]
-		return fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive)
+		return fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t\n%s", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive, components.DisplayText(op.Notice))
 	}
 	skipIndex := s.selected - len(s.current.Operations)
 	if skipIndex >= 0 && skipIndex < len(s.current.Skipped) {
@@ -330,10 +356,14 @@ func (s *Restore) fullPlanHeader(width int) []string {
 			{Cells: []string{"Machine", components.DisplayText(machine), "Target machine for this run"}},
 			{Cells: []string{"Conflict handling (f)", conflicts, conflictMeaning}},
 			{Cells: []string{"Convergence (e)", convergence, convergenceMeaning}},
+			{Cells: []string{"Activation (a)", activationLabel(s.options.ActivationMode()), "Explicit permission for this run"}},
 			{Cells: []string{"Defaults", defaults, defaultsMeaning}},
-		}, width, 5, s.styles,
+		}, width, 6, s.styles,
 	)
 	sections := []string{components.SectionDivider("Run settings", width, s.styles) + "\n" + settings}
+	if len(s.current.ActivationReview) > 0 {
+		sections = append(sections, "Review activation: press Enter to select individual starts before applying.")
+	}
 	if s.options.Convergence == policy.ConvergenceExact {
 		sections = append(sections, s.wrapCurrentPlan([]string{"WARNING: Exact may remove Blueprint-managed desired-absent targets; Resource data is never deleted."}))
 	}
@@ -359,7 +389,7 @@ func (s *Restore) compactPlanHeader(width int) []string {
 	counts := outcomeCounts(s.current)
 	machine, conflicts, _, convergence, _, defaults, _ := s.runSettings()
 	lines := []string{}
-	for _, line := range components.WrapText(fmt.Sprintf("Run: %s (f) · %s (e) · %s · %s", conflicts, convergence, defaults, machine), width) {
+	for _, line := range components.WrapText(fmt.Sprintf("Run: %s (f) · %s (e) · %s activation (a) · %s · %s", conflicts, convergence, activationLabel(s.options.ActivationMode()), defaults, machine), width) {
 		lines = append(lines, s.styles.SubtleAccent(line))
 	}
 	if s.options.Convergence == policy.ConvergenceExact {
@@ -836,11 +866,16 @@ func (s *Restore) apply() tea.Cmd {
 		if s.session == nil {
 			return restoreAppliedMsg{err: fmt.Errorf("restore session is unavailable")}
 		}
-		result, err := s.session.ApplyApprovedRestore(s.ctx, restoreScopeAll, options, approved, false)
+		// Review selection happened interactively in this terminal. No command
+		// here needs stdin; those use the tea.Exec handoff above.
+		result, err := s.session.ApplyApprovedRestore(s.ctx, restoreScopeAll, options, approved, s.options.ActivationMode() == policy.ActivationReview)
 		return restoreAppliedMsg{result, err}
 	}
 }
 func (s *Restore) plan() model.RestorePlan { return s.current }
+
+// CurrentPlan exposes the shared domain plan used by preview and approval.
+func (s *Restore) CurrentPlan() model.RestorePlan { return s.current }
 func (s *Restore) currentEntryCount() int {
 	return len(s.current.Operations) + len(s.current.Skipped)
 }
@@ -986,6 +1021,9 @@ func (s *Restore) confirmation() string {
 	}
 	if s.hasInteractiveOperation() {
 		prompt += " Some operations may ask for administrator authentication in this terminal; Blueprint steps aside while they run."
+	}
+	if s.options.ActivationMode() != policy.ActivationPersistentOnly {
+		prompt += " Services activation: " + activationLabel(s.options.ActivationMode()) + "."
 	}
 	return prompt
 }

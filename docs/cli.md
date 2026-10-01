@@ -47,8 +47,33 @@ an unreviewed removal. External base definitions remain outside the profile.
 `restore services --dry-run` previews persistent reconstruction of selected
 definitions, unit-specific drop-ins, enablement, and user masks. Authored file
 changes are guarded, then systemd refreshes definitions before persistent
-state changes. Services never starts, stops, or restarts processes in this
-milestone; previously active evidence does not grant activation authority.
+state changes. Services defaults to persistent state only; previously active
+evidence never grants activation authority by itself. Services never stops,
+restarts, or reloads application processes.
+
+Use `--activation persistent` (the default), `--activation working`, or
+`--activation review` for this run. Working mode is headless-safe only when
+explicitly requested and proposes starts only for captured-active targets whose
+saved `activation_preference` is `restore-working-state`. A saved `review`
+preference remains unstarted and visibly requires interactive activation review.
+Review mode requires an interactive terminal for Apply and asks about eligible
+starts individually; `--yes` does not answer those questions. JSON/dry-run
+previews list review candidates without granting start authority.
+
+New captures default to `activation_preference = "persistent-only"`. In the
+human-readable Services profile, select `restore-working-state` or `review` for
+targets you want considered for activation. Persistent-only preferences never
+start under either run mode. Every start also requires captured-active evidence,
+safe effective topology, parser validation, and compatibility/readiness. Timers,
+sockets and paths activate their entry point, not the triggered service directly.
+On fresh destinations, direct service activation is withheld until the manager
+establishes its effective source and entry-point relationships; persistent
+reconstruction can still apply, followed by inspection and a new activation plan.
+Slices never receive generic working-state activation. Independent approved
+starts share persistent-work prerequisites without depending on sibling starts.
+Already-running processes are never restarted. Approved activation is verified
+using this run's successful job receipt plus manager state; completed successful
+oneshots need not remain active.
 
 Safe keeps conflicting user files; Force can replace a supported user-controlled
 conflict with a backup, but cannot acquire an external base, cross linked paths,

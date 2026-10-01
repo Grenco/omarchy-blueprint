@@ -107,10 +107,33 @@ const (
 	ConvergenceExact    ConvergenceMode = "exact"
 )
 
-// RestoreOptions carries one restore run's two independent intent axes.
+// ActivationMode is explicit run authority, never a persisted machine default.
+type ActivationMode string
+
+const (
+	ActivationPersistentOnly      ActivationMode = "persistent"
+	ActivationRestoreWorkingState ActivationMode = "working"
+	ActivationReview              ActivationMode = "review"
+)
+
+// ActivationReviewSelection records interactive choices for this run only.
+type ActivationReviewSelection struct {
+	Units []string
+}
+
+// RestoreOptions carries independent conflict, convergence and activation intent.
 type RestoreOptions struct {
-	Conflicts   ConflictMode
-	Convergence ConvergenceMode
+	Conflicts        ConflictMode
+	Convergence      ConvergenceMode
+	Activation       ActivationMode
+	ReviewActivation *ActivationReviewSelection
+}
+
+func (o RestoreOptions) ActivationMode() ActivationMode {
+	if o.Activation == "" {
+		return ActivationPersistentOnly
+	}
+	return o.Activation
 }
 
 // DefaultRestoreOptions is the built-in Safe+Additive restore intent used
@@ -124,6 +147,14 @@ func DefaultRestoreOptions() RestoreOptions {
 // restore fields are normalized to defaults by profile/workflow before
 // reaching this validation.
 func ValidateRestoreOptions(options RestoreOptions) error {
+	switch options.ActivationMode() {
+	case ActivationPersistentOnly, ActivationRestoreWorkingState, ActivationReview:
+	default:
+		return fmt.Errorf("invalid activation mode %q, want persistent, working or review", options.Activation)
+	}
+	if options.ReviewActivation != nil && options.ActivationMode() != ActivationReview {
+		return fmt.Errorf("individual activation choices require review mode")
+	}
 	switch options.Conflicts {
 	case ConflictSafe, ConflictForce:
 	default:

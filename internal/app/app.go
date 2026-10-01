@@ -729,12 +729,24 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes, force, exact bool
-	var conflictsFlag, convergenceFlag string
+	var conflictsFlag, convergenceFlag, activationFlag string
 	providers := stateProviders(deps, opt)
 	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
 		override, err := parseRestoreOverride(force, exact, conflictsFlag, convergenceFlag)
 		if err != nil {
 			return err
+		}
+		if activationFlag != "" {
+			mode := policy.ActivationMode(activationFlag)
+			switch mode {
+			case policy.ActivationPersistentOnly, policy.ActivationRestoreWorkingState, policy.ActivationReview:
+			default:
+				return fmt.Errorf("invalid --activation %q, want persistent, working or review", activationFlag)
+			}
+			if mode == policy.ActivationReview && !dryRun && (!deps.IsTTY() || opt.json) {
+				return fmt.Errorf("activation review requires an interactive terminal and cannot apply with --json")
+			}
+			override.Activation = &mode
 		}
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
@@ -758,6 +770,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	cmd.Flags().BoolVar(&exact, "exact", false, "one-run shorthand for --convergence exact")
 	cmd.Flags().StringVar(&conflictsFlag, "conflicts", "", `one-run Restore conflict override: "safe" or "force"`)
 	cmd.Flags().StringVar(&convergenceFlag, "convergence", "", `one-run Restore convergence override: "additive" or "exact"`)
+	cmd.Flags().StringVar(&activationFlag, "activation", "", "one-run Services activation: persistent, working, or interactive review (default persistent)")
 	return cmd
 }
 
@@ -769,11 +782,15 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 // override either [axis] for one run without changing the saved machine
 // default," independently per axis, not as an all-or-nothing pair.
 type restoreOverride struct {
-	Conflicts   *policy.ConflictMode
-	Convergence *policy.ConvergenceMode
+	Conflicts        *policy.ConflictMode
+	Convergence      *policy.ConvergenceMode
+	Activation       *policy.ActivationMode
+	ReviewActivation *policy.ActivationReviewSelection
 }
 
-func (o restoreOverride) any() bool { return o.Conflicts != nil || o.Convergence != nil }
+func (o restoreOverride) any() bool {
+	return o.Conflicts != nil || o.Convergence != nil || o.Activation != nil
+}
 
 // resolve merges o onto base (the resolved default this run would use
 // absent any override), returning nil when o overrides nothing at all --
@@ -789,6 +806,10 @@ func (o restoreOverride) resolve(base policy.RestoreOptions) *policy.RestoreOpti
 	}
 	if o.Convergence != nil {
 		base.Convergence = *o.Convergence
+	}
+	if o.Activation != nil {
+		base.Activation = *o.Activation
+		base.ReviewActivation = o.ReviewActivation
 	}
 	return &base
 }
@@ -1720,6 +1741,7 @@ func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.
 }
 
 func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, override restoreOverride) error {
+	input := bufio.NewReader(deps.In)
 	session, err := openWorkflow(deps, opt)
 	if err != nil {
 		return profileError(opt.profileDir, err)
@@ -1757,6 +1779,31 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 		return err
 	}
+	if resolved.ActivationMode() == policy.ActivationReview {
+		if !deps.IsTTY() || opt.json {
+			return fmt.Errorf("activation review requires an interactive terminal")
+		}
+		selection := &policy.ActivationReviewSelection{}
+		for _, candidate := range plan.ActivationReview {
+			fmt.Fprintf(deps.Out, "Activate %s after Restore? %s [y/N] ", candidate.Unit, candidate.Reason)
+			answer, readErr := input.ReadString('\n')
+			if readErr != nil && strings.TrimSpace(answer) == "" {
+				return fmt.Errorf("activation review cancelled: %w", readErr)
+			}
+			if value := strings.ToLower(strings.TrimSpace(answer)); value == "y" || value == "yes" {
+				selection.Units = append(selection.Units, candidate.Unit)
+			}
+		}
+		override.ReviewActivation = selection
+		plan, restoreProviders, contexts, resolved, err = session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+		if err != nil {
+			return err
+		}
+		if err := workflow.CheckRestoreApplicable(plan, true); err != nil {
+			return err
+		}
+		planOptions = restorePlanOptionsFromPolicy(resolved)
+	}
 	if len(plan.Operations) == 0 {
 		if !opt.json {
 			fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
@@ -1791,7 +1838,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return errors.New("restore with --json requires --yes or --dry-run")
 		}
 		fmt.Fprint(deps.Out, "Apply this restore? [y/N] ")
-		answer, _ := bufio.NewReader(deps.In).ReadString('\n')
+		answer, _ := input.ReadString('\n')
 		if value := strings.ToLower(strings.TrimSpace(answer)); value != "y" && value != "yes" {
 			return errors.New("restore cancelled")
 		}
@@ -1826,6 +1873,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if err != nil {
 		return err
 	}
+	contexts = workflow.WithRestoreExecution(contexts, execution)
 	verification, err := verifyRestoreProviders(ctx, d, restoreProviders, contexts)
 	if err != nil {
 		return err
@@ -1938,6 +1986,12 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintln(&b, "Restore plan")
 	}
 	fmt.Fprintf(&b, "Omarchy: %s → %s\n", plan.OmarchyFrom, plan.OmarchyTo)
+	if plan.ActivationMode != "" {
+		fmt.Fprintf(&b, "Services activation: %s\n", plan.ActivationMode)
+	}
+	for _, candidate := range plan.ActivationReview {
+		fmt.Fprintf(&b, "Activation review: %s (approved=%t) — %s\n", candidate.Unit, candidate.Approved, candidate.Reason)
+	}
 	b.WriteString(renderCompatibility(plan.Compatibility))
 	b.WriteString(renderRequirements(plan))
 	if len(plan.Operations) == 0 && len(plan.Skipped) == 0 {
@@ -1946,7 +2000,7 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 	}
 	for _, op := range plan.Operations {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
-		if op.Interactive && op.Notice != "" {
+		if op.Notice != "" && (op.Interactive || op.Provider == "services") {
 			fmt.Fprintf(&b, "! %s\n", op.Notice)
 		}
 	}
