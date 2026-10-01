@@ -213,7 +213,7 @@ func (s Systemctl) VerifyUnitSet(ctx context.Context, proposed ProposedUnitSet) 
 	if err != nil {
 		return fmt.Errorf("resolve proposed user-service validation root: %w", err)
 	}
-	args := []string{"SYSTEMD_UNIT_PATH=" + root + ":", "systemd-analyze", "--user", "--generators=no", "--man=no", "verify"}
+	args := []string{"SYSTEMD_UNIT_PATH=" + root + ":", "XDG_RUNTIME_DIR=" + root, "systemd-analyze", "--user", "--generators=no", "--man=no", "verify"}
 	for _, file := range proposed.Files {
 		rel, err := filepath.Rel(proposed.Root, file)
 		if !filepath.IsAbs(file) || err != nil || filepath.IsAbs(rel) || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

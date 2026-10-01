@@ -64,6 +64,7 @@ func TestValidateRealSystemdLoadsProposedDropIns(t *testing.T) {
 	if _, err := exec.LookPath("systemd-analyze"); err != nil {
 		t.Skip("systemd-analyze is not installed")
 	}
+	t.Setenv("XDG_RUNTIME_DIR", "") // package builders have no user login session
 	p := Provider{Systemd: Systemctl{Runner: command.SystemRunner{}}}
 	base := []byte("[Unit]\nDefaultDependencies=no\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	if err := p.validateProposedSet(context.Background(), map[string][]byte{"blueprint-verify.service": base}); err != nil {
