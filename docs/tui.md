@@ -220,9 +220,15 @@ a selected user-owned drop-in or mask without its base definition becoming
 Blueprint-managed. The Services inventory keeps custom and managed units first,
 with other detected services collapsed by default; Enter expands that group.
 Discovery explanations appear in Details rather than crowding the name column.
-Services Restore currently shows explicit skips and Unknown/Reduced compatibility
-while other categories remain available. Persistent Services reconstruction
-follows in the next milestone.
+Services Restore now plans guarded persistent definitions/drop-ins and systemd
+enablement or user masks, with shared compatibility and Verify. It does not
+activate or restart processes: changes beneath an already-running service are
+accompanied by a no-restart notice. Conflicts, unresolved source topology, and
+Exact removals without matching provenance remain visibly withheld rather than
+being authorized by Force. Requirements for a usable user login session or unit
+verifier must be satisfied externally, followed by a fresh plan. Existing naked
+templates with unresolved sources remain Unknown; complete template/instance
+Capture and activation are subsequent Services work.
 
 ### Resources
 
