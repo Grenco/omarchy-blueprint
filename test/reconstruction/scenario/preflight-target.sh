@@ -34,7 +34,9 @@ absent "package:$RA_PACKAGE" eval '! pacman -Q "$RA_PACKAGE" >/dev/null 2>&1'
 absent "theme:$RA_THEME" test "$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null)" != "$RA_THEME"
 absent "default:terminal=$RA_DEFAULT_TERMINAL" test "$(omarchy default terminal)" != "$RA_DEFAULT_TERMINAL"
 paths=(".config/omarchy/plugins/$RA_PLUGIN_ID" "$RA_CONFIG_PATH" "$RA_HOOK_PATH" "$RA_HELPER_SOURCE"
-       "$RA_HELPER_TARGET" "$RA_GIT_PATH" "$RA_SKIP_PATH")
+       "$RA_HELPER_TARGET" "$RA_GIT_PATH" "$RA_SKIP_PATH" ".config/systemd/user/$RA_SERVICE"
+       ".config/systemd/user/$RA_TIMER" ".config/systemd/user/$RA_SERVICE.d/$RA_SERVICE_DROPIN"
+       ".config/systemd/user/$RA_UNMANAGED_SERVICE" "$RA_SERVICE_MARKER")
 [[ $mode != fresh ]] || paths+=(omarchy-profile .local/state/omarchy-blueprint)
 for path in "${paths[@]}"; do
   absent "~/$path" test ! -e "$HOME/$path"

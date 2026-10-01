@@ -47,6 +47,21 @@ ra_capture_source() {
     ra_contract restore-skip "$a/target-policy.json" target resources "resource:$RA_SKIP_RESOURCE" 2>> "$log" ||
     ra_fail CAPTURE "target Restore skip is not an explicit machine rule (see source/blueprint.log)"
 
+  # First Services adoption is a separate public reviewed selection flow:
+  # aggregate review deliberately never silently adopts new Services candidates.
+  before=$(ra_profile_digest source) &&
+    ra_blueprint source --profile "$p" --machine source --json capture services --review > "$a/services-preview.json" 2>> "$log" &&
+    after=$(ra_profile_digest source) ||
+    ra_fail CAPTURE "Services candidate preview failed"
+  [[ $before == "$after" ]] || ra_fail CAPTURE "Services preview mutated the profile"
+  ra_contract services-preview "$a/services-preview.json" source 2>> "$log" ||
+    ra_fail CAPTURE "Services preview lacks eligible unselected fixture candidates"
+  python3 "$RA_ROOT/scenario/approve_capture.py" --transcript "$a/services-capture-transcript.txt" \
+    --capture-service "$RA_SERVICE" --capture-service "$RA_TIMER" -- \
+    ssh -tt "${RA_SSH_OPTS[@]}" "$RA_USER@127.0.0.1" \
+    "source /tmp/blueprint-ra-fixtures/guest-env.sh && omarchy-blueprint --profile $p --machine source capture services --review" \
+    2>> "$log" || ra_fail CAPTURE "reviewed Services adoption failed; not retried"
+
   before=$(ra_profile_digest source) &&
     ra_blueprint source --profile "$p" --machine source --json capture --dry-run > "$a/capture-preview.json" 2>> "$log" &&
     after=$(ra_profile_digest source) ||

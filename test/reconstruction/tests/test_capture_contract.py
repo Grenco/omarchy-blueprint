@@ -1,6 +1,7 @@
 """Pure, host-side checks on Blueprint's source-side JSON and captured profile."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -15,6 +16,7 @@ spec = importlib.util.spec_from_file_location("capture_contract", MODULE)
 contract = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(contract)
 VALUES = contract.expected()
+SERVICE_FIXTURES = MODULE.parents[1] / "fixtures/services"
 
 
 def target(category, key, outcome, desired="unknown"):
@@ -79,6 +81,39 @@ setting = 'disabled'
 """,
 }
 
+service_bytes = (SERVICE_FIXTURES / VALUES["RA_SERVICE"]).read_bytes()
+timer_bytes = (SERVICE_FIXTURES / VALUES["RA_TIMER"]).read_bytes()
+drop_bytes = (SERVICE_FIXTURES / VALUES["RA_SERVICE_DROPIN"]).read_bytes()
+PROFILE.update({
+    f"services/units/{VALUES['RA_SERVICE']}": service_bytes.decode(),
+    f"services/units/{VALUES['RA_TIMER']}": timer_bytes.decode(),
+    f"services/units/{VALUES['RA_SERVICE']}.d/{VALUES['RA_SERVICE_DROPIN']}": drop_bytes.decode(),
+    "services/services.toml": f"""[[unit]]
+name = '{VALUES["RA_SERVICE"]}'
+management = 'definition'
+presence = 'present'
+definition = 'units/{VALUES["RA_SERVICE"]}'
+definition_hash = '{hashlib.sha256(service_bytes).hexdigest()}'
+start_intent = 'indirect'
+activation_preference = 'persistent-only'
+observed_active = false
+[[unit.drop_in]]
+path = 'units/{VALUES["RA_SERVICE"]}.d/{VALUES["RA_SERVICE_DROPIN"]}'
+presence = 'present'
+hash = '{hashlib.sha256(drop_bytes).hexdigest()}'
+mode = '0640'
+[[unit]]
+name = '{VALUES["RA_TIMER"]}'
+management = 'definition'
+presence = 'present'
+definition = 'units/{VALUES["RA_TIMER"]}'
+definition_hash = '{hashlib.sha256(timer_bytes).hexdigest()}'
+start_intent = 'enabled'
+activation_preference = 'persistent-only'
+observed_active = true
+""",
+})
+
 
 def write_profile(root: Path, overrides=None) -> Path:
     for name, text in {**PROFILE, **(overrides or {})}.items():
@@ -88,6 +123,19 @@ def write_profile(root: Path, overrides=None) -> Path:
 
 
 class CapturePreviewTests(unittest.TestCase):
+    def test_services_first_adoption_requires_unselected_eligible_candidates(self):
+        targets = [dict(target("services", name, "noop"), capture_eligible=True,
+                        requires_selection=True, selected=False,
+                        recommended_dependencies=[VALUES["RA_SERVICE"]] if name == VALUES["RA_TIMER"] else [])
+                   for name in (VALUES["RA_SERVICE"], VALUES["RA_TIMER"], VALUES["RA_UNMANAGED_SERVICE"])]
+        data = {"machine": "source", "sections": [{"targets": targets}]}
+        contract.assert_services_preview(data, "source", VALUES)
+        for change in ({"selected": True}, {"capture_eligible": False}, {"requires_selection": False}):
+            broken = copy.deepcopy(data)
+            broken["sections"][0]["targets"][0].update(change)
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                contract.assert_services_preview(broken, "source", VALUES)
+
     def test_accepts_canonical_candidates_despite_unrelated_blocks(self):
         contract.assert_capture_preview(preview(), "source", VALUES)
 
@@ -165,6 +213,18 @@ class PolicyAndMachineTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_rejects_corrupt_service_bytes_provenance_and_unmanaged_ownership(self):
+        metadata = PROFILE["services/services.toml"]
+        cases = {
+            "services/services.toml": metadata.replace("mode = '0640'", "mode = '0644'"),
+            f"services/units/{VALUES['RA_SERVICE']}": "[Service]\nExecStart=/usr/bin/false\n",
+            f"services/units/{VALUES['RA_UNMANAGED_SERVICE']}": "unmanaged",
+        }
+        for name, value in cases.items():
+            with self.subTest(path=name), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(AssertionError):
+                    contract.assert_services_profile(write_profile(Path(directory), {name: value}), VALUES)
+
     def test_accepts_canonical_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             contract.assert_profile(write_profile(Path(directory)), VALUES)

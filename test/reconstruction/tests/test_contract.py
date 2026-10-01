@@ -1,6 +1,7 @@
 """Pure, host-side checks on Blueprint's public Restore JSON."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -94,6 +95,14 @@ class PlanContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             contract.assert_final_convergence({**plan, "skipped": [{"resource": "other", "reason": "conflict"}]}, "target-only-skip")
 
+    def test_final_services_notice_is_exactly_persistent_only_timer(self):
+        notice = {"provider": "services", "resource": "blueprint-ra-marker.timer",
+                  "reason": "Will not start during Restore: target preference is Persistent state only."}
+        contract.assert_final_convergence({"operations": [], "skipped": [notice]}, "target-only-skip")
+        for changed in ({"resource": "other.timer"}, {"reason": "source topology unknown"}):
+            with self.subTest(changed=changed), self.assertRaises(AssertionError):
+                contract.assert_final_convergence({"operations": [], "skipped": [{**notice, **changed}]}, "target-only-skip")
+
 
 def canonical_plan() -> dict:
     ops = [{"provider": p, "action": "write", "resource": f"{p}:x", "command": ["true"]}
@@ -105,11 +114,35 @@ def canonical_plan() -> dict:
             {"provider": "resources", "action": "file", "resource": "resource:helper-script",
              "file": {"destination": "/home/spike/bin/blueprint-ra-helper", "expected_missing": True, "mode": 493}},
             {"provider": "resources", "action": "validate", "resource": "resource:git-fixture", "command": ["git"]}]
-    return {"operations": ops, "skipped": [{"provider": "resources", "resource": "resource:target-only-skip",
+    fixture = MODULE.parents[1] / "fixtures/services"
+    for name, source in (("blueprint-ra-marker.service", "blueprint-ra-marker.service"),
+                         ("blueprint-ra-marker.timer", "blueprint-ra-marker.timer"),
+                         ("blueprint-ra-marker.service.d/10-ra.conf", "10-ra.conf")):
+        ops.append({"provider": "services", "action": "write", "file": {
+            "destination": "/home/spike/.config/systemd/user/" + name,
+            "source_hash": hashlib.sha256((fixture / source).read_bytes()).hexdigest(),
+            "expected_missing": True, "reject_symlink_parents": True,
+            "mode": 0o640 if name.endswith(".conf") else 0o644}})
+    ops.append({"provider": "services", "action": "enable", "command": ["systemctl", "--user", "enable", "--no-reload", "--", "blueprint-ra-marker.timer"]})
+    return {"operations": ops, "compatibility": {"categories": [{"category": "services", "applies": True, "state": "supported", "authority": "unchanged"}]}, "skipped": [{"provider": "resources", "resource": "resource:target-only-skip",
                                             "reason": 'restore disabled for machine "target"'}]}
 
 
 class CanonicalPlanTests(unittest.TestCase):
+    def test_services_must_reconstruct_exact_fixture_without_activation(self):
+        for mutation in ("missing-artifact", "wrong-hash", "activation", "unknown-compatibility"):
+            plan = canonical_plan()
+            if mutation == "missing-artifact":
+                plan["operations"] = [op for op in plan["operations"] if not op.get("file", {}).get("destination", "").endswith("10-ra.conf")]
+            elif mutation == "wrong-hash":
+                next(op["file"] for op in plan["operations"] if op.get("provider") == "services" and op.get("file"))["source_hash"] = "wrong"
+            elif mutation == "activation":
+                plan["operations"].append({"provider": "services", "command": ["systemctl", "--user", "start", "--", "blueprint-ra-marker.timer"]})
+            else:
+                plan["compatibility"]["categories"][0]["state"] = "unknown"
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                contract.assert_services_plan(plan)
+
     def test_accepts_the_canonical_post_readiness_plan(self):
         contract.assert_canonical_plan(canonical_plan(), "alacritty")
 

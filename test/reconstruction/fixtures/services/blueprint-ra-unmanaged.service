@@ -1,0 +1,6 @@
+[Unit]
+Description=Unselected Blueprint Reconstruction Assurance ownership sentinel
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/true

@@ -2,6 +2,7 @@
 """Assertions for Blueprint's public source-side JSON and the captured profile (no guest orchestration)."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import tomllib
@@ -92,6 +93,57 @@ def assert_restore_defaults(data: dict, machine: str, conflicts: str, convergenc
         raise AssertionError(f"Restore defaults are {actual}, want {(machine, conflicts, convergence)}")
 
 
+def assert_services_preview(data: dict, machine: str, values: dict) -> None:
+    if data.get("machine") != machine:
+        raise AssertionError("Services candidate preview names the wrong machine")
+    targets = {t["key"]: t for section in data["sections"] for t in section["targets"]
+               if t["category"] == "services"}
+    for name in (values["RA_SERVICE"], values["RA_TIMER"], values["RA_UNMANAGED_SERVICE"]):
+        target = targets.get(name, {})
+        if not (target.get("capture_eligible") is True and target.get("requires_selection") is True
+                and target.get("selected") is False and target.get("desired") == "unknown"):
+            raise AssertionError(f"Services first adoption is not eligible/unselected: {name}: {target}")
+    if values["RA_SERVICE"] not in targets[values["RA_TIMER"]].get("recommended_dependencies", []):
+        raise AssertionError("timer does not recommend its custom service entry-point dependency")
+
+
+def assert_services_profile(profile: Path, values: dict) -> None:
+    fixture = EXPECTED_ENV.parent / "services"
+    units = _toml(profile, "services/services.toml").get("unit", [])
+    names = [unit.get("name") for unit in units]
+    if sorted(names) != sorted([values["RA_SERVICE"], values["RA_TIMER"]]):
+        raise AssertionError(f"Services ownership is not restricted to reviewed fixture targets: {names}")
+    for unit in units:
+        name = unit["name"]
+        relative = "units/" + name
+        wanted = (fixture / name).read_bytes()
+        if (unit.get("management"), unit.get("presence"), unit.get("definition"), unit.get("definition_hash")) != (
+                "definition", "present", relative, hashlib.sha256(wanted).hexdigest()):
+            raise AssertionError(f"Services definition provenance differs: {unit}")
+        if (profile / "services" / relative).read_bytes() != wanted:
+            raise AssertionError(f"captured definition bytes differ: {name}")
+        if unit.get("activation_preference") != "persistent-only":
+            raise AssertionError("first adoption unexpectedly granted activation preference")
+        if name == values["RA_TIMER"]:
+            if unit.get("start_intent") != "enabled" or unit.get("observed_active") is not True:
+                raise AssertionError("timer enablement/captured-active evidence was not preserved")
+            if unit.get("drop_in"):
+                raise AssertionError("unexpected timer overlays")
+        else:
+            if unit.get("start_intent") != "indirect":
+                raise AssertionError("oneshot service without Install must retain indirect/static intent")
+            drop_path = f"units/{name}.d/{values['RA_SERVICE_DROPIN']}"
+            drop_bytes = (fixture / values["RA_SERVICE_DROPIN"]).read_bytes()
+            expected_drop = {"path": drop_path, "presence": "present",
+                             "hash": hashlib.sha256(drop_bytes).hexdigest(), "mode": "0640"}
+            if unit.get("drop_in") != [expected_drop]:
+                raise AssertionError(f"unit-specific overlay provenance differs: {unit.get('drop_in')}")
+            if (profile / "services" / drop_path).read_bytes() != drop_bytes:
+                raise AssertionError("captured drop-in bytes differ")
+    if (profile / "services/units" / values["RA_UNMANAGED_SERVICE"]).exists():
+        raise AssertionError("unselected service entered captured artifact tree")
+
+
 def assert_check(data: dict, machine: str) -> None:
     if (data.get("machine") or {}).get("name") != machine:
         raise AssertionError(f"check ran for {data.get('machine')}, want {machine}")
@@ -134,6 +186,7 @@ def _toml(profile: Path, name: str) -> dict:
 
 def assert_profile(profile: Path, values: dict) -> None:
     profile = Path(profile)
+    assert_services_profile(profile, values)
     if values["RA_PACKAGE"] not in (profile / "packages/official.txt").read_text().split():
         raise AssertionError(f"packages do not contain {values['RA_PACKAGE']}")
     if _toml(profile, "themes/themes.toml").get("current") != values["RA_THEME"]:
@@ -177,6 +230,7 @@ def main() -> None:
         "resource-mapping": ("file", "resource", "portable", "effective"),
         "restore-skip": ("file", "machine", "category", "target"),
         "capture-preview": ("file", "machine"),
+        "services-preview": ("file", "machine"),
         "restore-defaults": ("file", "machine", "conflicts", "convergence"),
         "check": ("file", "machine"),
         "fresh-check": ("file", "machine"),
@@ -197,6 +251,8 @@ def main() -> None:
         assert_restore_skip(load_envelope(args.file, "policy show"), args.machine, args.category, args.target)
     elif args.check == "capture-preview":
         assert_capture_preview(load_envelope(args.file, "capture preview"), args.machine, values)
+    elif args.check == "services-preview":
+        assert_services_preview(load_envelope(args.file, "capture preview"), args.machine, values)
     elif args.check == "restore-defaults":
         assert_restore_defaults(load_envelope(args.file, "machine restore-defaults"),
                                 args.machine, args.conflicts, args.convergence)

@@ -25,6 +25,7 @@ import time
 
 # sudo ("[sudo] password for spike: ") and sudo-rs ("[sudo: authenticate] Password: ").
 SUDO_PROMPT = re.compile(rb"\[sudo[^\]\n]*\][^\n]*[Pp]assword[^\n]*: ?$")
+SERVICE_PROMPT = re.compile(rb"Manage services/([^\s?]+)\? \[(?:y/N|Y/n)\] $")
 
 
 def fail(label: str, message: str, transcript: bytes) -> int:
@@ -37,6 +38,8 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--approve", default=approve, help="exact prompt to answer with 'yes' once")
+    parser.add_argument("--capture-service", action="append", default=[],
+                        help="adopt this exact Services candidate; decline other Services candidates")
     parser.add_argument("--sudo-password-file")
     parser.add_argument("--max-sudo", type=int, default=3)
     parser.add_argument("--min-sudo", type=int, default=0, help="fail a successful command that asked fewer times")
@@ -54,6 +57,8 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
         with open(args.sudo_password_file, "rb") as secret:
             password = secret.read().strip()
     approve_bytes = args.approve.encode() if args.approve else None
+    service_choices = {name.encode() for name in args.capture_service}
+    services_seen = set()
 
     master, slave = os.openpty()
     child = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave,
@@ -92,7 +97,17 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
             output.extend(chunk)
             last_output = time.monotonic()
             pending = bytes(output[answered:])
-            if approve_bytes and not approved and pending.endswith(approve_bytes):
+            service_prompt = SERVICE_PROMPT.search(pending) if service_choices else None
+            if service_prompt:
+                unit = service_prompt.group(1)
+                if unit in services_seen:
+                    return stop("repeated Services selection prompt; not re-approving")
+                services_seen.add(unit)
+                os.write(master, b"yes\n" if unit in service_choices else b"no\n")
+                answered = len(output)
+            elif approve_bytes and not approved and pending.endswith(approve_bytes):
+                if not service_choices.issubset(services_seen):
+                    return stop("Capture approval reached without all required Services selections")
                 os.write(master, b"yes\n")
                 approved, answered = True, len(output)
             elif SUDO_PROMPT.search(pending):
@@ -108,6 +123,8 @@ def drive(argv: list[str], label: str = "drive_terminal", approve: str | None = 
         return fail(label, f"command exited {status} without the approval prompt", bytes(output))
     if status != 0:
         return fail(label, f"command failed with exit {status}; not retrying", bytes(output))
+    if not service_choices.issubset(services_seen):
+        return fail(label, "required Services selection prompts were missing", bytes(output))
     if sudo_answers < args.min_sudo:
         return fail(label, f"expected at least {args.min_sudo} sudo prompt(s), saw {sudo_answers}", bytes(output))
     return 0

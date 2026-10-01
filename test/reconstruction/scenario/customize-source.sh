@@ -15,7 +15,9 @@ pristine eval '! pacman -Q "$RA_PACKAGE" >/dev/null 2>&1'
 pristine test "$(theme_name)" != "$RA_THEME"
 pristine test "$(omarchy default terminal)" != "$RA_DEFAULT_TERMINAL"
 for path in ".config/omarchy/plugins/$RA_PLUGIN_ID" "$RA_CONFIG_PATH" "$RA_HOOK_PATH" \
-            "$RA_HELPER_SOURCE" "$RA_GIT_PATH" "$RA_SKIP_PATH"; do
+            "$RA_HELPER_SOURCE" "$RA_GIT_PATH" "$RA_SKIP_PATH" \
+            ".config/systemd/user/$RA_SERVICE" ".config/systemd/user/$RA_TIMER" \
+            ".config/systemd/user/$RA_UNMANAGED_SERVICE" "$RA_SERVICE_MARKER"; do
   pristine test ! -e "$HOME/$path"
 done
 git ls-remote "$RA_GIT_REMOTE" refs/heads/main | grep -q "^$RA_GIT_REVISION" ||
@@ -56,6 +58,21 @@ chmod 0755 "$HOME/$RA_HELPER_SOURCE"
 cp "$fixtures/skip/skip.txt" "$HOME/$RA_SKIP_PATH"
 git clone -q "$RA_GIT_REMOTE" "$HOME/$RA_GIT_PATH"
 
+step "persistent user-service fixture"
+unit_dir="$HOME/.config/systemd/user"
+mkdir -p "$unit_dir/$RA_SERVICE.d"
+cp "$fixtures/services/$RA_SERVICE" "$unit_dir/$RA_SERVICE"
+cp "$fixtures/services/$RA_TIMER" "$unit_dir/$RA_TIMER"
+cp "$fixtures/services/$RA_UNMANAGED_SERVICE" "$unit_dir/$RA_UNMANAGED_SERVICE"
+cp "$fixtures/services/$RA_SERVICE_DROPIN" "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN"
+chmod 0640 "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN"
+systemctl --user daemon-reload
+systemd-analyze --user --generators=no --man=no verify "$unit_dir/$RA_SERVICE" "$unit_dir/$RA_TIMER"
+systemctl --user enable "$RA_TIMER"
+systemctl --user start "$RA_TIMER"
+# Explicit native invocation proves the harmless fixture result without waiting
+# for a timer tick. The timer remains the captured active entry point.
+systemctl --user start "$RA_SERVICE"
 step "independent assertions"
 check() {
   local name=$1
@@ -79,3 +96,9 @@ check "resource:$RA_GIT_RESOURCE" eval 'test "$(git -C "$HOME/$RA_GIT_PATH" rev-
   test "$(git -C "$HOME/$RA_GIT_PATH" remote get-url origin)" = "$RA_GIT_REMOTE" &&
   test -z "$(git -C "$HOME/$RA_GIT_PATH" status --porcelain)"'
 check "resource:$RA_SKIP_RESOURCE" cmp "$fixtures/skip/skip.txt" "$HOME/$RA_SKIP_PATH"
+check "services:definition" cmp "$fixtures/services/$RA_SERVICE" "$unit_dir/$RA_SERVICE"
+check "services:drop-in" eval 'cmp "$fixtures/services/$RA_SERVICE_DROPIN" "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN" && test "$(stat -c %a "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN")" = 640'
+check "services:timer-enabled" systemctl --user is-enabled "$RA_TIMER"
+check "services:timer-active" systemctl --user is-active "$RA_TIMER"
+check "services:timer-entry-point" test "$(systemctl --user show --property=Triggers --value "$RA_TIMER")" = "$RA_SERVICE"
+check "services:marker" test "$(cat "$HOME/$RA_SERVICE_MARKER")" = reconstructed-through-managed-drop-in
