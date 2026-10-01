@@ -232,6 +232,8 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 		}
 	}
 	sort.Strings(result.Missing)
+	result.Missing = append(result.Missing, verifyActivation(current, rc)...)
+	sort.Strings(result.Missing)
 	result.OK = len(result.Missing) == 0
 	return result, nil
 }

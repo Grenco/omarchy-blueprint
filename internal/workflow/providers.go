@@ -18,10 +18,11 @@ type RestoreProvider interface {
 // RestoreFragment keeps one provider's effects and compatibility derived from
 // the same effective intent and detected target state.
 type RestoreFragment struct {
-	Operations    []model.Operation
-	Skipped       []model.Skipped
-	Requirements  []model.Requirement
-	Compatibility model.CompatibilityCategory
+	ActivationReview []model.ActivationCandidate
+	Operations       []model.Operation
+	Skipped          []model.Skipped
+	Requirements     []model.Requirement
+	Compatibility    model.CompatibilityCategory
 }
 
 // Provider is the narrow shared contract for status and capture orchestration.

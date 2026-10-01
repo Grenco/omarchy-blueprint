@@ -173,6 +173,7 @@ func (s *restoreScreen) Actions() []Action {
 		{ID: "restore.compatibility", Label: "Expand/collapse compatibility details", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'v'}) }},
 		{ID: "restore.conflicts", Label: "Toggle Safe/Force for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'f'}) }},
 		{ID: "restore.convergence", Label: "Toggle Additive/Exact for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
+		{ID: "restore.activation", Label: "Cycle Services activation for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
 		{ID: "restore.apply", Label: "Restore current plan", Group: "Restore", Enabled: reason == "", Visible: true, DisabledReason: reason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
 	}
 }

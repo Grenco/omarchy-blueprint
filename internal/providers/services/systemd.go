@@ -21,7 +21,7 @@ var _ Systemd = Systemctl{}
 
 const inspectionOutputLimit = 4 << 20
 
-const userUnitProperties = "Id,LoadState,UnitFileState,ActiveState,FragmentPath,DropInPaths,SourcePath,Transient,Requires,Wants,BindsTo,PartOf,Triggers,TriggeredBy"
+const userUnitProperties = "Id,LoadState,UnitFileState,ActiveState,FragmentPath,DropInPaths,SourcePath,Transient,Requires,Wants,BindsTo,PartOf,Triggers,TriggeredBy,Type,Result"
 
 // ValidationUnavailableError distinguishes missing inspection capability from
 // affirmative rejection of a proposed effective unit set.
@@ -146,6 +146,7 @@ func normalizeObservedUnit(name, catalogState string, p map[string]string) Obser
 		LoadState:        p["LoadState"],
 		RawUnitFileState: state, StartIntent: normalizeStartIntent(state),
 		ObservedActive: p["ActiveState"] == "active", Generated: generated, Transient: transient, Runtime: runtime,
+		ServiceType: p["Type"], ActiveState: p["ActiveState"], ExecutionResult: p["Result"],
 		Persistent: !generated && !transient && !runtimeSource && (fragment != "" || state == "masked") && state != "masked-runtime",
 	}
 	unit.Template = strings.Contains(name, "@.")
@@ -163,6 +164,7 @@ func normalizeObservedUnit(name, catalogState string, p map[string]string) Obser
 		related = append(related, strings.Fields(p[key])...)
 	}
 	unit.RelatedUnits = sortedUnitNames(related)
+	unit.TriggeredBy = sortedUnitNames(strings.Fields(p["TriggeredBy"]))
 	return unit
 }
 

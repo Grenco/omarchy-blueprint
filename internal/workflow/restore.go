@@ -112,6 +112,9 @@ func (e *UnmetRequirementsError) Error() string {
 // CheckRestoreApplicable refuses, before any mutation, a plan with unmet
 // requirements or with interactive operations when no terminal is handed over.
 func CheckRestoreApplicable(plan model.RestorePlan, terminal bool) error {
+	if plan.ActivationMode == string(policy.ActivationReview) && !terminal {
+		return fmt.Errorf("activation review requires an interactive terminal")
+	}
 	if blocking := compatibility.BlockingFindings(plan.Compatibility); len(blocking) > 0 {
 		linked := map[string]bool{}
 		for _, finding := range blocking {
@@ -165,6 +168,7 @@ func (s *Session) executeRestore(ctx context.Context, result RestoreResult, prov
 	if err != nil {
 		return result, err
 	}
+	contexts = WithRestoreExecution(contexts, result.Execution)
 	result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
 	if err != nil {
 		return result, err
@@ -218,6 +222,9 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 	}
 	contexts := make(map[string]RestoreContext, len(providers))
 	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
+	if resolved.Activation != "" {
+		plan.ActivationMode = string(resolved.ActivationMode())
+	}
 	plan.Compatibility = model.CompatibilityReport{
 		ProfileLastCapture: model.CompatibilityEnvironment{Known: s.profile.Manifest.Omarchy.CapturedVersion != "", OmarchyVersion: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyChannel: s.profile.Manifest.Omarchy.Channel},
 		Target:             model.CompatibilityEnvironment{Known: info.Version != "", OmarchyVersion: info.Version, OmarchyChannel: info.Channel},
@@ -240,6 +247,7 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 		}
 		plan.Operations, plan.Skipped = append(plan.Operations, part.Operations...), append(plan.Skipped, part.Skipped...)
 		plan.Requirements = append(plan.Requirements, part.Requirements...)
+		plan.ActivationReview = append(plan.ActivationReview, part.ActivationReview...)
 		plan.Compatibility.Categories = append(plan.Compatibility.Categories, part.Compatibility)
 		contexts[provider.ID()] = restoreCtx
 	}
@@ -256,10 +264,31 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 	}
 	for _, category := range plan.Compatibility.Categories {
 		planned := contexts[category.Category]
+		for _, op := range plan.Operations {
+			if op.Provider == category.Category {
+				planned.PlannedOperations = append(planned.PlannedOperations, op)
+			}
+		}
 		planned.Compatibility = category
 		contexts[category.Category] = planned
 	}
 	return plan, providers, contexts, resolved, nil
+}
+
+// WithRestoreExecution attaches successful executor receipts to planned intent.
+// Both CLI and TUI/workflow use this same binding before Verify.
+func WithRestoreExecution(contexts map[string]RestoreContext, execution restore.Result) map[string]RestoreContext {
+	bound := make(map[string]RestoreContext, len(contexts))
+	for id, rc := range contexts {
+		rc.CompletedOperations = nil
+		for _, op := range execution.Completed {
+			if op.Provider == id {
+				rc.CompletedOperations = append(rc.CompletedOperations, op)
+			}
+		}
+		bound[id] = rc
+	}
+	return bound
 }
 
 // resolveRestoreOptions returns this run's effective two-axis restore

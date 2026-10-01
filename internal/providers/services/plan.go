@@ -118,7 +118,7 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 	}
 	assessment.evidence = append(assessment.evidence, model.CompatibilityEvidence{Kind: "services.user-manager", Summary: "Current user manager supplied read-only persistent unit evidence"})
 	proposed := map[string][]byte{}
-	var fileOps, stateOps []model.Operation
+	var fileOps, stateOps, activationOps []model.Operation
 	needsReload := false
 	for _, unit := range selected {
 		effects, reason, code, blocked, err := p.planUnit(unit, current, rc)
@@ -144,6 +144,10 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 			}
 			assessment.findings = appendIfServiceFinding(assessment.findings, model.CompatibilityFinding{Target: unit.Name, Code: "services.dependency.unestablished", Summary: "External dependency evidence is incomplete; no activation authority is granted", State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged})
 		}
+		starts, candidates, activationSkips := planActivation(unit, current, rc)
+		activationOps = append(activationOps, starts...)
+		fragment.ActivationReview = append(fragment.ActivationReview, candidates...)
+		fragment.Skipped = append(fragment.Skipped, activationSkips...)
 		fileOps = append(fileOps, effects.files...)
 		stateOps = append(stateOps, effects.states...)
 		for name, bytes := range effects.proposed {
@@ -165,6 +169,7 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 	}
 	if len(proposed) > 0 {
 		if err := p.validateProposedSet(ctx, proposed); err != nil {
+			fragment.ActivationReview = nil
 			if ctx.Err() != nil {
 				return fragment, ctx.Err()
 			}
@@ -212,6 +217,14 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 		fragment.Operations = append(fragment.Operations, refresh)
 	}
 	fragment.Compatibility, err = assessment.category(true)
+	if err == nil {
+		for _, candidate := range activationOps {
+			for _, persistent := range fragment.Operations {
+				candidate.DependsOn = append(candidate.DependsOn, persistent.ID)
+			}
+			fragment.Operations = append(fragment.Operations, candidate)
+		}
+	}
 	return fragment, err
 }
 

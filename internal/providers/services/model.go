@@ -20,6 +20,9 @@ type ObservedUnit struct {
 	RawUnitFileState string
 	StartIntent      profile.ServiceStartIntent
 	ObservedActive   bool
+	ServiceType      string
+	ActiveState      string
+	ExecutionResult  string
 	Persistent       bool
 	Generated        bool
 	Transient        bool
@@ -28,6 +31,7 @@ type ObservedUnit struct {
 	InstanceOf       string
 	LinkedSource     string
 	RelatedUnits     []string
+	TriggeredBy      []string
 }
 
 // ProposedUnitSet will be built in a private temporary tree by Restore's

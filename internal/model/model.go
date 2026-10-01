@@ -110,15 +110,26 @@ type GitPatchApply struct {
 }
 
 type RestorePlan struct {
-	ProfileVersion int                 `json:"profile_schema"`
-	OmarchyFrom    string              `json:"omarchy_from"`
-	OmarchyTo      string              `json:"omarchy_to"`
-	Compatibility  CompatibilityReport `json:"compatibility"`
-	Operations     []Operation         `json:"operations"`
-	Skipped        []Skipped           `json:"skipped,omitempty"`
+	ActivationMode   string                `json:"activation_mode,omitempty"`
+	ActivationReview []ActivationCandidate `json:"activation_review,omitempty"`
+	ProfileVersion   int                   `json:"profile_schema"`
+	OmarchyFrom      string                `json:"omarchy_from"`
+	OmarchyTo        string                `json:"omarchy_to"`
+	Compatibility    CompatibilityReport   `json:"compatibility"`
+	Operations       []Operation           `json:"operations"`
+	Skipped          []Skipped             `json:"skipped,omitempty"`
 	// Requirements must be satisfied by the user before the plan may be
 	// applied; apply refuses while any remains (ADR 0022).
 	Requirements []Requirement `json:"requirements,omitempty"`
+}
+
+// ActivationCandidate is a provider-established eligible start, not authority.
+type ActivationCandidate struct {
+	Provider string `json:"provider"`
+	Resource string `json:"resource"`
+	Unit     string `json:"unit"`
+	Reason   string `json:"reason"`
+	Approved bool   `json:"approved"`
 }
 
 // Requirement is a machine precondition a plan's operations need but that

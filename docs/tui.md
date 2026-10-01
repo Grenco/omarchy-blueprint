@@ -221,14 +221,22 @@ Blueprint-managed. The Services inventory keeps custom and managed units first,
 with other detected services collapsed by default; Enter expands that group.
 Discovery explanations appear in Details rather than crowding the name column.
 Services Restore now plans guarded persistent definitions/drop-ins and systemd
-enablement or user masks, with shared compatibility and Verify. It does not
-activate or restart processes: changes beneath an already-running service are
+enablement or user masks, with shared compatibility and Verify. Its default is
+Persistent state only. Press `a` in Restore to cycle Persistent state only,
+Restore working state, and Review activation. Review presents eligible starts
+individually: `Space` approves/unapproves, `j/k` moves, and `Enter` finishes and
+replans before the ordinary Apply confirmation. Candidates begin unselected.
+Working mode never includes a saved Review preference; saved Persistent-only
+preferences never activate in either mode. Both surfaces use the same candidates,
+authority intersection, plan, and execution-bound Verify.
+Services never stops, restarts, or reloads processes: changes beneath an already-running service are
 accompanied by a no-restart notice. Conflicts, unresolved source topology, and
 Exact removals without matching provenance remain visibly withheld rather than
 being authorized by Force. Requirements for a usable user login session or unit
 verifier must be satisfied externally, followed by a fresh plan. Existing naked
 templates with unresolved sources remain Unknown; complete template/instance
-Capture and activation are subsequent Services work.
+Capture still needs authoritative source resolution before those templates can
+receive reconstruction or activation authority.
 
 ### Resources
 
