@@ -41,6 +41,20 @@ func (c *Cycle) Err() error { c.mu.Lock(); defer c.mu.Unlock(); return c.errLock
 // Context is canceled when the cycle's parent is canceled or it is closed.
 func (c *Cycle) Context() context.Context { return c.ctx }
 
+// BeginWork registers a read projection which may run forwarded providers
+// outside a slot. Close cancels it and waits for release as well as loaders.
+// The caller must release before calling Close; release is idempotent.
+func (c *Cycle) BeginWork() (func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.errLocked(); err != nil {
+		return nil, err
+	}
+	c.wg.Add(1)
+	var once sync.Once
+	return func() { once.Do(c.wg.Done) }, nil
+}
+
 // Close cancels and joins all launched loaders, then releases retained facts.
 // Concurrent Close callers all wait for the same completion.
 func (c *Cycle) Close() {

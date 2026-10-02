@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+// Runner implementations used by read observation must support concurrent
+// calls from independent providers. Authoritative mutation remains serialized.
 type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (string, error)
 }

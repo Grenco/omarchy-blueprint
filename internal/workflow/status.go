@@ -35,6 +35,11 @@ type resourceProvider interface {
 }
 
 func (s *ReadCycle) Status(ctx context.Context, onlyProvider string) (StatusReport, error) {
+	release, err := s.observations.BeginWork()
+	if err != nil {
+		return StatusReport{}, err
+	}
+	defer release()
 	ctx, stop := s.withContext(ctx)
 	defer stop()
 	if e := s.check(ctx); e != nil {
@@ -52,7 +57,7 @@ func (s *ReadCycle) Status(ctx context.Context, onlyProvider string) (StatusRepo
 		selected = []ReadProvider{provider}
 	}
 	report := StatusReport{Profile: profile.CloneData(s.profile), Machine: cloneMachine(s.machine), Providers: make([]ProviderStatus, 0, len(selected))}
-	for _, provider := range selected {
+	observe := func(ctx context.Context, provider ReadProvider) (ProviderStatus, error) {
 		status := ProviderStatus{ID: provider.ID(), Captured: true, Snapshot: providerSnapshot(profile.CloneData(s.profile), provider.ID())}
 		var err error
 		if scanner, ok := provider.(scanProvider); ok {
@@ -65,12 +70,26 @@ func (s *ReadCycle) Status(ctx context.Context, onlyProvider string) (StatusRepo
 			status.Changes, err = provider.Diff(ctx, profile.CloneData(s.profile))
 		}
 		if err != nil {
-			return StatusReport{}, fmt.Errorf("diff %s: %w", provider.ID(), err)
+			return ProviderStatus{}, fmt.Errorf("diff %s: %w", provider.ID(), err)
 		}
 		if e := s.check(ctx); e != nil {
-			return StatusReport{}, e
+			return ProviderStatus{}, e
 		}
-		report.Providers = append(report.Providers, status)
+		return status, nil
+	}
+	report.Providers, err = observeProviders(ctx, selected, readProviderConcurrency, observe)
+	if err != nil {
+		// A failed refresh is terminal for this cycle. Cancel and join slot
+		// loaders too: canceling a projection waiter alone leaves shared facts
+		// loading. Release first so Close cannot wait on this operation itself.
+		release()
+		if !observationCanceled(err) || s.observations.Err() != nil {
+			s.Close()
+		}
+		return StatusReport{}, err
+	}
+	if e := s.check(ctx); e != nil {
+		return StatusReport{}, e
 	}
 	return report, nil
 }

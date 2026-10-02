@@ -272,6 +272,19 @@ An approved scheduler operates only on read-cycle providers, writes preallocated
 
 No progressive/stale UI is planned. If meaningful latency remains after backend work, propose a separate reviewed presentation change. Any displayed stale data remains presentation, never authority.
 
+PR C approval update: after PR B #62 merged, the human authorized the
+[serial/2/4 spike](2026-10-02-observation-performance-v1-pr-c-spike.md) and selected
+**limit 4** over the initial limit-2 recommendation for its additional latency
+gain. Production scheduling is confined to read-cycle Status/Diff; classification,
+Restore preview planning and finalization remain serial. Register scheduled
+Status work with the cycle so Close joins forwarded providers as well as slot
+loaders. On a meaningful failed refresh, cancel/join local workers, release that
+registration, then Close/join the failed cycle and preserve the initiating error.
+Cancellation of an individual projection waiter remains local unless its cycle
+parent is canceled; no stale result is returned as success. A signal-killed or
+unstarted negative-exit command after scheduler cancellation is a secondary
+cancellation, not a new lower-index meaningful failure.
+
 ## E. Diagnostics and verification
 
 Add only lightweight opt-in stderr diagnostics, off by default, e.g. `BLUEPRINT_DEBUG_OBSERVATION=1`. Record provider ID, observation count/duration, total refresh time, command family/verb counts and elapsed time; no paths, unit/package names, arguments, environment, output bodies, URLs, fingerprints, or secrets. No files, network, telemetry store, or metrics dependency. Preserve human/JSON stdout. Disabled code must avoid stack walking, log formatting, and allocation-heavy collectors.
