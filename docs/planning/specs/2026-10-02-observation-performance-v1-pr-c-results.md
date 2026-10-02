@@ -157,7 +157,10 @@ was mutex-protected and the full race rerun passed. No production race was found
 Hosted same-runtime Reconstruction Assurance remains a required merge gate;
 no reconstruction/apply runs on the developer machine.
 
-Independent whole-branch review and any required fix pass precede publication.
+Independent whole-branch review completed: no Critical, Important or Minor
+findings; targeted observation/workflow/profile/Services/Packages/application
+read-and-authority race checks passed independently. No fix pass was required.
+Hosted same-runtime Reconstruction Assurance still gates merge.
 The serial/2/4 selection evidence and original limit-2 recommendation are in
 [the spike report](2026-10-02-observation-performance-v1-pr-c-spike.md); the human
 explicitly selected 4 for the additional latency gain. There is no runtime tuning
