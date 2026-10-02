@@ -4,6 +4,10 @@
 
 Accepted by the human on 2026-10-02 with the observation-performance spec and implementation plan. PR A is implemented; the human subsequently authorized pushing its branch, publishing these planning documents and opening a PR. PR B remains behind A's review/merge gate. No broader external repository mutations are authorized.
 
+PR A #61 is now approved/merged. PR B is implemented locally; publication and
+merge remain human gates. Review clarified that Resources' machine selection
+and presentation metadata must consume the private read snapshot explicitly.
+
 ## Context
 
 Services discovery is dominated by one serial systemctl show process per non-template identity. Packages and Services can also be discovered repeatedly while computing Diff, targets, and read-only Restore classification. Current main can conditionally spend about 10 seconds computing an Overview despite rendering its first output in under 100 ms.
@@ -22,6 +26,14 @@ Session.Reload currently changes shared profile/machine state during lazy Overvi
 6. Keep Capture, post-stage recheck, Apply, CLI PlanRestoreWithContext revalidation, execution preconditions, and Verify fresh and uncached. Approved values are comparison inputs, not execution authority. Shared read projections do not replace fresh state construction or exact approval equality.
 7. Resolve Services roots as local immutable inputs. Prepared Capture state remains confined to its serialized transaction path.
 8. Re-measure batching and reuse before adding a read-only bounded provider scheduler. Progressive/stale presentation and auto-sync remain separate future decisions.
+
+PR B integration clarification: an optional `ReadSnapshotBinder` gives Resources
+an explicit frozen machine selection, including no-machine, without adding a
+Resources observation cache. Consumers retain descriptive copied Profile/Machine
+metadata and resolved preview options, and resolve read policy in the same
+cycle. Capture reloads/validates authoritative desired state at transaction
+entry; TUI profile-edit actions similarly reload before editing. Removing read
+publication must never leave writes starting from stale Session desired state.
 
 ## Consequences
 

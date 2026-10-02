@@ -1,5 +1,18 @@
 # CLI guide
 
+## Read-only observation diagnostics
+
+Set `BLUEPRINT_DEBUG_OBSERVATION=1` to print request-local observation and
+command timings to stderr. Status, Overview, Capture preview, and Restore
+preview report Services/Packages load counts, elapsed times, and whitelisted
+command-family/verb counts. JSON and human-readable stdout remain unchanged.
+Diagnostics are off by default; no files, telemetry, arguments, command output,
+paths, package/unit names, environment values, or credentials are recorded.
+
+Each logical read refresh owns immutable observations and discards them when
+it ends. Capture and Restore still freshly inspect/revalidate before mutation;
+debugging does not change that authority boundary.
+
 `omarchy-blueprint --help` and subcommand help are the canonical reference
 for complete options and flags. This guide focuses on common workflows.
 

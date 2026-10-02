@@ -434,15 +434,19 @@ func selectedMachine(deps Dependencies, opt *options, d profile.Data) (machine.S
 }
 
 func resolveMachineContext(deps Dependencies, opt *options, d profile.Data) (machineContext, error) {
+	selection, err := selectedMachine(deps, opt, d)
+	if err != nil {
+		return machineContext{}, err
+	}
+	return resolveMachineContextForSelection(deps, opt, d, selection)
+}
+
+func resolveMachineContextForSelection(deps Dependencies, opt *options, d profile.Data, selection machine.Selection) (machineContext, error) {
 	home, err := deps.HomeDir()
 	if err != nil {
 		return machineContext{}, err
 	}
 	state, err := deps.StateHome()
-	if err != nil {
-		return machineContext{}, err
-	}
-	selection, err := selectedMachine(deps, opt, d)
 	if err != nil {
 		return machineContext{}, err
 	}
@@ -1091,7 +1095,8 @@ func defaultConfigDirs() (string, string, error) {
 func workflowDependencies(d Dependencies) workflow.Dependencies {
 	return workflow.Dependencies{
 		Runner: d.Runner, Now: d.Now, StateHome: d.StateHome, ThemeDirs: d.ThemeDirs,
-		PluginDir: d.PluginDir, ConfigDirs: d.ConfigDirs, BaselineHistory: d.BaselineHistory,
+		DiagnosticWriter: d.Err,
+		PluginDir:        d.PluginDir, ConfigDirs: d.ConfigDirs, BaselineHistory: d.BaselineHistory,
 		ShellPaths: d.ShellPaths, HooksDir: d.HooksDir, MiseGlobalConfig: d.MiseGlobalConfig,
 		HomeDir: d.HomeDir, Hostname: d.Hostname, ResourceLinkRoots: d.ResourceLinkRoots,
 	}
@@ -1113,6 +1118,9 @@ func openWorkflow(deps Dependencies, opt *options) (*workflow.Session, error) {
 			}
 		}
 		return finalizeRestorePlan(ctx, deps, opt, data, state, plan, restorePlanOptionsFromPolicy(options))
+	})
+	session.SetReadRestoreFinalizer(func(ctx context.Context, data profile.Data, ids []string, plan *model.RestorePlan, options policy.RestoreOptions) error {
+		return finalizeRestorePlanForIDs(ctx, deps, opt, data, ids, plan, restorePlanOptionsFromPolicy(options))
 	})
 	return session, nil
 }
@@ -1560,10 +1568,6 @@ func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary)
 }
 
 func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
-	machineContext, err := resolveMachineContext(deps, opt, d)
-	if err != nil {
-		return err
-	}
 	session, err := openWorkflow(deps, opt)
 	if err != nil {
 		return profileError(opt.profileDir, err)
@@ -1573,6 +1577,13 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		onlyProvider = providers[0].ID()
 	}
 	report, err := session.Status(ctx, onlyProvider)
+	if err != nil {
+		return err
+	}
+	// Render metadata and effective paths from the same desired snapshot that
+	// produced the observations, not a binding resolved before the read began.
+	d = report.Profile
+	machineContext, err := resolveMachineContextForSelection(deps, opt, d, report.Machine)
 	if err != nil {
 		return err
 	}
@@ -1764,12 +1775,15 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			base = m.EffectiveRestoreDefaults()
 		}
 	}
-	plan, restoreProviders, contexts, resolved, err := session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+	preview, err := session.PreviewRestore(ctx, onlyProvider, override.resolve(base))
 	if err != nil {
 		return err
 	}
+	plan, resolved := preview.Plan, preview.Options
+	var restoreProviders []workflow.RestoreProvider
+	var contexts map[string]workflow.RestoreContext
 	planOptions := restorePlanOptionsFromPolicy(resolved)
-	d = session.Profile()
+	d = preview.Profile
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
 	}
@@ -1797,16 +1811,26 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			}
 		}
 		override.ReviewActivation = selection
-		plan, restoreProviders, contexts, resolved, err = session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+		preview, err = session.PreviewRestore(ctx, onlyProvider, override.resolve(base))
 		if err != nil {
 			return err
 		}
+		plan, resolved, d = preview.Plan, preview.Options, preview.Profile
 		if err := workflow.CheckRestoreApplicable(plan, true); err != nil {
 			return err
 		}
 		planOptions = restorePlanOptionsFromPolicy(resolved)
 	}
 	if len(plan.Operations) == 0 {
+		fresh, providers, freshContexts, freshOptions, err := session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+		if err != nil {
+			return fmt.Errorf("revalidate no-op restore plan: %w", err)
+		}
+		if !reflect.DeepEqual(plan, fresh) {
+			return workflow.ErrRestorePlanChanged
+		}
+		plan, restoreProviders, contexts, resolved = fresh, providers, freshContexts, freshOptions
+		d = session.Profile()
 		if !opt.json {
 			fmt.Fprint(deps.Out, renderPlanWithOptions(plan, false, planOptions))
 		}

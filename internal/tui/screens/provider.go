@@ -24,6 +24,7 @@ type providerRow struct {
 // Provider presents typed saved state and semantic changes without inventing
 // provider-specific policy.
 type Provider struct {
+	readPresentation
 	ctx                     context.Context
 	session                 *workflow.Session
 	id                      string
@@ -48,6 +49,7 @@ type providerStatusMsg struct {
 	targets   []workflow.TargetInspection
 	effective map[string]policy.Effective
 	err       error
+	snapshot  *workflow.ReadSnapshot
 }
 type providerCaptureMsg struct {
 	requestID uint64
@@ -100,6 +102,9 @@ func (s *Provider) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.status, s.targets, s.effective, s.err, s.busy = msg.status, msg.targets, msg.effective, msg.err, false
+		if msg.err == nil && msg.snapshot != nil {
+			s.acceptSnapshot(*msg.snapshot)
+		}
 		if s.id == "services" {
 			sort.SliceStable(s.targets, func(i, j int) bool { return servicePrimaryTarget(s.targets[i]) && !servicePrimaryTarget(s.targets[j]) })
 		}
@@ -378,7 +383,7 @@ func previousProviderTab(tab string) string {
 }
 func (s *Provider) policyTab() bool { return s.tab == "Capture" || s.tab == "Restore" }
 func (s *Provider) policyScopeLabel() string {
-	return policyScopeLabel(s.policyScope, activeMachineName(s.session))
+	return policyScopeLabel(s.policyScope, s.selectedMachine(s.session).Name)
 }
 func emptyTabMessage(tab string, captured bool) string {
 	if !captured {
@@ -659,39 +664,49 @@ func (s *Provider) refresh() tea.Cmd {
 	requestID := s.requestID
 	scope := s.policyScope
 	s.busy = true
+	session, ctx, id := s.session, s.ctx, s.id
 	return func() tea.Msg {
-		report, err := s.session.Status(s.ctx, s.id)
-		if err != nil && !providerCaptured(s.session.Profile(), s.id) {
-			if s.id == "services" {
-				targets, inspectErr := s.session.PolicyTargets(s.ctx, s.id)
+		cycle, err := session.BeginRead(ctx)
+		if err != nil {
+			return providerStatusMsg{requestID: requestID, err: err}
+		}
+		defer cycle.Close()
+		snapshot, err := cycle.Snapshot(ctx)
+		if err != nil {
+			return providerStatusMsg{requestID: requestID, err: err}
+		}
+		report, err := cycle.Status(ctx, id)
+		if err != nil && !providerCaptured(snapshot.Profile, id) {
+			if id == "services" {
+				targets, inspectErr := cycle.PolicyTargets(ctx, id)
 				if inspectErr != nil {
 					return providerStatusMsg{requestID: requestID, err: inspectErr}
 				}
-				return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}, targets: targets}
+				return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: id}, targets: targets, snapshot: &snapshot}
 			}
-			return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: s.id}}
+			return providerStatusMsg{requestID: requestID, status: workflow.ProviderStatus{ID: id}, snapshot: &snapshot}
 		}
 		if err != nil {
 			return providerStatusMsg{requestID: requestID, err: err}
 		}
 		for _, status := range report.Providers {
-			if status.ID == s.id {
-				targets, err := s.session.PolicyTargets(s.ctx, s.id)
+			if status.ID == id {
+				targets, err := cycle.PolicyTargets(ctx, id)
 				if err != nil {
 					return providerStatusMsg{requestID: requestID, err: err}
 				}
 				effective := make(map[string]policy.Effective, len(targets))
 				for _, target := range targets {
-					resolved, err := s.session.EffectivePolicy(s.ctx, scope, s.id, target)
+					resolved, err := cycle.EffectivePolicy(ctx, scope, id, target)
 					if err != nil {
 						return providerStatusMsg{requestID: requestID, err: err}
 					}
 					effective[target.Key] = resolved
 				}
-				return providerStatusMsg{requestID: requestID, status: status, targets: targets, effective: effective}
+				return providerStatusMsg{requestID: requestID, status: status, targets: targets, effective: effective, snapshot: &snapshot}
 			}
 		}
-		return providerStatusMsg{requestID: requestID, err: fmt.Errorf("%s status is unavailable", s.id)}
+		return providerStatusMsg{requestID: requestID, err: fmt.Errorf("%s status is unavailable", id)}
 	}
 }
 func (s *Provider) capture() tea.Cmd {
@@ -727,7 +742,8 @@ func (s *Provider) toggleItem(row providerRow) tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
 	return func() tea.Msg {
-		return providerToggleMsg{requestID: requestID, err: s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key)}
+		err := editProfileFresh(s.ctx, s.session, func() error { return s.session.SetProviderItemEnabled(s.ctx, s.id, row.section, row.key) })
+		return providerToggleMsg{requestID: requestID, err: err}
 	}
 }
 func (s *Provider) policyAxis() policy.Axis {
@@ -746,7 +762,8 @@ func (s *Provider) setPolicy(row providerRow) tea.Cmd {
 		setting = policy.SettingEnabled
 	}
 	return func() tea.Msg {
-		return providerToggleMsg{requestID: requestID, err: s.session.SetPolicy(scope, axis, s.id, row.key, setting)}
+		err := editProfileFresh(s.ctx, s.session, func() error { return s.session.SetPolicy(scope, axis, s.id, row.key, setting) })
+		return providerToggleMsg{requestID: requestID, err: err}
 	}
 }
 func (s *Provider) clearPolicy(row providerRow) tea.Cmd {
@@ -755,7 +772,8 @@ func (s *Provider) clearPolicy(row providerRow) tea.Cmd {
 	scope := s.policyScope
 	axis := s.policyAxis()
 	return func() tea.Msg {
-		return providerToggleMsg{requestID: requestID, err: s.session.ClearPolicy(scope, axis, s.id, row.key)}
+		err := editProfileFresh(s.ctx, s.session, func() error { return s.session.ClearPolicy(scope, axis, s.id, row.key) })
+		return providerToggleMsg{requestID: requestID, err: err}
 	}
 }
 func providerItemCanToggle(id, section string) bool {

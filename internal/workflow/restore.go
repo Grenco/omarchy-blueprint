@@ -32,8 +32,8 @@ type RestoreResult struct {
 // explicit options value is used verbatim for this run only -- it is never
 // persisted as a new machine default.
 func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, error) {
-	plan, _, _, _, err := s.restorePlan(ctx, onlyProvider, options)
-	return plan, err
+	preview, err := s.PreviewRestore(ctx, onlyProvider, options)
+	return preview.Plan, err
 }
 
 // PlanRestoreWithContext is PlanRestore, but also returns each planned
@@ -316,7 +316,7 @@ func (s *Session) resolveRestoreOptions(options *policy.RestoreOptions) (policy.
 // Exact can override it, so this never consults options for the decision
 // itself, only records it on the returned context for providers to plan
 // with.
-func (s *Session) resolveRestoreContext(ctx context.Context, provider Provider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
+func (s *Session) resolveRestoreContext(ctx context.Context, provider ReadProvider, data profile.Data, machine string, options policy.RestoreOptions) (RestoreContext, error) {
 	targets, err := provider.InspectTargets(ctx, data)
 	if err != nil {
 		return RestoreContext{}, err

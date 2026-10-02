@@ -53,6 +53,11 @@ func (p *Provider) Verify(ctx context.Context, data profile.Data, rc workflow.Re
 	if len(selected) == 0 {
 		return result, nil
 	}
+	local, err := p.readSource().localProvider()
+	if err != nil {
+		return result, err
+	}
+	p = local
 	if err := p.resolveSourceRoots(); err != nil {
 		return result, err
 	}

@@ -33,6 +33,7 @@ func (r overviewRow) isSection() bool { return r.section != "" }
 func (r overviewRow) isItem() bool    { return r.item.Summary != "" }
 
 type Overview struct {
+	readPresentation
 	ctx       context.Context
 	session   *workflow.Session
 	data      workflow.Overview
@@ -50,6 +51,7 @@ type overviewMsg struct {
 	requestID uint64
 	data      workflow.Overview
 	err       error
+	snapshot  *workflow.ReadSnapshot
 }
 
 func NewOverview(session *workflow.Session) *Overview {
@@ -67,6 +69,9 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.data, s.err, s.busy = result.data, result.err, false
+		if result.err == nil && result.snapshot != nil {
+			s.acceptSnapshot(*result.snapshot)
+		}
 		s.list.SetSelected(s.selected, len(s.rows()), s.listHeight())
 		s.selected = s.list.Selected
 		return nil
@@ -115,7 +120,7 @@ func (s *Overview) View() string {
 	if s.err != nil {
 		return "Unable to load overview: " + components.DisplayText(s.err.Error())
 	}
-	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
+	if s.session != nil && !profileHasCapturedState(s.desiredProfile(s.session)) {
 		return renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "Nothing has been captured yet",
 			Explanation: "Capture is where you choose which parts of this machine Blueprint should remember. You can still explore the other sections to understand what each category covers.",
@@ -321,7 +326,7 @@ func (s *Overview) HeaderState() string {
 	if s.err != nil {
 		return "x overview error"
 	}
-	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
+	if s.session != nil && !profileHasCapturedState(s.desiredProfile(s.session)) {
 		return "~ nothing captured"
 	}
 	attention, changes := 0, 0
@@ -351,8 +356,18 @@ func (s *Overview) refresh() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
 	s.busy = true
+	session, ctx := s.session, s.ctx
 	return func() tea.Msg {
-		data, err := s.session.Overview(s.ctx)
-		return overviewMsg{requestID: requestID, data: data, err: err}
+		cycle, err := session.BeginRead(ctx)
+		if err != nil {
+			return overviewMsg{requestID: requestID, err: err}
+		}
+		defer cycle.Close()
+		data, err := cycle.Overview(ctx)
+		if err != nil {
+			return overviewMsg{requestID: requestID, err: err}
+		}
+		snapshot, err := cycle.Snapshot(ctx)
+		return overviewMsg{requestID: requestID, data: data, snapshot: &snapshot, err: err}
 	}
 }

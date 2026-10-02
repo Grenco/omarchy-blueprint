@@ -23,6 +23,7 @@ type HandoffRequest struct {
 }
 
 type Config struct {
+	readPresentation
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
@@ -56,6 +57,7 @@ type configStatusMsg struct {
 	targets    []workflow.TargetInspection
 	effective  map[string]policy.Effective
 	err        error
+	snapshot   *workflow.ReadSnapshot
 }
 type configInspectionMsg struct {
 	requestID  uint64
@@ -110,6 +112,9 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.candidates, s.targets, s.effective, s.err, s.busy = msg.candidates, msg.targets, msg.effective, nil, false
+		if msg.snapshot != nil {
+			s.acceptSnapshot(*msg.snapshot)
+		}
 		for _, candidate := range s.candidates {
 			if candidate.Path == s.focusPath {
 				if s.collapsed == nil {
@@ -579,7 +584,7 @@ func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 func (s *Config) policyScopeLabel() string {
-	return policyScopeLabel(s.policyScope, activeMachineName(s.session))
+	return policyScopeLabel(s.policyScope, s.selectedMachine(s.session).Name)
 }
 func (s *Config) targetPolicy(path string) (workflow.TargetInspection, policy.Effective) {
 	for _, target := range s.targets {
@@ -701,20 +706,26 @@ func (s *Config) rescan() tea.Cmd {
 	requestID := s.statusID
 	scope := s.policyScope
 	s.busy = true
+	session, ctx := s.session, s.ctx
 	return func() tea.Msg {
-		report, err := s.session.Status(s.ctx, "config")
+		cycle, err := session.BeginRead(ctx)
+		if err != nil {
+			return configStatusMsg{requestID: requestID, err: err}
+		}
+		defer cycle.Close()
+		report, err := cycle.Status(ctx, "config")
 		if err != nil {
 			return configStatusMsg{requestID: requestID, err: err}
 		}
 		for _, provider := range report.Providers {
 			if provider.ID == "config" && provider.ConfigScan != nil {
-				targets, err := s.session.PolicyTargets(s.ctx, "config")
+				targets, err := cycle.PolicyTargets(ctx, "config")
 				if err != nil {
 					return configStatusMsg{requestID: requestID, err: err}
 				}
 				effective := make(map[string]policy.Effective, len(targets))
 				for _, target := range targets {
-					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "config", target)
+					resolved, err := cycle.EffectivePolicy(ctx, scope, "config", target)
 					if err != nil {
 						return configStatusMsg{requestID: requestID, err: err}
 					}
@@ -730,13 +741,14 @@ func (s *Config) rescan() tea.Cmd {
 				}
 				for directory := range directories {
 					synthetic := workflow.TargetInspection{Key: directory, Ancestors: configPathAncestors(directory)}
-					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "config", synthetic)
+					resolved, err := cycle.EffectivePolicy(ctx, scope, "config", synthetic)
 					if err != nil {
 						return configStatusMsg{requestID: requestID, err: err}
 					}
 					effective[directory] = resolved
 				}
-				return configStatusMsg{requestID: requestID, candidates: provider.ConfigScan.Candidates, targets: targets, effective: effective}
+				snapshot := workflow.ReadSnapshot{Profile: report.Profile, Machine: report.Machine}
+				return configStatusMsg{requestID: requestID, candidates: provider.ConfigScan.Candidates, targets: targets, effective: effective, snapshot: &snapshot}
 			}
 		}
 		return configStatusMsg{requestID: requestID, err: fmt.Errorf("config scan is unavailable")}
@@ -762,7 +774,8 @@ func (s *Config) setPolicy(logical, policy string) tea.Cmd {
 	s.busy = true
 	requestID := s.statusID
 	return func() tea.Msg {
-		return configPolicyMsg{requestID: requestID, err: s.session.SetConfigPolicy(s.ctx, logical, policy)}
+		err := editProfileFresh(s.ctx, s.session, func() error { return s.session.SetConfigPolicy(s.ctx, logical, policy) })
+		return configPolicyMsg{requestID: requestID, err: err}
 	}
 }
 func (s *Config) setTargetPolicy(logical string) tea.Cmd {
@@ -779,7 +792,8 @@ func (s *Config) setTargetPolicy(logical string) tea.Cmd {
 		setting = policy.SettingEnabled
 	}
 	return func() tea.Msg {
-		return configPolicyMsg{requestID: requestID, err: s.session.SetPolicy(scope, axis, "config", logical, setting)}
+		err := editProfileFresh(s.ctx, s.session, func() error { return s.session.SetPolicy(scope, axis, "config", logical, setting) })
+		return configPolicyMsg{requestID: requestID, err: err}
 	}
 }
 func (s *Config) clearTargetPolicy(logical string) tea.Cmd {
@@ -791,16 +805,17 @@ func (s *Config) clearTargetPolicy(logical string) tea.Cmd {
 		axis = policy.AxisRestore
 	}
 	return func() tea.Msg {
-		return configPolicyMsg{requestID: requestID, err: s.session.ClearPolicy(scope, axis, "config", logical)}
+		err := editProfileFresh(s.ctx, s.session, func() error { return s.session.ClearPolicy(scope, axis, "config", logical) })
+		return configPolicyMsg{requestID: requestID, err: err}
 	}
 }
 func (s *Config) nextPolicy(path string) string {
-	for _, excluded := range s.session.Profile().Config.Excluded {
+	for _, excluded := range s.desiredProfile(s.session).Config.Excluded {
 		if excluded == path {
 			return "auto"
 		}
 	}
-	for _, included := range s.session.Profile().Config.Included {
+	for _, included := range s.desiredProfile(s.session).Config.Included {
 		if included == path {
 			return "exclude"
 		}
@@ -914,12 +929,12 @@ func (s *Config) candidatePolicy(path string) string {
 	if s.session == nil {
 		return "Auto"
 	}
-	for _, excluded := range s.session.Profile().Config.Excluded {
+	for _, excluded := range s.desiredProfile(s.session).Config.Excluded {
 		if configPathWithin(path, excluded) {
 			return "Excluded"
 		}
 	}
-	for _, included := range s.session.Profile().Config.Included {
+	for _, included := range s.desiredProfile(s.session).Config.Included {
 		if configPathWithin(path, included) {
 			return "Included"
 		}

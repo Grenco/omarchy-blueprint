@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
@@ -26,6 +27,7 @@ const (
 )
 
 type Resources struct {
+	readPresentation
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
@@ -74,6 +76,7 @@ type resourcesStatusMsg struct {
 	targets   []workflow.TargetInspection
 	policies  map[string]policy.Effective
 	err       error
+	snapshot  *workflow.ReadSnapshot
 }
 type resourceTrackedMsg struct {
 	requestID uint64
@@ -174,6 +177,9 @@ func (s *Resources) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.items, s.git, s.effective, s.targets, s.policies = msg.items, msg.git, msg.effective, msg.targets, msg.policies
+		if msg.err == nil && msg.snapshot != nil {
+			s.acceptSnapshot(*msg.snapshot)
+		}
 		if msg.err != nil {
 			s.err = msg.err
 		}
@@ -532,7 +538,7 @@ func (s *Resources) DetailView() string {
 }
 func (s *Resources) policyView() string {
 	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
-	if scope := policyScopeLabel(s.policyScope, activeMachineName(s.session)); scope != "" {
+	if scope := policyScopeLabel(s.policyScope, s.selectedMachine(s.session).Name); scope != "" {
 		lines = append(lines, scope)
 	}
 	lines = append(lines, "Safety: Exact never deletes Resource data.")
@@ -612,16 +618,16 @@ func (s *Resources) setResourcePolicy(clear bool) tea.Cmd {
 		axis, effective = policy.AxisRestore, s.policies[target.Key].Restore
 	}
 	return func() tea.Msg {
-		var err error
-		if clear {
-			err = s.session.ClearPolicy(scope, axis, "resources", target.Key)
-		} else {
+		err := editProfileFresh(s.ctx, s.session, func() error {
+			if clear {
+				return s.session.ClearPolicy(scope, axis, "resources", target.Key)
+			}
 			setting := policy.SettingDisabled
 			if !effective.Enabled {
 				setting = policy.SettingEnabled
 			}
-			err = s.session.SetPolicy(scope, axis, "resources", target.Key, setting)
-		}
+			return s.session.SetPolicy(scope, axis, "resources", target.Key, setting)
+		})
 		return resourcePolicyMsg{requestID: requestID, err: err}
 	}
 }
@@ -675,7 +681,7 @@ func (s *Resources) track() tea.Cmd {
 	requestID := s.requestID
 	request := s.trackRequest()
 	return func() tea.Msg {
-		_, _, err := s.session.TrackResource(s.ctx, request)
+		err := editProfileFresh(s.ctx, s.session, func() error { _, _, err := s.session.TrackResource(s.ctx, request); return err })
 		return resourceTrackedMsg{requestID: requestID, err: err}
 	}
 }
@@ -713,7 +719,7 @@ func (s *Resources) untrack() tea.Cmd {
 	requestID := s.requestID
 	id := s.selectedResource().ID
 	return func() tea.Msg {
-		_, err := s.session.UntrackResource(s.ctx, id)
+		err := editProfileFresh(s.ctx, s.session, func() error { _, err := s.session.UntrackResource(s.ctx, id); return err })
 		return resourceUntrackedMsg{requestID: requestID, err: err}
 	}
 }
@@ -725,33 +731,46 @@ func (s *Resources) rescan() tea.Cmd {
 	s.requestID++
 	requestID := s.requestID
 	scope := s.policyScope
+	session, ctx := s.session, s.ctx
 	return func() tea.Msg {
-		report, err := s.session.Status(s.ctx, "resources")
+		cycle, err := session.BeginRead(ctx)
+		if err != nil {
+			return resourcesStatusMsg{requestID: requestID, err: err}
+		}
+		defer cycle.Close()
+		report, err := cycle.Status(ctx, "resources")
 		if err != nil {
 			return resourcesStatusMsg{requestID: requestID, err: err}
 		}
 		for _, provider := range report.Providers {
 			if provider.ID == "resources" {
 				effective := make(map[string]string, len(report.Profile.Resources.Items))
-				for _, item := range report.Profile.Resources.Items {
-					inspection, err := s.session.InspectResource(s.ctx, item.ID)
-					if err == nil {
-						effective[item.ID] = inspection.EffectivePath
+				paths := machine.ResourcePaths{Home: session.HomeDir(), Overrides: map[string]string{}}
+				if report.Machine.Machine != nil {
+					for _, mapping := range report.Machine.Machine.ResourcePaths {
+						paths.Overrides[mapping.Resource] = mapping.Path
 					}
 				}
-				targets, err := s.session.PolicyTargets(s.ctx, "resources")
+				for _, item := range report.Profile.Resources.Items {
+					path, err := paths.Resolve(item)
+					if err == nil {
+						effective[item.ID] = path
+					}
+				}
+				targets, err := cycle.PolicyTargets(ctx, "resources")
 				if err != nil {
 					return resourcesStatusMsg{requestID: requestID, err: err}
 				}
 				policies := make(map[string]policy.Effective, len(targets))
 				for _, target := range targets {
-					resolved, err := s.session.EffectivePolicy(s.ctx, scope, "resources", target)
+					resolved, err := cycle.EffectivePolicy(ctx, scope, "resources", target)
 					if err != nil {
 						return resourcesStatusMsg{requestID: requestID, err: err}
 					}
 					policies[target.Key] = resolved
 				}
-				return resourcesStatusMsg{requestID: requestID, items: report.Profile.Resources.Items, git: provider.ResourceGit, effective: effective, targets: targets, policies: policies}
+				snapshot := workflow.ReadSnapshot{Profile: report.Profile, Machine: report.Machine}
+				return resourcesStatusMsg{requestID: requestID, items: report.Profile.Resources.Items, git: provider.ResourceGit, effective: effective, targets: targets, policies: policies, snapshot: &snapshot}
 			}
 		}
 		return resourcesStatusMsg{requestID: requestID}
@@ -860,5 +879,5 @@ func clonePathInspection(inspection workflow.PathInspection) workflow.PathInspec
 }
 
 func (s *Resources) browserConfig() components.BrowserConfig {
-	return components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.session.Profile(), InspectPathCmd: s.inspectPath}
+	return components.BrowserConfig{Home: s.session.HomeDir(), ProfileDir: s.session.ProfileDir(), Profile: s.desiredProfile(s.session), InspectPathCmd: s.inspectPath}
 }

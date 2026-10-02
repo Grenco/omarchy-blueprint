@@ -14,6 +14,12 @@
 
 **Approval/execution:** Approved on 2026-10-02. Tasks 1–3 / PR A implemented at `7def693779ce1cdad61f8b058e8e390dc54d4aaa`, pending human review/merge and hosted Reconstruction Assurance. The human subsequently authorized pushing A, committing/publishing these planning documents and opening a PR. See the spec's PR A evidence and the isolated worktree's ignored execution ledger. Tasks 4–10 have not begun.
 
+**PR B execution update:** PR A #61 was approved/merged; B starts from current
+main `bf6b816b75cffc79a30cdde7a7272ea902432745`. Tasks 4–9 are implemented and
+locally verified, with [before/after evidence](../specs/2026-10-02-observation-performance-v1-pr-b-results.md).
+Task 10 remains conditional and unstarted. PR B publication and merge remain
+human gates; the earlier paragraph records the approval state at PR A handoff.
+
 **Planning baseline:** `main`, `4b1617161eff583e01085ef85b270da04829ec48`, checked with successful `git pull --ff-only` on 2026-10-02. Execution starts from then-current main in an isolated worktree/branch after approval. Reconcile file locations and parallel changes before editing; do not overwrite user work.
 
 ## Global Constraints
@@ -74,6 +80,13 @@ Existing files to touch are pinned in each task. Do not split unrelated large fi
 ### Read interfaces
 
 Add `ReadProvider`, `ReadRestoreProvider`, and `ReadCycleBinder` exactly as defined in the spec to `internal/workflow/providers.go`. Provider embeds ReadProvider and keeps Capture; RestoreProvider keeps Plan/Verify. Optional category/scan/Git/resolver/validator capabilities are preserved by specialized read adapters, not silently removed.
+
+PR B review addition: `read_snapshot.go` defines descriptive `ReadSnapshot` and
+optional `ReadSnapshotBinder`; Resources receives frozen machine interpretation
+without a live-facts cache. Snapshot/EffectivePolicy read methods let TUI/CLI
+consumers render coherent result metadata without Session publication. Fresh
+Capture desired-state reload and TUI profile-edit entry reload are required by
+the same authority separation; see the spec and PR B results for regressions.
 
 Add `RestorePreview { Plan model.RestorePlan; Options policy.RestoreOptions; Profile profile.Data; Machine machine.Selection }` in `read_restore.go`. Add the spec's BeginRead/Close/read methods. Add `Session.PreviewRestore(context.Context, string, *policy.RestoreOptions) (RestorePreview, error)`; Session.PlanRestore returns that preview's plan. Session.PlanRestoreWithContext keeps its existing signature and fresh-authority semantics.
 

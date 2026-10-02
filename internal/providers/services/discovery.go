@@ -189,13 +189,6 @@ func Discover(units []ObservedUnit, saved profile.Services, roots Roots) []Candi
 }
 
 func (p *Provider) discovered(ctx context.Context, saved profile.Services) ([]Candidate, error) {
-	if p.ResolveRoots != nil {
-		roots, err := p.ResolveRoots()
-		if err != nil {
-			return nil, fmt.Errorf("resolve user-service source roots: %w", err)
-		}
-		p.Roots = roots
-	}
 	if p.Systemd == nil {
 		return nil, fmt.Errorf("Services needs a user systemd inspection source")
 	}
@@ -209,7 +202,16 @@ func (p *Provider) discovered(ctx context.Context, saved profile.Services) ([]Ca
 	return Discover(units, saved, p.Roots), nil
 }
 
-func (p Provider) InspectTargets(ctx context.Context, data profile.Data) ([]workflow.TargetInspection, error) {
+func (p *Provider) InspectTargets(ctx context.Context, data profile.Data) ([]workflow.TargetInspection, error) {
+	source := p.readSource()
+	o, err := source.observe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return source.targetsObserved(ctx, data, o)
+}
+
+func (p *Provider) inspectTargets(ctx context.Context, data profile.Data) ([]workflow.TargetInspection, error) {
 	candidates, err := p.discovered(ctx, data.Services)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -322,7 +324,7 @@ func newManagedDropIn(saved profile.ServiceUnit, candidate Candidate, roots Root
 	return false
 }
 
-func (p Provider) candidateFingerprint(candidate Candidate) (string, string) {
+func (p *Provider) candidateFingerprint(candidate Candidate) (string, string) {
 	type artifact struct{ Path, Hash, Mode string }
 	var artifacts []artifact
 	if candidate.Eligible && !candidate.Missing {

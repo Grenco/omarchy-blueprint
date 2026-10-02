@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -23,6 +24,34 @@ func TestOverviewExplainsCompletelyUncapturedProfile(t *testing.T) {
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("fresh overview missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestOverviewRefreshUsesFreshCapturedStateWithoutSessionPublication(t *testing.T) {
+	session, root := newSyncSession(t)
+	screen := NewOverview(session)
+	for _, captured := range []bool{true, false} {
+		d, err := profile.Load(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Manifest.Capture.Hooks = captured
+		if err := profile.Save(root, d); err != nil {
+			t.Fatal(err)
+		}
+		screen.Update(screen.refresh()())
+		if screen.err != nil {
+			t.Fatal(screen.err)
+		}
+		if got := strings.Contains(screen.View(), "Nothing has been captured yet"); got == captured {
+			t.Fatal("Overview rendered stale captured state", captured)
+		}
+		if got := screen.HeaderState() == "~ nothing captured"; got == captured {
+			t.Fatal("Overview header rendered stale captured state", captured)
+		}
+		if session.Profile().Manifest.Capture.Hooks {
+			t.Fatal("read refresh published Session state")
 		}
 	}
 }

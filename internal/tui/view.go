@@ -68,7 +68,19 @@ func (m model) styleFooter(footer string) string {
 
 func (m model) header() string {
 	profileName, machine := "default", "portable default"
-	if m.session != nil {
+	hasReadIdentity := false
+	if identity, ok := m.activeScreen().(interface {
+		HeaderIdentity() (string, string, string, bool)
+	}); ok {
+		if name, selected, source, known := identity.HeaderIdentity(); known {
+			hasReadIdentity = true
+			profileName, machine = components.DisplayText(name), "portable default"
+			if selected != "" {
+				machine = components.DisplayText(selected) + " (" + components.DisplayText(source) + ")"
+			}
+		}
+	}
+	if !hasReadIdentity && m.session != nil {
 		profileName = components.DisplayText(m.session.Profile().Manifest.Profile.Name)
 		if selection := m.session.Machine(); selection.Name != "" {
 			machine = components.DisplayText(selection.Name) + " (" + components.DisplayText(selection.Source) + ")"

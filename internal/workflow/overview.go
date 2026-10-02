@@ -47,7 +47,9 @@ type Overview struct {
 
 // Overview combines local, already-available state. Profile Git Status does
 // not fetch, so opening the decision inbox never refreshes remote state.
-func (s *Session) Overview(ctx context.Context) (Overview, error) {
+func (s *ReadCycle) Overview(ctx context.Context) (Overview, error) {
+	ctx, stop := s.withContext(ctx)
+	defer stop()
 	report, err := s.Status(ctx, "")
 	if err != nil {
 		return Overview{}, err
@@ -107,6 +109,9 @@ func (s *Session) Overview(ctx context.Context) (Overview, error) {
 		return left.Summary < right.Summary
 	})
 	sort.Strings(overview.Healthy)
+	if e := s.check(ctx); e != nil {
+		return Overview{}, e
+	}
 	return overview, nil
 }
 
@@ -171,9 +176,9 @@ func hasActionable(items []AttentionItem) bool {
 // Restore planned, lazily and only for categories that need it.
 type differenceClassifier struct {
 	ctx      context.Context
-	session  *Session
+	session  *ReadCycle
 	category string
-	provider Provider
+	provider ReadProvider
 	targets  map[string]TargetInspection
 	loaded   bool
 
@@ -187,13 +192,13 @@ type differenceClassifier struct {
 	restoreOptions policy.RestoreOptions
 }
 
-func (s *Session) newDifferenceClassifier(ctx context.Context, category string) *differenceClassifier {
+func (s *ReadCycle) newDifferenceClassifier(ctx context.Context, category string) *differenceClassifier {
 	provider, _ := ProviderByID(s.providers, category)
 	return &differenceClassifier{ctx: ctx, session: s, category: category, provider: provider}
 }
 
 func (c *differenceClassifier) key(change model.Change) (string, bool) {
-	resolver, ok := c.provider.(ChangeTargetResolver)
+	resolver, ok := readCapabilitySource(c.provider).(ChangeTargetResolver)
 	if !ok {
 		return "", false
 	}
@@ -207,7 +212,7 @@ func (c *differenceClassifier) target(key string) (TargetInspection, bool) {
 		if c.provider == nil {
 			return TargetInspection{}, false
 		}
-		targets, err := c.provider.InspectTargets(c.ctx, c.session.profile)
+		targets, err := c.provider.InspectTargets(c.ctx, profile.CloneData(c.session.profile))
 		if err != nil {
 			return TargetInspection{}, false
 		}
@@ -225,8 +230,9 @@ func (c *differenceClassifier) target(key string) (TargetInspection, bool) {
 func (c *differenceClassifier) restoreCandidate(key string) bool {
 	if !c.planned {
 		c.planned = true
-		resolver, ok := c.provider.(RestoreTargetResolver)
-		plan, _, _, options, err := c.session.restorePlan(c.ctx, c.category, nil)
+		resolver, ok := readCapabilitySource(c.provider).(RestoreTargetResolver)
+		preview, err := c.session.PreviewRestore(c.ctx, c.category, nil)
+		plan, options := preview.Plan, preview.Options
 		if !ok || err != nil {
 			c.restoreAll = true
 			return true

@@ -55,6 +55,11 @@ Typed copying is required: `profile.Packages` includes `Installed`, `MiseInstall
 2. **Context-carried memoization around Detect/InspectUserUnits (rejected).** Small changes, but scope and authority depend on inherited contexts; a mutation caller can accidentally retain presentation observations. It also hides configuration identity and lifetime.
 3. **Universal Observe/Project interface for every provider (deferred).** Uniform but requires an unnecessary conversion of Config, Resources, Shell, and other inexpensive providers. Optional read binding gives a later extension point without that rewrite.
 
+PR B implementation measurements are recorded separately in
+[PR B results](2026-10-02-observation-performance-v1-pr-b-results.md), including
+conditional classification and actual TUI navigation. They do not authorize
+the conditional PR C workstream.
+
 ## A. Services batching
 
 Keep the two existing catalogue commands, parsing rules, identity union, catalogue-only templates, normalization helper, and final sorting. Split the sorted eligible operands into chunks of **64**. Commands remain serial within one inventory: `2 + ceil(eligible / 64)` processes, zero shows when eligible is empty. Never introduce a goroutine per unit.
@@ -164,8 +169,18 @@ type ReadRestoreProvider interface {
 type ReadCycleBinder interface {
     BindReadCycle(*observation.Cycle) ReadProvider
 }
+// Optional desired-state inputs for Resources' machine-root interpretation.
+type ReadSnapshot struct {
+    Profile profile.Data
+    Machine machine.Selection
+}
+type ReadSnapshotBinder interface {
+    BindReadSnapshot(*observation.Cycle, ReadSnapshot) ReadProvider
+}
 func (s *Session) BeginRead(ctx context.Context) (*ReadCycle, error)
 func (r *ReadCycle) Close()
+func (r *ReadCycle) Snapshot(ctx context.Context) (ReadSnapshot, error)
+func (r *ReadCycle) EffectivePolicy(ctx context.Context, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error)
 func (r *ReadCycle) Status(ctx context.Context, only string) (StatusReport, error)
 func (r *ReadCycle) CaptureStatus(ctx context.Context) (StatusReport, error)
 func (r *ReadCycle) Overview(ctx context.Context) (Overview, error)
@@ -190,6 +205,15 @@ Use typed defensive copies for observed and derived values, including every nest
 A cycle is a stable set of per-provider observations acquired lazily at potentially different times, not an atomic machine snapshot. Services v1 reuse covers its resolved roots and normalized systemd inventory. Existing filesystem sensitivity, provenance, content and fingerprint checks remain in projection/authority helpers; this tranche does not snapshot all filesystem bytes. No cross-screen, cross-refresh, or human-pause reuse is implicit.
 
 The cycle also owns a lazy omarchy.Info metadata slot for preview environment checks. Multiple preview projections share this read-only metadata; authoritative planning continues to obtain fresh metadata through its existing path.
+
+PR B review clarification: Resources needs the optional snapshot-aware binding
+even though its discovery is not cached, because its previous adapter reloaded
+the machine binding inside every projection. Freeze the explicit selection,
+including portable/no-machine selection, in a private read worker. Do not copy
+its prepared Capture state. TUI/CLI consumers must render the result's desired
+profile, machine and resolved options, and resolve policy through the same
+cycle, instead of combining fresh facts with old Session metadata. Presentation
+may retain copied result metadata after Close; it never grants write authority.
 
 ### Slot semantics
 
@@ -217,11 +241,16 @@ Keep these authority paths separate:
 
 | Boundary | Required behavior |
 | --- | --- |
-| Capture / CaptureMany | Existing fresh target resolution and provider Capture observation; no ReadCycle binding |
+| Capture / CaptureMany | Freshly reload/validate authoritative desired profile and machine at transaction entry, then fresh target resolution and provider Capture observation; no ReadCycle binding |
 | CaptureApproved | Private fresh inspection for approval comparison, then fresh provider reads/staging, then independent fresh post-stage fingerprint recheck/rollback |
 | ApplyRestore / ApplyApprovedRestore | Existing Reload and uncached fresh plan, approval comparison, applicability/invariants, executor preconditions, fresh Verify |
 | CLI post-approval recheck | `PlanRestoreWithContext` remains authoritative and uncached; returns fresh providers/contexts for execution and Verify |
 | CLI no-op verification | Obtain authoritative fresh providers/contexts and preserve no-op verification; never Verify through a preview view |
+
+Reload at the action boundary for TUI profile/policy edits too: an accepted
+presentation snapshot must not cause unrelated external profile edits to be
+overwritten. This is not a promise of atomicity against concurrent external
+writes during a transaction, nor permission to run mutations concurrently.
 
 Move preview orchestration to read helpers without changing `restorePlan` into an ambient cache. `captureMany` must use a new private `inspectCaptureManyFresh` rather than the public read convenience methods. `recheckCapture` and Verify stay uncached. Preserve exact plan equality, selections, fingerprints, staged rollback, compatibility, readiness, operation ordering, activation authority, elevation/terminal handling, and journal/executor preconditions.
 

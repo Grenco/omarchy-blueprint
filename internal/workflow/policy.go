@@ -26,7 +26,11 @@ type PolicyScope struct {
 // actually viewing.
 func (s *Session) EffectivePolicy(ctx context.Context, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error) {
 	_ = ctx
-	machineRules, err := s.scopedMachineRules(scope)
+	return effectivePolicy(s.profile, scope, category, target)
+}
+
+func effectivePolicy(data profile.Data, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error) {
+	machineRules, err := scopedMachineRules(data, scope)
 	if err != nil {
 		return policy.Effective{}, err
 	}
@@ -34,7 +38,7 @@ func (s *Session) EffectivePolicy(ctx context.Context, scope PolicyScope, catego
 	if err != nil {
 		return policy.Effective{}, err
 	}
-	profileRules, err := remapLegacyPreinstallPolicyRules(s.profile.Policy, category, target.Key)
+	profileRules, err := remapLegacyPreinstallPolicyRules(data.Policy, category, target.Key)
 	if err != nil {
 		return policy.Effective{}, err
 	}
@@ -117,7 +121,16 @@ func remapLegacyPreinstallPolicyRules(rules policy.Rules, category, target strin
 // returns the raw resolved policy.EffectiveSetting alongside the decision so
 // callers (InspectCapture) can show why, without a second resolution.
 func (s *Session) resolveCaptureTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, CaptureDecision, error) {
-	effective, err := s.EffectivePolicy(ctx, PolicyScope{Machine: s.machine.Name}, category, target)
+	return resolveCaptureTarget(s.profile, s.machine.Name, category, target)
+}
+func (s *ReadCycle) resolveCaptureTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, CaptureDecision, error) {
+	if e := s.check(ctx); e != nil {
+		return policy.EffectiveSetting{}, CaptureDecision{}, e
+	}
+	return resolveCaptureTarget(s.profile, s.machine.Name, category, target)
+}
+func resolveCaptureTarget(data profile.Data, machine, category string, target TargetInspection) (policy.EffectiveSetting, CaptureDecision, error) {
+	effective, err := effectivePolicy(data, PolicyScope{Machine: machine}, category, target)
 	if err != nil {
 		return policy.EffectiveSetting{}, CaptureDecision{}, err
 	}
@@ -139,7 +152,16 @@ func (s *Session) resolveCaptureTarget(ctx context.Context, category string, tar
 // Skip. It returns the raw resolved policy.EffectiveSetting alongside the
 // decision so callers can show why, without a second resolution.
 func (s *Session) resolveRestoreTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, RestoreDecision, error) {
-	effective, err := s.EffectivePolicy(ctx, PolicyScope{Machine: s.machine.Name}, category, target)
+	return resolveRestoreTarget(s.profile, s.machine.Name, category, target)
+}
+func (s *ReadCycle) resolveRestoreTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, RestoreDecision, error) {
+	if e := s.check(ctx); e != nil {
+		return policy.EffectiveSetting{}, RestoreDecision{}, e
+	}
+	return resolveRestoreTarget(s.profile, s.machine.Name, category, target)
+}
+func resolveRestoreTarget(data profile.Data, machine, category string, target TargetInspection) (policy.EffectiveSetting, RestoreDecision, error) {
+	effective, err := effectivePolicy(data, PolicyScope{Machine: machine}, category, target)
 	if err != nil {
 		return policy.EffectiveSetting{}, RestoreDecision{}, err
 	}
@@ -166,7 +188,7 @@ type targetValidator interface {
 // validateTarget canonicalizes target against category's validator, if the
 // category has one and target is non-empty (an empty target means a
 // category-level rule, which has no target shape to validate).
-func validateTarget(provider Provider, target string) (string, error) {
+func validateTarget(provider ReadProvider, target string) (string, error) {
 	if target == "" {
 		return target, nil
 	}
@@ -382,14 +404,18 @@ func (s *Session) SetMachineRestoreDefaults(machineName string, options policy.R
 // scope: none at profile-defaults scope (Resolve itself rejects a Machine
 // override supplied there), or the named machine's own policy.
 func (s *Session) scopedMachineRules(scope PolicyScope) (policy.Rules, error) {
+	return scopedMachineRules(s.profile, scope)
+}
+func scopedMachineRules(data profile.Data, scope PolicyScope) (policy.Rules, error) {
 	if scope.Machine == "" {
 		return policy.Rules{}, nil
 	}
-	m, err := s.machineByName(scope.Machine)
-	if err != nil {
-		return policy.Rules{}, err
+	for _, m := range data.Machines.Items {
+		if m.Name == scope.Machine {
+			return m.Policy, nil
+		}
 	}
-	return m.Policy, nil
+	return policy.Rules{}, fmt.Errorf("machine %q does not exist", scope.Machine)
 }
 
 // upsertPolicyRule and removePolicyRule always build a fresh backing array

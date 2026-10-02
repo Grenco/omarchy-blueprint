@@ -61,6 +61,18 @@ func (s *Session) CaptureApproved(ctx context.Context, ids []string, approved Ca
 }
 
 func (s *Session) captureMany(ctx context.Context, ids []string, approved *CaptureInspection) (CaptureResult, error) {
+	// Read previews intentionally never publish desired state into Session.
+	// Mutation must freshly load and validate it as well as re-inspecting live
+	// facts, or saving Capture could overwrite edits already seen by a preview.
+	if err := ctx.Err(); err != nil {
+		return CaptureResult{}, err
+	}
+	if err := s.Reload(); err != nil {
+		return CaptureResult{}, fmt.Errorf("reload capture authority: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return CaptureResult{}, err
+	}
 	requested := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		if _, ok := ProviderByID(s.providers, id); !ok {
@@ -77,7 +89,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	var authority CaptureInspection
 	var contexts map[string]CaptureContext
 	if approved != nil {
-		fresh, err := s.InspectCaptureMany(ctx, ids)
+		fresh, err := s.inspectCaptureManyFresh(ctx, ids)
 		if err != nil {
 			return CaptureResult{}, err
 		}

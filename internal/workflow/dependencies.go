@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"io"
 	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
@@ -10,6 +11,7 @@ import (
 
 // Dependencies are the environment-facing services used by shared workflows.
 type Dependencies struct {
+	DiagnosticWriter  io.Writer
 	Runner            command.Runner
 	Now               func() time.Time
 	StateHome         func() (string, error)

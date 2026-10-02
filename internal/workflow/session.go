@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -13,13 +14,15 @@ import (
 )
 
 type Session struct {
-	deps            Dependencies
-	opts            Options
-	profile         profile.Data
-	machine         machine.Selection
-	providers       []Provider
-	profileGit      profilegit.Service
-	finalizeRestore func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error
+	configMu            sync.Mutex
+	deps                Dependencies
+	opts                Options
+	profile             profile.Data
+	machine             machine.Selection
+	providers           []Provider
+	profileGit          profilegit.Service
+	finalizeRestore     func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error
+	finalizeReadRestore func(context.Context, profile.Data, []string, *model.RestorePlan, policy.RestoreOptions) error
 }
 
 func Open(deps Dependencies, opts Options) (*Session, error) {
@@ -45,29 +48,14 @@ func Open(deps Dependencies, opts Options) (*Session, error) {
 // profile, even though opening that same profile fresh would fail in
 // SetProviders. s.profile is left untouched on validation failure.
 func (s *Session) Reload() error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	dir, err := machine.CanonicalProfileRoot(s.opts.ProfileDir)
 	if err != nil {
 		return err
 	}
 	s.opts.ProfileDir = dir
-	data, err := profile.Load(dir)
-	if err != nil {
-		return err
-	}
-	if s.providers != nil {
-		if err := validateLoadedPolicyTargets(s.providers, data); err != nil {
-			return err
-		}
-	}
-	state, err := s.deps.StateHome()
-	if err != nil {
-		return err
-	}
-	bound, err := (machine.BindingStore{StateHome: state}).Load(dir)
-	if err != nil {
-		return err
-	}
-	selection, err := machine.Select(s.opts.ExplicitMachine, bound, data.Machines.Items)
+	data, selection, err := loadReadSnapshot(context.Background(), readConfig{deps: s.deps, opts: s.opts, providers: s.providers})
 	if err != nil {
 		return err
 	}
@@ -178,10 +166,12 @@ func (s *Session) ProfileGitPush(ctx context.Context) (profilegit.Result, error)
 // touch the same target. Providers are left unset if validation fails, so a
 // session that fails to open never ends up in a half-usable state.
 func (s *Session) SetProviders(providers []Provider) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if err := validateLoadedPolicyTargets(providers, s.profile); err != nil {
 		return err
 	}
-	s.providers = providers
+	s.providers = append([]Provider(nil), providers...)
 	return nil
 }
 
@@ -190,5 +180,13 @@ func (s *Session) SetProviders(providers []Provider) error {
 // selected provider, so it cannot diverge from the effective Restore intent
 // that produced the plan it is adjusting.
 func (s *Session) SetRestoreFinalizer(finalize func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.finalizeRestore = finalize
+}
+
+func (s *Session) SetReadRestoreFinalizer(finalize func(context.Context, profile.Data, []string, *model.RestorePlan, policy.RestoreOptions) error) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.finalizeReadRestore = finalize
 }

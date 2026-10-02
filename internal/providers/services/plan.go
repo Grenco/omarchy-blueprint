@@ -19,13 +19,6 @@ import (
 )
 
 func (p *Provider) resolveSourceRoots() error {
-	if p.ResolveRoots != nil {
-		roots, err := p.ResolveRoots()
-		if err != nil {
-			return err
-		}
-		p.Roots = roots
-	}
 	if !filepath.IsAbs(p.Roots.UserConfigDir) {
 		return fmt.Errorf("Services needs an absolute persistent user configuration root")
 	}
@@ -94,6 +87,11 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 		fragment.Compatibility, err = assessment.category(false)
 		return fragment, err
 	}
+	local, err := p.readSource().localProvider()
+	if err != nil {
+		return fragment, err
+	}
+	p = local
 	if err := p.resolveSourceRoots(); err != nil {
 		return fragment, err
 	}
@@ -273,7 +271,7 @@ func serviceCommand(verb, name, target string) model.Operation {
 	return model.Operation{ID: id, Provider: "services", Action: verb, Resource: target, Command: command, Risk: model.RiskMedium, Reversible: false}
 }
 
-func (p Provider) desiredServiceFile(relative, hash, mode string) (capturedFile, error) {
+func (p *Provider) desiredServiceFile(relative, hash, mode string) (capturedFile, error) {
 	file, err := readServiceFile(filepath.Join(p.ProfileDir, "services", filepath.FromSlash(relative)))
 	if err != nil {
 		return capturedFile{}, err
@@ -285,7 +283,7 @@ func (p Provider) desiredServiceFile(relative, hash, mode string) (capturedFile,
 	return file, nil
 }
 
-func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]ObservedUnit, rc workflow.RestoreContext) (unitEffects, string, string, bool, error) {
+func (p *Provider) planUnit(saved profile.ServiceUnit, current map[string]ObservedUnit, rc workflow.RestoreContext) (unitEffects, string, string, bool, error) {
 	effects := unitEffects{proposed: map[string][]byte{}}
 	actual, found := current[saved.Name]
 	if found && !actual.Template && actual.LoadState == "not-found" && actual.FragmentPath == "" {
@@ -514,7 +512,7 @@ func (p Provider) planUnit(saved profile.ServiceUnit, current map[string]Observe
 	return effects, "", "", false, nil
 }
 
-func (p Provider) planStartIntent(name string, desired profile.ServiceStartIntent, actual ObservedUnit, found, force bool, target string) ([]model.Operation, string) {
+func (p *Provider) planStartIntent(name string, desired profile.ServiceStartIntent, actual ObservedUnit, found, force bool, target string) ([]model.Operation, string) {
 	if desired == "" || desired == profile.ServiceStartNotManaged || desired == profile.ServiceStartIndirect {
 		return nil, ""
 	}
