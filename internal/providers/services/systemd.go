@@ -21,7 +21,7 @@ var _ Systemd = Systemctl{}
 
 const inspectionOutputLimit = 4 << 20
 
-const userUnitProperties = "Id,LoadState,UnitFileState,ActiveState,FragmentPath,DropInPaths,SourcePath,Transient,Requires,Wants,BindsTo,PartOf,Triggers,TriggeredBy,Type,Result"
+const userUnitProperties = "Id,Names,LoadState,UnitFileState,ActiveState,FragmentPath,DropInPaths,SourcePath,Transient,Requires,Wants,BindsTo,PartOf,Triggers,TriggeredBy,Type,Result"
 
 // ValidationUnavailableError distinguishes missing inspection capability from
 // affirmative rejection of a proposed effective unit set.
@@ -33,10 +33,16 @@ func (e *ValidationUnavailableError) Error() string {
 func (e *ValidationUnavailableError) Unwrap() error { return e.Err }
 
 func (s Systemctl) inspect(ctx context.Context, args ...string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if s.Runner == nil {
 		return "", fmt.Errorf("systemd user inspection has no command runner")
 	}
 	output, err := command.RunOutput(ctx, s.Runner, inspectionOutputLimit, "systemctl", append([]string{"--user"}, args...)...)
+	if canceled := ctx.Err(); canceled != nil {
+		return "", canceled
+	}
 	if err != nil {
 		return "", err
 	}
@@ -79,21 +85,51 @@ func (s Systemctl) InspectUserUnits(ctx context.Context) ([]ObservedUnit, error)
 	}
 	sort.Strings(names)
 	byID := make(map[string]ObservedUnit, len(names))
+	eligible := make([]string, 0, len(names))
 	for _, name := range names {
 		if strings.Contains(name, "@.") {
 			unit := catalogTemplate(name, identities[name])
 			byID[unit.Name] = unit
 			continue
 		}
-		output, err := s.inspect(ctx, "show", "--all", "--no-pager", "--property="+userUnitProperties, "--", name)
+		eligible = append(eligible, name)
+	}
+	canonical := make(map[string]map[string]string)
+	aliasIDs := make(map[string]string)
+	for start := 0; start < len(eligible); start += userUnitBatchSize {
+		end := min(start+userUnitBatchSize, len(eligible))
+		batch := eligible[start:end]
+		args := append([]string{"show", "--all", "--no-pager", "--property=" + userUnitProperties, "--"}, batch...)
+		output, err := s.inspect(ctx, args...)
 		if err != nil {
-			return nil, fmt.Errorf("inspect user unit %q: %w", name, err)
+			return nil, fmt.Errorf("inspect user unit batch: %w", err)
 		}
-		unit := normalizeObservedUnit(name, identities[name], parseUnitProperties(output))
-		if unit.Name == "" {
-			return nil, fmt.Errorf("inspect user unit %q returned no identity", name)
+		records, err := parseUnitRecords(output)
+		if err != nil {
+			return nil, err
 		}
-		byID[unit.Name] = unit
+		mapped, err := mapUnitRecords(batch, records)
+		if err != nil {
+			return nil, err
+		}
+		// Aliases may straddle chunks. Reject ambiguity or changing normalized
+		// facts before accepting any complete inventory.
+		for _, record := range records {
+			if previous, exists := canonical[record.id]; exists && !sameUnitFacts(previous, record.properties) {
+				return nil, fmt.Errorf("user unit inventory returned conflicting canonical facts across batches")
+			}
+			canonical[record.id] = record.properties
+			for _, alias := range append([]string{record.id}, record.names...) {
+				if previous, exists := aliasIDs[alias]; exists && previous != record.id {
+					return nil, fmt.Errorf("user unit inventory returned ambiguous identity across batches")
+				}
+				aliasIDs[alias] = record.id
+			}
+		}
+		for _, name := range batch {
+			unit := normalizeObservedUnit(name, identities[name], mapped[name])
+			byID[unit.Name] = unit
+		}
 	}
 	names = names[:0]
 	for name := range byID {
