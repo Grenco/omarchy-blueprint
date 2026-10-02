@@ -675,10 +675,14 @@ func (p packagesStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	if err != nil {
 		return nil, err
 	}
-	current, err := provider.Detect(ctx)
+	observed, err := provider.Observe(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromPackages(d, observed.Packages())
+}
+
+func targetsFromPackages(d profile.Data, current profile.Packages) ([]workflow.TargetInspection, error) {
 	preinstalls := current.Preinstalls
 	desired := packagesprovider.CanonicalizePreinstallOwnership(d.Packages, preinstalls.Items)
 
@@ -983,11 +987,11 @@ func (p packagesStateProvider) Diff(ctx context.Context, d profile.Data) ([]mode
 	if err != nil {
 		return nil, err
 	}
-	current, err := provider.Detect(ctx)
+	observed, err := provider.Observe(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return packagesprovider.Diff(d.Packages, current), nil
+	return packagesprovider.Diff(d.Packages, observed.Packages()), nil
 }
 
 // Plan excludes every Restore-Skip package/tool from the desired state fed
@@ -1005,10 +1009,14 @@ func (p packagesStateProvider) Plan(ctx context.Context, d profile.Data, info om
 	if err != nil {
 		return workflow.RestoreFragment{}, err
 	}
-	current, err := provider.Detect(ctx)
+	observed, err := provider.Observe(ctx)
 	if err != nil {
 		return workflow.RestoreFragment{}, err
 	}
+	return planFromPackages(d, info, restoreCtx, provider, observed.Packages())
+}
+
+func planFromPackages(d profile.Data, info omarchy.Info, restoreCtx workflow.RestoreContext, provider packagesprovider.Provider, current profile.Packages) (workflow.RestoreFragment, error) {
 	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, current.Preinstalls.Items)
 	saved, matched, err := filterPackagesForRestoreSkip(d.Packages, restoreCtx)
 	if err != nil {
