@@ -14,6 +14,7 @@ import (
 
 // Capture composes existing provider capture operations into one discoverable screen.
 type Capture struct {
+	readPresentation
 	ctx                                  context.Context
 	session                              *workflow.Session
 	statuses                             []workflow.ProviderStatus
@@ -33,6 +34,7 @@ type Capture struct {
 }
 
 type captureReview struct {
+	readPresentation
 	categories []string
 	scope      workflow.PolicyScope
 	// inspection is what the user approves. Outcomes are for the active
@@ -61,12 +63,14 @@ type captureReviewMsg struct {
 	err           error
 	focus         string
 	policyChanged bool
+	snapshot      *workflow.ReadSnapshot
 }
 
 type captureStatusMsg struct {
 	requestID uint64
 	statuses  []workflow.ProviderStatus
 	err       error
+	snapshot  *workflow.ReadSnapshot
 }
 type captureDoneMsg struct {
 	requestID uint64
@@ -78,6 +82,13 @@ type captureDoneMsg struct {
 
 func NewCaptureContext(ctx context.Context, session *workflow.Session) *Capture {
 	return &Capture{ctx: ctx, session: session, chosen: map[string]bool{}}
+}
+
+func (s *Capture) HeaderIdentity() (string, string, string, bool) {
+	if s.review != nil && s.review.readSnapshot != nil {
+		return s.review.HeaderIdentity()
+	}
+	return s.readPresentation.HeaderIdentity()
 }
 func (s *Capture) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Capture) SetSize(width, height int) {
@@ -93,6 +104,9 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.statuses, s.err, s.busy = msg.statuses, msg.err, false
+		if msg.err == nil && msg.snapshot != nil {
+			s.acceptSnapshot(*msg.snapshot)
+		}
 		s.cursor = min(s.cursor, max(0, len(s.statuses)-1))
 		s.ensureCursorVisible()
 		return nil
@@ -313,7 +327,8 @@ func (s *Capture) refresh() tea.Cmd {
 	s.busy = true
 	return func() tea.Msg {
 		report, err := s.session.CaptureStatus(s.ctx)
-		return captureStatusMsg{requestID: requestID, statuses: report.Providers, err: err}
+		snapshot := workflow.ReadSnapshot{Profile: report.Profile, Machine: report.Machine}
+		return captureStatusMsg{requestID: requestID, statuses: report.Providers, snapshot: &snapshot, err: err}
 	}
 }
 func (s *Capture) capture() tea.Cmd {
@@ -376,30 +391,41 @@ func (s *Capture) inspectReview(focus string, policyChanged bool, mutate func() 
 	requestID, ids, scope, session, ctx := review.requestID, append([]string(nil), review.categories...), review.scope, s.session, s.ctx
 	return func() tea.Msg {
 		if mutate != nil {
-			if err := mutate(); err != nil {
+			if err := editProfileFresh(ctx, session, mutate); err != nil {
 				return captureReviewMsg{requestID: requestID, err: err, focus: focus}
 			}
 		}
-		inspection, err := session.InspectCaptureMany(ctx, ids)
+		cycle, err := session.BeginRead(ctx)
 		if err != nil {
 			return captureReviewMsg{requestID: requestID, err: err, focus: focus, policyChanged: policyChanged}
 		}
-		settings, err := scopeCaptureSettings(ctx, session, scope, inspection)
-		return captureReviewMsg{requestID: requestID, inspection: inspection, settings: settings, err: err, focus: focus, policyChanged: policyChanged}
+		defer cycle.Close()
+		inspection, err := cycle.InspectCaptureMany(ctx, ids)
+		if err != nil {
+			return captureReviewMsg{requestID: requestID, err: err, focus: focus, policyChanged: policyChanged}
+		}
+		settings, err := scopeCaptureSettings(ctx, cycle, scope, inspection)
+		if err != nil {
+			return captureReviewMsg{requestID: requestID, err: err, focus: focus, policyChanged: policyChanged}
+		}
+		snapshot, err := cycle.Snapshot(ctx)
+		return captureReviewMsg{requestID: requestID, inspection: inspection, settings: settings, snapshot: &snapshot, err: err, focus: focus, policyChanged: policyChanged}
 	}
 }
 
 // scopeCaptureSettings resolves each listed target's Capture policy at the
 // scope the review edits, which may differ from the active machine whose
 // outcomes the review shows.
-func scopeCaptureSettings(ctx context.Context, session *workflow.Session, scope workflow.PolicyScope, inspection workflow.CaptureInspection) (map[string]policy.EffectiveSetting, error) {
+func scopeCaptureSettings(ctx context.Context, reader interface {
+	EffectivePolicy(context.Context, workflow.PolicyScope, string, workflow.TargetInspection) (policy.Effective, error)
+}, scope workflow.PolicyScope, inspection workflow.CaptureInspection) (map[string]policy.EffectiveSetting, error) {
 	settings := map[string]policy.EffectiveSetting{}
 	for _, section := range inspection.Review() {
 		if section.Group == workflow.CaptureReviewNoAction {
 			continue
 		}
 		for _, target := range section.Targets {
-			effective, err := session.EffectivePolicy(ctx, scope, target.Category, target.Inspection)
+			effective, err := reader.EffectivePolicy(ctx, scope, target.Category, target.Inspection)
 			if err != nil {
 				return nil, err
 			}
@@ -438,6 +464,9 @@ func (s *Capture) applyReview(msg captureReviewMsg) tea.Cmd {
 	review.notice, review.pendingNotice = review.pendingNotice, ""
 	if msg.err == nil {
 		review.settings = msg.settings
+		if msg.snapshot != nil {
+			review.acceptSnapshot(*msg.snapshot)
+		}
 		s.setReviewInspection(msg.inspection, msg.focus)
 	}
 	if msg.policyChanged {
@@ -646,11 +675,15 @@ var captureOutcomeMeaning = map[workflow.CaptureOutcome]string{
 }
 
 func captureScopeLabel(session *workflow.Session, scope workflow.PolicyScope) string {
+	return captureScopeLabelFor(scope, activeMachineName(session))
+}
+
+func captureScopeLabelFor(scope workflow.PolicyScope, active string) string {
 	if scope.Machine == "" {
 		return "Policy scope: Profile defaults"
 	}
 	label := "Policy scope: " + components.DisplayText(scope.Machine)
-	if scope.Machine == activeMachineName(session) {
+	if scope.Machine == active {
 		label += " (this machine)"
 	}
 	return label
@@ -680,9 +713,10 @@ func (s *Capture) reviewView() string {
 		}
 		lines = append(lines, line)
 	}
-	scopeLine := captureScopeLabel(s.session, review.scope)
-	if review.scope.Machine != activeMachineName(s.session) {
-		scopeLine += " · outcomes are for " + machineLabel(activeMachineName(s.session))
+	active := review.selectedMachine(s.session).Name
+	scopeLine := captureScopeLabelFor(review.scope, active)
+	if review.scope.Machine != active {
+		scopeLine += " · outcomes are for " + machineLabel(active)
 	}
 	for _, line := range components.WrapText(scopeLine, width) {
 		lines = append(lines, s.styles.SubtleAccent(line))
@@ -779,7 +813,8 @@ func (s *Capture) reviewDetail() string {
 		label = target.Inspection.Key
 	}
 	blocked := target.Outcome == workflow.CaptureOutcomeBlocked
-	scopeName := strings.TrimPrefix(captureScopeLabel(s.session, s.review.scope), "Policy scope: ")
+	active := s.review.selectedMachine(s.session).Name
+	scopeName := strings.TrimPrefix(captureScopeLabelFor(s.review.scope, active), "Policy scope: ")
 	scoped := s.scopeSetting(target)
 	lines := []string{
 		components.DisplayText(label),
@@ -789,8 +824,8 @@ func (s *Capture) reviewDetail() string {
 		captureOutcomeMeaning[target.Outcome],
 		"Capture policy at " + scopeName + ": " + policySettingSummary(scoped, blocked),
 	}
-	if s.review.scope.Machine != activeMachineName(s.session) {
-		lines = append(lines, "Applied on "+machineLabel(activeMachineName(s.session))+": "+policySettingSummary(target.Policy, blocked))
+	if s.review.scope.Machine != active {
+		lines = append(lines, "Applied on "+machineLabel(active)+": "+policySettingSummary(target.Policy, blocked))
 	}
 	if target.Inspection.SafetyReason != "" {
 		lines = append(lines, "Safety: "+components.DisplayText(target.Inspection.SafetyReason))

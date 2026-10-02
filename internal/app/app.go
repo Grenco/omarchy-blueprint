@@ -434,15 +434,19 @@ func selectedMachine(deps Dependencies, opt *options, d profile.Data) (machine.S
 }
 
 func resolveMachineContext(deps Dependencies, opt *options, d profile.Data) (machineContext, error) {
+	selection, err := selectedMachine(deps, opt, d)
+	if err != nil {
+		return machineContext{}, err
+	}
+	return resolveMachineContextForSelection(deps, opt, d, selection)
+}
+
+func resolveMachineContextForSelection(deps Dependencies, opt *options, d profile.Data, selection machine.Selection) (machineContext, error) {
 	home, err := deps.HomeDir()
 	if err != nil {
 		return machineContext{}, err
 	}
 	state, err := deps.StateHome()
-	if err != nil {
-		return machineContext{}, err
-	}
-	selection, err := selectedMachine(deps, opt, d)
 	if err != nil {
 		return machineContext{}, err
 	}
@@ -1564,10 +1568,6 @@ func renderConfigStatus(changes []model.Change, scan configprovider.ScanSummary)
 }
 
 func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, diff bool) error {
-	machineContext, err := resolveMachineContext(deps, opt, d)
-	if err != nil {
-		return err
-	}
 	session, err := openWorkflow(deps, opt)
 	if err != nil {
 		return profileError(opt.profileDir, err)
@@ -1577,6 +1577,13 @@ func statusAll(ctx context.Context, deps Dependencies, opt *options, d profile.D
 		onlyProvider = providers[0].ID()
 	}
 	report, err := session.Status(ctx, onlyProvider)
+	if err != nil {
+		return err
+	}
+	// Render metadata and effective paths from the same desired snapshot that
+	// produced the observations, not a binding resolved before the read began.
+	d = report.Profile
+	machineContext, err := resolveMachineContextForSelection(deps, opt, d, report.Machine)
 	if err != nil {
 		return err
 	}

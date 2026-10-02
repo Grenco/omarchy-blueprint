@@ -40,7 +40,9 @@ func (s *Session) BeginRead(ctx context.Context) (*ReadCycle, error) {
 	r := &ReadCycle{observations: cycle, profile: data, machine: selection, profileGit: cfg.profileGit, finalize: cfg.finalize}
 	r.finishDiagnostics = finish
 	for _, p := range cfg.providers {
-		if binder, ok := p.(ReadCycleBinder); ok {
+		if binder, ok := p.(ReadSnapshotBinder); ok {
+			r.providers = append(r.providers, binder.BindReadSnapshot(cycle, (ReadSnapshot{Profile: data, Machine: selection}).Clone()))
+		} else if binder, ok := p.(ReadCycleBinder); ok {
 			r.providers = append(r.providers, binder.BindReadCycle(cycle))
 		} else {
 			r.providers = append(r.providers, narrowReadProvider(p))
@@ -52,6 +54,20 @@ func (s *Session) BeginRead(ctx context.Context) (*ReadCycle, error) {
 		return nil, e
 	}
 	return r, nil
+}
+
+func (r *ReadCycle) EffectivePolicy(ctx context.Context, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error) {
+	if err := r.check(ctx); err != nil {
+		return policy.Effective{}, err
+	}
+	resolved, err := effectivePolicy(r.profile, scope, category, target)
+	if err != nil {
+		return policy.Effective{}, err
+	}
+	if err := r.check(ctx); err != nil {
+		return policy.Effective{}, err
+	}
+	return resolved, nil
 }
 func (r *ReadCycle) Close() { r.observations.Close(); r.finishDiagnostics() }
 

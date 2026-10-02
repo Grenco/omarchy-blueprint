@@ -126,3 +126,48 @@ func TestReadPreviewCannotBecomeCaptureMutationAuthority(t *testing.T) {
 		})
 	}
 }
+
+type savingCycleProvider struct{ *cycleExpensiveProvider }
+
+func (p *savingCycleProvider) Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error) {
+	p.mutations.Add(1)
+	return profile.Packages{}, nil, nil
+}
+
+func TestCaptureReloadsDesiredStateAfterPrivateRestorePreview(t *testing.T) {
+	for _, id := range []string{"services", "packages"} {
+		t.Run(id, func(t *testing.T) {
+			p := &cycleExpensiveProvider{id: id}
+			s := cycleSession(t, p, false)
+			if err := s.SetProviders([]Provider{&savingCycleProvider{p}}); err != nil {
+				t.Fatal(err)
+			}
+			edited, err := profile.Load(s.ProfileDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			edited.Manifest.Profile.Name = "external-edit"
+			if err := profile.Save(s.ProfileDir(), edited); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := s.PreviewRestore(context.Background(), id, nil)
+			if err != nil || preview.Profile.Manifest.Profile.Name != "external-edit" {
+				t.Fatal("preview did not observe edit", err)
+			}
+			if s.Profile().Manifest.Profile.Name == "external-edit" {
+				t.Fatal("read preview published into authority")
+			}
+			approved, err := s.InspectCaptureMany(context.Background(), []string{id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CaptureApproved(context.Background(), []string{id}, approved); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := profile.Load(s.ProfileDir())
+			if err != nil || saved.Manifest.Profile.Name != "external-edit" {
+				t.Fatal("Capture overwrote an already-observed external edit", err)
+			}
+		})
+	}
+}

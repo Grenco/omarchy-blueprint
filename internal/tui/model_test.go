@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -890,6 +891,34 @@ func TestRootHeaderSanitizesProfileName(t *testing.T) {
 	if strings.Contains(header, "\x1b") || !strings.Contains(header, "profile?name?") {
 		t.Fatalf("unsafe header=%q", header)
 	}
+}
+
+type snapshotIdentityScreen struct{ recordingScreen }
+
+func (*snapshotIdentityScreen) HeaderIdentity() (string, string, string, bool) {
+	return "fresh\nprofile", "fresh-machine", "binding", true
+}
+
+func TestRootHeaderUsesAcceptedSnapshotWithoutReadingReloadingSession(t *testing.T) {
+	session := integrationSession(t)
+	m := newModelWithSession(ThemeLoader{NoColor: true}, session)
+	m.screens[ScreenOverview] = &snapshotIdentityScreen{}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 50 {
+			if err := session.Reload(); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	for range 500 {
+		if header := m.header(); !strings.Contains(header, "fresh?profile") || !strings.Contains(header, "fresh-machine (binding)") {
+			t.Fatal("header ignored accepted read identity", header)
+		}
+	}
+	wg.Wait()
 }
 
 func TestRootHeaderShowsProfilePathWithoutFooterOpenNotice(t *testing.T) {

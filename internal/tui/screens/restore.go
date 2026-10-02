@@ -20,6 +20,7 @@ import (
 // options. Applying always asks workflow to create a fresh plan, never the
 // previewed one.
 type Restore struct {
+	readPresentation
 	ctx                     context.Context
 	session                 *workflow.Session
 	width, height, selected int
@@ -94,6 +95,7 @@ type restorePlanMsg struct {
 	plan            model.RestorePlan
 	forcedOverrides int
 	err             error
+	preview         *workflow.RestorePreview
 }
 
 func NewRestore(session *workflow.Session) *Restore {
@@ -119,6 +121,10 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		s.current, s.forcedOverrides, s.err, s.planning = msg.plan, msg.forcedOverrides, msg.err, false
+		if msg.err == nil && msg.preview != nil {
+			s.options = msg.preview.Options
+			s.acceptSnapshot(workflow.ReadSnapshot{Profile: msg.preview.Profile, Machine: msg.preview.Machine})
+		}
 		s.selected = min(s.selected, max(0, s.currentEntryCount()-1))
 		return nil
 	case restoreAppliedMsg:
@@ -223,7 +229,7 @@ func (s *Restore) View() string {
 	if s.planning {
 		return "Refreshing plan..."
 	}
-	if s.session != nil && !profileHasCapturedState(s.session.Profile()) {
+	if s.session != nil && !profileHasCapturedState(s.desiredProfile(s.session)) {
 		return renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "Nothing to restore yet",
 			Explanation: "Restore recreates state that is already saved in this Blueprint profile.",
@@ -250,6 +256,9 @@ func (s *Restore) DetailView() string {
 
 func (s *Restore) ensureOptions() {
 	if s.override {
+		return
+	}
+	if s.readSnapshot != nil {
 		return
 	}
 	if s.session == nil {
@@ -302,7 +311,7 @@ func (s *Restore) refreshPlan() tea.Cmd {
 				forcedOverrides = countForcedOverrides(plan, safePreview.Plan)
 			}
 		}
-		return restorePlanMsg{requestID: requestID, plan: plan, forcedOverrides: forcedOverrides}
+		return restorePlanMsg{requestID: requestID, plan: plan, forcedOverrides: forcedOverrides, preview: &preview}
 	}
 }
 func (s *Restore) currentPlanView() string {
@@ -622,8 +631,8 @@ func restoreCompatibilityEnvironment(env model.CompatibilityEnvironment) string 
 
 func (s *Restore) runSettings() (machine, conflicts, conflictMeaning, convergence, convergenceMeaning, defaults, defaultsMeaning string) {
 	machine = "Profile defaults"
-	if s.session != nil && s.session.Machine().Name != "" {
-		machine = s.session.Machine().Name
+	if selection := s.selectedMachine(s.session); selection.Name != "" {
+		machine = selection.Name
 	}
 	conflicts, conflictMeaning = titleMode(string(s.options.Conflicts)), "Keep conflicting files"
 	if s.options.Conflicts == policy.ConflictForce {

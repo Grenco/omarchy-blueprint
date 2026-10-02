@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/observation"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
@@ -65,6 +66,11 @@ func (p *countedRestoreRead) Plan(ctx context.Context, _ profile.Data, _ omarchy
 }
 
 func readRestoreScreen(t *testing.T, p *countedRestoreProvider) *Restore {
+	screen, _ := readRestoreScreenWithState(t, p)
+	return screen
+}
+
+func readRestoreScreenWithState(t *testing.T, p *countedRestoreProvider) (*Restore, string) {
 	t.Helper()
 	dir, state := t.TempDir(), t.TempDir()
 	if e := profile.Save(dir, profile.New("test", time.Unix(1, 0))); e != nil {
@@ -77,7 +83,51 @@ func readRestoreScreen(t *testing.T, p *countedRestoreProvider) *Restore {
 	if e := session.SetProviders([]workflow.Provider{p}); e != nil {
 		t.Fatal(e)
 	}
-	return NewRestore(session)
+	return NewRestore(session), state
+}
+
+func TestRestoreRefreshPresentsFreshMachineDefaultsWithoutSessionPublication(t *testing.T) {
+	screen, state := readRestoreScreenWithState(t, &countedRestoreProvider{})
+	session := screen.session
+	d, err := profile.Load(session.ProfileDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Manifest.Capture.Hooks = true
+	d.Machines.Items = []profile.Machine{{Name: "a"}, {Name: "b", RestoreConflicts: policy.ConflictForce, RestoreConvergence: policy.ConvergenceExact}}
+	if err := profile.Save(session.ProfileDir(), d); err != nil {
+		t.Fatal(err)
+	}
+	// Select A before opening the read; then externally switch to B.
+	if err := session.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.UseMachine(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := (machine.BindingStore{StateHome: state}).Save(session.ProfileDir(), "b"); err != nil {
+		t.Fatal(err)
+	}
+	screen.Update(screen.refreshPlan()())
+	if screen.err != nil {
+		t.Fatal(screen.err)
+	}
+	if screen.options.Conflicts != policy.ConflictForce || screen.options.Convergence != policy.ConvergenceExact {
+		t.Fatal("preview options discarded", screen.options)
+	}
+	machineName, _, _, _, _, _, _ := screen.runSettings()
+	if machineName != "b" {
+		t.Fatal("fresh plan labelled with stale machine", machineName)
+	}
+	if confirmation := screen.confirmation(); !strings.Contains(confirmation, "Force conflicts, Exact convergence") {
+		t.Fatal("confirmation lost fresh settings", confirmation)
+	}
+	if view := screen.View(); !strings.Contains(view, "Force") || !strings.Contains(view, "Exact") {
+		t.Fatal("plan settings lost on render", view)
+	}
+	if session.Machine().Name != "a" {
+		t.Fatal("read preview published Session state")
+	}
 }
 
 func TestRestoreForceAndSafeRefreshShareOneObservation(t *testing.T) {

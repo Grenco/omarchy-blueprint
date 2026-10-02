@@ -81,6 +81,13 @@ Existing files to touch are pinned in each task. Do not split unrelated large fi
 
 Add `ReadProvider`, `ReadRestoreProvider`, and `ReadCycleBinder` exactly as defined in the spec to `internal/workflow/providers.go`. Provider embeds ReadProvider and keeps Capture; RestoreProvider keeps Plan/Verify. Optional category/scan/Git/resolver/validator capabilities are preserved by specialized read adapters, not silently removed.
 
+PR B review addition: `read_snapshot.go` defines descriptive `ReadSnapshot` and
+optional `ReadSnapshotBinder`; Resources receives frozen machine interpretation
+without a live-facts cache. Snapshot/EffectivePolicy read methods let TUI/CLI
+consumers render coherent result metadata without Session publication. Fresh
+Capture desired-state reload and TUI profile-edit entry reload are required by
+the same authority separation; see the spec and PR B results for regressions.
+
 Add `RestorePreview { Plan model.RestorePlan; Options policy.RestoreOptions; Profile profile.Data; Machine machine.Selection }` in `read_restore.go`. Add the spec's BeginRead/Close/read methods. Add `Session.PreviewRestore(context.Context, string, *policy.RestoreOptions) (RestorePreview, error)`; Session.PlanRestore returns that preview's plan. Session.PlanRestoreWithContext keeps its existing signature and fresh-authority semantics.
 
 `ReadCycle` owns `*observation.Cycle`, a private desired-state snapshot, `[]ReadProvider` in established order, a lazy `omarchy.Info` metadata slot for preview environment, and the read finalizer. It never owns authoritative providers as publicly accessible capabilities. Each provider view owns its typed slot; there is no global key registry or provider-ID cache map.

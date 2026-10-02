@@ -153,6 +153,8 @@ type resourcesStateProvider struct {
 	deps     Dependencies
 	opt      *options
 	prepared *resourcesprovider.PreparedCapture
+	// Non-nil only on a private, narrowed read worker; nil means fresh authority.
+	readSelection *machine.Selection
 }
 
 // TrackResource stages resource artifacts before saving metadata, retaining the
@@ -265,7 +267,12 @@ func (p resourcesStateProvider) provider(d profile.Data) (resourcesprovider.Prov
 	if plugins, err := p.deps.PluginDir(); err == nil {
 		claims.Claims = append(claims.Claims, ownership.Claim{Provider: "plugins", Path: plugins, Recursive: true})
 	}
-	context, err := resolveMachineContext(p.deps, p.opt, d)
+	var context machineContext
+	if p.readSelection != nil {
+		context, err = resolveMachineContextForSelection(p.deps, p.opt, d, *p.readSelection)
+	} else {
+		context, err = resolveMachineContext(p.deps, p.opt, d)
+	}
 	if err != nil {
 		return resourcesprovider.Provider{}, err
 	}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/observation"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
@@ -16,6 +17,34 @@ type readConfig struct {
 	providers  []Provider
 	profileGit profilegit.Service
 	finalize   func(context.Context, profile.Data, []string, *model.RestorePlan, policy.RestoreOptions) error
+}
+
+// ReadSnapshot is descriptive desired state, never mutation authority.
+// Copies may be retained by presentation after the owning cycle is closed.
+type ReadSnapshot struct {
+	Profile profile.Data
+	Machine machine.Selection
+}
+
+func (s ReadSnapshot) Clone() ReadSnapshot {
+	return ReadSnapshot{Profile: profile.CloneData(s.Profile), Machine: cloneMachine(s.Machine)}
+}
+
+// ReadSnapshotBinder is optional for adapters whose read interpretation needs
+// the captured machine selection as well as provider observation slots.
+type ReadSnapshotBinder interface {
+	BindReadSnapshot(*observation.Cycle, ReadSnapshot) ReadProvider
+}
+
+func (r *ReadCycle) Snapshot(ctx context.Context) (ReadSnapshot, error) {
+	if err := r.check(ctx); err != nil {
+		return ReadSnapshot{}, err
+	}
+	copy := (ReadSnapshot{Profile: r.profile, Machine: r.machine}).Clone()
+	if err := r.check(ctx); err != nil {
+		return ReadSnapshot{}, err
+	}
+	return copy, nil
 }
 
 // loadReadSnapshot loads desired state privately; it never publishes to a
