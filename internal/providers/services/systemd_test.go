@@ -83,13 +83,28 @@ func (f *fixtureRunner) Run(_ context.Context, name string, args ...string) (str
 	case "list-units":
 		return f.loaded, nil
 	case "show":
-		unit := args[len(args)-1]
-		if strings.Contains(unit, "@.") {
-			return "", fmt.Errorf("Unit name %s is neither a valid invocation ID nor unit name", unit)
+		var records []string
+		separator := -1
+		for i, arg := range args {
+			if arg == "--" {
+				separator = i
+				break
+			}
 		}
-		if value, ok := f.show[unit]; ok {
-			return value, nil
+		if separator < 0 {
+			return "", fmt.Errorf("missing show separator")
 		}
+		for _, unit := range args[separator+1:] {
+			if strings.Contains(unit, "@.") {
+				return "", fmt.Errorf("naked template queried")
+			}
+			value, ok := f.show[unit]
+			if !ok {
+				return "", fmt.Errorf("unknown show operand")
+			}
+			records = append(records, strings.TrimSpace(value))
+		}
+		return strings.Join(records, "\n\n") + "\n", nil
 	case "cat":
 		unit := args[len(args)-1]
 		if value, ok := f.cat[unit]; ok {
