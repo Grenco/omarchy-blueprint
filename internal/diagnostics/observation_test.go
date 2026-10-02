@@ -16,6 +16,12 @@ func TestObservationDiagnosticsDisabled(t *testing.T) {
 		t.Fatal("disabled facility replaced context")
 	}
 	finish()
+	if WithCollectorFrom(ctx, got) != ctx {
+		t.Fatal("disabled collector forwarding replaced context")
+	}
+	if allocations := testing.AllocsPerRun(1000, func() { WithCollectorFrom(ctx, got) }); allocations != 0 {
+		t.Fatal("disabled collector forwarding allocates", allocations)
+	}
 	args := []string{"--user", "show", "private.service"}
 	if StartCommand(ctx, "systemctl", args) != nil {
 		t.Fatal("disabled callback allocated")

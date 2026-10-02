@@ -55,6 +55,11 @@ Typed copying is required: `profile.Packages` includes `Installed`, `MiseInstall
 2. **Context-carried memoization around Detect/InspectUserUnits (rejected).** Small changes, but scope and authority depend on inherited contexts; a mutation caller can accidentally retain presentation observations. It also hides configuration identity and lifetime.
 3. **Universal Observe/Project interface for every provider (deferred).** Uniform but requires an unnecessary conversion of Config, Resources, Shell, and other inexpensive providers. Optional read binding gives a later extension point without that rewrite.
 
+PR B implementation measurements are recorded separately in
+[PR B results](2026-10-02-observation-performance-v1-pr-b-results.md), including
+conditional classification and actual TUI navigation. They do not authorize
+the conditional PR C workstream.
+
 ## A. Services batching
 
 Keep the two existing catalogue commands, parsing rules, identity union, catalogue-only templates, normalization helper, and final sorting. Split the sorted eligible operands into chunks of **64**. Commands remain serial within one inventory: `2 + ceil(eligible / 64)` processes, zero shows when eligible is empty. Never introduce a goroutine per unit.

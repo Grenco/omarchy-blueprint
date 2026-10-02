@@ -62,6 +62,17 @@ func sortedKeys(m map[string]timing) []string {
 	return keys
 }
 func active(ctx context.Context) *collector { c, _ := ctx.Value(contextKey{}).(*collector); return c }
+
+// WithCollectorFrom carries only request-local diagnostics into a projection's
+// caller context. It preserves caller values and cancellation, and does not
+// allocate when diagnostics are disabled.
+func WithCollectorFrom(ctx, source context.Context) context.Context {
+	if c := active(source); c != nil {
+		return context.WithValue(ctx, contextKey{}, c)
+	}
+	return ctx
+}
+
 func (c *collector) record(observation bool, key string, start time.Time) {
 	elapsed := time.Since(start)
 	c.mu.Lock()

@@ -58,6 +58,7 @@ func (r *ReadCycle) Close() { r.observations.Close(); r.finishDiagnostics() }
 // Forwarded providers without slots must also receive cycle cancellation.
 // Caller cancellation remains local to this projection, not shared loaders.
 func (r *ReadCycle) withContext(ctx context.Context) (context.Context, func()) {
+	ctx = diagnostics.WithCollectorFrom(ctx, r.observations.Context())
 	linked, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(r.observations.Context(), cancel)
 	return linked, func() { stop(); cancel() }
