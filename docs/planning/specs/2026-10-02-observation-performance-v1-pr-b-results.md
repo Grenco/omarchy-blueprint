@@ -8,9 +8,9 @@ mutation is included. PR C remains a separate human/measurement gate.
 ## Reproducibility
 
 - Before: merged PR A/main `bf6b816b75cffc79a30cdde7a7272ea902432745`.
-- After measured implementation: `a28167d9a3e561f0452e1b9048e0c134450d1105`.
-  A subsequent diagnostics-only correction carries the request collector into
-  forwarded caller contexts; diagnostics were disabled for these measurements.
+- After measured implementation, including independent-review fixes:
+  `5e8849acd4a59dcea196c9eccf250631ba8625ca`.
+  Diagnostics were disabled for these measurements.
 - Omarchy, Linux `7.1.9-arch1-2 x86_64`, Go `go1.27.1 linux/amd64`,
   systemd `261 (261.2-1-arch)`, Ryzen 7 5800HS, 16 logical CPUs.
 - Profile: `omarchy-profile`, unchanged. Five warm samples per variant/path,
@@ -32,35 +32,35 @@ also calculates the Safe comparison, as the TUI does.
 
 | Metric | Before | After | Change |
 | --- | ---: | ---: | ---: |
-| Services-only Status | 0.804 | 0.811 | +0.9%, already observed once |
-| Packages-only Status | 0.626 | 0.630 | +0.6%, already detected once |
-| Full Status | 1.686 | 1.687 | effectively unchanged |
-| Overview | 2.339 | 1.747 | −25.3% |
-| Overview → Restore | 5.769 | 3.773 | −34.6% |
-| Overview → Force/Safe Restore | 9.324 | 4.284 | −54.0% |
+| Services-only Status | 0.804 | 0.810 | +0.8%, already observed once |
+| Packages-only Status | 0.626 | 0.633 | +1.1%, already detected once |
+| Full Status | 1.686 | 1.683 | effectively unchanged |
+| Overview | 2.339 | 1.692 | −27.7% |
+| Overview → Restore | 5.769 | 3.705 | −35.8% |
+| Overview → Force/Safe Restore | 9.324 | 4.267 | −54.2% |
 | Commands per Overview | 108 | 79 | −29 |
 | systemctl calls per Overview | 12 | 10 | −2 package semantic probes |
 | Packages detections per Overview | 2 | 1 | −50% |
 | Services inventories per Overview | 1 | 1 | already one on this profile |
-| Largest child RSS, Overview | 162.31 MiB | 162.32 MiB | unchanged |
-| Blueprint's own peak RSS, Overview | 23.13 MiB | 25.36 MiB | +2.23 MiB |
+| Largest child RSS, Overview | 162.31 MiB | 162.27 MiB | unchanged |
+| Blueprint's own peak RSS, Overview | 23.13 MiB | 25.28 MiB | +2.15 MiB |
 
-Overview ranges: 2.319–2.409 s before, 1.732–1.760 s after (startup included).
-Overview → Restore ranges: 5.756–5.841 s and 3.756–3.811 s.
-Force/Safe ranges: 9.250–9.383 s and 4.238–4.339 s.
+Overview ranges: 2.319–2.409 s before, 1.681–1.713 s after (startup included).
+Overview → Restore ranges: 5.756–5.841 s and 3.691–3.752 s.
+Force/Safe ranges: 9.250–9.383 s and 4.245–4.274 s.
 
 | Path | Commands before → after | Services before → after | Packages before → after | CPU before → after |
 | --- | ---: | ---: | ---: | ---: |
-| Overview | 108 → 79 | 1 → 1 | 2 → 1 | 1.745 → 1.124 s |
-| Full Status | 76 → 76 | 1 → 1 | 1 → 1 | 1.083 → 1.079 s |
-| Services Status | 8 → 8 | 1 → 1 | 0 → 0 | 0.182 → 0.183 s |
-| Packages Status | 29 → 29 | 0 → 0 | 1 → 1 | 0.659 → 0.663 s |
-| Overview → Restore | 263 → 197 | 3 → 2 | 4 → 2 | 3.933 → 2.557 s |
-| Overview → Force/Safe | 418 → 276 | 5 → 2 | 6 → 2 | 6.186 → 3.106 s |
+| Overview | 108 → 79 | 1 → 1 | 2 → 1 | 1.745 → 1.098 s |
+| Full Status | 76 → 76 | 1 → 1 | 1 → 1 | 1.083 → 1.086 s |
+| Services Status | 8 → 8 | 1 → 1 | 0 → 0 | 0.182 → 0.184 s |
+| Packages Status | 29 → 29 | 0 → 0 | 1 → 1 | 0.659 → 0.664 s |
+| Overview → Restore | 263 → 197 | 3 → 2 | 4 → 2 | 3.933 → 2.519 s |
+| Overview → Force/Safe | 418 → 276 | 5 → 2 | 6 → 2 | 6.186 → 3.089 s |
 
 CPU combines Blueprint and child user/system time; it is not evidence of Go CPU
-as the bottleneck. Overview Blueprint self CPU is 0.136 → 0.131 s; child CPU is
-1.608 → 0.994 s. Status needs only
+as the bottleneck. Overview Blueprint self CPU is 0.136 → 0.128 s; child CPU is
+approximately 0.97 s after. Status needs only
 one live observation already, so reuse does not speed it up.
 
 ## Actual TUI measurements
@@ -72,16 +72,16 @@ only toggles conflict mode. No Apply/Capture action was sent.
 
 | Metric | Before | After |
 | --- | ---: | ---: |
-| Process start → first frame | 45.0 ms | 44.8 ms |
-| Process start → populated Overview | 2.360 s | 1.743 s |
-| Process start → completed default Restore preview | 5.908 s | 3.927 s |
+| Process start → first frame | 45.0 ms | 44.1 ms |
+| Process start → populated Overview | 2.360 s | 1.759 s |
+| Process start → completed default Restore preview | 5.908 s | 3.874 s |
 | Force/Safe refresh after default preview | 7.016 s | 2.584 s |
-| Overview-only process CPU (self + children) | 1.769 s | 1.140 s |
-| Default navigation process CPU (self + children) | 4.105 s | 2.729 s |
+| Overview-only process CPU (self + children) | 1.769 s | 1.145 s |
+| Default navigation process CPU (self + children) | 4.105 s | 2.699 s |
 | Default + Force navigation process CPU | 8.677 s | 4.768 s |
-| Largest process RSS, default navigation | 162.46 MiB | 162.42 MiB |
+| Largest process RSS, default navigation | 162.46 MiB | 162.57 MiB |
 
-Default-then-Force total startup latency is 12.975 → 6.493 s, including both
+Default-then-Force total startup latency is 12.975 → 6.512 s, including both
 preview refreshes. It is not the direct Force/Safe logical row above. All runs
 reached populated screens, with no timeout/error display. Quitting the TUI
 returns the existing context-canceled exit code 1 on both versions; this is not
@@ -96,7 +96,7 @@ the temporary profile is removed after the probe.
 
 | Metric | Before | After |
 | --- | ---: | ---: |
-| Overview wall median | 5.889 s | 1.540 s |
+| Overview wall median | 5.889 s | 1.553 s |
 | Commands | 154 | 41 |
 | Services inventories | 4 | 1 |
 | Packages detections | 4 | 1 |
@@ -115,15 +115,15 @@ private arguments/output are deliberately omitted.
 
 | Family | Calls before → after | Cumulative before → after | Median call after | Slowest after |
 | --- | ---: | ---: | ---: | ---: |
-| systemctl | 12 → 10 | 820 → 838 ms | 113 ms | 151 ms |
-| pacman | 32 → 16 | 1,028 → 517 ms | 10.7 ms | 188 ms |
-| pacman-conf | 4 → 2 | 24.3 → 12.1 ms | 6.1 ms | 7.4 ms |
-| mise | 2 → 1 | 22.6 → 11.9 ms | 11.9 ms | 13.1 ms |
-| git | 36 → 36 | 53.6 → 52.7 ms | 1.3 ms | 2.9 ms |
-| omarchy | 6 → 6 | 148 → 152 ms | 14.1 ms | 65.0 ms |
-| sh | 12 → 6 | 161 → 80 ms | 3.2 ms | 65.4 ms |
-| tailscale | 2 → 1 | 13.0 → 6.4 ms | 6.4 ms | 7.5 ms |
-| cat | 2 → 1 | 1.7 → 0.8 ms | 0.8 ms | 1.1 ms |
+| systemctl | 12 → 10 | 820 → 807 ms | 110 ms | 140 ms |
+| pacman | 32 → 16 | 1,028 → 507 ms | 10.6 ms | 190 ms |
+| pacman-conf | 4 → 2 | 24.3 → 11.8 ms | 5.9 ms | 8.0 ms |
+| mise | 2 → 1 | 22.6 → 11.2 ms | 11.2 ms | 11.5 ms |
+| git | 36 → 36 | 53.6 → 52.5 ms | 1.3 ms | 3.1 ms |
+| omarchy | 6 → 6 | 148 → 148 ms | 14.1 ms | 62.4 ms |
+| sh | 12 → 6 | 161 → 78 ms | 3.1 ms | 65.6 ms |
+| tailscale | 2 → 1 | 13.0 → 6.7 ms | 6.7 ms | 7.3 ms |
+| cat | 2 → 1 | 1.7 → 0.9 ms | 0.9 ms | 1.0 ms |
 | systemd-analyze | 0 → 0 | 0 | — | — |
 
 Services inventory is two catalogues plus six `show` batches (8 commands).
@@ -147,6 +147,17 @@ replanning/comparison, and Verify remain freshly inspected. Tests explicitly
 change live A to B while a preview cycle remains alive, and prove mutation is
 refused with no effects; staging A to C also refuses/rolls back. CLI changed
 no-op plans are revalidated before verification rather than trusted.
+
+Independent whole-branch review found three issues; the single fix pass
+reproduced each with failing tests before correcting it: Capture now freshly
+loads desired state at mutation entry; Resources freezes machine binding inputs
+for the read cycle; TUI/CLI presentation consumes matching descriptive snapshot
+metadata rather than older Session state. Optional `ReadSnapshotBinder`,
+`Snapshot` and `EffectivePolicy` methods keep those inputs explicit. TUI profile
+edit callbacks also freshly load desired state before edits. This does not add
+transaction locking: external desired-file edits during an already-running
+Capture transaction remain a pre-existing concurrency limitation, and unrelated
+concurrent mutation operations remain unsupported.
 
 Verification: `go test ./...`, `go vet ./...`, `go build ./...`, full
 `go test -race ./...`, release helpers (61/61), reconstruction helpers (103/103),
