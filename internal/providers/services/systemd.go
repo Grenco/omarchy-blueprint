@@ -140,6 +140,9 @@ func (s Systemctl) InspectUserUnits(ctx context.Context) ([]ObservedUnit, error)
 	for _, name := range names {
 		result = append(result, byID[name])
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 

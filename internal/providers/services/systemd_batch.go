@@ -105,7 +105,11 @@ func sameUnitFacts(a, b map[string]string) bool {
 	// Catalogue fallback is operand-specific and is applied only after mapping.
 	// Normalization already sorts/deduplicates topology lists. Raw list order and
 	// alias-list differences are not conflicting machine facts.
-	return reflect.DeepEqual(normalizeObservedUnit(a["Id"], "", a), normalizeObservedUnit(b["Id"], "", b))
+	// Empty UnitFileState may later acquire a linked catalogue fallback.
+	// Compare that projection too so SourcePath cannot become an arbitrary
+	// output-order winner. Other fallback states reveal no additional fields.
+	return reflect.DeepEqual(normalizeObservedUnit(a["Id"], "", a), normalizeObservedUnit(b["Id"], "", b)) &&
+		reflect.DeepEqual(normalizeObservedUnit(a["Id"], "linked", a), normalizeObservedUnit(b["Id"], "linked", b))
 }
 
 func mapUnitRecords(requested []string, records []unitRecord) (map[string]map[string]string, error) {

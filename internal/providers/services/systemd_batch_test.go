@@ -356,3 +356,85 @@ func TestMapUnitRecordsQuotedEscapedAlias(t *testing.T) {
 		t.Fatalf("quoted escaped alias lost: %v", err)
 	}
 }
+
+func TestDuplicateAliasRecordsRejectLinkedSourceFallbackConflict(t *testing.T) {
+	for _, across := range []bool{false, true} {
+		t.Run(fmt.Sprintf("across=%t", across), func(t *testing.T) {
+			r := &batchRunner{files: "a-alias.service alias -\nz-real.service linked -\n", records: map[string]string{
+				"a-alias.service": "Id=z-real.service\nNames=a-alias.service z-real.service\nUnitFileState=\nFragmentPath=/same.service\nSourcePath=/first.service\n",
+				"z-real.service":  "Id=z-real.service\nNames=z-real.service a-alias.service\nUnitFileState=\nFragmentPath=/same.service\nSourcePath=/second.service\n",
+			}}
+			if across {
+				for i := 0; i < 64; i++ {
+					n := fmt.Sprintf("m-%02d.service", i)
+					r.files += n + " static -\n"
+					r.records[n] = "Id=" + n + "\n"
+				}
+			}
+			got, err := (Systemctl{Runner: r}).InspectUserUnits(context.Background())
+			if err == nil || got != nil {
+				t.Fatal("catalogue-linked fallback hid conflicting source facts")
+			}
+		})
+	}
+}
+
+func TestDuplicateAliasRecordsAcceptEquivalentLinkedSourceFallback(t *testing.T) {
+	r := &batchRunner{files: "a-alias.service alias -\nz-real.service linked -\n", records: map[string]string{
+		"a-alias.service": "Id=z-real.service\nNames=a-alias.service z-real.service\nUnitFileState=\nFragmentPath=/same.service\nSourcePath=\n",
+		"z-real.service":  "Id=z-real.service\nNames=z-real.service a-alias.service\nUnitFileState=\nFragmentPath=/same.service\nSourcePath=/same.service\n",
+	}}
+	got, err := (Systemctl{Runner: r}).InspectUserUnits(context.Background())
+	if err != nil || len(got) != 1 || got[0].LinkedSource != "/same.service" {
+		t.Fatalf("equivalent linked fallback rejected: err=%v", err)
+	}
+}
+
+// Deterministically models cancellation immediately after the final runner
+// context check has observed nil. A publication check must read the context
+// again rather than assuming command completion guarantees current liveness.
+type cancelAfterProbeContext struct {
+	context.Context
+	cancel context.CancelFunc
+	armed  bool
+}
+
+func (c *cancelAfterProbeContext) Err() error {
+	err := c.Context.Err()
+	if c.armed {
+		c.armed = false
+		c.cancel()
+	}
+	return err
+}
+
+type inventoryRunnerFunc func(context.Context, string, ...string) (string, error)
+
+func (f inventoryRunnerFunc) Run(ctx context.Context, name string, args ...string) (string, error) {
+	return f(ctx, name, args...)
+}
+
+func TestInspectUserUnitsCancellationBeforePublication(t *testing.T) {
+	for _, templatesOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("templates-only=%t", templatesOnly), func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &cancelAfterProbeContext{Context: parent, cancel: cancel}
+			r := &batchRunner{files: "one.service static -\n", records: map[string]string{"one.service": "Id=one.service\n"}}
+			if templatesOnly {
+				r.files = "one@.service static -\n"
+			}
+			runner := inventoryRunnerFunc(func(c context.Context, name string, args ...string) (string, error) {
+				out, err := r.Run(c, name, args...)
+				if args[1] == "show" || (templatesOnly && args[1] == "list-units") {
+					ctx.armed = true
+				}
+				return out, err
+			})
+			got, err := (Systemctl{Runner: runner}).InspectUserUnits(ctx)
+			if !errors.Is(err, context.Canceled) || got != nil {
+				t.Fatal("canceled inventory published after processing")
+			}
+		})
+	}
+}
