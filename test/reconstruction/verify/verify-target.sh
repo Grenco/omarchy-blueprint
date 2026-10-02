@@ -28,4 +28,16 @@ check "resource:$RA_GIT_RESOURCE" eval 'test "$(git -C "$HOME/$RA_GIT_PATH" remo
   test "$(git -C "$HOME/$RA_GIT_PATH" rev-parse HEAD)" = "$RA_GIT_REVISION" &&
   test -z "$(git -C "$HOME/$RA_GIT_PATH" status --porcelain)"'
 check "resource:$RA_SKIP_RESOURCE:untouched" test ! -e "$HOME/$RA_SKIP_PATH"
+unit_dir="$HOME/.config/systemd/user"
+check "services:definition" cmp "$fixtures/services/$RA_SERVICE" "$unit_dir/$RA_SERVICE"
+check "services:timer-definition" cmp "$fixtures/services/$RA_TIMER" "$unit_dir/$RA_TIMER"
+check "services:drop-in" eval 'cmp "$fixtures/services/$RA_SERVICE_DROPIN" "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN" && test "$(stat -c %a "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN")" = 640'
+check "services:timer-enabled" systemctl --user is-enabled "$RA_TIMER"
+check "services:effective-definition" test "$(systemctl --user show --property=FragmentPath --value "$RA_SERVICE")" = "$unit_dir/$RA_SERVICE"
+check "services:effective-drop-in" test "$(systemctl --user show --property=DropInPaths --value "$RA_SERVICE")" = "$unit_dir/$RA_SERVICE.d/$RA_SERVICE_DROPIN"
+check "services:timer-entry-point" test "$(systemctl --user show --property=Triggers --value "$RA_TIMER")" = "$RA_SERVICE"
+check "services:loadability" systemd-analyze --user --generators=no --man=no verify "$unit_dir/$RA_SERVICE" "$unit_dir/$RA_TIMER"
+check "services:unmanaged-not-adopted" test ! -e "$unit_dir/$RA_UNMANAGED_SERVICE"
+check "services:persistent-only-no-timer-start" eval '! systemctl --user is-active --quiet "$RA_TIMER"'
+check "services:persistent-only-no-marker" test ! -e "$HOME/$RA_SERVICE_MARKER"
 exit "$status"

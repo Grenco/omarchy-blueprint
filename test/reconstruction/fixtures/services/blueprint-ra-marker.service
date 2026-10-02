@@ -1,0 +1,6 @@
+[Unit]
+Description=Blueprint Reconstruction Assurance marker
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sh -c 'mkdir -p "%h/.local/state/blueprint-ra"; printf "%%s\n" "$BLUEPRINT_RA_MARKER" > "%h/.local/state/blueprint-ra/service-marker"'

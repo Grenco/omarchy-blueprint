@@ -25,6 +25,30 @@ as portable, so a `git://` daemon would not do. Each guest trusts the per-run
 certificate for that URL only, through the system Git config, which is outside
 `$HOME` and is not Blueprint state.
 
+The Services fixture owns `blueprint-ra-marker.service`, its timer, and the
+exact `10-ra.conf` drop-in (mode `0640`). The timer names the service explicitly
+and uses a 365-day interval: no gate assertion waits for a timer tick. Machine A
+starts the timer and invokes the harmless oneshot natively once to prove its
+drop-in-dependent marker. An unselected custom user service is an ownership
+sentinel; neither its metadata nor its bytes may enter the exported profile.
+
+First adoption uses a dedicated `capture services --review` terminal pass before
+aggregate Capture. The driver answers exact per-unit Manage prompts, approves
+only the two canonical units, declines all other candidates, and refuses missing
+or repeated selections. JSON previews must show the new units eligible but
+unselected and must not mutate the profile. The exported TOML, definition bytes,
+hashes, timer enablement/active evidence, and drop-in mode are checked independently.
+
+This canonical lane gates persistent Services reconstruction and **no implicit
+activation**, retaining its existing approved default Restore without a one-run
+activation override. Machine B independently checks effective manager fragment
+and drop-in paths, exact bytes/mode, parser loadability, persistent timer
+enablement, and absence of both an active timer and the marker. Activation
+authority/oneshot/entry-point behavior remains covered by the PR D integration
+tests; this lane does not claim Blueprint activation evidence or depend on
+wall-clock timer firing. Unresolved template/instance Capture remains a separate
+carry-forward requirement, so this fixture alone does not mark Services v1 complete.
+
 The installed base has no pacman sync databases, and the only supported way to
 make it package-ready is Omarchy's own `omarchy update` (ADR 0022). Both
 machines therefore become ready the same way (`SOURCE_READINESS`,
@@ -57,7 +81,8 @@ Phase boundaries:
   independent `PASS` line per target in `source/pre-capture.txt`.
 - `CAPTURE`: profile, machine overlays, Resources, target mapping and Restore
   skip through the public CLI; a non-mutating `capture --dry-run --json`
-  preview; one `capture --review` approved at its real prompt
+  preview; dedicated first Services adoption followed by one aggregate
+  `capture --review` approved at its real prompt
   (`scenario/approve_capture.py`, never retried); `check`; and assertions on
   the exported archive's profile.
 - `PROFILE_HANDOFF`: the archive digest is verified on the host and Machine A
@@ -80,7 +105,7 @@ Phase boundaries:
   Blueprint's journal must end with a successful verification.
 - `INDEPENDENT_VERIFY`: native assertions (`verify/verify-target.sh`), then a
   final dry-run with no actionable work beyond the intentional
-  `target-only-skip`.
+  `target-only-skip` and the exact timer Persistent-state-only activation notice.
 
 ## Fresh target package state
 

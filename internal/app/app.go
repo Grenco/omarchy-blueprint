@@ -857,8 +857,10 @@ type checkNoter interface {
 }
 
 func checkCommand(deps Dependencies, opt *options) *cobra.Command {
-	providers := stateProviders(deps, opt)
 	return &cobra.Command{Use: "check", Args: cobra.NoArgs, Short: "Validate the profile and environment", RunE: func(cmd *cobra.Command, _ []string) error {
+		// Providers that retain ProfileDir must be constructed after Cobra's
+		// persistent pre-run normalizes the selected global --profile option.
+		providers := stateProviders(deps, opt)
 		d, err := profile.Load(opt.profileDir)
 		if err != nil {
 			return profileError(opt.profileDir, err)

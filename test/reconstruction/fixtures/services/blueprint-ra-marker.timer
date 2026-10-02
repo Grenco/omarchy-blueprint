@@ -1,0 +1,10 @@
+[Unit]
+Description=Blueprint Reconstruction Assurance marker entry point
+
+[Timer]
+OnActiveSec=365d
+OnUnitActiveSec=365d
+Unit=blueprint-ra-marker.service
+
+[Install]
+WantedBy=timers.target

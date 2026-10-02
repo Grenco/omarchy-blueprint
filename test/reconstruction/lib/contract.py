@@ -1,6 +1,7 @@
 """Assertions for Blueprint's public JSON Restore plan (no guest orchestration)."""
 
 import json
+import hashlib
 from pathlib import Path
 
 
@@ -75,7 +76,43 @@ def assert_copy_destination(plan: dict, resource_substring: str, destination: st
         raise AssertionError(f"missing mapped copy for {resource_substring} at {destination}")
 
 
-CANONICAL_PROVIDERS = ("packages", "themes", "plugins", "shell", "config", "hooks", "defaults", "resources")
+CANONICAL_PROVIDERS = ("packages", "themes", "plugins", "shell", "config", "hooks", "defaults", "resources", "services")
+
+
+def assert_services_plan(plan: dict) -> None:
+    root = "/home/spike/.config/systemd/user/"
+    for operation in plan["operations"]:
+        for kind in ("file", "copy", "symlink", "delete"):
+            destination = (operation.get(kind) or {}).get("destination", "")
+            if operation.get("provider") != "services" and destination.startswith(root):
+                raise AssertionError("another provider competes with Services for its reserved user-unit destination")
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/services"
+    expected_files = {
+        "blueprint-ra-marker.service": fixture / "blueprint-ra-marker.service",
+        "blueprint-ra-marker.timer": fixture / "blueprint-ra-marker.timer",
+        "blueprint-ra-marker.service.d/10-ra.conf": fixture / "10-ra.conf",
+    }
+    operations = [op for op in plan["operations"] if op.get("provider") == "services"]
+    writes = [op["file"] for op in operations if op.get("file") is not None]
+    if len(writes) != 3 or {f.get("destination") for f in writes} != {root + name for name in expected_files}:
+        raise AssertionError("Services plan does not create exactly the reviewed fixture artifacts")
+    for write in writes:
+        name = write["destination"].removeprefix(root)
+        if not write.get("expected_missing") or not write.get("reject_symlink_parents"):
+            raise AssertionError("Services write lacks fresh-target filesystem guards")
+        if write.get("source_hash") != hashlib.sha256(expected_files[name].read_bytes()).hexdigest():
+            raise AssertionError("Services write source differs from the canonical fixture")
+        if name.endswith(".conf") and write.get("mode") != 0o640:
+            raise AssertionError("Services drop-in mode provenance was lost")
+    expected_enable = ["systemctl", "--user", "enable", "--no-reload", "--", "blueprint-ra-marker.timer"]
+    commands = [op.get("command") for op in operations if op.get("command")]
+    if commands.count(expected_enable) != 1:
+        raise AssertionError("persistent timer enablement is absent or duplicated")
+    if any(command not in (expected_enable, ["systemctl", "--user", "daemon-reload"]) for command in commands):
+        raise AssertionError("canonical Services Restore gained unexpected state or activation authority")
+    categories = [c for c in plan.get("compatibility", {}).get("categories", []) if c.get("category") == "services"]
+    if len(categories) != 1 or (categories[0].get("state"), categories[0].get("authority"), categories[0].get("applies")) != ("supported", "unchanged", True):
+        raise AssertionError("Services reconstruction lacks Supported, applicable compatibility evidence")
 
 
 def assert_canonical_plan(plan: dict, package: str) -> None:
@@ -92,12 +129,16 @@ def assert_canonical_plan(plan: dict, package: str) -> None:
             raise AssertionError(f"Blueprint planned its own package metadata sync: {operation}")
     assert_copy_destination(plan, "helper-script", "/home/spike/bin/blueprint-ra-helper")
     assert_skip(plan, "resources", "target-only-skip", "restore disabled")
+    assert_services_plan(plan)
 
 
 def assert_final_convergence(plan: dict, allowed_skip_substring: str) -> None:
     if plan["operations"]:
         raise AssertionError("actionable operations remain after Restore")
     for skip in plan.get("skipped", []):
+        if (skip.get("provider") == "services" and skip.get("resource") == "blueprint-ra-marker.timer"
+                and skip.get("reason") == "Will not start during Restore: target preference is Persistent state only."):
+            continue
         if (allowed_skip_substring not in skip.get("resource", "")
                 or "restore disabled" not in skip.get("reason", "")):
             raise AssertionError(f"unexpected final skip: {skip}")

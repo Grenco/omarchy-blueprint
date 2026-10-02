@@ -29,6 +29,20 @@ CHILD = textwrap.dedent("""
         termios.tcsetattr(0, termios.TCSANOW, attrs)
         print()
         return answer
+    if mode.startswith("services"):
+        units = [("blueprint-ra-marker.timer", "y/N"), ("blueprint-ra-marker.service", "Y/n"),
+                 ("blueprint-ra-unmanaged.service", "y/N")]
+        if mode == "services-missing":
+            units = units[1:]
+        if mode == "services-repeated":
+            units = units[:1] + units
+        for unit, hint in units:
+            answer = ask("Manage services/" + unit + "? [" + hint + "] ")
+            expected = "no" if unit == "blueprint-ra-unmanaged.service" else "yes"
+            if answer != expected:
+                print("wrong ownership selection"); sys.exit(1)
+        if ask("Apply this Capture? [y/N] ") != "yes":
+            sys.exit(1)
     if mode.startswith("approve"):
         print("Restore plan", flush=True); time.sleep(0.2)
         if ask("\\nApply this restore? [y/N] ") != "yes":
@@ -59,6 +73,24 @@ def drive(work: str, mode: str, *options: str) -> subprocess.CompletedProcess:
 
 
 class DriveTerminalTests(unittest.TestCase):
+    def test_services_selects_only_named_candidates_and_approves_once(self):
+        with tempfile.TemporaryDirectory() as work:
+            result = drive(work, "services", "--approve", "Apply this Capture? [y/N] ",
+                           "--capture-service", "blueprint-ra-marker.timer",
+                           "--capture-service", "blueprint-ra-marker.service")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(work, "runs").read_text(), "run\n")
+            self.assertEqual(Path(work, "transcript.txt").read_text().count("Apply this Capture? [y/N] "), 1)
+
+    def test_services_missing_or_repeated_selection_fails_without_retry(self):
+        for mode in ("services-missing", "services-repeated"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as work:
+                result = drive(work, mode, "--approve", "Apply this Capture? [y/N] ",
+                               "--capture-service", "blueprint-ra-marker.timer",
+                               "--capture-service", "blueprint-ra-marker.service")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(Path(work, "runs").read_text(), "run\n")
+
     def test_approves_once_and_answers_sudo_without_recording_the_password(self):
         with tempfile.TemporaryDirectory() as work:
             result = drive(work, "approve-sudo", "--approve", RESTORE_PROMPT, "--sudo-password-file", f"{work}/password")
