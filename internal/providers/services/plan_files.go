@@ -14,7 +14,7 @@ import (
 // planArtifact is deliberately narrower than unit ownership: callers first
 // establish effective systemd provenance. This helper then confines a file
 // effect to the persistent user config root with exact execution preconditions.
-func (p Provider) planArtifact(unit, relative, destination string, desired capturedFile, force, deletion bool) (model.Operation, string, error) {
+func (p *Provider) planArtifact(unit, relative, destination string, desired capturedFile, force, deletion bool) (model.Operation, string, error) {
 	if !withinUserRoot(destination, p.Roots.UserConfigDir) {
 		return model.Operation{}, "Service artifact is outside the persistent user configuration root", nil
 	}

@@ -62,6 +62,12 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 	if p.prepared != nil {
 		return nil, nil, errors.New("Services Capture already has a staged generation")
 	}
+	owner := p
+	local, err := p.readSource().localProvider()
+	if err != nil {
+		return nil, nil, err
+	}
+	p = local
 	candidates, err := p.discovered(ctx, data.Services)
 	if err != nil {
 		return nil, nil, err
@@ -143,7 +149,7 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 	if err != nil {
 		return nil, nil, err
 	}
-	p.prepared = &preparedCapture{stage: stage}
+	owner.prepared = &preparedCapture{stage: stage}
 	data.Services = next
 	data.Manifest.Capture.Services = true
 	return next, changes, nil
@@ -156,7 +162,7 @@ func serviceChange(kind model.ChangeType, name, summary string) model.Change {
 // projectServiceUnit is the exact semantic metadata Capture would persist for
 // an available unit. Diff uses this same projection instead of guessing which
 // fields might change, so approved previews include every captured effect.
-func (p Provider) projectServiceUnit(candidate Candidate, old profile.ServiceUnit, managed, selected bool) (profile.ServiceUnit, map[string]capturedFile, error) {
+func (p *Provider) projectServiceUnit(candidate Candidate, old profile.ServiceUnit, managed, selected bool) (profile.ServiceUnit, map[string]capturedFile, error) {
 	name := candidate.Unit.Name
 	artifacts := map[string]capturedFile{}
 	unit := profile.ServiceUnit{
@@ -344,7 +350,16 @@ func (p *Provider) RollbackCapture() error {
 	return errors.Join(err, os.RemoveAll(prepared.stage))
 }
 
-func (p Provider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+func (p *Provider) Diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
+	source := p.readSource()
+	o, err := source.observe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return source.diffObserved(ctx, d, o)
+}
+
+func (p *Provider) diff(ctx context.Context, d profile.Data) ([]model.Change, error) {
 	candidates, err := p.discovered(ctx, d.Services)
 	if err != nil {
 		return nil, err
@@ -385,7 +400,7 @@ func (p Provider) Diff(ctx context.Context, d profile.Data) ([]model.Change, err
 	return changes, nil
 }
 
-func (p Provider) Check(_ context.Context, d profile.Data) error {
+func (p *Provider) Check(_ context.Context, d profile.Data) error {
 	if err := profile.Validate(d); err != nil {
 		return err
 	}
@@ -406,7 +421,7 @@ func (p Provider) Check(_ context.Context, d profile.Data) error {
 	return nil
 }
 
-func (p Provider) checkServiceArtifact(path, expected string) error {
+func (p *Provider) checkServiceArtifact(path, expected string) error {
 	if expected == "" {
 		return fmt.Errorf("service artifact %q has no content provenance", path)
 	}

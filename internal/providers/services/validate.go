@@ -13,7 +13,7 @@ import (
 // validateProposedSet never writes target configuration or touches the user
 // manager. Callers supply the exact effective proposed base/drop-in bytes;
 // systemd, rather than a Blueprint parser, validates the complete unit set.
-func (p Provider) validateProposedSet(ctx context.Context, files map[string][]byte) error {
+func (p *Provider) validateProposedSet(ctx context.Context, files map[string][]byte) error {
 	if len(files) == 0 {
 		return nil
 	}

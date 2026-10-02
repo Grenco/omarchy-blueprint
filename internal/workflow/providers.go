@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/observation"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -27,15 +28,30 @@ type RestoreFragment struct {
 
 // Provider is the narrow shared contract for status and capture orchestration.
 // Provider-specific construction remains at the application boundary.
-type Provider interface {
+type ReadProvider interface {
 	ID() string
 	Captured(profile.Data) bool
 	// InspectTargets returns the provider's read-only, descriptive policy
 	// targets. It must not mutate state; Capture and Plan/Verify re-inspect
 	// before mutation rather than trusting a stale inventory.
 	InspectTargets(context.Context, profile.Data) ([]TargetInspection, error)
-	Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error)
 	Diff(context.Context, profile.Data) ([]model.Change, error)
+}
+
+// ReadRestoreProvider derives previews but grants no execution or verification.
+type ReadRestoreProvider interface {
+	ReadProvider
+	Plan(context.Context, profile.Data, omarchy.Info, RestoreContext) (RestoreFragment, error)
+}
+
+type ReadCycleBinder interface {
+	BindReadCycle(*observation.Cycle) ReadProvider
+}
+
+// Provider retains authoritative Capture separately from its read contract.
+type Provider interface {
+	ReadProvider
+	Capture(context.Context, *profile.Data, CaptureContext) (any, []model.Change, error)
 }
 
 type categoryProvider interface {
