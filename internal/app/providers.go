@@ -100,7 +100,7 @@ func servicesStateProvider(deps Dependencies, opt *options) *servicesprovider.Pr
 	}
 	return &servicesprovider.Provider{Systemd: systemd, ProfileDir: opt.profileDir, ResolveRoots: func() (servicesprovider.Roots, error) {
 		if deps.ServicesRoots != nil {
-			return deps.ServicesRoots(), nil
+			return servicesSourceRoots(deps, ""), nil
 		}
 		if deps.HomeDir == nil {
 			return servicesprovider.Roots{}, errors.New("home directory is unavailable for user-service inspection")
@@ -109,15 +109,24 @@ func servicesStateProvider(deps Dependencies, opt *options) *servicesprovider.Pr
 		if err != nil {
 			return servicesprovider.Roots{}, err
 		}
-		configRoot, dataRoot := os.Getenv("XDG_CONFIG_HOME"), os.Getenv("XDG_DATA_HOME")
-		if configRoot == "" {
-			configRoot = filepath.Join(home, ".config")
-		}
-		if dataRoot == "" {
-			dataRoot = filepath.Join(home, ".local", "share")
-		}
-		return servicesprovider.Roots{UserConfigDir: filepath.Join(configRoot, "systemd", "user"), UserDataDir: filepath.Join(dataRoot, "systemd", "user")}, nil
+		return servicesSourceRoots(deps, home), nil
 	}}
+}
+
+// A semantic reservation prevents generic Config adoption; it never grants
+// Services ownership. Services still requires reviewed per-unit selection.
+func servicesSourceRoots(deps Dependencies, home string) servicesprovider.Roots {
+	if deps.ServicesRoots != nil {
+		return deps.ServicesRoots()
+	}
+	configRoot, dataRoot := os.Getenv("XDG_CONFIG_HOME"), os.Getenv("XDG_DATA_HOME")
+	if configRoot == "" {
+		configRoot = filepath.Join(home, ".config")
+	}
+	if dataRoot == "" {
+		dataRoot = filepath.Join(home, ".local", "share")
+	}
+	return servicesprovider.Roots{UserConfigDir: filepath.Join(configRoot, "systemd", "user"), UserDataDir: filepath.Join(dataRoot, "systemd", "user")}
 }
 
 func categoryProviderIDs(providers []stateProvider) []string {
@@ -2120,6 +2129,12 @@ func (p configStateProvider) provider(d profile.Data) (configprovider.Provider, 
 		return configprovider.Provider{}, err
 	}
 	claims := ownership.Index{Claims: []ownership.Claim{{Provider: "profile", Path: p.opt.profileDir, Recursive: true}}}
+	serviceRoots := servicesSourceRoots(p.deps, home)
+	for _, root := range []string{serviceRoots.UserConfigDir, serviceRoots.UserDataDir} {
+		if root != "" {
+			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "services", Path: root, Recursive: true})
+		}
+	}
 	if p.deps.StateHome != nil {
 		if state, err := p.deps.StateHome(); err == nil {
 			claims.Claims = append(claims.Claims, ownership.Claim{Provider: "state", Path: state, Recursive: true})

@@ -130,7 +130,7 @@ def canonical_plan() -> dict:
 
 class CanonicalPlanTests(unittest.TestCase):
     def test_services_must_reconstruct_exact_fixture_without_activation(self):
-        for mutation in ("missing-artifact", "wrong-hash", "activation", "unknown-compatibility"):
+        for mutation in ("missing-artifact", "wrong-hash", "activation", "unknown-compatibility", "competing-config-write"):
             plan = canonical_plan()
             if mutation == "missing-artifact":
                 plan["operations"] = [op for op in plan["operations"] if not op.get("file", {}).get("destination", "").endswith("10-ra.conf")]
@@ -138,6 +138,8 @@ class CanonicalPlanTests(unittest.TestCase):
                 next(op["file"] for op in plan["operations"] if op.get("provider") == "services" and op.get("file"))["source_hash"] = "wrong"
             elif mutation == "activation":
                 plan["operations"].append({"provider": "services", "command": ["systemctl", "--user", "start", "--", "blueprint-ra-marker.timer"]})
+            elif mutation == "competing-config-write":
+                plan["operations"].append({"provider": "config", "file": {"destination": "/home/spike/.config/systemd/user/blueprint-ra-marker.service"}})
             else:
                 plan["compatibility"]["categories"][0]["state"] = "unknown"
             with self.subTest(mutation=mutation), self.assertRaises(AssertionError):

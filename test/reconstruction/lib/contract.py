@@ -81,6 +81,11 @@ CANONICAL_PROVIDERS = ("packages", "themes", "plugins", "shell", "config", "hook
 
 def assert_services_plan(plan: dict) -> None:
     root = "/home/spike/.config/systemd/user/"
+    for operation in plan["operations"]:
+        for kind in ("file", "copy", "symlink", "delete"):
+            destination = (operation.get(kind) or {}).get("destination", "")
+            if operation.get("provider") != "services" and destination.startswith(root):
+                raise AssertionError("another provider competes with Services for its reserved user-unit destination")
     fixture = Path(__file__).resolve().parents[1] / "fixtures/services"
     expected_files = {
         "blueprint-ra-marker.service": fixture / "blueprint-ra-marker.service",

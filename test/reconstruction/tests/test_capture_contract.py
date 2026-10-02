@@ -216,6 +216,7 @@ class ProfileTests(unittest.TestCase):
     def test_rejects_corrupt_service_bytes_provenance_and_unmanaged_ownership(self):
         metadata = PROFILE["services/services.toml"]
         cases = {
+            "config/config.toml": PROFILE["config/config.toml"] + "\n[[file]]\npath = '.config/systemd/user/blueprint-ra-unmanaged.service'\nhash = 'x'\n",
             "services/services.toml": metadata.replace("mode = '0640'", "mode = '0644'"),
             f"services/units/{VALUES['RA_SERVICE']}": "[Service]\nExecStart=/usr/bin/false\n",
             f"services/units/{VALUES['RA_UNMANAGED_SERVICE']}": "unmanaged",

@@ -109,6 +109,10 @@ def assert_services_preview(data: dict, machine: str, values: dict) -> None:
 
 def assert_services_profile(profile: Path, values: dict) -> None:
     fixture = EXPECTED_ENV.parent / "services"
+    config = _toml(profile, "config/config.toml")
+    for item in config.get("file", []) + config.get("delete", []):
+        if item.get("path", "").startswith(".config/systemd/user/"):
+            raise AssertionError("Config captured reserved Services state, including an unreviewed unit")
     units = _toml(profile, "services/services.toml").get("unit", [])
     names = [unit.get("name") for unit in units]
     if sorted(names) != sorted([values["RA_SERVICE"], values["RA_TIMER"]]):

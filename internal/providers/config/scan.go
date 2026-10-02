@@ -132,6 +132,16 @@ func (p Provider) scan(saved profile.Configs, includeSaved bool) (ScanSummary, e
 			if err != nil {
 				return ScanSummary{}, err
 			}
+			// Ownership still narrows saved intent when its old destination is
+			// absent. classify checks delegation before inspecting info; this
+			// synthetic entry is only used for immutable delegated claims.
+			if p.delegated(abs) {
+				if entries[path] == nil {
+					entries[path] = map[bool]treeEntry{}
+				}
+				entries[path][true] = treeEntry{abs: abs}
+				continue
+			}
 			_, err = os.Lstat(abs)
 			if os.IsNotExist(err) {
 				continue
