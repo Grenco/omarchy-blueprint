@@ -183,3 +183,20 @@ func TestCycleCloseIdempotent(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestSlotCancellationDuringClonePreventsReturn(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := New(parent)
+	defer c.Close()
+	copying, release := make(chan struct{}), make(chan struct{})
+	s := NewSlot(c, func(context.Context) (int, error) { return 42, nil }, func(v int) int { close(copying); <-release; return v })
+	result := make(chan error, 1)
+	go func() { _, e := s.Get(context.Background()); result <- e }()
+	<-copying
+	cancel()
+	close(release)
+	if e := <-result; !errors.Is(e, context.Canceled) {
+		t.Fatal("returned success after cancellation during copying", e)
+	}
+}

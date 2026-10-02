@@ -278,19 +278,28 @@ func (s *Restore) refreshPlan() tea.Cmd {
 	effectiveOptions := s.options
 	var options *policy.RestoreOptions
 	if s.override {
-		options = &s.options
+		copied := effectiveOptions
+		options = &copied
 	}
+	session, ctx := s.session, s.ctx
 	return func() tea.Msg {
-		plan, err := s.session.PlanRestore(s.ctx, restoreScopeAll, options)
+		cycle, err := session.BeginRead(ctx)
 		if err != nil {
 			return restorePlanMsg{requestID: requestID, err: err}
 		}
+		defer cycle.Close()
+		preview, err := cycle.PreviewRestore(ctx, restoreScopeAll, options)
+		if err != nil {
+			return restorePlanMsg{requestID: requestID, err: err}
+		}
+		plan := preview.Plan
+		effectiveOptions = preview.Options
 		forcedOverrides := 0
 		if effectiveOptions.Conflicts == policy.ConflictForce {
 			safe := effectiveOptions
 			safe.Conflicts = policy.ConflictSafe
-			if safePlan, safeErr := s.session.PlanRestore(s.ctx, restoreScopeAll, &safe); safeErr == nil {
-				forcedOverrides = countForcedOverrides(plan, safePlan)
+			if safePreview, safeErr := cycle.PreviewRestore(ctx, restoreScopeAll, &safe); safeErr == nil {
+				forcedOverrides = countForcedOverrides(plan, safePreview.Plan)
 			}
 		}
 		return restorePlanMsg{requestID: requestID, plan: plan, forcedOverrides: forcedOverrides}

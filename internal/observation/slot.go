@@ -89,9 +89,20 @@ func (s *Slot[T]) Get(ctx context.Context) (T, error) {
 	}
 	s.mu.Lock()
 	c.mu.Unlock()
-	defer s.mu.Unlock()
 	if s.err != nil {
-		return zero, s.err
+		err := s.err
+		s.mu.Unlock()
+		return zero, err
 	}
-	return s.clone(s.value), nil
+	copy := s.clone(s.value)
+	s.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.errLocked(); err != nil {
+		return zero, err
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+	return copy, nil
 }

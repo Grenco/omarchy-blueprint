@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -61,7 +62,15 @@ func lastPluginOperationID(plan model.RestorePlan, pluginID string) string {
 // reason can never turn into a Verify failure the way a plan-only
 // post-processing step could (round-2 review blocker).
 func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, plan *model.RestorePlan, options restorePlanOptions) error {
-	if !providerSelected(providers, "shell") {
+	ids := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		ids = append(ids, provider.ID())
+	}
+	return finalizeRestorePlanForIDs(ctx, deps, opt, d, ids, plan, options)
+}
+
+func finalizeRestorePlanForIDs(ctx context.Context, deps Dependencies, opt *options, d profile.Data, ids []string, plan *model.RestorePlan, options restorePlanOptions) error {
+	if !slices.Contains(ids, "shell") {
 		return restore.ValidatePlan(*plan)
 	}
 	writeIndex := findOperationIndex(plan, "shell", "write")
@@ -106,7 +115,7 @@ func finalizeRestorePlan(ctx context.Context, deps Dependencies, opt *options, d
 			conflicts = append(conflicts, id)
 			continue
 		}
-		if !providerSelected(providers, "plugins") {
+		if !slices.Contains(ids, "plugins") {
 			blocked = append(blocked, id)
 			continue
 		}

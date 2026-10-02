@@ -2,6 +2,7 @@ package packages
 
 import (
 	"context"
+	"github.com/Grenco/omarchy-blueprint/internal/diagnostics"
 
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
@@ -11,6 +12,9 @@ import (
 type Observation struct{ packages profile.Packages }
 
 func (p Provider) Observe(ctx context.Context) (Observation, error) {
+	if finish := diagnostics.StartObservation(ctx, "packages"); finish != nil {
+		defer finish()
+	}
 	facts, err := p.Detect(ctx)
 	if canceled := ctx.Err(); canceled != nil {
 		return Observation{}, canceled

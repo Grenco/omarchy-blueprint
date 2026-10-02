@@ -34,33 +34,41 @@ type resourceProvider interface {
 	DiffWithGitWorkingState(context.Context, profile.Data) ([]model.Change, map[string]resourcesprovider.GitWorkingSummary, error)
 }
 
-func (s *Session) Status(ctx context.Context, onlyProvider string) (StatusReport, error) {
+func (s *ReadCycle) Status(ctx context.Context, onlyProvider string) (StatusReport, error) {
+	ctx, stop := s.withContext(ctx)
+	defer stop()
+	if e := s.check(ctx); e != nil {
+		return StatusReport{}, e
+	}
 	selected := capturedProviders(s.providers, s.profile)
 	if onlyProvider != "" {
 		provider, ok := ProviderByID(s.providers, onlyProvider)
 		if !ok {
 			return StatusReport{}, fmt.Errorf("unknown category %s", onlyProvider)
 		}
-		if !provider.Captured(s.profile) {
+		if !provider.Captured(profile.CloneData(s.profile)) {
 			return StatusReport{}, CaptureRequiredError(provider.ID())
 		}
-		selected = []Provider{provider}
+		selected = []ReadProvider{provider}
 	}
-	report := StatusReport{Profile: s.profile, Machine: s.machine, Providers: make([]ProviderStatus, 0, len(selected))}
+	report := StatusReport{Profile: profile.CloneData(s.profile), Machine: cloneMachine(s.machine), Providers: make([]ProviderStatus, 0, len(selected))}
 	for _, provider := range selected {
-		status := ProviderStatus{ID: provider.ID(), Captured: true, Snapshot: providerSnapshot(s.profile, provider.ID())}
+		status := ProviderStatus{ID: provider.ID(), Captured: true, Snapshot: providerSnapshot(profile.CloneData(s.profile), provider.ID())}
 		var err error
 		if scanner, ok := provider.(scanProvider); ok {
 			var scan configprovider.ScanSummary
-			status.Changes, scan, err = scanner.DiffWithScan(ctx, s.profile)
+			status.Changes, scan, err = scanner.DiffWithScan(ctx, profile.CloneData(s.profile))
 			status.ConfigScan = &scan
 		} else if scanner, ok := provider.(resourceProvider); ok {
-			status.Changes, status.ResourceGit, err = scanner.DiffWithGitWorkingState(ctx, s.profile)
+			status.Changes, status.ResourceGit, err = scanner.DiffWithGitWorkingState(ctx, profile.CloneData(s.profile))
 		} else {
-			status.Changes, err = provider.Diff(ctx, s.profile)
+			status.Changes, err = provider.Diff(ctx, profile.CloneData(s.profile))
 		}
 		if err != nil {
 			return StatusReport{}, fmt.Errorf("diff %s: %w", provider.ID(), err)
+		}
+		if e := s.check(ctx); e != nil {
+			return StatusReport{}, e
 		}
 		report.Providers = append(report.Providers, status)
 	}
@@ -69,7 +77,7 @@ func (s *Session) Status(ctx context.Context, onlyProvider string) (StatusReport
 
 // CaptureStatus includes uncaptured categories so the Capture screen can make
 // first capture discoverable while reusing normal status for captured state.
-func (s *Session) CaptureStatus(ctx context.Context) (StatusReport, error) {
+func (s *ReadCycle) CaptureStatus(ctx context.Context) (StatusReport, error) {
 	report, err := s.Status(ctx, "")
 	if err != nil {
 		return StatusReport{}, err

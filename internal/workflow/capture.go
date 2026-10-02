@@ -77,7 +77,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	var authority CaptureInspection
 	var contexts map[string]CaptureContext
 	if approved != nil {
-		fresh, err := s.InspectCaptureMany(ctx, ids)
+		fresh, err := s.inspectCaptureManyFresh(ctx, ids)
 		if err != nil {
 			return CaptureResult{}, err
 		}

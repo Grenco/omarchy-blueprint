@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"github.com/Grenco/omarchy-blueprint/internal/diagnostics"
 	"slices"
 )
 
@@ -49,6 +50,9 @@ func (s readSource) localProvider() (*Provider, error) {
 }
 
 func (s readSource) observe(ctx context.Context) (Observation, error) {
+	if finish := diagnostics.StartObservation(ctx, "services"); finish != nil {
+		defer finish()
+	}
 	p, err := s.localProvider()
 	if err != nil {
 		return Observation{}, err

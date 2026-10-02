@@ -152,7 +152,7 @@ func replayCaptureSelections(fresh, approved CaptureInspection) CaptureInspectio
 // profile or any provider state, resolving each target's real effective
 // Capture policy against the session's currently selected machine; provider
 // safety still blocks ineligible targets outright regardless of policy.
-func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (CaptureInspection, error) {
+func (s *Session) inspectCaptureFresh(ctx context.Context, onlyProvider string) (CaptureInspection, error) {
 	providers := s.providers
 	if onlyProvider != "" {
 		provider, ok := ProviderByID(s.providers, onlyProvider)
@@ -180,20 +180,25 @@ func (s *Session) InspectCapture(ctx context.Context, onlyProvider string) (Capt
 }
 
 func (s *Session) inspectProviderCapture(ctx context.Context, provider Provider) ([]CaptureTarget, error) {
-	targets, err := provider.InspectTargets(ctx, s.profile)
+	return inspectProviderCapture(ctx, provider, s.profile, s.resolveCaptureTarget)
+}
+
+func inspectProviderCapture(ctx context.Context, provider ReadProvider, data profile.Data, resolve func(context.Context, string, TargetInspection) (policy.EffectiveSetting, CaptureDecision, error)) ([]CaptureTarget, error) {
+	targets, err := provider.InspectTargets(ctx, profile.CloneData(data))
 	if err != nil {
 		return nil, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
 	}
 	if len(targets) == 0 {
 		return nil, nil
 	}
-	differs, err := targetDifferences(ctx, provider, s.profile, targets)
+	targets = cloneTargets(targets)
+	differs, err := targetDifferences(ctx, provider, profile.CloneData(data), targets)
 	if err != nil {
 		return nil, fmt.Errorf("compare %s targets: %w", provider.ID(), err)
 	}
 	items := make([]CaptureTarget, 0, len(targets))
 	for _, target := range targets {
-		effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+		effective, decision, err := resolve(ctx, provider.ID(), target)
 		if err != nil {
 			return nil, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
 		}
@@ -376,8 +381,8 @@ type RestoreTargetResolver interface {
 // change cannot be attributed to a target in this provider's inspected
 // inventory, every target is conservatively treated as differing so a real
 // change is never presented as "no action needed".
-func targetDifferences(ctx context.Context, provider Provider, data profile.Data, targets []TargetInspection) (func(string) bool, error) {
-	resolver, ok := provider.(ChangeTargetResolver)
+func targetDifferences(ctx context.Context, provider ReadProvider, data profile.Data, targets []TargetInspection) (func(string) bool, error) {
+	resolver, ok := readCapabilitySource(provider).(ChangeTargetResolver)
 	if !ok {
 		return func(string) bool { return true }, nil
 	}
@@ -472,10 +477,10 @@ func (i CaptureInspection) Review() []CaptureReviewSection {
 
 // InspectCaptureMany is InspectCapture for an explicit category choice, the
 // same set CaptureMany would write, merged into one preview.
-func (s *Session) InspectCaptureMany(ctx context.Context, ids []string) (CaptureInspection, error) {
+func (s *Session) inspectCaptureManyFresh(ctx context.Context, ids []string) (CaptureInspection, error) {
 	merged := CaptureInspection{Categories: map[string][]CaptureTarget{}}
 	for _, id := range ids {
-		inspection, err := s.InspectCapture(ctx, id)
+		inspection, err := s.inspectCaptureFresh(ctx, id)
 		if err != nil {
 			return CaptureInspection{}, err
 		}

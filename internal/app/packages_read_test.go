@@ -240,3 +240,30 @@ func TestPackagesReadOriginUnavailableParity(t *testing.T) {
 		t.Fatal("origin-unknown preview changed", e)
 	}
 }
+
+func TestPackagesVerifyDoesNotUseReadSnapshot(t *testing.T) {
+	p, d, r, _ := packageReadFixture(t)
+	d.Packages.Official = []string{"git"}
+	ctx := context.Background()
+	c := observation.New(ctx)
+	defer c.Close()
+	v := p.BindReadCycle(c)
+	targets, e := v.InspectTargets(ctx, d)
+	if e != nil {
+		t.Fatal(e)
+	}
+	delete(r.runner.official, "git")
+	result, e := p.Verify(ctx, d, packageReadContext(targets))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if result.OK || r.detections != 2 {
+		t.Fatal("Verify trusted read packages A after removal")
+	}
+	if _, e := v.Diff(ctx, d); e != nil {
+		t.Fatal(e)
+	}
+	if r.detections != 2 {
+		t.Fatal("Verify contaminated cycle")
+	}
+}

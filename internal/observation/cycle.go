@@ -34,6 +34,13 @@ func (c *Cycle) errLocked() error {
 	return c.ctx.Err()
 }
 
+// Err rejects work after closure or parent cancellation, even if a projection
+// does not require an observation slot.
+func (c *Cycle) Err() error { c.mu.Lock(); defer c.mu.Unlock(); return c.errLocked() }
+
+// Context is canceled when the cycle's parent is canceled or it is closed.
+func (c *Cycle) Context() context.Context { return c.ctx }
+
 // Close cancels and joins all launched loaders, then releases retained facts.
 // Concurrent Close callers all wait for the same completion.
 func (c *Cycle) Close() {

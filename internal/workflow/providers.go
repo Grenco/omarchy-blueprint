@@ -55,35 +55,35 @@ type Provider interface {
 }
 
 type categoryProvider interface {
-	Provider
 	CategoryEnabled() bool
 }
 
 type emptyProvider interface{ Empty(any) bool }
 
-func ProviderIDs(providers []Provider) []string {
+func ProviderIDs[T ReadProvider](providers []T) []string {
 	ids := make([]string, 0, len(providers))
 	for _, provider := range providers {
-		if category, ok := provider.(categoryProvider); ok && category.CategoryEnabled() {
+		if enabled, ok := readCategoryState(provider); ok && enabled {
 			ids = append(ids, provider.ID())
 		}
 	}
 	return ids
 }
 
-func ProviderByID(providers []Provider, id string) (Provider, bool) {
+func ProviderByID[T ReadProvider](providers []T, id string) (T, bool) {
 	for _, provider := range providers {
 		if provider.ID() == id {
 			return provider, true
 		}
 	}
-	return nil, false
+	var zero T
+	return zero, false
 }
 
-func capturedProviders(providers []Provider, data profile.Data) []Provider {
-	selected := make([]Provider, 0, len(providers))
+func capturedProviders[T ReadProvider](providers []T, data profile.Data) []T {
+	selected := make([]T, 0, len(providers))
 	for _, provider := range providers {
-		if provider.Captured(data) {
+		if provider.Captured(profile.CloneData(data)) {
 			selected = append(selected, provider)
 		}
 	}

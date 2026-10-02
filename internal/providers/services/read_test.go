@@ -195,6 +195,33 @@ func TestServicesFreshPlanAndVerifyRootsAreLocal(t *testing.T) {
 	}
 }
 
+func TestServicesVerifyDoesNotUseReadSnapshot(t *testing.T) {
+	p, data, sd, _ := persistentPlanFixture(t)
+	counter := &countingReadSystemd{Systemd: sd, units: sd.units}
+	p.Systemd = counter
+	ctx := context.Background()
+	c := observation.New(ctx)
+	defer c.Close()
+	v := p.BindReadCycle(c)
+	if _, e := v.Diff(ctx, *data); e != nil {
+		t.Fatal(e)
+	}
+	counter.units = nil
+	result, e := p.Verify(ctx, *data, planContext(*data, false, false))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if result.OK || counter.calls.Load() != 2 {
+		t.Fatal("Verify trusted read inventory A after unit disappeared")
+	}
+	if _, e := v.Diff(ctx, *data); e != nil {
+		t.Fatal(e)
+	}
+	if counter.calls.Load() != 2 {
+		t.Fatal("fresh Verify contaminated cycle")
+	}
+}
+
 func TestServicesReadUnavailableManagerProjections(t *testing.T) {
 	for _, saved := range []bool{false, true} {
 		t.Run(map[bool]string{false: "empty", true: "saved"}[saved], func(t *testing.T) {

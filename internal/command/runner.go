@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Grenco/omarchy-blueprint/internal/diagnostics"
 	"os"
 	"os/exec"
 	"strings"
@@ -57,6 +58,9 @@ func (e *RunError) Error() string {
 func (e *RunError) Unwrap() error { return e.Err }
 
 func (SystemRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
+		defer finish()
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -70,6 +74,9 @@ func (SystemRunner) Run(ctx context.Context, name string, args ...string) (strin
 }
 
 func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
+		defer finish()
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -97,6 +104,9 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, args ...string) ([]byte, error) {
+	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
+		defer finish()
+	}
 	if limit < 0 {
 		return nil, fmt.Errorf("%s output exceeds %d bytes", name, limit)
 	}

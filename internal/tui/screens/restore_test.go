@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/observation"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -26,6 +28,96 @@ func (restoreErrorRunner) Run(_ context.Context, name string, args ...string) (s
 		return "stable", nil
 	}
 	return "4.0.0", nil
+}
+
+type countedRestoreProvider struct {
+	restoreErrorProvider
+	calls   atomic.Int32
+	started chan struct{}
+	block   bool
+}
+
+func (p *countedRestoreProvider) BindReadCycle(c *observation.Cycle) workflow.ReadProvider {
+	slot := observation.NewSlot(c, func(ctx context.Context) (int, error) {
+		p.calls.Add(1)
+		if p.block {
+			close(p.started)
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}
+		return 1, nil
+	}, func(v int) int { return v })
+	return &countedRestoreRead{ReadProvider: workflow.NarrowReadProvider(p), slot: slot}
+}
+
+type countedRestoreRead struct {
+	workflow.ReadProvider
+	slot *observation.Slot[int]
+}
+
+func (p *countedRestoreRead) InspectTargets(ctx context.Context, _ profile.Data) ([]workflow.TargetInspection, error) {
+	_, e := p.slot.Get(ctx)
+	return nil, e
+}
+func (p *countedRestoreRead) Plan(ctx context.Context, _ profile.Data, _ omarchy.Info, _ workflow.RestoreContext) (workflow.RestoreFragment, error) {
+	_, e := p.slot.Get(ctx)
+	return workflow.RestoreFragment{Compatibility: model.CompatibilityCategory{Category: p.ID(), Authority: model.CompatibilityUnchanged}}, e
+}
+
+func readRestoreScreen(t *testing.T, p *countedRestoreProvider) *Restore {
+	t.Helper()
+	dir, state := t.TempDir(), t.TempDir()
+	if e := profile.Save(dir, profile.New("test", time.Unix(1, 0))); e != nil {
+		t.Fatal(e)
+	}
+	session, e := workflow.Open(workflow.Dependencies{Runner: restoreErrorRunner{}, StateHome: func() (string, error) { return state, nil }}, workflow.Options{ProfileDir: dir})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e := session.SetProviders([]workflow.Provider{p}); e != nil {
+		t.Fatal(e)
+	}
+	return NewRestore(session)
+}
+
+func TestRestoreForceAndSafeRefreshShareOneObservation(t *testing.T) {
+	p := &countedRestoreProvider{}
+	screen := readRestoreScreen(t, p)
+	screen.options = policy.DefaultRestoreOptions()
+	screen.options.Conflicts = policy.ConflictForce
+	screen.override = true
+	message := screen.refreshPlan()().(restorePlanMsg)
+	if message.err != nil || p.calls.Load() != 1 {
+		t.Fatalf("refresh err=%v observations=%d", message.err, p.calls.Load())
+	}
+	if e := screen.refreshPlan()().(restorePlanMsg).err; e != nil {
+		t.Fatal(e)
+	}
+	if p.calls.Load() != 2 {
+		t.Fatal("new refresh reused old observation")
+	}
+}
+
+func TestRestoreCanceledPreviewRejectsLateResult(t *testing.T) {
+	p := &countedRestoreProvider{block: true, started: make(chan struct{})}
+	screen := readRestoreScreen(t, p)
+	ctx, cancel := context.WithCancel(context.Background())
+	screen.ctx = ctx
+	command := screen.refreshPlan()
+	result := make(chan restorePlanMsg, 1)
+	go func() { result <- command().(restorePlanMsg) }()
+	<-p.started
+	cancel()
+	message := <-result
+	if !errors.Is(message.err, context.Canceled) {
+		t.Fatal(message.err)
+	}
+	screen.planRequestID++
+	screen.current = model.RestorePlan{Skipped: []model.Skipped{{Reason: "newer result"}}}
+	screen.Update(message)
+	if screen.current.Skipped[0].Reason != "newer result" {
+		t.Fatal("late canceled result replaced newer presentation")
+	}
 }
 
 type restoreErrorProvider struct{}
