@@ -57,8 +57,10 @@ type Restore struct {
 	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
 	// handedOff is true while an approved plan runs in the real terminal.
 	handedOff bool
-	// skippedNotice names the steps the person skipped in the last apply.
-	skippedNotice string
+	// lastRun is the outcome of the last apply, shown above the refreshed
+	// plan; lastRunExpanded shows it in full in the details pane (o).
+	lastRun         *restoreRun
+	lastRunExpanded bool
 }
 
 // restoreTerminalCommand applies an approved plan while bubbletea has
@@ -125,6 +127,120 @@ func requestTerminal(command tea.ExecCommand, done tea.ExecCallback) tea.Cmd {
 type restoreAppliedMsg struct {
 	result workflow.RestoreResult
 	err    error
+}
+
+// restoreRun is the outcome of the last apply.
+type restoreRun struct {
+	result workflow.RestoreResult
+	err    error
+}
+
+// restoreLastRunLines bounds the last-run section so a run with many
+// failures cannot push the plan off screen; o shows everything.
+const restoreLastRunLines = 6
+
+func (r *restoreRun) failedCount() int { return len(r.result.Execution.Failed) }
+
+// headline sums up the last apply in one line.
+func (r *restoreRun) headline() string {
+	execution := r.result.Execution
+	switch {
+	case r.failedCount() > 0:
+		return fmt.Sprintf("Last restore: %d %s failed, %d completed", r.failedCount(), pluralWord(r.failedCount(), "step", "steps"), len(execution.Completed))
+	case r.err != nil && !r.result.Applied:
+		return "Last restore didn't run: " + components.DisplayText(r.err.Error())
+	case r.err != nil:
+		return "Last restore stopped: " + components.DisplayText(r.err.Error())
+	case len(execution.SkippedByYou) > 0:
+		return "Last restore: done, except what you skipped (it's still in the plan below)"
+	case !r.result.Verification.OK && r.result.Applied:
+		return "Last restore: applied, but some targets still don't match the profile"
+	default:
+		return "Last restore: applied and verified"
+	}
+}
+
+// report is every detail of the last apply, for the details pane.
+func (r *restoreRun) report() []string {
+	execution := r.result.Execution
+	lines := []string{"Last restore", r.headline()}
+	if len(execution.Failed) > 0 {
+		lines = append(lines, "", "Failed:")
+		for _, failure := range execution.Failed {
+			lines = append(lines, "✗ "+restoreStepLabel(failure.Operation)+": "+components.DisplayText(failure.Error))
+		}
+	}
+	if len(execution.SkippedByYou) > 0 {
+		lines = append(lines, "", "Skipped by you:")
+		for _, op := range execution.SkippedByYou {
+			lines = append(lines, "↷ "+restoreStepLabel(op))
+		}
+	}
+	if len(execution.Blocked) > 0 {
+		lines = append(lines, "", "Held back (they depend on a step that didn't complete):")
+		for _, blocked := range execution.Blocked {
+			lines = append(lines, "↷ "+restoreStepLabel(blocked.Operation)+" (waits on "+components.DisplayText(blocked.Dependency)+")")
+		}
+	}
+	if missing := r.result.Verification.Missing; len(missing) > 0 {
+		lines = append(lines, "", "Still not matching the profile:")
+		for _, item := range missing {
+			lines = append(lines, "  "+components.DisplayText(item))
+		}
+	}
+	if r.result.Journal != "" {
+		lines = append(lines, "", "Journal: "+components.DisplayText(r.result.Journal))
+	}
+	return lines
+}
+
+// lastRunLines summarizes the last apply in at most limit lines: what
+// failed and why first, then what was skipped or held back, and where to
+// see everything.
+func (s *Restore) lastRunLines(width, limit int) []string {
+	run := s.lastRun
+	execution := run.result.Execution
+	style := s.styles.Muted
+	if run.failedCount() > 0 || run.err != nil {
+		style = s.styles.Error
+	} else if len(execution.SkippedByYou) > 0 || (!run.result.Verification.OK && run.result.Applied) {
+		style = s.styles.Warning
+	}
+	headline := run.headline()
+	if len(run.report()) > 2 {
+		headline += " (o details)"
+	}
+	lines := []string{style(components.WrapText(headline, width)[0])}
+	var detail []string
+	for _, failure := range execution.Failed {
+		detail = append(detail, "✗ "+restoreStepLabel(failure.Operation)+": "+components.DisplayText(failure.Error))
+	}
+	if len(execution.SkippedByYou) > 0 {
+		names := make([]string, 0, len(execution.SkippedByYou))
+		for _, op := range execution.SkippedByYou {
+			names = append(names, restoreStepLabel(op))
+		}
+		detail = append(detail, "↷ Skipped by you: "+strings.Join(names, ", "))
+	}
+	if len(execution.Blocked) > 0 {
+		detail = append(detail, fmt.Sprintf("↷ %d held back because they depend on a step that didn't complete", len(execution.Blocked)))
+	}
+	if run.result.Journal != "" && run.failedCount() > 0 {
+		detail = append(detail, "Journal: "+components.DisplayText(run.result.Journal))
+	}
+	room := limit - 1
+	for i, line := range detail {
+		if room <= 0 {
+			break
+		}
+		if room == 1 && i < len(detail)-1 {
+			lines = append(lines, s.styles.Muted(fmt.Sprintf("… %d more (o details)", len(detail)-i)))
+			break
+		}
+		lines = append(lines, style(components.WrapText(line, width)[0]))
+		room--
+	}
+	return lines
 }
 
 // restoreProgress is what the busy view shows while an approved plan
@@ -238,19 +354,12 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		return waitRestoreProgress(msg.events)
 	case restoreAppliedMsg:
-		s.err, s.confirm, s.busy, s.handedOff = msg.err, false, false, false
-		s.skippedNotice = ""
-		if msg.err == nil && len(msg.result.Execution.SkippedByYou) > 0 {
-			names := make([]string, 0, len(msg.result.Execution.SkippedByYou))
-			for _, op := range msg.result.Execution.SkippedByYou {
-				names = append(names, restoreStepLabel(op))
-			}
-			s.skippedNotice = "Restored everything except what you skipped: " + strings.Join(names, ", ") + ". It's still in the plan below; apply it when you're ready."
-		}
-		if msg.err == nil {
-			return s.refreshPlan()
-		}
-		return nil
+		// An apply outcome, failed or not, is reported above the plan; it is
+		// never a planning error. The machine may have changed either way, so
+		// always plan again.
+		s.confirm, s.busy, s.handedOff = false, false, false
+		s.lastRun = &restoreRun{result: msg.result, err: msg.err}
+		return s.refreshPlan()
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -274,6 +383,11 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	if s.busy || s.planning {
 		return nil
 	}
+	if s.err != nil && key.String() != "r" {
+		// The plan could not be prepared, so there is nothing on screen to
+		// navigate or apply; only planning again does anything.
+		return nil
+	}
 	switch key.String() {
 	case "a":
 		s.ensureOptions()
@@ -293,6 +407,10 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		s.layoutPlan()
 	case "r":
 		return s.refreshPlan()
+	case "o":
+		if s.lastRun != nil {
+			s.lastRunExpanded = !s.lastRunExpanded
+		}
 	case "d":
 		if len(s.deferred) > 0 {
 			s.deferred = nil
@@ -350,7 +468,7 @@ func (s *Restore) View() string {
 		return s.activationReviewView()
 	}
 	if s.err != nil {
-		return "Unable to prepare restore: " + components.DisplayText(s.err.Error())
+		return strings.Join(append(components.WrapText("Unable to prepare restore: "+components.DisplayText(s.err.Error()), s.widthOrDefault()), "", "Press r to plan again."), "\n")
 	}
 	if s.busy {
 		return s.busyView()
@@ -368,6 +486,9 @@ func (s *Restore) View() string {
 	return s.currentPlanView()
 }
 func (s *Restore) DetailView() string {
+	if s.lastRunExpanded && s.lastRun != nil {
+		return strings.Join(s.lastRun.report(), "\n")
+	}
 	if s.compatibilityExpanded {
 		return strings.Join(s.compatibilityReportLines(s.widthOrDefault(), false), "\n")
 	}
@@ -510,11 +631,11 @@ func (s *Restore) fullPlanHeader(width int) []string {
 		}, width, 6, s.styles,
 	)
 	sections := []string{components.SectionDivider("Run settings", width, s.styles) + "\n" + settings}
+	if s.lastRun != nil {
+		sections = append([]string{strings.Join(s.lastRunLines(width, restoreLastRunLines), "\n")}, sections...)
+	}
 	if deferred := s.deferredLine(width); deferred != "" {
 		sections = append(sections, deferred)
-	}
-	if s.skippedNotice != "" {
-		sections = append(sections, strings.Join(components.WrapText(s.styles.Warning(components.DisplayText(s.skippedNotice)), width), "\n"))
 	}
 	if len(s.current.ActivationReview) > 0 {
 		sections = append(sections, "Review activation: press Enter to select individual starts before applying.")
@@ -544,6 +665,9 @@ func (s *Restore) compactPlanHeader(width int) []string {
 	counts := outcomeCounts(s.current)
 	machine, conflicts, _, convergence, _, defaults, _ := s.runSettings()
 	lines := []string{}
+	if s.lastRun != nil {
+		lines = append(lines, s.lastRunLines(width, 1)...)
+	}
 	for _, line := range components.WrapText(fmt.Sprintf("Run: %s (f) · %s (e) · %s activation (a) · %s · %s", conflicts, convergence, activationLabel(s.options.ActivationMode()), defaults, machine), width) {
 		lines = append(lines, s.styles.SubtleAccent(line))
 	}
@@ -712,6 +836,9 @@ func (s *Restore) deferredLine(width int) string {
 	text := "Deferred for later: " + strings.Join(labels, ", ") + " · not part of this restore · press d to plan them again"
 	return strings.Join(components.WrapText(s.styles.Warning(components.DisplayText(text)), width), "\n")
 }
+
+// HasLastRun reports whether an apply outcome is available to show.
+func (s *Restore) HasLastRun() bool { return s.lastRun != nil }
 
 // CanDefer reports whether d would narrow this plan: something is not ready,
 // nothing is deferred yet, and at least one category would remain.

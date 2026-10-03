@@ -165,6 +165,11 @@ marked in the plan and run last; while one has the terminal, Ctrl+C skips
 just that step and the rest of the restore continues. Restore then shows what
 you skipped, which stays in the plan until you apply it.
 
+After a restore runs, Restore plans again and shows how the run went above
+the new plan: which steps failed and why, what you skipped, what was held back
+because it depended on them, and the journal path. Press `o` for the full
+report in the Details pane.
+
 On a freshly installed machine without a package database, Packages is
 blocked until you run `omarchy update` in a terminal and press `r`; you can
 defer it with `d` meanwhile.

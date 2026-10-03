@@ -179,12 +179,13 @@ func (s *restoreScreen) Actions() []Action {
 		{ID: "restore.convergence", Label: "Toggle Additive/Exact for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'e'}) }},
 		{ID: "restore.activation", Label: "Cycle Services activation for this run", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'a'}) }},
 		{ID: "restore.replan", Label: "Plan again", Group: "Restore", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
+		{ID: "restore.last-run", Label: "Show/hide last restore details", Group: "Restore", Enabled: s.HasLastRun(), Visible: true, DisabledReason: "no restore has run yet", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'o'}) }},
 		{ID: "restore.defer", Label: deferLabel, Group: "Restore", Enabled: deferEnabled, Visible: true, DisabledReason: "every category is ready, or deferring would leave nothing to restore", Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'd'}) }},
 		{ID: "restore.apply", Label: "Restore current plan", Group: "Restore", Enabled: reason == "", Visible: true, DisabledReason: reason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
 	}
 }
 func (s *restoreScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "restore.conflicts", Key: "f"}, {ActionID: "restore.convergence", Key: "e"}, {ActionID: "restore.compatibility", Key: "v"}, {ActionID: "restore.replan", Key: "r"}, {ActionID: "restore.defer", Key: "d"}, {ActionID: "restore.apply", Key: "enter"}}
+	return []Binding{{ActionID: "restore.conflicts", Key: "f"}, {ActionID: "restore.convergence", Key: "e"}, {ActionID: "restore.compatibility", Key: "v"}, {ActionID: "restore.replan", Key: "r"}, {ActionID: "restore.last-run", Key: "o"}, {ActionID: "restore.defer", Key: "d"}, {ActionID: "restore.apply", Key: "enter"}}
 }
 
 func (s *syncScreen) ID() ScreenID { return ScreenSync }
