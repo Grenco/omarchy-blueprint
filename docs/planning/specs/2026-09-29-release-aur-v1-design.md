@@ -16,7 +16,7 @@ This document is a design specification, not an implementation plan. It does not
 
 The first public distribution milestone is:
 
-> An Omarchy 4+ user can install `omarchy-blueprint` from the AUR, receive a package built from an immutable Blueprint release, and report the exact Blueprint version they are running.
+> An Omarchy 4+ user can install `omarchy-blueprint` as a pacman-owned package built from an immutable Blueprint release, initially from the release's PKGBUILD and later from the AUR, and report the exact Blueprint version they are running.
 
 The initial release line is pre-1.0 and begins with `v0.1.0`.
 
@@ -46,9 +46,10 @@ There is no `-git` or `-bin` variant in v1.
 The long-term distribution sequence is intentionally:
 
 ```text
-AUR release
+GitHub Release beta (release PKGBUILD, see the amendment)
 → public announcement
-→ real-world Omarchy user testing and security feedback
+→ AUR publication once onboarding is available
+→ real-world Omarchy user testing, security feedback and maintenance history
 → stabilization
 → later proposal to the Omarchy package repository
 ```
@@ -105,7 +106,7 @@ Release/AUR v1 does not add:
 - release-time mutation of user profiles;
 - telemetry.
 
-The Omarchy repository is a deliberate next phase after public AUR soak and stabilization.
+The Omarchy repository is a deliberate next phase after public beta and AUR soak and stabilization.
 
 ## Current repository findings
 
@@ -781,7 +782,7 @@ A maintainer:
 
 A maintainer deliberately tags the chosen merged `main` commit.
 
-The tag pipeline verifies, packages, and prepares the draft GitHub Release. A maintainer reviews the draft and publishes it. The published-release workflow then validates the exact final AUR package, pauses for protected AUR approval, and publishes the first AUR revision.
+The tag pipeline verifies, packages, and prepares the draft GitHub Release. A maintainer reviews the draft and publishes it. The published-release workflow then validates the exact final AUR package. Once AUR publishing is enabled, it pauses for protected AUR approval and publishes the first AUR revision; until then, users install from the release's PKGBUILD (see the amendment).
 
 ### Phase 4 — public soak
 
