@@ -43,6 +43,13 @@ type Operation struct {
 	Reversible  bool             `json:"reversible"`
 	Interactive bool             `json:"interactive,omitempty"`
 	Notice      string           `json:"notice,omitempty"`
+	// Label names the step for people when Resource alone doesn't, such as
+	// an Omarchy setup recipe that does far more than install a package.
+	Label string `json:"label,omitempty"`
+	// AwaitsYou says what the step may wait for from the person, such as
+	// signing in through a link it prints. Progress repeats it while the
+	// step runs so a wait never looks like a hang.
+	AwaitsYou string `json:"awaits_you,omitempty"`
 }
 
 type Copy struct {
@@ -121,6 +128,9 @@ type RestorePlan struct {
 	// Requirements must be satisfied by the user before the plan may be
 	// applied; apply refuses while any remains (ADR 0022).
 	Requirements []Requirement `json:"requirements,omitempty"`
+	// Deferred lists captured categories this run explicitly left out so the
+	// rest can apply (ADR 0028). They are not planned, verified or assessed.
+	Deferred []string `json:"deferred,omitempty"`
 }
 
 // ActivationCandidate is a provider-established eligible start, not authority.

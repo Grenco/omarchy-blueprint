@@ -33,12 +33,20 @@ it with `makepkg`, as you would an AUR package:
 mkdir omarchy-blueprint && cd omarchy-blueprint
 curl -fLO https://github.com/Grenco/omarchy-blueprint/releases/latest/download/PKGBUILD
 less PKGBUILD
-makepkg -si
+makepkg -di
 ```
 
 `makepkg` downloads the release's source archive, checks it against the
-SHA-256 pinned in the `PKGBUILD`, builds and tests it, and installs it with
-pacman. Check the result:
+SHA-256 pinned in the `PKGBUILD`, builds and tests it with Go, and installs it
+with pacman, which checks its runtime dependencies.
+
+Omarchy provides Go through mise, which `makepkg` can't see, so `-d`
+(`--nodeps`) tells it to build with the `go` on your `PATH` instead of
+installing pacman's. If you don't have Go at all, use `makepkg -si`: it
+installs the `go` package with pacman (asking first) before building, and
+`makepkg -sri` removes it again afterwards.
+
+Check the result:
 
 ```sh
 omarchy-blueprint --version          # omarchy-blueprint version <release>

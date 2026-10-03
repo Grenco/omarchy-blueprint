@@ -48,18 +48,24 @@ func (s *Session) PlanRestore(ctx context.Context, onlyProvider string, options 
 // options argument actually resolved to (e.g. to decide how to render the
 // plan).
 func (s *Session) PlanRestoreWithContext(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
-	return s.restorePlan(ctx, onlyProvider, options)
+	return s.restorePlan(ctx, onlyRestoreScope(onlyProvider), options)
+}
+
+// PlanRestoreScopeWithContext is PlanRestoreWithContext for an explicit
+// RestoreScope, such as one that defers blocked categories.
+func (s *Session) PlanRestoreScopeWithContext(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
+	return s.restorePlan(ctx, scope, options)
 }
 
 // ApplyRestore always replans after approval, so the executor validates current
 // filesystem preconditions rather than relying on a preview-time plan. See
 // PlanRestore for how options resolves.
 func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions) (RestoreResult, error) {
-	plan, providers, contexts, resolved, err := s.restorePlan(ctx, onlyProvider, options)
+	plan, providers, contexts, resolved, err := s.restorePlan(ctx, onlyRestoreScope(onlyProvider), options)
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	return s.executeRestore(ctx, RestoreResult{Options: resolved, Plan: plan}, providers, contexts, false)
+	return s.executeRestore(ctx, RestoreResult{Options: resolved, Plan: plan}, providers, contexts, false, nil)
 }
 
 // ApplyApprovedRestore applies a plan the user approved. It replans and
@@ -68,7 +74,21 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 // the caller has handed the real terminal to this call (CLI, or the TUI
 // after releasing it), so interactive operations may prompt there.
 func (s *Session) ApplyApprovedRestore(ctx context.Context, onlyProvider string, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool) (RestoreResult, error) {
-	plan, providers, contexts, resolved, err := s.restorePlan(ctx, onlyProvider, options)
+	return s.ApplyApprovedRestoreScope(ctx, onlyRestoreScope(onlyProvider), options, approved, terminal)
+}
+
+// ApplyApprovedRestoreScope is ApplyApprovedRestore for an explicit
+// RestoreScope. The scope is replanned too, so a deferral is part of what
+// the approval covers.
+func (s *Session) ApplyApprovedRestoreScope(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool) (RestoreResult, error) {
+	return s.ApplyApprovedRestoreWithProgress(ctx, scope, options, approved, terminal, nil)
+}
+
+// ApplyApprovedRestoreWithProgress is ApplyApprovedRestoreScope that also
+// reports each operation as it starts, keeps running and finishes, so an
+// interface can show what Restore is doing.
+func (s *Session) ApplyApprovedRestoreWithProgress(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool, progress restore.ProgressFunc) (RestoreResult, error) {
+	plan, providers, contexts, resolved, err := s.restorePlan(ctx, scope, options)
 	if err != nil {
 		return RestoreResult{}, err
 	}
@@ -76,7 +96,7 @@ func (s *Session) ApplyApprovedRestore(ctx context.Context, onlyProvider string,
 	if !reflect.DeepEqual(plan, approved) {
 		return result, ErrRestorePlanChanged
 	}
-	return s.executeRestore(ctx, result, providers, contexts, terminal)
+	return s.executeRestore(ctx, result, providers, contexts, terminal, progress)
 }
 
 // ErrRestorePlanChanged means the recalculated plan differs from the one the
@@ -139,7 +159,7 @@ func CheckRestoreApplicable(plan model.RestorePlan, terminal bool) error {
 	return nil
 }
 
-func (s *Session) executeRestore(ctx context.Context, result RestoreResult, providers []RestoreProvider, contexts map[string]RestoreContext, terminal bool) (RestoreResult, error) {
+func (s *Session) executeRestore(ctx context.Context, result RestoreResult, providers []RestoreProvider, contexts map[string]RestoreContext, terminal bool, progress restore.ProgressFunc) (RestoreResult, error) {
 	plan := result.Plan
 	if err := CheckRestoreApplicable(plan, terminal); err != nil {
 		return result, err
@@ -164,7 +184,7 @@ func (s *Session) executeRestore(ctx context.Context, result RestoreResult, prov
 	}
 	defer journal.Close()
 	result.Journal, result.Applied = journal.Path, true
-	result.Execution, err = restore.Execute(ctx, s.deps.Runner, plan, journal, s.deps.Now, 5_000_000_000, nil)
+	result.Execution, err = restore.Execute(ctx, s.deps.Runner, plan, journal, s.deps.Now, 5_000_000_000, progress)
 	if err != nil {
 		return result, err
 	}
@@ -189,7 +209,7 @@ func interactiveOperation(plan model.RestorePlan) (model.Operation, bool) {
 	return model.Operation{}, false
 }
 
-func (s *Session) restorePlan(ctx context.Context, only string, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
+func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions) (model.RestorePlan, []RestoreProvider, map[string]RestoreContext, policy.RestoreOptions, error) {
 	if err := s.Reload(); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
@@ -197,16 +217,9 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 	if err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
-	selected := capturedProviders(s.providers, s.profile)
-	if only != "" {
-		provider, ok := ProviderByID(s.providers, only)
-		if !ok {
-			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("unknown category %s", only)
-		}
-		if !provider.Captured(s.profile) {
-			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, CaptureRequiredError(provider.ID())
-		}
-		selected = []Provider{provider}
+	selected, deferred, err := selectRestoreScope(s.providers, s.profile, scope)
+	if err != nil {
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
 	providers := make([]RestoreProvider, 0, len(selected))
 	for _, provider := range selected {
@@ -221,7 +234,7 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
 	contexts := make(map[string]RestoreContext, len(providers))
-	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
+	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version, Deferred: deferred}
 	if resolved.Activation != "" {
 		plan.ActivationMode = string(resolved.ActivationMode())
 	}
@@ -256,6 +269,10 @@ func (s *Session) restorePlan(ctx context.Context, only string, options *policy.
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("finalize restore plan: %w", err)
 		}
 	} else if err := restore.ValidatePlan(plan); err != nil {
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
+	}
+	plan.Operations = restore.AwaitingStepsLast(plan.Operations)
+	if err := restore.ValidatePlan(plan); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
 	plan.Compatibility = compatibility.NormalizeReport(plan.Compatibility)

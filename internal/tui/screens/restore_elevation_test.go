@@ -72,7 +72,26 @@ func TestRestoreKeepsNonInteractivePlansInsideTheTUI(t *testing.T) {
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
 		t.Fatal("approval dispatched nothing")
-	} else if msg, ok := cmd().(restoreAppliedMsg); !ok || msg.err == nil {
+	} else if msg, ok := appliedFromBatch(cmd()); !ok || msg.err == nil {
 		t.Fatalf("expected in-TUI apply result, got %#v", msg)
 	}
+}
+
+// appliedFromBatch runs an in-TUI apply batch (the apply and its progress
+// listener) in order and returns the apply result.
+func appliedFromBatch(msg tea.Msg) (restoreAppliedMsg, bool) {
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		applied, ok := msg.(restoreAppliedMsg)
+		return applied, ok
+	}
+	for _, cmd := range batch {
+		if cmd == nil {
+			continue
+		}
+		if applied, ok := cmd().(restoreAppliedMsg); ok {
+			return applied, true
+		}
+	}
+	return restoreAppliedMsg{}, false
 }

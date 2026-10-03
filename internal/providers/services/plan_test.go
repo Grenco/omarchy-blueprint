@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
@@ -19,8 +20,11 @@ import (
 type planSystemd struct {
 	discoverySystemd
 	inspectErr, verifyErr error
-	validations           int
-	proposed              map[string]string
+	// rejectWith, when set, is systemd-analyze output to reject the set
+	// with; "<root>" stands for the temporary validation root.
+	rejectWith  string
+	validations int
+	proposed    map[string]string
 }
 
 func (s *planSystemd) InspectUserUnits(context.Context) ([]ObservedUnit, error) {
@@ -47,6 +51,9 @@ func (s *planSystemd) VerifyUnitSet(_ context.Context, set ProposedUnitSet) erro
 		s.proposed[filepath.ToSlash(rel)] = string(bytes)
 		return nil
 	})
+	if s.rejectWith != "" {
+		return &command.RunError{Name: "env", Output: strings.ReplaceAll(s.rejectWith, "<root>", set.Root), ExitCode: 1, Err: errors.New("exit status 1")}
+	}
 	return errors.Join(err, s.verifyErr)
 }
 
@@ -310,6 +317,23 @@ func TestPlanInvalidProposedUnitBlocksBeforeMutation(t *testing.T) {
 	fragment := persistentPlan(t, p, *data, false, false)
 	if fragment.Compatibility.Authority != model.CompatibilityBlocked || len(fragment.Operations) != 0 {
 		t.Fatalf("invalid proposed units retained mutation authority: %+v", fragment)
+	}
+}
+
+func TestPlanRejectedUnitNamesSystemdsReasonWithoutTheValidationRoot(t *testing.T) {
+	p, data, s, live := persistentPlanFixture(t)
+	if err := os.Remove(live); err != nil {
+		t.Fatal(err)
+	}
+	s.units = nil
+	s.rejectWith = "<root>/backup.service:7: Unknown key 'X' in section [Service], ignoring.\nbackup.service: Command /usr/bin/restic is not executable: No such file or directory\n"
+	fragment := persistentPlan(t, p, *data, false, false)
+	if fragment.Compatibility.Authority != model.CompatibilityBlocked || len(fragment.Compatibility.Findings) == 0 {
+		t.Fatalf("rejected unit did not block: %+v", fragment.Compatibility)
+	}
+	finding := fragment.Compatibility.Findings[0]
+	if finding.Code != "services.unit.invalid" || finding.Target != "backup.service" || !strings.Contains(finding.Summary, "Command /usr/bin/restic is not executable") || strings.Contains(finding.Summary, "blueprint-services-verify") || strings.Contains(finding.Summary, "Unknown key") {
+		t.Fatalf("finding does not carry systemd's reason cleanly: %+v", finding)
 	}
 }
 
