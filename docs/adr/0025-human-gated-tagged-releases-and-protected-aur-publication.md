@@ -6,7 +6,7 @@ Proposed
 
 ## Context
 
-Omarchy Blueprint is ready to move from repository-only software to a public installable package. The first public distribution target is the Arch User Repository (AUR), with the Omarchy package repository intentionally deferred until Blueprint has accumulated real user installs, bug reports, security feedback, and a visible maintenance history.
+Omarchy Blueprint is ready to move from repository-only software to a public installable package. The Arch User Repository (AUR) was the intended first package channel. Because AUR onboarding was unavailable when the first public beta was ready, the validated PKGBUILD attached to each GitHub Release became the initial beta channel (section 15), with the AUR to follow and the Omarchy package repository intentionally deferred until Blueprint has accumulated real user installs, bug reports, security feedback, and a visible maintenance history.
 
 Publishing to the AUR is not only a packaging task. A trustworthy package needs an upstream release identity, immutable source bytes, a version users can report, package-specific validation, and publication credentials that are isolated from untrusted code.
 
@@ -22,7 +22,7 @@ At this decision point:
 
 The product goal for the first release is:
 
-> An Omarchy 4+ user can install `omarchy-blueprint` from the AUR, receive a package built from an immutable Blueprint release, and report the exact Blueprint version they are running.
+> An Omarchy 4+ user can install `omarchy-blueprint` as a pacman-owned package built from an immutable Blueprint release, initially from the release's PKGBUILD and later from the AUR, and report the exact Blueprint version they are running.
 
 The first intended upstream release is `v0.1.0`.
 
@@ -71,17 +71,19 @@ The archive expands beneath one versioned top-level directory.
 
 The AUR package does not build from `main`, another moving branch, or an unpinned source. Its concrete PKGBUILD names the release archive and pins its SHA-256.
 
+From the first public beta, each release also carries its validated `pkgrel=1` PKGBUILD (section 15).
+
 Once a GitHub Release is public, its source archive is immutable by policy. A failed downstream publication reuses the same bytes. Application-source corrections require a new upstream version; packaging-only corrections use Arch `pkgrel` against the original source archive.
 
 ### 4. GitHub Release publication is human-gated
 
-A pushed release tag starts verification and prepares a **draft** GitHub Release with the verified source archive and checksum.
+A pushed release tag starts verification and prepares a **draft** GitHub Release with the verified source archive, checksum and validated `pkgrel=1` PKGBUILD.
 
 The workflow does not automatically make the upstream release public.
 
 A maintainer reviews the draft release notes and assets and explicitly publishes the GitHub Release. That publication is the upstream distribution boundary.
 
-Only a published GitHub Release may advance to final AUR validation and publication.
+Only a published GitHub Release may advance to final AUR validation and publication. AUR publication may also happen later, for an already published release (section 15).
 
 A valid GitHub Release remains valid if AUR publication later fails.
 
@@ -201,20 +203,37 @@ Credential-bearing workflows minimize opaque marketplace dependencies. GitHub Ac
 
 All external version/tag inputs are strictly validated before interpolation into shell commands or paths.
 
-### 14. AUR is the first public channel; Omarchy repository inclusion is a later decision
+### 14. AUR is the long-term public package channel; Omarchy repository inclusion is later
 
 Release/AUR v1 does not operate a custom pacman repository and does not target Arch official repositories.
 
 The intended sequence is:
 
 ```text
-AUR publication
-→ public user/security soak
-→ maintenance history
+GitHub Release beta (release PKGBUILD, section 15)
+→ AUR publication
+→ public user/security soak and maintenance history
 → later proposal to the Omarchy package repository
 ```
 
 The Omarchy repository proposal is a separate human-reviewed tranche after the project has evidence of successful installs, responsive maintenance, and no unresolved high-severity security issue.
+
+### 15. Amendment: pre-AUR beta distribution through GitHub Releases
+
+AUR remains the intended long-term package channel. Because new AUR account registration was unavailable when the first public beta was ready, each GitHub Release also carries the release's validated `pkgrel=1` PKGBUILD, so users can install a release with ordinary Arch tooling before the AUR package exists:
+
+```text
+omarchy-blueprint-<version>.tar.gz
+SHA256SUMS
+PKGBUILD
+```
+
+- The release PKGBUILD is rendered by the same tooling from `packaging/aur/PKGBUILD.template`, which stays the single recipe source of truth. Rendered PKGBUILDs and `.SRCINFO` are outputs and are never committed.
+- Before the draft is prepared, the Release workflow renders it for the source archive's final public URL and checksum and runs the full Arch package validation against the locally built archive. Users build it with `makepkg -si`, which verifies the pinned SHA-256 and gives normal pacman ownership.
+- `.SRCINFO` and the 0BSD packaging `LICENSE` are not release assets: `makepkg` does not need them, and they are still generated for the AUR repository. No prebuilt binary is published.
+- The release PKGBUILD is an immutable release asset like the archive. While the package is not on the AUR, a recipe correction therefore requires a new upstream PATCH release; `pkgrel` revisions apply once AUR publication exists.
+- AUR publication is a later, explicit step that does not block a GitHub Release. The credential-bearing AUR push runs only when the repository enables it (`AUR_PUBLISHING_ENABLED`); final package validation from the public URL always runs.
+- The first AUR publication of a release, whether from the `release: published` event or a later manual dispatch with `pkgrel=1`, renders the recipe from the release tag and must be byte-identical to the release's `PKGBUILD` asset. Users who installed from the release therefore have exactly the package the AUR later serves.
 
 ## Consequences
 
@@ -228,15 +247,18 @@ The Omarchy repository proposal is a separate human-reviewed tranche after the p
 - AUR credentials are isolated behind validation and human approval.
 - AUR publication is retryable without rewriting release bytes or history.
 - The first public channel is simple enough to maintain while the project gathers real-world feedback.
+- Beta users can install a validated, pacman-owned release before AUR onboarding is possible, and later receive the identical package from the AUR.
 - The packaging recipe can later provide useful evidence for an Omarchy package-repository proposal.
 
 ### Negative
 
-- A release requires two deliberate human publication gates: GitHub Release publication and AUR environment approval.
+- GitHub Release publication is the deliberate human release gate. AUR publication has its own protected human approval gate, which may come later.
 - The repository gains additional release scripts, workflow definitions, and packaging tests.
 - GitHub-hosted package validation may use a disposable Arch container rather than Arch's strongest `devtools` clean-chroot machinery; this limitation must be documented if retained.
 - A dedicated AUR key and protected environment require one-time operational setup.
 - AUR users build from source, so installation is slower than a precompiled `-bin` package.
+- Until the package is on the AUR, users update by downloading the next release's PKGBUILD, and recipe-only fixes cost a PATCH release.
+- The release-asset PKGBUILD and the first AUR publication are coupled: the maintainer identity in the rendered recipe must not change between them, or the release must be published to the AUR with `pkgrel >= 2`.
 
 ## Rejected alternatives
 

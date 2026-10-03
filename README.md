@@ -13,15 +13,56 @@ to reconstruct things natively rather than blindly snapshot bytes.
 
 ## Installation
 
-Blueprint requires Omarchy 4 or newer on x86_64.
+Blueprint is in early public beta. It requires Omarchy 4 or newer on x86_64.
 
-Blueprint releases are tagged `vMAJOR.MINOR.PATCH`, and each one publishes a
-source archive and its `SHA256SUMS` on GitHub Releases. The intended
-installation channel is the source-built `omarchy-blueprint` package in the
-Arch User Repository (AUR), which follows each published release. It is not
-on the AUR yet.
+Review each Restore plan (`omarchy-blueprint restore --dry-run`, or the review
+screen in the TUI) before you apply it. Blueprint rebuilds your Omarchy
+personalisation; it is not a backup tool, so keep independent backups of
+personal data that matters.
 
-Until then, build from source with Go 1.25 or newer:
+### Install the packaged release
+
+Blueprint is packaged as `omarchy-blueprint`, an Arch package built from the
+release's source. It will be published on the Arch User Repository (AUR), but
+the AUR is not accepting new account registrations yet, so it is not there.
+Until it is, every [GitHub Release](https://github.com/Grenco/omarchy-blueprint/releases)
+carries the same `PKGBUILD` the AUR will get. Download the latest one and build
+it with `makepkg`, as you would an AUR package:
+
+```sh
+mkdir omarchy-blueprint && cd omarchy-blueprint
+curl -fLO https://github.com/Grenco/omarchy-blueprint/releases/latest/download/PKGBUILD
+less PKGBUILD
+makepkg -si
+```
+
+`makepkg` downloads the release's source archive, checks it against the
+SHA-256 pinned in the `PKGBUILD`, builds and tests it, and installs it with
+pacman. Check the result:
+
+```sh
+omarchy-blueprint --version          # omarchy-blueprint version <release>
+pacman -Qo /usr/bin/omarchy-blueprint
+```
+
+To update, repeat these steps in a fresh directory. Once the package is on the
+AUR, pacman and AUR helpers treat it as the same package.
+
+To uninstall:
+
+```sh
+sudo pacman -R omarchy-blueprint
+```
+
+Arch's default `makepkg.conf` also builds and installs
+`omarchy-blueprint-debug`; add it to the command if
+`pacman -Q omarchy-blueprint-debug` lists it. Uninstalling doesn't touch your
+profiles or Blueprint's state in `~/.local/state/omarchy-blueprint`.
+
+### Build from a Git checkout
+
+For contributors. This needs Go 1.25 or newer, and pacman does not manage the
+binary:
 
 ```sh
 git clone https://github.com/Grenco/omarchy-blueprint.git
@@ -29,9 +70,12 @@ cd omarchy-blueprint
 go build -trimpath -o omarchy-blueprint ./cmd/omarchy-blueprint
 ```
 
-A source build reports its version as `dev`; a release or package build
-reports the release version. Include the output of
-`omarchy-blueprint --version` when you report an issue.
+A Git build reports its version as `dev`.
+
+### Reporting bugs
+
+Open an issue at <https://github.com/Grenco/omarchy-blueprint/issues> and
+include the output of `omarchy-blueprint --version`.
 
 ## Quick start
 
@@ -146,7 +190,8 @@ go build ./cmd/omarchy-blueprint
 
 ## Project status
 
-Blueprint is a working, actively developed specification implementation.
+Blueprint is in early public beta: a working, actively developed
+specification implementation.
 Current boundaries — such as which conflicts restore can resolve
 automatically and which state remains machine-specific — are documented in
 the [Guide](docs/guide.md#current-boundaries).

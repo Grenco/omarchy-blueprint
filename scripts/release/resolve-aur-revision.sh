@@ -7,9 +7,12 @@
 # out for the package recipe).
 #   release   a published, non-prerelease vMAJOR.MINOR.PATCH release: pkgrel 1,
 #             packaged with the recipe reviewed in that release's tag
-#   dispatch  a packaging-only revision (pkgrel >= 2) of an existing published
-#             release, dispatched from main: packaged with the recipe at the
-#             dispatch event's commit (<github-sha>), never the moving branch
+#   dispatch  a revision of an existing published release, dispatched from
+#             main. pkgrel 1 publishes the release itself later (e.g. once AUR
+#             access exists), packaged with the recipe in its tag exactly as a
+#             release event would. pkgrel >= 2 is a packaging-only revision,
+#             packaged with the recipe at the dispatch event's commit
+#             (<github-sha>), never the moving branch
 set -euo pipefail
 
 fail() {
@@ -32,15 +35,18 @@ case $mode in
     (( $# == 5 )) || fail "usage: resolve-aur-revision.sh dispatch <version> <pkgrel> <github-ref> <github-sha>"
     version=$2 pkgrel=$3 github_ref=$4 github_sha=$5
     [[ $version =~ $semver ]] || fail "not a MAJOR.MINOR.PATCH version: $(printf '%q' "$version")"
-    [[ $pkgrel =~ ^[1-9][0-9]*$ ]] && (( pkgrel >= 2 )) ||
-      fail "a packaging-only revision needs pkgrel >= 2 (pkgrel 1 is published from the release itself): $(printf '%q' "$pkgrel")"
-    [[ $github_ref == refs/heads/main ]] || fail "packaging-only revisions are dispatched from main, not $github_ref"
+    [[ $pkgrel =~ ^[1-9][0-9]*$ ]] || fail "not a positive integer pkgrel: $(printf '%q' "$pkgrel")"
+    [[ $github_ref == refs/heads/main ]] || fail "AUR revisions are dispatched from main, not $github_ref"
     [[ $github_sha =~ ^[0-9a-f]{40}$ ]] || fail "not a full commit SHA: $(printf '%q' "$github_sha")"
     tag="v$version"
     state=$(gh api "repos/{owner}/{repo}/releases/tags/$tag" --jq '"\(.draft) \(.prerelease)"') ||
       fail "no published GitHub Release $tag"
     [[ $state == "false false" ]] || fail "GitHub Release $tag is not a published, non-prerelease release"
-    ref=$github_sha
+    if (( pkgrel == 1 )); then
+      ref="refs/tags/$tag"
+    else
+      ref=$github_sha
+    fi
     ;;
   *) fail "usage: resolve-aur-revision.sh release|dispatch ..." ;;
 esac
