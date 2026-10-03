@@ -15,7 +15,7 @@ import (
 
 // UnitSetRejectedError is systemd refusing the proposed unit set. Output is
 // systemd-analyze's own report with the temporary validation root removed,
-// so it names units as the person knows them (ADR 0027).
+// so it names units as the person knows them (ADR 0028).
 type UnitSetRejectedError struct {
 	Err    error
 	Output string

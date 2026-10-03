@@ -40,7 +40,7 @@ type Restore struct {
 	options                 policy.RestoreOptions
 	override                bool
 	// deferred is this run's explicit deferral of categories that are not
-	// ready (ADR 0027). It is never persisted.
+	// ready (ADR 0028). It is never persisted.
 	deferred        []string
 	progress        restoreProgress
 	forcedOverrides int
@@ -590,7 +590,7 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 }
 
 // restoreBlockerGroupBudget bounds the blocker section so it can never push
-// the plan off screen, however many targets are blocked (ADR 0027).
+// the plan off screen, however many targets are blocked (ADR 0028).
 const restoreBlockerGroupBudget = 4
 
 // blockerLines summarizes what blocks the plan: one entry per category and

@@ -797,7 +797,7 @@ type restoreOverride struct {
 	Convergence      *policy.ConvergenceMode
 	Activation       *policy.ActivationMode
 	ReviewActivation *policy.ActivationReviewSelection
-	// Defer narrows this run's scope rather than its options (ADR 0027).
+	// Defer narrows this run's scope rather than its options (ADR 0028).
 	Defer []string
 }
 
@@ -2122,7 +2122,7 @@ func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlan
 }
 
 // renderBlockedNextSteps tells the person how to proceed when the plan
-// cannot apply (ADR 0027): fix the cause and plan again, defer what isn't
+// cannot apply (ADR 0028): fix the cause and plan again, defer what isn't
 // ready, or skip specific targets for good. Force is never offered; it does
 // not override compatibility.
 func renderBlockedNextSteps(plan model.RestorePlan, single string) string {
@@ -2180,7 +2180,7 @@ func renderCompatibility(report model.CompatibilityReport) string {
 }
 
 // groupTargets names a finding group's targets without listing hundreds:
-// one target by name, more as a count with a few examples (ADR 0027).
+// one target by name, more as a count with a few examples (ADR 0028).
 func groupTargets(targets []string) string {
 	switch {
 	case len(targets) == 0:

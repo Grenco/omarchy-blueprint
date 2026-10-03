@@ -1,4 +1,4 @@
-# ADR 0027: Readable Restore Blockers and Explicit Deferral
+# ADR 0028: Readable Restore Blockers and Explicit Deferral
 
 ## Status
 

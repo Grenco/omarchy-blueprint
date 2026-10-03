@@ -10,7 +10,7 @@ import (
 
 // RestoreScope selects the categories one Restore run plans. Only names a
 // single category; Defer leaves captured categories out of this run so the
-// rest can apply while they are blocked (ADR 0027). Both are explicit,
+// rest can apply while they are blocked (ADR 0028). Both are explicit,
 // per-run narrowing (ADR 0023 §8): neither is persisted, and neither grants
 // authority to the categories that remain.
 type RestoreScope struct {

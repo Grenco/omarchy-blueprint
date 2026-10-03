@@ -8,7 +8,7 @@ import (
 
 // rejectedUnitSummaries explains, per selected unit, why systemd refused the
 // proposed set. systemd validates the set as a whole, so a unit it did not
-// name is blocked by the units it did (ADR 0027).
+// name is blocked by the units it did (ADR 0028).
 func rejectedUnitSummaries(err error, units []string) map[string]string {
 	summaries := make(map[string]string, len(units))
 	var rejected *UnitSetRejectedError

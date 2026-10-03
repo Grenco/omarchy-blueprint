@@ -8,7 +8,7 @@ import (
 
 // FindingGroup is the findings of one category that share a cause: the same
 // code, state, authority, linked requirement and explanation. Restore
-// surfaces present groups rather than one line per target (ADR 0027); the
+// surfaces present groups rather than one line per target (ADR 0028); the
 // plan itself, and its JSON, still carry every finding.
 type FindingGroup struct {
 	Category      string
