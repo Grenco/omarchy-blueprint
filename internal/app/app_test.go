@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 )
 
 type machineRunner struct {
+	mu                 sync.Mutex
 	official           map[string]bool
 	aur                map[string]bool
 	dependencies       map[string]bool
@@ -94,6 +96,8 @@ func TestMain(m *testing.M) {
 }
 
 func (r *machineRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.allCommands = append(r.allCommands, append([]string{name}, args...))
 	key := name + " " + strings.Join(args, " ")
 	switch key {

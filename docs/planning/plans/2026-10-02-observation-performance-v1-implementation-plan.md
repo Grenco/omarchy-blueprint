@@ -211,6 +211,21 @@ Expected: every stable comparison equal; no positional mapping. The planning pro
 
 ## Task 10: Conditional provider scheduling decision (not approved implementation)
 
+PR C execution update: the human authorized spike and implementation after
+PR B #62 merged. Base is `7a0c16ec9c937a2545301b9369b710ed44eaba95`.
+The [serial/2/4 spike](../specs/2026-10-02-observation-performance-v1-pr-c-spike.md)
+is complete with 105 successful samples and equal normalized results. Bound 2
+and explicit cycle worker-lifetime integration are proposed for this task's
+measured-choice review gate; production implementation has not started.
+
+Approval update: the human reviewed the comparison and explicitly selected
+**limit 4**. Implement the scheduler/Status integration using TDD. Add
+`Cycle.BeginWork() (func(), error)` for synchronized, idempotently released
+projection lifetime registration; use existing Close rather than a separate
+Cancel API for terminal failed-cycle loader joining. Exact authority entry points
+remain unchanged. The spike report above retains the original recommendation
+as historical evidence, not the selected production bound.
+
 **Files if separately approved:** `internal/workflow/read_scheduler.go`, `read_scheduler_test.go`, read-cycle Status aggregation; no authority-path scheduler.
 
 **Proposed interface:** private `observeProviders(ctx context.Context, providers []ReadProvider, limit int, observe func(context.Context, ReadProvider) (ProviderStatus,error)) ([]ProviderStatus,error)`; explicit limit selected by measurement, not a default decided here.
