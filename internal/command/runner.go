@@ -9,7 +9,25 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
+
+// detach keeps a non-interactive command from ever prompting. Run in its own
+// session it has no controlling terminal, so sudo, ssh and git fail at once
+// instead of waiting on a prompt nobody can see behind the TUI; Git is also
+// told never to ask for credentials. Commands that may prompt run through
+// RunInteractive, which hands them the terminal.
+func detach(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// A detached command no longer sees the terminal's interrupt. On
+	// cancellation ask its whole process group (it leads one, being a
+	// session leader) to stop, so helpers such as git's ssh go too, and kill
+	// it only if it ignores that.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
+}
 
 // Runner implementations used by read observation must support concurrent
 // calls from independent providers. Authoritative mutation remains serialized.
@@ -64,6 +82,7 @@ func (SystemRunner) Run(ctx context.Context, name string, args ...string) (strin
 		defer finish()
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	detach(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		exitCode := -1
@@ -80,6 +99,10 @@ func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...str
 		defer finish()
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Interactive commands (sudo pacman) get the terminal's own interrupt.
+	// Cancellation sends the same signal rather than killing them, so they
+	// can clean up (pacman releases its database lock).
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		exitCode := -1
@@ -113,6 +136,7 @@ func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, arg
 		return nil, fmt.Errorf("%s output exceeds %d bytes", name, limit)
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	detach(cmd)
 	stdout := &boundedBuffer{limit: limit}
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = stdout, &stderr
