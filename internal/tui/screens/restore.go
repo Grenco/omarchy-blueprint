@@ -52,8 +52,11 @@ type Restore struct {
 	// entryOffset is the first visible line of the Changes/Skipped region
 	// when the plan is taller than the workspace.
 	entryOffset int
-	// exec hands the terminal to a blocking command (tea.Exec).
+	// exec hands the terminal to a blocking command. By default it asks the
+	// root model to do so (TerminalRequest).
 	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
+	// handedOff is true while an approved plan runs in the real terminal.
+	handedOff bool
 }
 
 // restoreTerminalCommand applies an approved plan while bubbletea has
@@ -98,6 +101,19 @@ func (*restoreTerminalCommand) SetStderr(io.Writer)     {}
 
 func (s *Restore) scope() workflow.RestoreScope {
 	return workflow.RestoreScope{Defer: append([]string(nil), s.deferred...)}
+}
+
+// TerminalRequest asks the root model to hand the real terminal to Command
+// and deliver Done's message back to the requesting screen. A screen cannot
+// return tea.Exec itself: the root routes each screen command's message
+// back to its screen, and Bubble Tea would never see the exec request.
+type TerminalRequest struct {
+	Command tea.ExecCommand
+	Done    tea.ExecCallback
+}
+
+func requestTerminal(command tea.ExecCommand, done tea.ExecCallback) tea.Cmd {
+	return func() tea.Msg { return TerminalRequest{Command: command, Done: done} }
 }
 
 type restoreAppliedMsg struct {
@@ -163,7 +179,7 @@ func NewRestore(session *workflow.Session) *Restore {
 	return NewRestoreContext(context.Background(), session)
 }
 func NewRestoreContext(ctx context.Context, session *workflow.Session) *Restore {
-	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions(), exec: tea.Exec}
+	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions(), exec: requestTerminal}
 }
 func (s *Restore) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Restore) SetSize(width, height int)          { s.width, s.height = width, height }
@@ -202,7 +218,7 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		return waitRestoreProgress(msg.events)
 	case restoreAppliedMsg:
-		s.err, s.confirm, s.busy = msg.err, false, false
+		s.err, s.confirm, s.busy, s.handedOff = msg.err, false, false, false
 		if msg.err == nil {
 			return s.refreshPlan()
 		}
@@ -1047,6 +1063,7 @@ func (s *Restore) apply() tea.Cmd {
 	}
 	approved := s.plan()
 	if s.hasInteractiveOperation() {
+		s.handedOff = true
 		command := &restoreTerminalCommand{ctx: s.ctx, session: s.session, scope: s.scope(), options: options, approved: approved}
 		return s.exec(command, func(err error) tea.Msg { return restoreAppliedMsg{command.result, err} })
 	}
@@ -1079,6 +1096,9 @@ func (s *Restore) apply() tea.Cmd {
 // long step is visibly working rather than looking stuck.
 func (s *Restore) busyView() string {
 	width := s.widthOrDefault()
+	if s.handedOff {
+		return strings.Join(components.WrapText("Restore is running in the terminal so sudo can ask for your password there; Blueprint returns when it finishes.", width), "\n")
+	}
 	lines := []string{s.styles.SubtleAccent(fmt.Sprintf("Applying restore · %d of %d steps done", s.progress.done, s.progress.total))}
 	if s.progress.failed > 0 {
 		lines = append(lines, s.styles.Error(fmt.Sprintf("%d failed so far; Restore continues with independent steps", s.progress.failed)))

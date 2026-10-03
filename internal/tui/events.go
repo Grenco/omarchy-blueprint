@@ -44,6 +44,15 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 	case screens.SessionReloadNeeded:
 		updated, cmd := m.reloadSessionScreens(msg.Reason)
 		return updated.(model), cmd, true
+	case screens.TerminalRequest:
+		if origin == "" {
+			return m, nil, false
+		}
+		// Executed here, unwrapped, so Bubble Tea releases the terminal. The
+		// result is routed back to the screen that asked.
+		return m, tea.Exec(msg.Command, func(err error) tea.Msg {
+			return screenMsg{Screen: origin, Msg: msg.Done(err)}
+		}), true
 	case screens.HandoffRequest:
 		updated, cmd := m.handleHandoffRequest(msg)
 		return updated.(model), cmd, true
