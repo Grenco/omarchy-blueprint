@@ -174,3 +174,26 @@ func TestCursorAndLockRejectSymlinkedStateDirectory(t *testing.T) {
 		t.Fatal("outside directory changed", err)
 	}
 }
+
+func TestCursorLoadRemoveRejectAliasedParentAndPreserveOtherProfile(t *testing.T) {
+	home, firstRoot, secondRoot := t.TempDir(), t.TempDir(), t.TempDir()
+	first := CursorStore{StateHome: home, ProfileRoot: firstRoot}
+	second := CursorStore{StateHome: home, ProfileRoot: secondRoot}
+	if err := first.Save(validCursor()); err != nil {
+		t.Fatal(err)
+	}
+	firstDir, _ := machine.ProfileStateDir(home, firstRoot)
+	secondDir, _ := machine.ProfileStateDir(home, secondRoot)
+	if err := os.Symlink(firstDir, secondDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := second.Load(); ok || err == nil {
+		t.Error("Load adopted another profile through a parent symlink")
+	}
+	if err := second.Remove(); err == nil {
+		t.Error("Remove accepted another profile alias")
+	}
+	if got, ok, err := first.Load(); err != nil || !ok || got != validCursor() {
+		t.Fatal("other profile cursor damaged", ok, err)
+	}
+}

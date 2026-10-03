@@ -79,6 +79,11 @@ func (s CursorStore) Load() (Cursor, bool, error) {
 	if err != nil {
 		return Cursor{}, false, err
 	}
+	if err := inspectStateDir(s.StateHome, filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
+		return Cursor{}, false, nil
+	} else if err != nil {
+		return Cursor{}, false, err
+	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return Cursor{}, false, nil
@@ -155,12 +160,49 @@ func (s CursorStore) Remove() error {
 	if err != nil {
 		return err
 	}
+	if err := inspectStateDir(s.StateHome, filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 	return syncStateDir(filepath.Dir(path))
+}
+
+// Read/remove must enforce the same profile isolation as save/lock, without
+// creating missing state or changing permissions. StateHome itself is trusted.
+func inspectStateDir(home, dir string) error {
+	root, err := filepath.Abs(home)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return os.ErrNotExist
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return errors.New("sync state directory is not a directory")
+		}
+	}
+	return nil
 }
 
 func syncStateDir(path string) error {

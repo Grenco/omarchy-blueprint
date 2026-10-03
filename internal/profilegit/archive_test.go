@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -44,6 +45,74 @@ func TestArchiveRejectsHostileEntries(t *testing.T) {
 			_ = w.Close()
 			if err := extractProfileArchive(context.Background(), bytes.NewReader(buf.Bytes()), t.TempDir()); err == nil {
 				t.Fatal("unsafe archive accepted")
+			}
+		})
+	}
+}
+
+type archiveSizeRunner struct{ size int64 }
+
+func (r *archiveSizeRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	out, err := (command.SystemRunner{}).Run(ctx, name, args...)
+	if err == nil {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--output=") {
+				info, statErr := os.Stat(strings.TrimPrefix(arg, "--output="))
+				if statErr != nil {
+					return "", statErr
+				}
+				r.size = info.Size()
+			}
+		}
+	}
+	return out, err
+}
+
+type deepTreeRunner struct{}
+
+func (deepTreeRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	return "100644 blob " + strings.Repeat("a", 40) + "       0\t" + strings.Repeat("dir/", 20000) + "file\x00", nil
+}
+func TestArchiveTreeBudgetIncludesDirectoriesAndLongNames(t *testing.T) {
+	if _, err := (Service{Runner: deepTreeRunner{}, Root: t.TempDir()}).archiveTree(context.Background(), strings.Repeat("a", 40)); err == nil {
+		t.Fatal("deep tree metadata bypassed archive preflight bound")
+	}
+}
+
+func TestMaterializeExportSubstCannotExpandArchiveBeforeLimitCheck(t *testing.T) {
+	for _, source := range []string{"tree", "info", "configured"} {
+		t.Run(source, func(t *testing.T) {
+			root := t.TempDir()
+			git(t, root, "init", "-b", "main")
+			gitIdentity(t, root)
+			content := strings.Repeat("$Format:%<(10000)%s$\n", 100)
+			gitCommit(t, root, "config/expanded", content)
+			attributes := "config/expanded export-subst\n"
+			switch source {
+			case "tree":
+				gitCommit(t, root, ".gitattributes", attributes)
+			case "info":
+				mustWrite(t, filepath.Join(root, ".git/info/attributes"), attributes)
+			case "configured":
+				attrs := filepath.Join(t.TempDir(), "attributes")
+				mustWrite(t, attrs, attributes)
+				git(t, root, "config", "core.attributesFile", attrs)
+			}
+			sha := gitOutput(t, root, "rev-parse", "HEAD")
+			runner := &archiveSizeRunner{}
+			s, err := New(runner, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dest := t.TempDir()
+			if err := s.MaterializeCommit(context.Background(), sha, dest); err != nil {
+				t.Error("literal commit content not materialized", err)
+			}
+			if runner.size > 16384 {
+				t.Errorf("small literal tree expanded to %d bytes before size enforcement", runner.size)
+			}
+			if bytes, err := os.ReadFile(filepath.Join(dest, "config/expanded")); err != nil || string(bytes) != content {
+				t.Fatal("commit literal content changed", err)
 			}
 		})
 	}

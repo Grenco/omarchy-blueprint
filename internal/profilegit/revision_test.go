@@ -154,3 +154,53 @@ func TestRevisionRefusesParentRepository(t *testing.T) {
 		t.Fatal("parent repository accepted")
 	}
 }
+
+func TestRevisionRemoteIdentityPreservesAtSignsInRepositoryPaths(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"git@one.example:team/a@profile.git", "one.example:team/a@profile.git"},
+		{"git@two.example:other/b@profile.git", "two.example:other/b@profile.git"},
+		{"/srv/one/a@profile.git", "/srv/one/a@profile.git"},
+		{"/srv/two/b@profile.git", "/srv/two/b@profile.git"},
+		{"relative/a@profile.git", "relative/a@profile.git"},
+		{"./relative/a@profile.git", "./relative/a@profile.git"},
+		{"https://user:token@host.invalid/team/a@profile.git", "https://host.invalid/team/a@profile.git"},
+	} {
+		got, err := remoteIdentity(tc.raw)
+		if err != nil || got != tc.want {
+			t.Fatalf("remote identity=%q want=%q error=%v", got, tc.want, err)
+		}
+	}
+}
+
+func TestRevisionReplacementObjectsCannotChangePinnedFacts(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init", "-b", "main")
+	gitIdentity(t, root)
+	gitCommit(t, root, "config/value", "base")
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	gitCommit(t, root, "config/value", "original")
+	original := gitOutput(t, root, "rev-parse", "HEAD")
+	git(t, root, "checkout", "--orphan", "replacement")
+	git(t, root, "rm", "-r", "--cached", ".")
+	gitCommit(t, root, "config/value", "substitute")
+	replacement := gitOutput(t, root, "rev-parse", "HEAD")
+	git(t, root, "replace", original, replacement)
+	s := profileGitService(t, root)
+	ctx := context.Background()
+	dest := t.TempDir()
+	if err := s.MaterializeCommit(ctx, original, dest); err != nil {
+		t.Fatal(err)
+	}
+	if mustRead(t, filepath.Join(dest, "config/value")) != "original" {
+		t.Fatal("pinned original SHA returned replacement content")
+	}
+	if got, err := s.ResolveCommit(ctx, original); err != nil || got != original {
+		t.Fatal(got, err)
+	}
+	if got, err := s.IsAncestor(ctx, base, original); err != nil || !got {
+		t.Fatal("replacement altered ancestry", got, err)
+	}
+	if paths, err := s.CommittedPaths(ctx, base, original); err != nil || !reflect.DeepEqual(paths, []string{"config/value"}) {
+		t.Fatal("replacement altered history audit", paths, err)
+	}
+}

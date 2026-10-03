@@ -24,6 +24,14 @@ type RevisionInfo struct {
 	OriginFingerprint string
 }
 
+// Exact history reads must interpret stored objects, never local replacement refs.
+func (s Service) revisionRun(ctx context.Context, args ...string) (string, error) {
+	return s.Runner.Run(ctx, "git", append([]string{"--no-replace-objects", "-C", s.Root}, args...)...)
+}
+func (s Service) revisionOutput(ctx context.Context, args ...string) ([]byte, error) {
+	return command.RunOutput(ctx, s.Runner, maxStatusOutput, "git", append([]string{"--no-replace-objects", "-C", s.Root}, args...)...)
+}
+
 func revisionError(ctx context.Context, action string, err error) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("%s: %w", action, ctx.Err())
@@ -33,7 +41,7 @@ func revisionError(ctx context.Context, action string, err error) error {
 }
 
 func (s Service) requireExactRepository(ctx context.Context) error {
-	out, err := s.Runner.Run(ctx, "git", "-C", s.Root, "rev-parse", "--show-toplevel")
+	out, err := s.revisionRun(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return revisionError(ctx, "inspect profile repository", err)
 	}
@@ -51,7 +59,7 @@ func (s Service) ResolveCommit(ctx context.Context, ref string) (string, error) 
 	if err := s.requireExactRepository(ctx); err != nil {
 		return "", err
 	}
-	out, err := s.Runner.Run(ctx, "git", "-C", s.Root, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	out, err := s.revisionRun(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil {
 		return "", revisionError(ctx, "resolve profile commit", err)
 	}
@@ -67,12 +75,12 @@ func (s Service) CurrentRevisionInfo(ctx context.Context) (RevisionInfo, error) 
 	if err != nil {
 		return RevisionInfo{}, err
 	}
-	branch, err := s.Runner.Run(ctx, "git", "-C", s.Root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch, err := s.revisionRun(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return RevisionInfo{}, revisionError(ctx, "resolve current branch (detached HEAD is unsupported)", err)
 	}
 	// for-each-ref avoids parsing an upstream short name into a guessed remote name.
-	out, err := s.Runner.Run(ctx, "git", "-C", s.Root, "for-each-ref", "--format=%(upstream:short)%00%(upstream:remotename)", "refs/heads/"+strings.TrimSpace(branch))
+	out, err := s.revisionRun(ctx, "for-each-ref", "--format=%(upstream:short)%00%(upstream:remotename)", "refs/heads/"+strings.TrimSpace(branch))
 	if err != nil {
 		return RevisionInfo{}, revisionError(ctx, "resolve tracking identity", err)
 	}
@@ -80,7 +88,7 @@ func (s Service) CurrentRevisionInfo(ctx context.Context) (RevisionInfo, error) 
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[1] == "." {
 		return RevisionInfo{}, errors.New("profile branch requires a configured remote upstream")
 	}
-	raw, err := s.Runner.Run(ctx, "git", "-C", s.Root, "remote", "get-url", "--", parts[1])
+	raw, err := s.revisionRun(ctx, "remote", "get-url", "--", parts[1])
 	if err != nil {
 		return RevisionInfo{}, revisionError(ctx, "resolve tracking remote", err)
 	}
@@ -108,9 +116,29 @@ func remoteIdentity(raw string) (string, error) {
 		u.Scheme = strings.ToLower(u.Scheme)
 		return u.String(), nil
 	}
-	// SCP-style SSH URLs: remove the transport user, retain exact host/path.
-	if at := strings.LastIndex(raw, "@"); at >= 0 {
-		raw = raw[at+1:]
+	// SCP syntax has a host/path colon before any slash (outside IPv6
+	// brackets). '@' in a repository or local filesystem path is not userinfo.
+	bracket := false
+	for i, c := range raw {
+		if c == '/' {
+			break
+		}
+		if c == '[' {
+			bracket = true
+		}
+		if c == ']' {
+			bracket = false
+		}
+		if c == ':' && !bracket {
+			authority, repository := raw[:i], raw[i+1:]
+			if at := strings.LastIndex(authority, "@"); at >= 0 {
+				authority = authority[at+1:]
+			}
+			if authority == "" || repository == "" {
+				return "", errors.New("invalid tracking remote identity")
+			}
+			return strings.ToLower(authority) + ":" + repository, nil
+		}
 	}
 	return raw, nil
 }
@@ -131,7 +159,7 @@ func (s Service) IsAncestor(ctx context.Context, base, tip string) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	_, err = s.Runner.Run(ctx, "git", "-C", s.Root, "merge-base", "--is-ancestor", b, t)
+	_, err = s.revisionRun(ctx, "merge-base", "--is-ancestor", b, t)
 	if err == nil {
 		return true, nil
 	}
@@ -163,7 +191,7 @@ func (s Service) CommittedPaths(ctx context.Context, baseExclusive, tipInclusive
 	if !ancestor {
 		return nil, errors.New("history audit base is not an ancestor")
 	}
-	commits, err := command.RunOutput(ctx, s.Runner, maxStatusOutput, "git", "-C", s.Root, "rev-list", b+".."+t)
+	commits, err := s.revisionOutput(ctx, "rev-list", b+".."+t)
 	if err != nil {
 		return nil, revisionError(ctx, "enumerate committed history", err)
 	}
@@ -173,7 +201,7 @@ func (s Service) CommittedPaths(ctx context.Context, baseExclusive, tipInclusive
 		if !exactCommitID.MatchString(sha) {
 			return nil, errors.New("invalid history commit identity")
 		}
-		bytes, err := command.RunOutput(ctx, s.Runner, maxStatusOutput, "git", "-C", s.Root, "diff-tree", "--root", "-r", "-m", "--no-commit-id", "--name-status", "-z", "-M", "-C", "--find-copies-harder", sha)
+		bytes, err := s.revisionOutput(ctx, "diff-tree", "--root", "-r", "-m", "--no-commit-id", "--name-status", "-z", "-M", "-C", "--find-copies-harder", sha)
 		if err != nil {
 			return nil, revisionError(ctx, "inspect committed paths", err)
 		}

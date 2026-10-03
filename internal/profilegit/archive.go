@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/Grenco/omarchy-blueprint/internal/command"
 )
 
 // Profiles contain manifests and captured artifacts, not full machine images.
@@ -28,12 +26,27 @@ type archiveBlob struct {
 }
 
 func (s Service) archiveTree(ctx context.Context, sha string) ([]archiveBlob, error) {
-	out, err := command.RunOutput(ctx, s.Runner, maxStatusOutput, "git", "-C", s.Root, "ls-tree", "-r", "-l", "-z", sha)
+	out, err := s.revisionOutput(ctx, "ls-tree", "-r", "-l", "-z", sha)
 	if err != nil {
 		return nil, revisionError(ctx, "inspect snapshot tree", err)
 	}
 	result := []archiveBlob{}
 	var total int64
+	count := 0
+	directories := map[string]bool{}
+	charge := func(name string, size int64) error {
+		// Include padding, long-name/PAX headers and every directory header.
+		overhead := int64(4096) + 4*int64(len(name))
+		if size > maxArchiveBytes-overhead || total > maxArchiveBytes-size-overhead {
+			return errors.New("snapshot exceeds archive size limit")
+		}
+		total += size + overhead
+		count++
+		if count > maxArchiveEntries {
+			return errors.New("snapshot exceeds entry limit")
+		}
+		return nil
+	}
 	records := strings.Split(string(out), "\x00")
 	for _, record := range records {
 		if record == "" {
@@ -54,10 +67,18 @@ func (s Service) archiveTree(ctx context.Context, sha string) ([]archiveBlob, er
 		if fields[0] != "100644" && fields[0] != "100755" && fields[0] != "120000" {
 			return nil, errors.New("unsupported snapshot blob mode")
 		}
-		if size > maxArchiveBytes || total > maxArchiveBytes-size-1024 {
-			return nil, errors.New("snapshot exceeds archive size limit")
+		if err := charge(name, size); err != nil {
+			return nil, err
 		}
-		total += size + 1024
+		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+			if directories[parent] {
+				break
+			}
+			directories[parent] = true
+			if err := charge(parent, 0); err != nil {
+				return nil, err
+			}
+		}
 		result = append(result, archiveBlob{name: name, mode: fields[0], hash: fields[2], size: size})
 		if len(result) > maxArchiveEntries {
 			return nil, errors.New("snapshot exceeds entry limit")
@@ -126,7 +147,10 @@ func (s Service) MaterializeCommit(ctx context.Context, sha, dest string) (resul
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	_, err = s.Runner.Run(ctx, "git", "-c", "tar.umask=0022", "-C", s.Root, "archive", "--format=tar", "--output="+temp.Name(), sha)
+	// Archive a tree, not a commit: Git then has no commit metadata to expand
+	// export-subst placeholders from any attribute source. Literal blobs stay
+	// within the preflight budget; exact-tree verification still catches omissions.
+	_, err = s.revisionRun(ctx, "-c", "tar.umask=0022", "archive", "--format=tar", "--output="+temp.Name(), sha+"^{tree}")
 	if err != nil {
 		return revisionError(ctx, "archive profile revision", err)
 	}
