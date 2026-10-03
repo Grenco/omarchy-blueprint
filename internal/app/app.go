@@ -1932,6 +1932,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
 	}
 	if !verification.OK {
+		if message := skippedFollowUp(execution, verification.Missing); message != "" {
+			return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "execution": execution, "verification": verification, "journal": journal.Path}, message+fmt.Sprintf("Journal: %s\n", journal.Path)+deferredFollowUp(plan.Deferred))
+		}
 		if message, ok := unresolvedShellConflictMessage(plan); ok {
 			if err := emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, message); err != nil {
 				return err
@@ -2232,6 +2235,10 @@ func renderRequirements(plan model.RestorePlan) string {
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Type == restore.ProgressSkipped {
+		fmt.Fprintf(w, "↷ Skipped %s (you pressed Ctrl+C); continuing with the rest of the restore\n", operationName(event.Operation))
+		return
+	}
 	if event.Operation.Provider == "resources" {
 		name := strings.TrimPrefix(event.Operation.Resource, "resource:")
 		verb, past := "Restoring resource", "Restored resource"
@@ -2390,14 +2397,14 @@ func renderLabelledProgress(w io.Writer, event restore.Progress) {
 	case restore.ProgressStarted:
 		fmt.Fprintf(w, "Running %s...\n", op.Label)
 		if op.AwaitsYou != "" {
-			fmt.Fprintf(w, "! This step waits for you: %s.\n", op.AwaitsYou)
+			fmt.Fprintf(w, "! This step waits for you: %s. (Ctrl+C skips this step; the rest of the restore continues.)\n", op.AwaitsYou)
 		}
 	case restore.ProgressHeartbeat:
 		switch {
 		case op.AwaitsYou == "":
 			fmt.Fprintf(w, "  Still running %s (%s elapsed)...\n", op.Label, event.Elapsed)
 		case int(event.Elapsed.Seconds())%30 < 5:
-			fmt.Fprintf(w, "  Still running %s (%s elapsed); it may be waiting for you to %s.\n", op.Label, event.Elapsed, op.AwaitsYou)
+			fmt.Fprintf(w, "  Still running %s (%s elapsed); it may be waiting for you to %s. (Ctrl+C skips this step; the rest of the restore continues.)\n", op.Label, event.Elapsed, op.AwaitsYou)
 		}
 	case restore.ProgressCompleted:
 		fmt.Fprintf(w, "✓ Finished %s (%s)\n", op.Label, event.Elapsed)
@@ -2406,15 +2413,63 @@ func renderLabelledProgress(w io.Writer, event restore.Progress) {
 	}
 }
 
+// operationName is how a step is named to people: its label when it has
+// one, otherwise its target.
+func operationName(op model.Operation) string {
+	if op.Label != "" {
+		return op.Label
+	}
+	return op.Resource
+}
+
+// skippedFollowUp explains a restore that finished except for steps the
+// person skipped. It is empty when anything still missing is not explained
+// by those skips (or the steps waiting on them), which remains a
+// verification failure.
+func skippedFollowUp(execution restore.Result, missing []string) string {
+	if len(execution.SkippedByYou) == 0 {
+		return ""
+	}
+	held := append([]model.Operation(nil), execution.SkippedByYou...)
+	for _, blocked := range execution.Blocked {
+		held = append(held, blocked.Operation)
+	}
+	covered := map[string]bool{}
+	for _, op := range held {
+		covered[op.Resource] = true
+		kind, _, _ := strings.Cut(op.Resource, ":")
+		for _, item := range op.Items {
+			covered[kind+":"+item] = true
+		}
+	}
+	for _, resource := range missing {
+		if !covered[resource] {
+			return ""
+		}
+	}
+	names := make([]string, 0, len(execution.SkippedByYou))
+	for _, op := range execution.SkippedByYou {
+		names = append(names, operationName(op))
+	}
+	message := "Restore finished, except what you skipped: " + strings.Join(names, ", ") + ".\n"
+	if len(execution.Blocked) > 0 {
+		message += fmt.Sprintf("%d step(s) that depend on it were held back too.\n", len(execution.Blocked))
+	}
+	return message + "Run `omarchy-blueprint restore` again when you're ready to finish it.\n"
+}
+
 func renderRestoreFailures(w io.Writer, execution restore.Result, verification model.VerificationResult, journal string) {
 	fmt.Fprintf(w, "\nRestore completed with %d successful and %d failed operation(s).\n", len(execution.Completed), len(execution.Failed))
 	for _, failure := range execution.Failed {
 		fmt.Fprintf(w, "✗ %s: %s\n", failure.Operation.Resource, failure.Error)
 	}
+	for _, op := range execution.SkippedByYou {
+		fmt.Fprintf(w, "↷ %s (skipped by you)\n", operationName(op))
+	}
 	if len(execution.Blocked) > 0 {
 		fmt.Fprintf(w, "%d dependent operation(s) skipped.\n", len(execution.Blocked))
 		for _, blocked := range execution.Blocked {
-			fmt.Fprintf(w, "↷ %s (dependency %s failed)\n", blocked.Operation.Resource, blocked.Dependency)
+			fmt.Fprintf(w, "↷ %s (waits on %s, which didn't complete)\n", blocked.Operation.Resource, blocked.Dependency)
 		}
 	}
 	if len(verification.Missing) > 0 {

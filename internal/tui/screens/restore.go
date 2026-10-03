@@ -57,6 +57,8 @@ type Restore struct {
 	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
 	// handedOff is true while an approved plan runs in the real terminal.
 	handedOff bool
+	// skippedNotice names the steps the person skipped in the last apply.
+	skippedNotice string
 }
 
 // restoreTerminalCommand applies an approved plan while bubbletea has
@@ -82,15 +84,19 @@ func (c *restoreTerminalCommand) Run() error {
 		out = io.Discard
 	}
 	fmt.Fprintln(out, "Applying the approved Blueprint restore. Commands may ask for administrator authentication here; Blueprint never sees the password.")
+	fmt.Fprintln(out, "Ctrl+C while a step is asking you something skips just that step; the rest of the restore continues.")
 	var err error
 	c.result, err = c.session.ApplyApprovedRestoreWithProgress(c.ctx, c.scope, c.options, c.approved, true, func(event restore.Progress) {
 		if line := restoreProgressLine(event); line != "" {
 			fmt.Fprintln(out, line)
 		}
 	})
-	if err != nil {
+	switch {
+	case err != nil:
 		fmt.Fprintln(out, "Restore failed:", err)
-	} else {
+	case len(c.result.Execution.SkippedByYou) > 0:
+		fmt.Fprintln(out, "Restore applied, except what you skipped; returning to Blueprint.")
+	default:
 		fmt.Fprintln(out, "Restore applied; returning to Blueprint.")
 	}
 	return err
@@ -158,9 +164,11 @@ func restoreProgressLine(event restore.Progress) string {
 	switch event.Type {
 	case restore.ProgressStarted:
 		if event.Operation.AwaitsYou != "" {
-			return "→ " + label + "\n! This step waits for you: " + components.DisplayText(event.Operation.AwaitsYou) + "."
+			return "→ " + label + "\n! This step waits for you: " + components.DisplayText(event.Operation.AwaitsYou) + ". (Ctrl+C skips this step; the rest of the restore continues.)"
 		}
 		return "→ " + label
+	case restore.ProgressSkipped:
+		return "↷ Skipped " + label + " (you pressed Ctrl+C); continuing with the rest of the restore"
 	case restore.ProgressCompleted:
 		return fmt.Sprintf("✓ %s (%s)", label, event.Elapsed.Round(time.Second))
 	case restore.ProgressFailed:
@@ -169,7 +177,7 @@ func restoreProgressLine(event restore.Progress) string {
 		if int(event.Elapsed.Seconds())%30 < 5 {
 			line := fmt.Sprintf("  still running: %s (%s)", label, event.Elapsed.Round(time.Second))
 			if event.Operation.AwaitsYou != "" {
-				line += "; it may be waiting for you to " + components.DisplayText(event.Operation.AwaitsYou)
+				line += "; it may be waiting for you to " + components.DisplayText(event.Operation.AwaitsYou) + " (Ctrl+C skips this step; the rest of the restore continues)"
 			}
 			return line
 		}
@@ -225,10 +233,20 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		case restore.ProgressFailed:
 			s.progress.done++
 			s.progress.failed++
+		case restore.ProgressSkipped:
+			s.progress.done++
 		}
 		return waitRestoreProgress(msg.events)
 	case restoreAppliedMsg:
 		s.err, s.confirm, s.busy, s.handedOff = msg.err, false, false, false
+		s.skippedNotice = ""
+		if msg.err == nil && len(msg.result.Execution.SkippedByYou) > 0 {
+			names := make([]string, 0, len(msg.result.Execution.SkippedByYou))
+			for _, op := range msg.result.Execution.SkippedByYou {
+				names = append(names, restoreStepLabel(op))
+			}
+			s.skippedNotice = "Restored everything except what you skipped: " + strings.Join(names, ", ") + ". It's still in the plan below; apply it when you're ready."
+		}
 		if msg.err == nil {
 			return s.refreshPlan()
 		}
@@ -494,6 +512,9 @@ func (s *Restore) fullPlanHeader(width int) []string {
 	sections := []string{components.SectionDivider("Run settings", width, s.styles) + "\n" + settings}
 	if deferred := s.deferredLine(width); deferred != "" {
 		sections = append(sections, deferred)
+	}
+	if s.skippedNotice != "" {
+		sections = append(sections, strings.Join(components.WrapText(s.styles.Warning(components.DisplayText(s.skippedNotice)), width), "\n"))
 	}
 	if len(s.current.ActivationReview) > 0 {
 		sections = append(sections, "Review activation: press Enter to select individual starts before applying.")

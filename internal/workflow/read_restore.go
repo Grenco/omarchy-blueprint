@@ -113,6 +113,10 @@ func (r *ReadCycle) PreviewRestoreScope(ctx context.Context, scope RestoreScope,
 	} else if e := restore.ValidatePlan(plan); e != nil {
 		return RestorePreview{}, e
 	}
+	plan.Operations = restore.AwaitingStepsLast(plan.Operations)
+	if e := restore.ValidatePlan(plan); e != nil {
+		return RestorePreview{}, e
+	}
 	plan.Compatibility = compatibility.NormalizeReport(plan.Compatibility)
 	if e := compatibility.ValidateReport(plan.Compatibility, ids, targets, plan.Requirements); e != nil {
 		return RestorePreview{}, fmt.Errorf("validate restore compatibility: %w", e)

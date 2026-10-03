@@ -124,10 +124,25 @@ func TestStepThatWaitsForYouSaysSoInPlanAndProgress(t *testing.T) {
 		renderProgress(&out, event)
 	}
 	want := "Running Omarchy's Tailscale setup...\n" +
-		"! This step waits for you: sign in to Tailscale with the link it prints.\n" +
-		"  Still running Omarchy's Tailscale setup (30s elapsed); it may be waiting for you to sign in to Tailscale with the link it prints.\n" +
+		"! This step waits for you: sign in to Tailscale with the link it prints. (Ctrl+C skips this step; the rest of the restore continues.)\n" +
+		"  Still running Omarchy's Tailscale setup (30s elapsed); it may be waiting for you to sign in to Tailscale with the link it prints. (Ctrl+C skips this step; the rest of the restore continues.)\n" +
 		"✓ Finished Omarchy's Tailscale setup (45s)\n"
 	if out.String() != want {
 		t.Fatalf("progress =\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+func TestSkippedFollowUpOnlyExplainsWhatTheSkipLeftUndone(t *testing.T) {
+	tailscale := model.Operation{ID: "tailscale", Resource: "official:tailscale", Items: []string{"tailscale"}, Label: "Omarchy's Tailscale setup"}
+	execution := restore.Result{SkippedByYou: []model.Operation{tailscale}}
+	message := skippedFollowUp(execution, []string{"official:tailscale"})
+	if !strings.Contains(message, "except what you skipped: Omarchy's Tailscale setup") || !strings.Contains(message, "omarchy-blueprint restore") {
+		t.Fatalf("follow-up = %q", message)
+	}
+	if got := skippedFollowUp(execution, []string{"official:tailscale", "theme:other"}); got != "" {
+		t.Fatalf("a missing target the skip doesn't explain was excused: %q", got)
+	}
+	if got := skippedFollowUp(restore.Result{}, []string{"official:tailscale"}); got != "" {
+		t.Fatalf("follow-up without any skip: %q", got)
 	}
 }

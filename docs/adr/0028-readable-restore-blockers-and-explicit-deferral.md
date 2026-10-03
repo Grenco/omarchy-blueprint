@@ -182,6 +182,30 @@ command's whole process group to stop (SIGTERM, then a kill after a grace
 period) and sends interactive commands the interrupt they would have received,
 so `pacman` can release its database lock.
 
+### 9. Steps that wait for the person run last and can be skipped
+
+Some steps legitimately wait for the person: Omarchy's Tailscale recipe runs
+`tailscale up`, which waits until the device is signed in. Blueprint does not
+skip, time out or reimplement such a step, and never handles the credentials.
+Two rules keep the wait from holding the restore hostage:
+
+- **Waiting steps run last.** Steps with `awaits_you`, and every step that
+  depends on them, move to the end of the plan in their original order.
+  Everything else is done before Restore waits for anyone. The reordering is
+  part of the plan, so the preview shows it and approval covers it.
+- **Ctrl+C during a step that owns the terminal skips just that step.** The
+  terminal delivers the interrupt to the step, which stops; Blueprint ignores
+  it itself, records the step as skipped by the person (not failed), holds
+  back the steps that depend on it, and continues with the rest. At any other
+  moment Ctrl+C still stops the restore, and a second one exits at once.
+  The summary names what was skipped and that `restore` will plan it again.
+  A skipped step that leaves its target unverified is not reported as a
+  verification failure, but anything else still missing is.
+
+Skipping an Omarchy recipe stops the whole recipe, not only its waiting part,
+so its remaining setup also happens on the next restore. Recipes are safe to
+run again.
+
 ## Consequences
 
 ### Positive

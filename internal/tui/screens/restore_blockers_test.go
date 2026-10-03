@@ -135,8 +135,9 @@ func TestRestoreTerminalProgressLines(t *testing.T) {
 		{restore.Progress{Type: restore.ProgressFailed, Operation: op, Elapsed: time.Second}, "✗ Install official:firefox failed after 1s"},
 		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: 30 * time.Second}, "  still running: Install official:firefox (30s)"},
 		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: 10 * time.Second}, ""},
-		{restore.Progress{Type: restore.ProgressStarted, Operation: tailscale}, "→ Omarchy's Tailscale setup\n! This step waits for you: sign in with the link it prints."},
-		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: tailscale, Elapsed: 60 * time.Second}, "  still running: Omarchy's Tailscale setup (1m0s); it may be waiting for you to sign in with the link it prints"},
+		{restore.Progress{Type: restore.ProgressStarted, Operation: tailscale}, "→ Omarchy's Tailscale setup\n! This step waits for you: sign in with the link it prints. (Ctrl+C skips this step; the rest of the restore continues.)"},
+		{restore.Progress{Type: restore.ProgressSkipped, Operation: tailscale}, "↷ Skipped Omarchy's Tailscale setup (you pressed Ctrl+C); continuing with the rest of the restore"},
+		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: tailscale, Elapsed: 60 * time.Second}, "  still running: Omarchy's Tailscale setup (1m0s); it may be waiting for you to sign in with the link it prints (Ctrl+C skips this step; the rest of the restore continues)"},
 	} {
 		if got := restoreProgressLine(tc.event); got != tc.want {
 			t.Fatalf("restoreProgressLine(%s, %s) = %q, want %q", tc.event.Type, tc.event.Elapsed, got, tc.want)

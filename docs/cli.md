@@ -196,6 +196,14 @@ Commands that don't need your terminal run detached from it, so anything that
 would ask for a password, such as a Git credential or SSH passphrase, fails
 with an error instead of waiting on an invisible prompt.
 
+Some steps wait for you on purpose, such as Omarchy's Tailscale setup, which
+waits until you sign in with the link it prints. The plan marks them
+`! Waits for you`, they run after everything else, and progress reminds you
+what they are waiting for. Press Ctrl+C while a step is asking you something
+to skip just that step: the rest of the restore continues, anything that
+depends on the skipped step is held back, and the next `restore` plans what
+you skipped. Ctrl+C at any other moment stops the restore.
+
 ## Target one category
 
 Most lifecycle commands accept an optional category argument to operate on

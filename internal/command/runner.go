@@ -104,10 +104,14 @@ func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...str
 	// can clean up (pacman releases its database lock).
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
+	err, interrupted := runInteractive(cmd.Run)
+	if err != nil {
 		exitCode := -1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
+		}
+		if interrupted && ctx.Err() == nil {
+			err = fmt.Errorf("%w (%w)", ErrSkippedByUser, err)
 		}
 		return &RunError{Name: name, Args: args, ExitCode: exitCode, Err: err}
 	}

@@ -271,6 +271,10 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 	} else if err := restore.ValidatePlan(plan); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
+	plan.Operations = restore.AwaitingStepsLast(plan.Operations)
+	if err := restore.ValidatePlan(plan); err != nil {
+		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
+	}
 	plan.Compatibility = compatibility.NormalizeReport(plan.Compatibility)
 	if err := compatibility.ValidateReport(plan.Compatibility, selectedIDs, targets, plan.Requirements); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("validate restore compatibility: %w", err)
