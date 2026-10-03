@@ -121,6 +121,9 @@ type RestorePlan struct {
 	// Requirements must be satisfied by the user before the plan may be
 	// applied; apply refuses while any remains (ADR 0022).
 	Requirements []Requirement `json:"requirements,omitempty"`
+	// Deferred lists captured categories this run explicitly left out so the
+	// rest can apply (ADR 0027). They are not planned, verified or assessed.
+	Deferred []string `json:"deferred,omitempty"`
 }
 
 // ActivationCandidate is a provider-established eligible start, not authority.

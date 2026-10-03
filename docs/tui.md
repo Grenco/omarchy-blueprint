@@ -135,20 +135,34 @@ has no compatibility verdict.
 Even one Blocked finding disables Apply for the entire plan; Force only changes
 conflict handling and cannot override compatibility. Unknown with Reduced
 authority may leave safe work available, while uncertain Exact removal stays
-withheld. A policy Restore Skip can deliberately leave a target alone; the CLI
-can explicitly narrow Restore to one category. Otherwise address the finding
-outside Blueprint and open Restore again to replan. The compact review keeps
-blockers and their findings visible alongside the selected work item and
+withheld. Blockers are summarized by category and cause, with a target count
+rather than one line per target, so the plan stays on screen; when a blocker
+has a known fix, such as `omarchy update`, it is shown beside it. Below them
+Restore says how to proceed:
+
+- fix the cause outside Blueprint and press `r` to plan again;
+- press `d` to restore everything else now and **defer** the categories that
+  aren't ready. Deferral is for this run only: the plan names the deferred
+  categories, you approve it as usual, and pressing `d` again plans them once
+  they are ready;
+- use a Restore Skip policy to leave a specific target alone for good.
+
+The compact review keeps blockers visible alongside the selected work item and
 indicates when more report lines are available. Blocked authority is red and
 always visible, Reduced authority is summarized in yellow, and uncertainty
 that leaves authority Unchanged is muted information rather than a warning.
 
 Package changes that need administrator authentication are marked
 interactive. When you approve such a plan, the interface steps aside and the
-restore runs in the terminal so `sudo` can show its own prompt, then
-Blueprint returns. On a freshly installed machine without a package database,
-the plan shows **Requires before applying** and cannot be applied until you
-run `omarchy update` in a terminal and open Restore again.
+restore runs in the terminal so `sudo` can show its own prompt, with a line
+for each step as it starts and finishes, then Blueprint returns. Any other
+plan applies inside the interface, which shows how many steps are done, the
+step running now and how long it has taken. Those steps run without a
+terminal, so anything that would ask for a password (a Git credential or SSH
+passphrase, say) fails with an error instead of waiting on a prompt you can't
+see. On a freshly installed machine without a package database, Packages is
+blocked until you run `omarchy update` in a terminal and press `r`; you can
+defer it with `d` meanwhile.
 
 ## Software
 

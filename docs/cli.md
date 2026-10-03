@@ -151,11 +151,28 @@ report under `plan.compatibility`, with `profile_last_capture`, `target`, and
 deterministically ordered `categories`. Unknown remains explicit in JSON.
 
 Any Blocked finding refuses the entire selected Restore scope before approval
-or mutation, even under `--force` (Force only changes conflict handling). You
-can explicitly narrow the scope with `restore <category>` or a Restore Skip
-policy for a target you intend to leave alone. Otherwise address the finding
-outside Blueprint and plan again; changing the environment or a requirement
-remediation never silently approves the old plan.
+or mutation, even under `--force` (Force only changes conflict handling).
+Blocked findings are grouped by category and cause, with a target count
+instead of one line per target; `--json` still lists every finding. Under the
+plan, Restore says how to proceed:
+
+- address the cause outside Blueprint (a fix such as `omarchy update` is
+  printed when one is known) and plan again;
+- restore everything else now and defer what isn't ready:
+
+  ```sh
+  omarchy-blueprint restore --defer packages,services
+  ```
+
+  Deferral applies to this run only and cannot be combined with a category
+  argument. The plan lists the deferred categories (`deferred` in JSON), and
+  they are not planned, checked or verified. Run `restore` again once they are
+  ready;
+- leave a specific target out for good with
+  `omarchy-blueprint policy set restore <category> skip <target>`.
+
+Changing the environment or a requirement remediation never silently approves
+the old plan.
 
 Installing or removing system packages goes through Omarchy, which asks for
 administrator authentication with `sudo`. These steps are marked interactive
@@ -166,8 +183,18 @@ A freshly installed Omarchy machine has no package database yet. Blueprint can
 still check it and show what it would restore, but a plan that installs
 packages lists `Requires before applying: … Run: omarchy update` and refuses
 to apply until you have run Omarchy's own update. Blueprint never updates the
-system for you. `restore <category>` still applies categories that need no
-packages.
+system for you. A fresh machine typically restores in stages:
+
+```sh
+omarchy-blueprint restore --defer packages,services   # everything that can apply now
+omarchy update                                        # Omarchy's own readiness step
+omarchy-blueprint restore --defer services            # packages now install
+omarchy-blueprint restore                             # services verify once their programs exist
+```
+
+Commands that don't need your terminal run detached from it, so anything that
+would ask for a password, such as a Git credential or SSH passphrase, fails
+with an error instead of waiting on an invisible prompt.
 
 ## Target one category
 

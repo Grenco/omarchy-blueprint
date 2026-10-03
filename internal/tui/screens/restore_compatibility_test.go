@@ -153,8 +153,8 @@ func TestRestoreApplyDisabledReasonMatchesSharedApplicabilityAndScreenState(t *t
 		busy       bool
 		err        error
 	}{
-		{name: "blocked-with-operations", plan: blocked, want: "Compatibility blocks"},
-		{name: "unmet-requirements", plan: requiring, want: "Requirements must be completed"},
+		{name: "blocked-with-operations", plan: blocked, want: "aren't ready"},
+		{name: "unmet-requirements", plan: requiring, want: "requirements must be completed"},
 		{name: "no-operations", plan: model.RestorePlan{}, want: "no operations"},
 		{name: "refreshing", plan: ready, planning: true, want: "plan is refreshing"},
 		{name: "applying", plan: ready, busy: true, want: "restore is applying"},
@@ -241,7 +241,7 @@ func TestRestoreRequirementWithoutOperationsDoesNotClaimConvergence(t *testing.T
 	screen.current.Requirements = []model.Requirement{{ID: "packages.metadata", Reason: "package metadata unavailable", Remediation: []string{"omarchy", "update"}}}
 	view := screen.View()
 	assertWithinBudget(t, screen, view)
-	if !strings.Contains(view, "complete Requirements and replan") || strings.Contains(view, "No restore operations required") {
+	if !strings.Contains(view, "Restore can't apply yet") || strings.Contains(view, "No restore operations required") {
 		t.Fatalf("unmet readiness presented as convergence:\n%s", view)
 	}
 }
