@@ -160,7 +160,12 @@ plan applies inside the interface, which shows how many steps are done, the
 step running now and how long it has taken. Those steps run without a
 terminal, so anything that would ask for a password (a Git credential or SSH
 passphrase, say) fails with an error instead of waiting on a prompt you can't
-see. On a freshly installed machine without a package database, Packages is
+see. Steps that wait for you on purpose, such as signing in to Tailscale, are
+marked in the plan and run last; while one has the terminal, Ctrl+C skips
+just that step and the rest of the restore continues. Restore then shows what
+you skipped, which stays in the plan until you apply it.
+
+On a freshly installed machine without a package database, Packages is
 blocked until you run `omarchy update` in a terminal and press `r`; you can
 defer it with `d` meanwhile.
 
