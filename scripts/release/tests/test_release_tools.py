@@ -419,6 +419,8 @@ class DraftReleaseTests(unittest.TestCase):
         repo = fixture_repo(self.tmp)
         self.dist = self.tmp / "dist"
         self.assertEqual(make_archive(repo, "v0.1.0", "0.1.0", self.dist).returncode, 0)
+        digest = (self.dist / "SHA256SUMS").read_text().split()[0]
+        (self.dist / "PKGBUILD").write_text(rendered(sha256=digest))
         # GitHub's view of v0.1.0: an annotated tag object peeling to the verified commit.
         self.commit = git(repo, "rev-parse", "v0.1.0^{commit}")
         self.other = git(repo, "rev-parse", "side")
@@ -458,12 +460,13 @@ class DraftReleaseTests(unittest.TestCase):
         log = self.state / "calls.log"
         return log.read_text() if log.exists() else ""
 
-    def test_creates_a_draft_with_both_assets_when_no_release_exists(self):
+    def test_creates_a_draft_with_all_assets_when_no_release_exists(self):
         result = self.prepare()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Created draft release v0.1.0", result.stdout)
         self.assertEqual((self.state / "v0.1.0" / "draft").read_text().strip(), "true")
         self.assertEqual({p.name: p.read_bytes() for p in (self.state / "v0.1.0" / "assets").iterdir()}, self.verified())
+        self.assertEqual(sorted(self.verified()), ["PKGBUILD", "SHA256SUMS", "omarchy-blueprint-0.1.0.tar.gz"])
         create = [line for line in self.calls().splitlines() if line.startswith("release create")]
         self.assertEqual(len(create), 1)
         self.assertIn("--draft", create[0])
@@ -560,6 +563,19 @@ class DraftReleaseTests(unittest.TestCase):
         self.assertNotEqual(self.prepare().returncode, 0)
         self.assertEqual(self.calls(), "")
 
+    def test_rejects_a_pkgbuild_that_is_not_this_releases_pkgrel_1_recipe(self):
+        digest = (self.dist / "SHA256SUMS").read_text().split()[0]
+        for overrides in ({"sha256": SHA}, {"pkgrel": "2"},
+                          {"version": "0.1.1", "source-url": URL.replace("0.1.0", "0.1.1"), "sha256": digest}):
+            with self.subTest(overrides=overrides):
+                (self.dist / "PKGBUILD").write_text(rendered(**overrides))
+                result = self.prepare()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("not the pkgrel 1 recipe", result.stderr)
+        (self.dist / "PKGBUILD").unlink()
+        self.assertNotEqual(self.prepare().returncode, 0)
+        self.assertEqual(self.calls(), "")
+
 
 def workflow(name: str) -> str:
     return (WORKFLOWS / name).read_text()
@@ -576,8 +592,8 @@ class WorkflowBoundaryTests(unittest.TestCase):
     def test_release_and_package_validation_never_reference_aur_credentials(self):
         for name in ("release.yml", "aur-package-validation.yml"):
             with self.subTest(workflow=name):
-                self.assertNotIn("AUR_", workflow(name))
-                self.assertNotIn("secrets.", workflow(name))
+                for credential in ("AUR_SSH", "AUR_KNOWN_HOSTS", "aur-release", "aur.archlinux.org", "secrets."):
+                    self.assertNotIn(credential, workflow(name))
 
     def test_release_workflow_actions_are_pinned_to_full_commit_shas(self):
         for name in ("release.yml", "aur-package-validation.yml"):
@@ -595,7 +611,7 @@ class WorkflowBoundaryTests(unittest.TestCase):
         draft_job = text.split("\n  draft:\n", 1)[1]
         self.assertIn("contents: write", draft_job)
         self.assertNotIn("contents: write", text.split("\n  draft:\n", 1)[0])
-        self.assertIn("needs: verify", draft_job)
+        self.assertIn("needs: [verify, package]", draft_job)
         self.assertIn("verify-release-tag.sh", text)
         self.assertIn("prepare-draft-release.sh", draft_job)
         # The verified commit, not just the version, reaches the write-capable job.
@@ -605,6 +621,21 @@ class WorkflowBoundaryTests(unittest.TestCase):
         self.assertIn('make-source-archive.sh "$COMMIT"', text)
         for publish in ("--draft=false", "gh release edit", "gh release create"):
             self.assertNotIn(publish, text)
+
+    def test_release_validates_its_pkgbuild_for_the_public_url_before_the_draft(self):
+        package = job(workflow("release.yml"), "package")
+        self.assertIn("needs: verify", package)
+        self.assertIn("container: archlinux:base-devel", package)
+        self.assertIn("ref: ${{ needs.verify.outputs.commit }}", package)
+        self.assertIn("--pkgrel 1", package)
+        # Exactly the URL fetch-release-source.sh constructs once the release is public.
+        self.assertIn('--source-url "https://github.com/$REPOSITORY/releases/download/$TAG/omarchy-blueprint-$VERSION.tar.gz"',
+                      package)
+        self.assertIn("base=\"https://github.com/$repo/releases/download/v$version\"",
+                      (RELEASE / "fetch-release-source.sh").read_text())
+        self.assertIn('validate-arch-package.sh "$RUNNER_TEMP/package" "$VERSION" 1', package)
+        self.assertIn("path: pkgbuild/PKGBUILD", package)
+        self.assertNotIn("contents: write", package)
 
     def test_package_validation_is_read_only_and_builds_in_a_fresh_arch_container(self):
         text = workflow("aur-package-validation.yml")
@@ -654,10 +685,16 @@ class ResolveAurRevisionTests(unittest.TestCase):
         self.assertEqual(result.stdout, f"version=0.1.0\npkgrel=2\ntag=v0.1.0\nref={'a' * 40}\n")
         self.assertNotIn("refs/heads/main", result.stdout)
 
-    def test_packaging_only_revision_rejects_pkgrel_1_other_refs_and_unpublished_releases(self):
+    def test_dispatched_pkgrel_1_is_bound_to_the_release_tag_not_the_dispatch_commit(self):
+        result = self.resolve("dispatch", "0.1.0", "1", "refs/heads/main", "a" * 40, release_state="false false")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "version=0.1.0\npkgrel=1\ntag=v0.1.0\nref=refs/tags/v0.1.0\n")
+        self.assertEqual(result.stdout, self.resolve("release", "v0.1.0", "false", "false").stdout)
+        self.assertNotEqual(self.resolve("dispatch", "0.1.0", "1", "refs/heads/main", "a" * 40).returncode, 0)
+
+    def test_dispatch_rejects_bad_pkgrel_other_refs_and_unpublished_releases(self):
         sha = "a" * 40
-        cases = [(("0.1.0", "1", "refs/heads/main", sha), "false false"),
-                 (("0.1.0", "0", "refs/heads/main", sha), "false false"),
+        cases = [(("0.1.0", "0", "refs/heads/main", sha), "false false"),
                  (("0.1.0", "02", "refs/heads/main", sha), "false false"),
                  (("v0.1.0", "2", "refs/heads/main", sha), "false false"),
                  (("0.1.0", "2", "refs/heads/feature", sha), "false false"),
@@ -682,6 +719,7 @@ class FetchReleaseSourceTests(unittest.TestCase):
         repo = fixture_repo(self.tmp)
         self.served = self.tmp / "served"
         self.assertEqual(make_archive(repo, "v0.1.0", "0.1.0", self.served).returncode, 0)
+        (self.served / "PKGBUILD").write_text("release PKGBUILD\n")
         # Serves <served>/<asset> for any URL, logging every invocation.
         curl = f"""#!/usr/bin/env bash
 printf '%s\\n' "$*" >> {self.tmp}/curl.log
@@ -703,11 +741,13 @@ cp "{self.served}/${{url##*/}}" "$out"
         base = "https://github.com/Grenco/omarchy-blueprint/releases/download/v0.1.0"
         self.assertEqual(result.stdout, f"{base}/omarchy-blueprint-0.1.0.tar.gz\n")
         log = (self.tmp / "curl.log").read_text().splitlines()
-        self.assertEqual(len(log), 2)
+        self.assertEqual(len(log), 3)
         for line in log:
             self.assertIn("--proto =https", line)
             self.assertIn("--fail", line)
-            self.assertTrue(line.endswith(f"{base}/omarchy-blueprint-0.1.0.tar.gz") or line.endswith(f"{base}/SHA256SUMS"))
+        self.assertEqual(sorted(line.rsplit(" ", 1)[1] for line in log),
+                         sorted(f"{base}/{asset}" for asset in ("omarchy-blueprint-0.1.0.tar.gz", "SHA256SUMS", "PKGBUILD")))
+        self.assertEqual((self.tmp / "release" / "PKGBUILD").read_text(), "release PKGBUILD\n")
 
     def test_rejects_tampered_or_ambiguous_assets(self):
         archive = self.served / "omarchy-blueprint-0.1.0.tar.gz"
@@ -884,6 +924,18 @@ class AurPublishBoundaryTests(unittest.TestCase):
         self.assertIn('[[ $(git rev-parse HEAD) == $(git rev-parse "$RECIPE_REF^{commit}") ]]', validate)
         self.assertNotIn("refs/heads/main", resolve + validate.replace(
             "+refs/heads/main:refs/remotes/origin/main", ""))
+
+    def test_pkgrel_1_must_equal_the_releases_pkgbuild_asset(self):
+        validate = job(workflow("aur-publish.yml"), "validate")
+        self.assertIn('if [[ $PKGREL == 1 ]]; then', validate)
+        self.assertIn('cmp "$RUNNER_TEMP/release/PKGBUILD" "$RUNNER_TEMP/package/PKGBUILD"', validate)
+
+    def test_aur_push_is_opt_in_so_releases_never_need_aur_access(self):
+        text = workflow("aur-publish.yml")
+        self.assertIn("if: vars.AUR_PUBLISHING_ENABLED == 'true'", job(text, "publish"))
+        for name in ("resolve", "validate"):
+            with self.subTest(job=name):
+                self.assertNotIn("AUR_PUBLISHING_ENABLED", job(text, name))
 
     def test_publish_job_only_pushes_validated_files(self):
         publish = job(workflow("aur-publish.yml"), "publish")

@@ -1,7 +1,9 @@
 # Tag-triggered upstream release preparation (ADR 0025). A pushed
 # vMAJOR.MINOR.PATCH tag whose commit is on main is verified, the product is
 # tested on the exact tag, the deterministic source archive and SHA256SUMS are
-# built and checked, and a DRAFT GitHub Release is prepared with them.
+# built and checked, the release's pkgrel 1 PKGBUILD is rendered for the
+# archive's final public URL and validated in a fresh Arch container from the
+# local archive, and a DRAFT GitHub Release is prepared with all three.
 #
 # This workflow never publishes the release and never sees AUR credentials. A
 # maintainer reviews the draft's notes and assets and publishes it by hand.
@@ -74,9 +76,58 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  package:
+    name: Render and validate the release PKGBUILD
+    needs: verify
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 30
+    steps:
+      - name: Install validation tools
+        run: pacman -Syu --noconfirm --needed git go namcap python
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/dist
+      - name: Render the pkgrel 1 package for the public release URL
+        env:
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          MAINTAINER_NAME: ${{ vars.AUR_MAINTAINER_NAME }}
+          MAINTAINER_EMAIL: ${{ vars.AUR_MAINTAINER_EMAIL }}
+        run: |
+          # The URL fetch-release-source.sh constructs once the release is
+          # public; AUR Publish re-renders from it and requires this file.
+          python3 scripts/release/render-aur-package.py \
+            --version "$VERSION" --pkgrel 1 \
+            --source-url "https://github.com/$REPOSITORY/releases/download/$TAG/omarchy-blueprint-$VERSION.tar.gz" \
+            --sha256 "$(cut -d' ' -f1 "$RUNNER_TEMP/dist/SHA256SUMS")" \
+            --maintainer-name "$MAINTAINER_NAME" --maintainer-email "$MAINTAINER_EMAIL" \
+            --output-dir "$RUNNER_TEMP/package"
+          mkdir pkgbuild
+          cp "$RUNNER_TEMP/package/PKGBUILD" pkgbuild/
+          # The draft is not public yet: seed the verified archive so makepkg
+          # builds it locally, still checking it against the pinned sha256.
+          cp "$RUNNER_TEMP/dist/omarchy-blueprint-$VERSION.tar.gz" "$RUNNER_TEMP/package/"
+      - name: Build, check, inspect and install the package
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: bash scripts/release/validate-arch-package.sh "$RUNNER_TEMP/package" "$VERSION" 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-pkgbuild
+          path: pkgbuild/PKGBUILD
+          if-no-files-found: error
+          retention-days: 7
+
   draft:
     name: Prepare draft GitHub Release
-    needs: verify
+    needs: [verify, package]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -89,6 +140,10 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-assets
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-pkgbuild
           path: dist
       - name: Prepare the draft release
         env:
