@@ -99,7 +99,8 @@ func (s Service) CurrentRevisionInfo(ctx context.Context) (RevisionInfo, error) 
 	return RevisionInfo{SHA: sha, Branch: strings.TrimSpace(branch), Upstream: parts[0], OriginFingerprint: fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))}, nil
 }
 
-// Identity deliberately excludes authentication/query/fragment information.
+// SSH usernames select repository namespaces and are part of identity. Passwords,
+// HTTPS authentication userinfo, queries and fragments are not repository identity.
 func remoteIdentity(raw string) (string, error) {
 	if raw == "" || strings.ContainsAny(raw, "\x00\r\n") {
 		return "", errors.New("invalid tracking remote identity")
@@ -109,7 +110,11 @@ func remoteIdentity(raw string) (string, error) {
 		if err != nil || u.Scheme == "" || (u.Host == "" && u.Scheme != "file") {
 			return "", errors.New("invalid tracking remote identity")
 		}
-		u.User = nil
+		if strings.EqualFold(u.Scheme, "ssh") && u.User != nil {
+			u.User = url.User(u.User.Username())
+		} else {
+			u.User = nil
+		}
 		u.RawQuery = ""
 		u.Fragment = ""
 		u.Host = strings.ToLower(u.Host)
@@ -131,13 +136,15 @@ func remoteIdentity(raw string) (string, error) {
 		}
 		if c == ':' && !bracket {
 			authority, repository := raw[:i], raw[i+1:]
+			user := ""
 			if at := strings.LastIndex(authority, "@"); at >= 0 {
+				user = authority[:at+1]
 				authority = authority[at+1:]
 			}
 			if authority == "" || repository == "" {
 				return "", errors.New("invalid tracking remote identity")
 			}
-			return strings.ToLower(authority) + ":" + repository, nil
+			return user + strings.ToLower(authority) + ":" + repository, nil
 		}
 	}
 	return raw, nil

@@ -157,8 +157,8 @@ func TestRevisionRefusesParentRepository(t *testing.T) {
 
 func TestRevisionRemoteIdentityPreservesAtSignsInRepositoryPaths(t *testing.T) {
 	for _, tc := range []struct{ raw, want string }{
-		{"git@one.example:team/a@profile.git", "one.example:team/a@profile.git"},
-		{"git@two.example:other/b@profile.git", "two.example:other/b@profile.git"},
+		{"git@one.example:team/a@profile.git", "git@one.example:team/a@profile.git"},
+		{"git@two.example:other/b@profile.git", "git@two.example:other/b@profile.git"},
 		{"/srv/one/a@profile.git", "/srv/one/a@profile.git"},
 		{"/srv/two/b@profile.git", "/srv/two/b@profile.git"},
 		{"relative/a@profile.git", "relative/a@profile.git"},
@@ -168,6 +168,48 @@ func TestRevisionRemoteIdentityPreservesAtSignsInRepositoryPaths(t *testing.T) {
 		got, err := remoteIdentity(tc.raw)
 		if err != nil || got != tc.want {
 			t.Fatalf("remote identity=%q want=%q error=%v", got, tc.want, err)
+		}
+	}
+}
+
+// SSH usernames select the server-side repository namespace, unlike HTTPS
+// authentication credentials. Omitting them aliases distinct reconciliation lineages.
+func TestRevisionSSHUserSwitchInvalidatesRemoteFingerprint(t *testing.T) {
+	_, root, _ := gitRemoteClones(t)
+	service := profileGitService(t, root)
+	ctx := context.Background()
+	for _, pair := range [][2]string{
+		{"alice@host.example:profile.git", "bob@host.example:profile.git"},
+		{"ssh://alice@host.example/profile.git", "ssh://bob@host.example/profile.git"},
+		{"Alice@host.example:profile.git", "alice@host.example:profile.git"},
+	} {
+		git(t, root, "remote", "set-url", "origin", pair[0])
+		a, err := service.CurrentRevisionInfo(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		git(t, root, "remote", "set-url", "origin", pair[1])
+		b, err := service.CurrentRevisionInfo(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.OriginFingerprint == b.OriginFingerprint {
+			t.Error("SSH account switch did not invalidate repository fingerprint")
+		}
+		if len(a.OriginFingerprint) != 64 || len(b.OriginFingerprint) != 64 || strings.Contains(a.OriginFingerprint, "alice") || strings.Contains(b.OriginFingerprint, "bob") {
+			t.Fatal("remote identity was not an opaque fingerprint")
+		}
+	}
+}
+
+func TestRevisionSSHIdentityExcludesPasswordButPreservesUser(t *testing.T) {
+	for _, raw := range []string{
+		"ssh://Alice:first-secret@HOST.EXAMPLE/profile.git?token=secret#secret",
+		"ssh://Alice:rotated-secret@host.example/profile.git",
+	} {
+		got, err := remoteIdentity(raw)
+		if err != nil || got != "ssh://Alice@host.example/profile.git" {
+			t.Fatal("SSH identity lost username or retained credentials", err)
 		}
 	}
 }
