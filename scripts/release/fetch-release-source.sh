@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Usage: fetch-release-source.sh <owner/repo> <version> <output-dir>
 #
-# Downloads the immutable source archive and SHA256SUMS of the published
-# GitHub Release v<version> from their public URLs, which this script
-# constructs itself, and verifies them. Prints the archive URL, which is the
-# exact source the AUR package builds from.
+# Downloads the immutable source archive, SHA256SUMS and PKGBUILD of the
+# published GitHub Release v<version> from their public URLs, which this
+# script constructs itself, and verifies the archive. Prints the archive URL,
+# which is the exact source the AUR package builds from. The PKGBUILD is the
+# release's pkgrel 1 recipe, which AUR publication of pkgrel 1 must match.
 set -euo pipefail
 
 fail() {
@@ -22,7 +23,7 @@ archive="omarchy-blueprint-$version.tar.gz"
 base="https://github.com/$repo/releases/download/v$version"
 mkdir -p "$out"
 [[ -z $(find "$out" -mindepth 1 -maxdepth 1) ]] || fail "$out must be empty"
-for asset in "$archive" SHA256SUMS; do
+for asset in "$archive" SHA256SUMS PKGBUILD; do
   curl --fail --silent --show-error --location --proto '=https' --retry 3 \
     --output "$out/$asset" "$base/$asset"
 done

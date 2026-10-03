@@ -1,13 +1,16 @@
 # Final AUR validation and protected AUR publication (ADR 0025).
 #
 # Starts when a maintainer publishes a GitHub Release (pkgrel 1), or by
-# manual dispatch from main for a packaging-only revision (pkgrel >= 2) of an
-# existing published release, bound to the dispatch event's commit. Validation downloads the immutable release
+# manual dispatch from main for an existing published release: pkgrel 1 to
+# publish the release's own recipe later, from its tag, or a packaging-only
+# revision (pkgrel >= 2) bound to the dispatch event's commit. Validation downloads the immutable release
 # source from its public URL, rebuilds it from the release tag to prove the
-# bytes match, renders the final PKGBUILD, and builds, checks, inspects and
-# installs it in a fresh Arch container. None of that sees AUR credentials.
+# bytes match, renders the final PKGBUILD (for pkgrel 1, it must equal the
+# release's PKGBUILD asset), and builds, checks, inspects and installs it in
+# a fresh Arch container. None of that sees AUR credentials.
 #
-# Only the publish job reads the AUR SSH key. It runs in the protected
+# Only the publish job reads the AUR SSH key. It runs only when the
+# repository variable AUR_PUBLISHING_ENABLED is true, in the protected
 # aur-release environment, so it waits for a required reviewer, and only
 # after validation succeeds. It pushes the validated files without
 # rendering or building anything, never force-pushes, and is a no-op when
@@ -23,7 +26,7 @@ on:
         description: Existing published release version (MAJOR.MINOR.PATCH, no leading v)
         required: true
       pkgrel:
-        description: Packaging-only pkgrel (2 or higher)
+        description: pkgrel (1 publishes the release's own recipe; 2 or higher is a packaging-only revision)
         required: true
 
 permissions:
@@ -128,6 +131,14 @@ jobs:
             --sha256 "$(cut -d' ' -f1 "$RUNNER_TEMP/release/SHA256SUMS")" \
             --maintainer-name "$MAINTAINER_NAME" --maintainer-email "$MAINTAINER_EMAIL" \
             --output-dir "$RUNNER_TEMP/package"
+          # pkgrel 1 is the recipe beta testers already build from the
+          # release's PKGBUILD asset; the AUR must get exactly that file.
+          if [[ $PKGREL == 1 ]]; then
+            cmp "$RUNNER_TEMP/release/PKGBUILD" "$RUNNER_TEMP/package/PKGBUILD" || {
+              echo "the rendered PKGBUILD differs from the release's PKGBUILD asset; publish a pkgrel >= 2 revision instead"
+              exit 1
+            }
+          fi
       - name: Build from the public URL, check, inspect and install
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -152,6 +163,9 @@ jobs:
   publish:
     name: Publish to the AUR
     needs: [resolve, validate]
+    # Off until the AUR account and aur-release environment exist; validation
+    # still runs. Publish later by dispatching the same version and pkgrel.
+    if: vars.AUR_PUBLISHING_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: aur-release

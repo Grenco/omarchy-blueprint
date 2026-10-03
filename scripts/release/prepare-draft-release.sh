@@ -2,7 +2,9 @@
 # Usage: prepare-draft-release.sh <tag> <version> <commit> <dist-dir>
 #
 # Prepares the DRAFT GitHub Release for a verified release tag with the
-# verified source archive and SHA256SUMS in <dist-dir>, using the GitHub CLI.
+# verified source archive, SHA256SUMS and the validated pkgrel 1 PKGBUILD in
+# <dist-dir>, using the GitHub CLI. The PKGBUILD is the AUR recipe for this
+# release; beta testers build it with makepkg while the AUR is unavailable.
 # <commit> is the commit the tag was verified at and the assets were built
 # from; nothing is changed unless the tag on GitHub still points at it.
 #
@@ -47,19 +49,23 @@ tag=$1 version=$2 commit=$3 dist=$4
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || fail "not a full commit SHA: $(printf '%q' "$commit")"
 
 archive="omarchy-blueprint-$version.tar.gz"
-assets=("$archive" SHA256SUMS)
+assets=("$archive" SHA256SUMS PKGBUILD)
 [[ $(find "$dist" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort) == "$(printf '%s\n' "${assets[@]}" | LC_ALL=C sort)" ]] ||
   fail "$dist must contain exactly: ${assets[*]}"
 (cd "$dist" && sha256sum --check --strict SHA256SUMS) >&2 || fail "$dist/SHA256SUMS does not verify"
 [[ $(wc -l < "$dist/SHA256SUMS") -eq 1 ]] || fail "SHA256SUMS must name exactly the source archive"
+read -r digest _ < "$dist/SHA256SUMS"
+for line in "pkgname=omarchy-blueprint" "pkgver=$version" "pkgrel=1" "sha256sums=('$digest')"; do
+  grep -qxF -- "$line" "$dist/PKGBUILD" || fail "PKGBUILD is not the pkgrel 1 recipe for $archive: missing $line"
+done
 
 require_tag_at_commit
 
 if ! draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
   gh release create "$tag" --draft --verify-tag --title "$tag" --generate-notes \
-    "$dist/$archive" "$dist/SHA256SUMS" >&2
+    "${assets[@]/#/$dist/}" >&2
   require_tag_at_commit
-  echo "Created draft release $tag at $commit with $archive and SHA256SUMS."
+  echo "Created draft release $tag at $commit with $archive, SHA256SUMS and PKGBUILD."
   exit 0
 fi
 
