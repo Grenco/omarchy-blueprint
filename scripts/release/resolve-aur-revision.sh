@@ -36,7 +36,7 @@ case $mode in
     version=$2 pkgrel=$3 github_ref=$4 github_sha=$5
     [[ $version =~ $semver ]] || fail "not a MAJOR.MINOR.PATCH version: $(printf '%q' "$version")"
     [[ $pkgrel =~ ^[1-9][0-9]*$ ]] || fail "not a positive integer pkgrel: $(printf '%q' "$pkgrel")"
-    [[ $github_ref == refs/heads/main ]] || fail "packaging-only revisions are dispatched from main, not $github_ref"
+    [[ $github_ref == refs/heads/main ]] || fail "AUR revisions are dispatched from main, not $github_ref"
     [[ $github_sha =~ ^[0-9a-f]{40}$ ]] || fail "not a full commit SHA: $(printf '%q' "$github_sha")"
     tag="v$version"
     state=$(gh api "repos/{owner}/{repo}/releases/tags/$tag" --jq '"\(.draft) \(.prerelease)"') ||

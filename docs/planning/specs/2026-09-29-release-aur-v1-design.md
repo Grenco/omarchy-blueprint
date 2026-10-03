@@ -8,6 +8,8 @@ This design follows the approved conversational architecture review for publishi
 
 It is based on `main` at `4261ba0dbe4808d02e9cf6b3573b0038fb100736` on 2026-09-29. At design time the repository has normal Go CI but no GitHub Releases and no AUR package publication pipeline.
 
+Amended for the first public beta: GitHub Releases also carry the validated `pkgrel=1` PKGBUILD while AUR onboarding is unavailable. See [Amendment: pre-AUR beta distribution](#amendment-pre-aur-beta-distribution).
+
 This document is a design specification, not an implementation plan. It does not authorize production changes, GitHub mutation, AUR publication, credential creation, or release creation by itself.
 
 ## Summary
@@ -207,7 +209,7 @@ omarchy-blueprint-0.1.0/
 
 The archive generation process must normalize the properties needed for repeatable bytes from the same Git object. The implementation plan must include an automated assertion that producing the source archive twice from the same commit yields the same SHA-256.
 
-`SHA256SUMS` records the release asset checksum and is uploaded beside the archive.
+`SHA256SUMS` records the release asset checksum and is uploaded beside the archive. The release also carries its validated `pkgrel=1` PKGBUILD (see the amendment below).
 
 Once a GitHub Release is published, that version's source archive is immutable. A publication retry reuses the same asset and checksum; it does not rebuild-and-replace the release bytes.
 
@@ -220,11 +222,12 @@ tag pushed
 → verify tag/commit
 → product tests
 → create/check deterministic source archive
+→ render and validate the pkgrel=1 PKGBUILD against the local archive
 → prepare draft GitHub Release with assets
 → human reviews/edits release notes and publishes the release
 → release:published event
 → validate the exact final AUR package against the published asset
-→ protected AUR publication
+→ protected AUR publication (when enabled; otherwise later, see the amendment)
 ```
 
 The tag-triggered workflow may create/update only the draft release for that verified tag. It does not make the upstream release public automatically.
@@ -558,6 +561,8 @@ AUR installation
 building from source
 ```
 
+Until the package is on the AUR, the packaged channel is the release's PKGBUILD built with `makepkg -si` (see the amendment), and the README must not imply AUR availability.
+
 The first public announcement may recommend an AUR helper for convenience, but project documentation should also describe the underlying AUR package identity and avoid implying that AUR helpers are part of pacman itself.
 
 The docs must state the runtime support boundary:
@@ -591,6 +596,25 @@ Add a maintainer-facing release document covering:
 - what evidence to collect before approaching the Omarchy package repository.
 
 The runbook must make clear which steps mutate GitHub or AUR and therefore require human authority.
+
+## Amendment: pre-AUR beta distribution
+
+AUR remains the intended long-term package channel. Because new AUR account registration was unavailable when the first public beta was ready, each GitHub Release also carries the release's validated `pkgrel=1` PKGBUILD, so users can install a release with ordinary Arch tooling before the AUR package exists:
+
+```text
+omarchy-blueprint-<version>.tar.gz
+SHA256SUMS
+PKGBUILD
+```
+
+- The release PKGBUILD is rendered by the same tooling from `packaging/aur/PKGBUILD.template`, which stays the single recipe source of truth. Rendered PKGBUILDs and `.SRCINFO` are outputs and are never committed.
+- Before the draft is prepared, the Release workflow renders it for the source archive's final public URL and checksum and runs the full Arch package validation against the locally built archive. Users build it with `makepkg -si`, which verifies the pinned SHA-256 and gives normal pacman ownership.
+- `.SRCINFO` and the 0BSD packaging `LICENSE` are not release assets: `makepkg` does not need them, and they are still generated for the AUR repository. No prebuilt binary is published.
+- The release PKGBUILD is an immutable release asset like the archive. While the package is not on the AUR, a recipe correction therefore requires a new upstream PATCH release; `pkgrel` revisions apply once AUR publication exists.
+- AUR publication is a later, explicit step that does not block a GitHub Release. The credential-bearing AUR push runs only when the repository enables it (`AUR_PUBLISHING_ENABLED`), so the state model can stop at `PACKAGE_VALIDATED` until AUR access exists; final package validation from the public URL always runs.
+- The first AUR publication of a release, whether from the `release: published` event or a later manual dispatch with `pkgrel=1`, renders the recipe from the release tag and must be byte-identical to the release's `PKGBUILD` asset. Users who installed from the release therefore have exactly the package the AUR later serves.
+
+ADR 0025 records the same amendment as its section 15.
 
 ## Initial repository ownership map
 
