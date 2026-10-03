@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 )
 
 // freshMachineRestorePlan is what a fresh Omarchy machine plans: every saved
@@ -103,5 +105,29 @@ func TestRestoreDeferLeavesBlockedCategoryOutOfTheRun(t *testing.T) {
 	}
 	if code, output := configRun(t, deps, profileDir, "restore", "plugins", "--defer", "themes"); code == 0 || !strings.Contains(output, "cannot be combined") {
 		t.Fatalf("--defer with a category argument was accepted: code=%d output=%s", code, output)
+	}
+}
+
+func TestStepThatWaitsForYouSaysSoInPlanAndProgress(t *testing.T) {
+	op := model.Operation{ID: "packages.install.semantic.tailscale", Provider: "packages", Action: "install", Resource: "official:tailscale", Items: []string{"tailscale"}, Interactive: true, Label: "Omarchy's Tailscale setup", AwaitsYou: "sign in to Tailscale with the link it prints"}
+	plan := renderPlan(model.RestorePlan{Operations: []model.Operation{op}}, true)
+	if !strings.Contains(plan, "! Waits for you: sign in to Tailscale with the link it prints.") {
+		t.Fatalf("plan does not say the step waits for you:\n%s", plan)
+	}
+	var out strings.Builder
+	for _, event := range []restore.Progress{
+		{Type: restore.ProgressStarted, Operation: op},
+		{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: 10 * time.Second},
+		{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: 30 * time.Second},
+		{Type: restore.ProgressCompleted, Operation: op, Elapsed: 45 * time.Second},
+	} {
+		renderProgress(&out, event)
+	}
+	want := "Running Omarchy's Tailscale setup...\n" +
+		"! This step waits for you: sign in to Tailscale with the link it prints.\n" +
+		"  Still running Omarchy's Tailscale setup (30s elapsed); it may be waiting for you to sign in to Tailscale with the link it prints.\n" +
+		"✓ Finished Omarchy's Tailscale setup (45s)\n"
+	if out.String() != want {
+		t.Fatalf("progress =\n%s\nwant\n%s", out.String(), want)
 	}
 }

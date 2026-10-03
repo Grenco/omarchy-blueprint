@@ -125,6 +125,7 @@ func TestRestoreBusyViewShowsTheRunningStep(t *testing.T) {
 
 func TestRestoreTerminalProgressLines(t *testing.T) {
 	op := model.Operation{Resource: "official:firefox", Action: "install"}
+	tailscale := model.Operation{Resource: "official:tailscale", Action: "install", Label: "Omarchy's Tailscale setup", AwaitsYou: "sign in with the link it prints"}
 	for _, tc := range []struct {
 		event restore.Progress
 		want  string
@@ -134,6 +135,8 @@ func TestRestoreTerminalProgressLines(t *testing.T) {
 		{restore.Progress{Type: restore.ProgressFailed, Operation: op, Elapsed: time.Second}, "✗ Install official:firefox failed after 1s"},
 		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: 30 * time.Second}, "  still running: Install official:firefox (30s)"},
 		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: op, Elapsed: 10 * time.Second}, ""},
+		{restore.Progress{Type: restore.ProgressStarted, Operation: tailscale}, "→ Omarchy's Tailscale setup\n! This step waits for you: sign in with the link it prints."},
+		{restore.Progress{Type: restore.ProgressHeartbeat, Operation: tailscale, Elapsed: 60 * time.Second}, "  still running: Omarchy's Tailscale setup (1m0s); it may be waiting for you to sign in with the link it prints"},
 	} {
 		if got := restoreProgressLine(tc.event); got != tc.want {
 			t.Fatalf("restoreProgressLine(%s, %s) = %q, want %q", tc.event.Type, tc.event.Elapsed, got, tc.want)

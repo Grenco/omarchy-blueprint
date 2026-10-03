@@ -12,11 +12,13 @@ func TestSemanticRecipeSelectsTailscaleServiceFlow(t *testing.T) {
 	}
 	want := AppRecipe{
 		ID:            "tailscale",
+		Name:          "Tailscale",
 		Install:       []string{"omarchy-install-service-tailscale"},
 		Remove:        []string{"omarchy-remove-service-tailscale"},
 		Interactive:   true,
 		InstallNotice: "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint.",
 		RemoveNotice:  "Tailscale removal uses Omarchy's interactive service teardown.",
+		AwaitsYou:     "sign in to Tailscale with the link it prints; the step waits until this device is authorised, then finishes Omarchy's setup",
 		Verify: [][]string{
 			{"systemctl", "is-enabled", "tailscaled"},
 			{"tailscale", "status"},

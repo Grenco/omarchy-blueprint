@@ -43,6 +43,13 @@ type Operation struct {
 	Reversible  bool             `json:"reversible"`
 	Interactive bool             `json:"interactive,omitempty"`
 	Notice      string           `json:"notice,omitempty"`
+	// Label names the step for people when Resource alone doesn't, such as
+	// an Omarchy setup recipe that does far more than install a package.
+	Label string `json:"label,omitempty"`
+	// AwaitsYou says what the step may wait for from the person, such as
+	// signing in through a link it prints. Progress repeats it while the
+	// step runs so a wait never looks like a hang.
+	AwaitsYou string `json:"awaits_you,omitempty"`
 }
 
 type Copy struct {

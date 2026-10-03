@@ -145,6 +145,9 @@ func waitRestoreProgress(events <-chan restore.Progress) tea.Cmd {
 }
 
 func restoreStepLabel(op model.Operation) string {
+	if op.Label != "" {
+		return components.DisplayText(op.Label)
+	}
 	return operationAction(op) + " " + components.DisplayText(op.Resource)
 }
 
@@ -154,6 +157,9 @@ func restoreProgressLine(event restore.Progress) string {
 	label := restoreStepLabel(event.Operation)
 	switch event.Type {
 	case restore.ProgressStarted:
+		if event.Operation.AwaitsYou != "" {
+			return "→ " + label + "\n! This step waits for you: " + components.DisplayText(event.Operation.AwaitsYou) + "."
+		}
 		return "→ " + label
 	case restore.ProgressCompleted:
 		return fmt.Sprintf("✓ %s (%s)", label, event.Elapsed.Round(time.Second))
@@ -161,7 +167,11 @@ func restoreProgressLine(event restore.Progress) string {
 		return fmt.Sprintf("✗ %s failed after %s", label, event.Elapsed.Round(time.Second))
 	case restore.ProgressHeartbeat:
 		if int(event.Elapsed.Seconds())%30 < 5 {
-			return fmt.Sprintf("  still running: %s (%s)", label, event.Elapsed.Round(time.Second))
+			line := fmt.Sprintf("  still running: %s (%s)", label, event.Elapsed.Round(time.Second))
+			if event.Operation.AwaitsYou != "" {
+				line += "; it may be waiting for you to " + components.DisplayText(event.Operation.AwaitsYou)
+			}
+			return line
 		}
 	}
 	return ""
@@ -345,7 +355,11 @@ func (s *Restore) DetailView() string {
 	}
 	if s.selected < len(s.current.Operations) {
 		op := s.current.Operations[s.selected]
-		return fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t\n%s", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive, components.DisplayText(op.Notice))
+		detail := fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t\n%s", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive, components.DisplayText(op.Notice))
+		if op.AwaitsYou != "" {
+			detail += "\nWaits for you: " + components.DisplayText(op.AwaitsYou)
+		}
+		return detail
 	}
 	skipIndex := s.selected - len(s.current.Operations)
 	if skipIndex >= 0 && skipIndex < len(s.current.Skipped) {
@@ -1263,6 +1277,11 @@ func (s *Restore) confirmation() string {
 	}
 	if s.hasInteractiveOperation() {
 		prompt += " Some operations may ask for administrator authentication in this terminal; Blueprint steps aside while they run."
+	}
+	for _, op := range s.plan().Operations {
+		if op.AwaitsYou != "" {
+			prompt += " " + components.DisplayText(restoreStepLabel(op)) + " waits for you: " + components.DisplayText(op.AwaitsYou) + "."
+		}
 	}
 	if s.options.ActivationMode() != policy.ActivationPersistentOnly {
 		prompt += " Services activation: " + activationLabel(s.options.ActivationMode()) + "."

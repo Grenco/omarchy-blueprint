@@ -2059,6 +2059,9 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		if op.Notice != "" && (op.Interactive || op.Provider == "services") {
 			fmt.Fprintf(&b, "! %s\n", op.Notice)
 		}
+		if op.AwaitsYou != "" {
+			fmt.Fprintf(&b, "! Waits for you: %s.\n", op.AwaitsYou)
+		}
 	}
 	for _, op := range plan.Operations {
 		if op.Provider == "shell" && op.Action == "write" && op.File != nil {
@@ -2355,6 +2358,10 @@ func renderProgress(w io.Writer, event restore.Progress) {
 		}
 		return
 	}
+	if event.Operation.Label != "" {
+		renderLabelledProgress(w, event)
+		return
+	}
 	kind := strings.SplitN(event.Operation.Resource, ":", 2)[0]
 	count := len(event.Operation.Items)
 	label := fmt.Sprintf("%d %s package", count, kind)
@@ -2370,6 +2377,32 @@ func renderProgress(w io.Writer, event restore.Progress) {
 		fmt.Fprintf(w, "✓ Installed %s (%s)\n", label, event.Elapsed)
 	case restore.ProgressFailed:
 		fmt.Fprintf(w, "✗ Failed installing %s after %s\n", label, event.Elapsed)
+	}
+}
+
+// renderLabelledProgress reports a step by its own name, such as an Omarchy
+// setup recipe. A step that may wait for the person says so when it starts
+// and about every 30 seconds while it runs, so a wait never looks like a
+// hang.
+func renderLabelledProgress(w io.Writer, event restore.Progress) {
+	op := event.Operation
+	switch event.Type {
+	case restore.ProgressStarted:
+		fmt.Fprintf(w, "Running %s...\n", op.Label)
+		if op.AwaitsYou != "" {
+			fmt.Fprintf(w, "! This step waits for you: %s.\n", op.AwaitsYou)
+		}
+	case restore.ProgressHeartbeat:
+		switch {
+		case op.AwaitsYou == "":
+			fmt.Fprintf(w, "  Still running %s (%s elapsed)...\n", op.Label, event.Elapsed)
+		case int(event.Elapsed.Seconds())%30 < 5:
+			fmt.Fprintf(w, "  Still running %s (%s elapsed); it may be waiting for you to %s.\n", op.Label, event.Elapsed, op.AwaitsYou)
+		}
+	case restore.ProgressCompleted:
+		fmt.Fprintf(w, "✓ Finished %s (%s)\n", op.Label, event.Elapsed)
+	case restore.ProgressFailed:
+		fmt.Fprintf(w, "✗ %s failed after %s\n", op.Label, event.Elapsed)
 	}
 }
 

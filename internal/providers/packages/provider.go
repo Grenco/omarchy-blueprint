@@ -1086,6 +1086,8 @@ func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {
 		Reversible:  false,
 		Interactive: recipe.Interactive,
 		Notice:      recipe.InstallNotice,
+		Label:       "Omarchy's " + recipe.Name + " setup",
+		AwaitsYou:   recipe.AwaitsYou,
 	}
 }
 

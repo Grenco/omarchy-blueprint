@@ -162,6 +162,11 @@ the step running now and how long it has run, and the terminal handoff for
 `sudo` steps prints a line per step. Progress comes from the executor's
 existing events, so it adds no new authority or state.
 
+A step can name itself (`label`) and say what it may wait for from the person
+(`awaits_you`), for example an Omarchy recipe that waits for a Tailscale
+sign-in. The plan shows that before approval, and progress repeats it while the
+step runs, so waiting for the person never looks like a hang.
+
 ### 8. Non-interactive commands can never prompt
 
 Operations not marked interactive run detached from the terminal: in their own
