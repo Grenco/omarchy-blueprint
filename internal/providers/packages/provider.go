@@ -238,7 +238,7 @@ func RestoreCompatibility(saved, current profile.Packages, applyTargets map[stri
 			return nil
 		}
 		if current.OriginUnavailable {
-			finding := model.CompatibilityFinding{Code: "packages.origin.unknown", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "package repository origin cannot be established from local metadata"}
+			finding := model.CompatibilityFinding{Code: "packages.origin.unknown", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityUnchanged, Summary: "pacman's package databases aren't set up yet, so Blueprint can't tell which repository provides this package"}
 			if !installed[name] {
 				if !metadataRequired {
 					return fmt.Errorf("compatibility: missing %s requires a same-plan packages.metadata requirement", ref)
@@ -349,7 +349,7 @@ func RestoreCompatibility(saved, current profile.Packages, applyTargets map[stri
 		if want && !actual {
 			operationID := "packages.preinstall.install." + id
 			if needsMetadata(operationID) || saved.Preinstalls.Managed && !saved.Preinstalls.RemovedAll && current.Preinstalls.RemovedAll && apply("preinstalls") && needsMetadata("packages.preinstalls.install") {
-				findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.metadata.unavailable", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "installing this preinstall requires package metadata", RequirementID: "packages.metadata"})
+				findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.metadata.unavailable", Target: ref, State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "installing this Omarchy preinstall needs pacman's package databases, which aren't set up yet", RequirementID: "packages.metadata"})
 				continue
 			}
 			if current.OriginUnavailable {
@@ -365,7 +365,7 @@ func RestoreCompatibility(saved, current profile.Packages, applyTargets map[stri
 		case saved.Preinstalls.RemovedAll && !current.Preinstalls.RemovedAll:
 			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.unestablished", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityReduced, Summary: "broad Omarchy preinstall removal remains disabled"})
 		case !saved.Preinstalls.RemovedAll && current.Preinstalls.RemovedAll && needsMetadata("packages.preinstalls.install"):
-			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.metadata.unavailable", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "restoring Omarchy preinstalls requires package metadata", RequirementID: "packages.metadata"})
+			findings = append(findings, model.CompatibilityFinding{Code: "packages.preinstall.metadata.unavailable", Target: "preinstalls", State: model.CompatibilityUnknown, Authority: model.CompatibilityBlocked, Summary: "restoring Omarchy preinstalls needs pacman's package databases, which aren't set up yet", RequirementID: "packages.metadata"})
 		case !saved.Preinstalls.RemovedAll && current.Preinstalls.RemovedAll && current.OriginUnavailable:
 			return model.CompatibilityCategory{}, fmt.Errorf("compatibility: preinstall group needs a same-plan packages.metadata requirement")
 		default:
@@ -397,7 +397,7 @@ func (p Provider) Plan(saved, current profile.Packages, schema int, from, to str
 		sort.Strings(needs)
 		plan.Requirements = append(plan.Requirements, model.Requirement{
 			ID: "packages.metadata", Provider: "packages", Kind: "package-metadata",
-			Reason:      "package metadata unavailable: pacman sync databases missing for " + strings.Join(current.MissingSyncDatabases, ", ") + "; installing packages needs Omarchy's own system update first",
+			Reason:      "pacman's package databases aren't set up on this machine yet (missing: " + strings.Join(current.MissingSyncDatabases, ", ") + "); Omarchy's own update creates them, and installing packages needs them",
 			Remediation: []string{"omarchy", "update"},
 			Operations:  needs,
 		})
