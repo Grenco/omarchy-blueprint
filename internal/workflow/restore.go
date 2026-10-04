@@ -65,7 +65,7 @@ func (s *Session) ApplyRestore(ctx context.Context, onlyProvider string, options
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	return s.executeRestore(ctx, RestoreResult{Options: resolved, Plan: plan}, providers, contexts, false, nil)
+	return s.executeRestore(ctx, RestoreResult{Options: resolved, Plan: plan}, providers, contexts, false, RestoreApplyHooks{})
 }
 
 // ApplyApprovedRestore applies a plan the user approved. It replans and
@@ -88,6 +88,21 @@ func (s *Session) ApplyApprovedRestoreScope(ctx context.Context, scope RestoreSc
 // reports each operation as it starts, keeps running and finishes, so an
 // interface can show what Restore is doing.
 func (s *Session) ApplyApprovedRestoreWithProgress(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool, progress restore.ProgressFunc) (RestoreResult, error) {
+	return s.ApplyApprovedRestoreWithHooks(ctx, scope, options, approved, terminal, RestoreApplyHooks{Progress: progress})
+}
+
+// RestoreApplyHooks let an interface follow an apply and host its
+// interactive steps.
+type RestoreApplyHooks struct {
+	Progress restore.ProgressFunc
+	// Interactive, when set, runs every interactive command: it is handed
+	// the command's own run and must give it the real terminal for that
+	// call, so an interface can stay on screen between such steps.
+	Interactive func(ctx context.Context, run func() error) error
+}
+
+// ApplyApprovedRestoreWithHooks is ApplyApprovedRestoreScope with hooks.
+func (s *Session) ApplyApprovedRestoreWithHooks(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions, approved model.RestorePlan, terminal bool, hooks RestoreApplyHooks) (RestoreResult, error) {
 	plan, providers, contexts, resolved, err := s.restorePlan(ctx, scope, options)
 	if err != nil {
 		return RestoreResult{}, err
@@ -96,7 +111,7 @@ func (s *Session) ApplyApprovedRestoreWithProgress(ctx context.Context, scope Re
 	if !reflect.DeepEqual(plan, approved) {
 		return result, ErrRestorePlanChanged
 	}
-	return s.executeRestore(ctx, result, providers, contexts, terminal, progress)
+	return s.executeRestore(ctx, result, providers, contexts, terminal, hooks)
 }
 
 // ErrRestorePlanChanged means the recalculated plan differs from the one the
@@ -159,7 +174,7 @@ func CheckRestoreApplicable(plan model.RestorePlan, terminal bool) error {
 	return nil
 }
 
-func (s *Session) executeRestore(ctx context.Context, result RestoreResult, providers []RestoreProvider, contexts map[string]RestoreContext, terminal bool, progress restore.ProgressFunc) (RestoreResult, error) {
+func (s *Session) executeRestore(ctx context.Context, result RestoreResult, providers []RestoreProvider, contexts map[string]RestoreContext, terminal bool, hooks RestoreApplyHooks) (RestoreResult, error) {
 	plan := result.Plan
 	if err := CheckRestoreApplicable(plan, terminal); err != nil {
 		return result, err
@@ -184,7 +199,11 @@ func (s *Session) executeRestore(ctx context.Context, result RestoreResult, prov
 	}
 	defer journal.Close()
 	result.Journal, result.Applied = journal.Path, true
-	result.Execution, err = restore.Execute(ctx, s.deps.Runner, plan, journal, s.deps.Now, 5_000_000_000, progress)
+	runner := s.deps.Runner
+	if interactive, ok := runner.(command.InteractiveRunner); ok && hooks.Interactive != nil {
+		runner = hostedRunner{Runner: runner, interactive: interactive, host: hooks.Interactive}
+	}
+	result.Execution, err = restore.Execute(ctx, runner, plan, journal, s.deps.Now, 5_000_000_000, hooks.Progress)
 	if err != nil {
 		return result, err
 	}
@@ -198,6 +217,18 @@ func (s *Session) executeRestore(ctx context.Context, result RestoreResult, prov
 		return result, fmt.Errorf("restore completed with %d failed operation(s)", len(result.Execution.Failed))
 	}
 	return result, nil
+}
+
+// hostedRunner runs interactive commands through an interface's host, which
+// gives each the real terminal.
+type hostedRunner struct {
+	command.Runner
+	interactive command.InteractiveRunner
+	host        func(ctx context.Context, run func() error) error
+}
+
+func (r hostedRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+	return r.host(ctx, func() error { return r.interactive.RunInteractive(ctx, name, args...) })
 }
 
 func interactiveOperation(plan model.RestorePlan) (model.Operation, bool) {

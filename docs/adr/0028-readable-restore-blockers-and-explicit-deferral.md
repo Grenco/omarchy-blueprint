@@ -158,8 +158,15 @@ outside Blueprint, replacing "open Restore again to replan".
 
 Both surfaces report each operation as it starts, keeps running and
 finishes. The CLI already did; the TUI now shows steps done out of the total,
-the step running now and how long it has run, and the terminal handoff for
-`sudo` steps prints a line per step. Progress comes from the executor's
+the step running now and how long it has run.
+
+The TUI no longer hands the terminal over for a whole plan that contains a
+`sudo` step. The plan applies from the interface, and each interactive step
+borrows the terminal (kept across consecutive interactive steps) and prints
+its progress there; the interface returns as soon as an ordinary step starts.
+While a restore applies, Ctrl+C in the interface no longer quits, which would
+abandon the running step: pressing it twice stops the restore after the
+current step, and the outcome is shown with the refreshed plan. Progress comes from the executor's
 existing events, so it adds no new authority or state.
 
 A step can name itself (`label`) and say what it may wait for from the person

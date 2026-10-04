@@ -153,14 +153,15 @@ always visible, Reduced authority is summarized in yellow, and uncertainty
 that leaves authority Unchanged is muted information rather than a warning.
 
 Package changes that need administrator authentication are marked
-interactive. When you approve such a plan, the interface steps aside and the
-restore runs in the terminal so `sudo` can show its own prompt, with a line
-for each step as it starts and finishes, then Blueprint returns. Any other
-plan applies inside the interface, which shows how many steps are done, the
-step running now and how long it has taken. Those steps run without a
-terminal, so anything that would ask for a password (a Git credential or SSH
-passphrase, say) fails with an error instead of waiting on a prompt you can't
-see. Steps that wait for you on purpose, such as signing in to Tailscale, are
+interactive. An approved plan applies from the interface, which shows how many
+steps are done, the step running now and how long it has taken. When a step
+needs you, such as a `sudo` password, the interface lends it the terminal so
+the step can show its own prompt, and comes back as soon as the next ordinary
+step starts. Other steps run without a terminal, so anything that would ask
+for a password (a Git credential or SSH passphrase, say) fails with an error
+instead of waiting on a prompt you can't see. While a restore is applying,
+Ctrl+C doesn't quit: press it twice to stop the restore after the current
+step. Steps that wait for you on purpose, such as signing in to Tailscale, are
 marked in the plan and run last; while one has the terminal, Ctrl+C skips
 just that step and the rest of the restore continues. Restore then shows what
 you skipped, which stays in the plan until you apply it.

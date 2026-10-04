@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -42,70 +41,28 @@ type Restore struct {
 	// deferred is this run's explicit deferral of categories that are not
 	// ready (ADR 0028). It is never persisted.
 	deferred        []string
-	progress        restoreProgress
 	forcedOverrides int
-	planRequestID   uint64
-	changesTable    components.Table
-	skipsTable      components.Table
-	settingsTable   components.Table
-	summaryTable    components.Table
+	// run is the in-progress apply's shared state; stopApply cancels it
+	// after the current step, once stopRequested confirms (Ctrl+C twice).
+	run           *restoreRunState
+	stopRequested bool
+	stopApply     context.CancelFunc
+	planRequestID uint64
+	changesTable  components.Table
+	skipsTable    components.Table
+	settingsTable components.Table
+	summaryTable  components.Table
 	// entryOffset is the first visible line of the Changes/Skipped region
 	// when the plan is taller than the workspace.
 	entryOffset int
 	// exec hands the terminal to a blocking command. By default it asks the
 	// root model to do so (TerminalRequest).
 	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
-	// handedOff is true while an approved plan runs in the real terminal.
-	handedOff bool
 	// lastRun is the outcome of the last apply, shown above the refreshed
 	// plan; lastRunExpanded shows it in full in the details pane (o).
 	lastRun         *restoreRun
 	lastRunExpanded bool
 }
-
-// restoreTerminalCommand applies an approved plan while bubbletea has
-// released the terminal (tea.Exec), so operations that elevate through sudo
-// prompt on the real terminal exactly as they do from the CLI. The same
-// workflow apply runs; only the terminal ownership differs (ADR 0022).
-type restoreTerminalCommand struct {
-	ctx      context.Context
-	session  *workflow.Session
-	scope    workflow.RestoreScope
-	options  *policy.RestoreOptions
-	approved model.RestorePlan
-	stdout   io.Writer
-	result   workflow.RestoreResult
-}
-
-func (c *restoreTerminalCommand) Run() error {
-	if c.session == nil {
-		return fmt.Errorf("restore session is unavailable")
-	}
-	out := c.stdout
-	if out == nil {
-		out = io.Discard
-	}
-	fmt.Fprintln(out, "Applying the approved Blueprint restore. Commands may ask for administrator authentication here; Blueprint never sees the password.")
-	fmt.Fprintln(out, "Ctrl+C while a step is asking you something skips just that step; the rest of the restore continues.")
-	var err error
-	c.result, err = c.session.ApplyApprovedRestoreWithProgress(c.ctx, c.scope, c.options, c.approved, true, func(event restore.Progress) {
-		if line := restoreProgressLine(event); line != "" {
-			fmt.Fprintln(out, line)
-		}
-	})
-	switch {
-	case err != nil:
-		fmt.Fprintln(out, "Restore failed:", err)
-	case len(c.result.Execution.SkippedByYou) > 0:
-		fmt.Fprintln(out, "Restore applied, except what you skipped; returning to Blueprint.")
-	default:
-		fmt.Fprintln(out, "Restore applied; returning to Blueprint.")
-	}
-	return err
-}
-func (*restoreTerminalCommand) SetStdin(io.Reader)      {}
-func (c *restoreTerminalCommand) SetStdout(w io.Writer) { c.stdout = w }
-func (*restoreTerminalCommand) SetStderr(io.Writer)     {}
 
 func (s *Restore) scope() workflow.RestoreScope {
 	return workflow.RestoreScope{Defer: append([]string(nil), s.deferred...)}
@@ -147,6 +104,8 @@ func (r *restoreRun) headline() string {
 	switch {
 	case r.failedCount() > 0:
 		return fmt.Sprintf("Last restore: %d %s failed, %d completed", r.failedCount(), pluralWord(r.failedCount(), "step", "steps"), len(execution.Completed))
+	case errors.Is(r.err, context.Canceled):
+		return fmt.Sprintf("Last restore: stopped by you after %d completed %s; plan again to finish it", len(execution.Completed), pluralWord(len(execution.Completed), "step", "steps"))
 	case r.err != nil && !r.result.Applied:
 		return "Last restore didn't run: " + components.DisplayText(r.err.Error())
 	case r.err != nil:
@@ -243,29 +202,6 @@ func (s *Restore) lastRunLines(width, limit int) []string {
 	return lines
 }
 
-// restoreProgress is what the busy view shows while an approved plan
-// applies inside the interface.
-type restoreProgress struct {
-	total, done, failed int
-	current             string
-	elapsed             time.Duration
-}
-
-type restoreProgressMsg struct {
-	event  restore.Progress
-	events <-chan restore.Progress
-}
-
-func waitRestoreProgress(events <-chan restore.Progress) tea.Cmd {
-	return func() tea.Msg {
-		event, ok := <-events
-		if !ok {
-			return nil
-		}
-		return restoreProgressMsg{event: event, events: events}
-	}
-}
-
 func restoreStepLabel(op model.Operation) string {
 	if op.Label != "" {
 		return components.DisplayText(op.Label)
@@ -338,26 +274,13 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.selected = min(s.selected, max(0, s.currentEntryCount()-1))
 		return nil
-	case restoreProgressMsg:
-		switch msg.event.Type {
-		case restore.ProgressStarted:
-			s.progress.current, s.progress.elapsed = restoreStepLabel(msg.event.Operation), 0
-		case restore.ProgressHeartbeat:
-			s.progress.elapsed = msg.event.Elapsed
-		case restore.ProgressCompleted:
-			s.progress.done++
-		case restore.ProgressFailed:
-			s.progress.done++
-			s.progress.failed++
-		case restore.ProgressSkipped:
-			s.progress.done++
-		}
-		return waitRestoreProgress(msg.events)
+	case restoreEventMsg:
+		return s.handleRestoreEvent(msg)
 	case restoreAppliedMsg:
 		// An apply outcome, failed or not, is reported above the plan; it is
 		// never a planning error. The machine may have changed either way, so
 		// always plan again.
-		s.confirm, s.busy, s.handedOff = false, false, false
+		s.confirm, s.busy, s.stopRequested, s.stopApply = false, false, false, nil
 		s.lastRun = &restoreRun{result: msg.result, err: msg.err}
 		return s.refreshPlan()
 	}
@@ -1214,66 +1137,33 @@ func skipReasonLabel(reason string) string {
 	return "Skipped"
 }
 
-// apply runs the approved plan through the shared workflow. A plan with
-// interactive operations gets the real terminal via tea.Exec; any other plan
-// applies without leaving the interface. Either way the workflow refuses a
-// plan that changed after approval.
-func (s *Restore) apply() tea.Cmd {
-	var options *policy.RestoreOptions
-	if s.override {
-		options = &s.options
-	}
-	approved := s.plan()
-	if s.hasInteractiveOperation() {
-		s.handedOff = true
-		command := &restoreTerminalCommand{ctx: s.ctx, session: s.session, scope: s.scope(), options: options, approved: approved}
-		return s.exec(command, func(err error) tea.Msg { return restoreAppliedMsg{command.result, err} })
-	}
-	s.progress = restoreProgress{total: len(approved.Operations)}
-	events := make(chan restore.Progress, 16)
-	session, ctx, scope, review := s.session, s.ctx, s.scope(), s.options.ActivationMode() == policy.ActivationReview
-	run := func() tea.Msg {
-		defer close(events)
-		if session == nil {
-			return restoreAppliedMsg{err: fmt.Errorf("restore session is unavailable")}
-		}
-		// Review selection happened interactively in this terminal. No command
-		// here needs stdin; those use the tea.Exec handoff above.
-		result, err := session.ApplyApprovedRestoreWithProgress(ctx, scope, options, approved, review, func(event restore.Progress) {
-			if event.Type == restore.ProgressHeartbeat {
-				select {
-				case events <- event:
-				default: // a later heartbeat will update the elapsed time
-				}
-				return
-			}
-			events <- event
-		})
-		return restoreAppliedMsg{result, err}
-	}
-	return tea.Batch(run, waitRestoreProgress(events))
-}
-
-// busyView shows which step is running while a plan applies here, so a
-// long step is visibly working rather than looking stuck.
+// busyView shows which step is running while a plan applies, so a long
+// step is visibly working rather than looking stuck.
 func (s *Restore) busyView() string {
 	width := s.widthOrDefault()
-	if s.handedOff {
-		return strings.Join(components.WrapText("Restore is running in the terminal so sudo can ask for your password there; Blueprint returns when it finishes.", width), "\n")
+	var run restoreRunSnapshot
+	if s.run != nil {
+		run = s.run.snapshot()
 	}
-	lines := []string{s.styles.SubtleAccent(fmt.Sprintf("Applying restore · %d of %d steps done", s.progress.done, s.progress.total))}
-	if s.progress.failed > 0 {
-		lines = append(lines, s.styles.Error(fmt.Sprintf("%d failed so far; Restore continues with independent steps", s.progress.failed)))
+	lines := []string{s.styles.SubtleAccent(fmt.Sprintf("Applying restore · %d of %d steps done", run.done, run.total))}
+	if run.failed > 0 {
+		lines = append(lines, s.styles.Error(fmt.Sprintf("%d failed so far; Restore continues with independent steps", run.failed)))
 	}
-	if s.progress.current != "" {
-		now := "Now: " + s.progress.current
-		if s.progress.elapsed > 0 {
-			now += " · " + s.progress.elapsed.Round(time.Second).String()
+	if run.skipped > 0 {
+		lines = append(lines, s.styles.Warning(fmt.Sprintf("%d skipped by you", run.skipped)))
+	}
+	if run.current != "" {
+		now := "Now: " + run.current
+		if run.elapsed > 0 {
+			now += " · " + run.elapsed.Round(time.Second).String()
 		}
 		lines = append(lines, components.WrapText(now, width)...)
 	}
 	lines = append(lines, "")
-	lines = append(lines, components.WrapText(s.styles.Muted("These steps run without a terminal: anything that would ask for a password stops with an error instead of waiting."), width)...)
+	if s.stopRequested {
+		lines = append(lines, components.WrapText(s.styles.Warning("Press Ctrl+C again to stop the restore after the current step."), width)...)
+	}
+	lines = append(lines, components.WrapText(s.styles.Muted("Steps that need you, such as a sudo password or a sign-in, borrow the terminal and Blueprint comes back afterwards. Other steps can't prompt: anything that would ask for a password stops with an error instead of waiting."), width)...)
 	return strings.Join(lines, "\n")
 }
 func (s *Restore) plan() model.RestorePlan { return s.current }

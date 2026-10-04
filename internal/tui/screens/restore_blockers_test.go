@@ -103,20 +103,19 @@ func TestRestoreBusyViewShowsTheRunningStep(t *testing.T) {
 	screen := NewRestore(nil)
 	screen.width, screen.height = 100, 20
 	screen.busy = true
-	screen.progress = restoreProgress{total: 5}
-	events := make(chan restore.Progress)
-	close(events)
+	screen.run = &restoreRunState{total: 5}
 	notes := model.Operation{Provider: "resources", Resource: "resource:notes", Action: "git clone"}
 	for _, event := range []restore.Progress{
 		{Type: restore.ProgressStarted, Operation: model.Operation{Resource: "theme:a", Action: "install"}},
 		{Type: restore.ProgressCompleted, Operation: model.Operation{Resource: "theme:a", Action: "install"}},
+		{Type: restore.ProgressSkipped, Operation: model.Operation{Resource: "official:tailscale"}},
 		{Type: restore.ProgressStarted, Operation: notes},
 		{Type: restore.ProgressHeartbeat, Operation: notes, Elapsed: 12 * time.Second},
 	} {
-		screen.Update(restoreProgressMsg{event: event, events: events})
+		screen.run.record(event)
 	}
 	view := screen.View()
-	for _, want := range []string{"Applying restore · 1 of 5 steps done", "Now: Git clone resource:notes · 12s", "stops with an error"} {
+	for _, want := range []string{"Applying restore · 2 of 5 steps done", "1 skipped by you", "Now: Git clone resource:notes · 12s", "borrow the terminal"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("busy view lacks %q:\n%s", want, view)
 		}
