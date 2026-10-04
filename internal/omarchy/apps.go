@@ -4,13 +4,16 @@ package omarchy
 // treating a semantically configured application as only a package.
 type AppRecipe struct {
 	ID            string
+	Name          string
 	Install       []string
 	Remove        []string
 	Interactive   bool
 	InstallNotice string
 	RemoveNotice  string
-	Verify        [][]string
-	RemoveVerify  [][]string
+	// AwaitsYou is what installation waits for from the person, if anything.
+	AwaitsYou    string
+	Verify       [][]string
+	RemoveVerify [][]string
 }
 
 // SemanticRecipe returns the small, reviewed set of applications for which
@@ -21,11 +24,13 @@ func SemanticRecipe(id string) (AppRecipe, bool) {
 	case "tailscale":
 		return AppRecipe{
 			ID:            id,
+			Name:          "Tailscale",
 			Install:       []string{"omarchy-install-service-tailscale"},
 			Remove:        []string{"omarchy-remove-service-tailscale"},
 			Interactive:   true,
 			InstallNotice: "Tailscale setup requires interactive device authentication; credentials are not stored by Blueprint.",
 			RemoveNotice:  "Tailscale removal uses Omarchy's interactive service teardown.",
+			AwaitsYou:     "sign in to Tailscale with the link it prints; the step waits until this device is authorised, then finishes Omarchy's setup",
 			Verify: [][]string{
 				{"systemctl", "is-enabled", "tailscaled"},
 				{"tailscale", "status"},

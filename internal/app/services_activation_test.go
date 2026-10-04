@@ -194,7 +194,19 @@ func TestTUIReviewApprovalReachesSharedExecutionAndVerify(t *testing.T) {
 	cmd() // modal presentation, then Enter approves the complete current plan
 	cmd = screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	msg := cmd()
-	screen.Update(msg)
+	// In-interface apply is a batch: the apply itself and its progress
+	// listener. Run them in order, as the program would deliver them.
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, part := range batch {
+			if part != nil {
+				if result := part(); result != nil {
+					screen.Update(result)
+				}
+			}
+		}
+	} else {
+		screen.Update(msg)
+	}
 	if len(runner.starts) != 1 || strings.Contains(screen.View(), "Unable") {
 		t.Fatalf("TUI review was treated as headless or lost receipts: starts=%v view=%s", runner.starts, screen.View())
 	}

@@ -4,14 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
+	"github.com/Grenco/omarchy-blueprint/internal/restore"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -36,60 +38,205 @@ type Restore struct {
 	current                 model.RestorePlan
 	options                 policy.RestoreOptions
 	override                bool
-	forcedOverrides         int
-	planRequestID           uint64
-	changesTable            components.Table
-	skipsTable              components.Table
-	settingsTable           components.Table
-	summaryTable            components.Table
+	// deferred is this run's explicit deferral of categories that are not
+	// ready (ADR 0028). It is never persisted.
+	deferred        []string
+	forcedOverrides int
+	// run is the in-progress apply's shared state; stopApply cancels it
+	// once stopRequested confirms (Ctrl+C twice); the running step is asked to stop.
+	run           *restoreRunState
+	stopRequested bool
+	stopApply     context.CancelFunc
+	planRequestID uint64
+	changesTable  components.Table
+	skipsTable    components.Table
+	settingsTable components.Table
+	summaryTable  components.Table
 	// entryOffset is the first visible line of the Changes/Skipped region
 	// when the plan is taller than the workspace.
 	entryOffset int
-	// exec hands the terminal to a blocking command (tea.Exec).
+	// exec hands the terminal to a blocking command. By default it asks the
+	// root model to do so (TerminalRequest).
 	exec func(tea.ExecCommand, tea.ExecCallback) tea.Cmd
+	// lastRun is the outcome of the last apply, shown above the refreshed
+	// plan; lastRunExpanded shows it in full in the details pane (o).
+	lastRun         *restoreRun
+	lastRunExpanded bool
 }
 
-// restoreTerminalCommand applies an approved plan while bubbletea has
-// released the terminal (tea.Exec), so operations that elevate through sudo
-// prompt on the real terminal exactly as they do from the CLI. The same
-// workflow apply runs; only the terminal ownership differs (ADR 0022).
-type restoreTerminalCommand struct {
-	ctx      context.Context
-	session  *workflow.Session
-	options  *policy.RestoreOptions
-	approved model.RestorePlan
-	stdout   io.Writer
-	result   workflow.RestoreResult
+func (s *Restore) scope() workflow.RestoreScope {
+	return workflow.RestoreScope{Defer: append([]string(nil), s.deferred...)}
 }
 
-func (c *restoreTerminalCommand) Run() error {
-	if c.session == nil {
-		return fmt.Errorf("restore session is unavailable")
-	}
-	out := c.stdout
-	if out == nil {
-		out = io.Discard
-	}
-	fmt.Fprintln(out, "Applying the approved Blueprint restore. Commands may ask for administrator authentication here; Blueprint never sees the password.")
-	var err error
-	c.result, err = c.session.ApplyApprovedRestore(c.ctx, restoreScopeAll, c.options, c.approved, true)
-	if err != nil {
-		fmt.Fprintln(out, "Restore failed:", err)
-	} else {
-		fmt.Fprintln(out, "Restore applied; returning to Blueprint.")
-	}
-	return err
+// TerminalRequest asks the root model to hand the real terminal to Command
+// and deliver Done's message back to the requesting screen. A screen cannot
+// return tea.Exec itself: the root routes each screen command's message
+// back to its screen, and Bubble Tea would never see the exec request.
+type TerminalRequest struct {
+	Command tea.ExecCommand
+	Done    tea.ExecCallback
 }
-func (*restoreTerminalCommand) SetStdin(io.Reader)      {}
-func (c *restoreTerminalCommand) SetStdout(w io.Writer) { c.stdout = w }
-func (*restoreTerminalCommand) SetStderr(io.Writer)     {}
 
-const restoreScopeAll = ""
+func requestTerminal(command tea.ExecCommand, done tea.ExecCallback) tea.Cmd {
+	return func() tea.Msg { return TerminalRequest{Command: command, Done: done} }
+}
 
 type restoreAppliedMsg struct {
 	result workflow.RestoreResult
 	err    error
 }
+
+// restoreRun is the outcome of the last apply.
+type restoreRun struct {
+	result workflow.RestoreResult
+	err    error
+}
+
+// restoreLastRunLines bounds the last-run section so a run with many
+// failures cannot push the plan off screen; o shows everything.
+const restoreLastRunLines = 6
+
+func (r *restoreRun) failedCount() int { return len(r.result.Execution.Failed) }
+
+// headline sums up the last apply in one line.
+func (r *restoreRun) headline() string {
+	execution := r.result.Execution
+	switch {
+	case r.failedCount() > 0:
+		return fmt.Sprintf("Last restore: %d %s failed, %d completed", r.failedCount(), pluralWord(r.failedCount(), "step", "steps"), len(execution.Completed))
+	case errors.Is(r.err, context.Canceled):
+		return fmt.Sprintf("Last restore: stopped by you after %d completed %s; plan again to finish it", len(execution.Completed), pluralWord(len(execution.Completed), "step", "steps"))
+	case r.err != nil && !r.result.Applied:
+		return "Last restore didn't run: " + components.DisplayText(r.err.Error())
+	case r.err != nil:
+		return "Last restore stopped: " + components.DisplayText(r.err.Error())
+	case len(execution.SkippedByYou) > 0:
+		return "Last restore: done, except what you skipped (it's still in the plan below)"
+	case !r.result.Verification.OK && r.result.Applied:
+		return "Last restore: applied, but some targets still don't match the profile"
+	default:
+		return "Last restore: applied and verified"
+	}
+}
+
+// report is every detail of the last apply, for the details pane.
+func (r *restoreRun) report() []string {
+	execution := r.result.Execution
+	lines := []string{"Last restore", r.headline()}
+	if len(execution.Failed) > 0 {
+		lines = append(lines, "", "Failed:")
+		for _, failure := range execution.Failed {
+			lines = append(lines, "✗ "+restoreStepLabel(failure.Operation)+": "+components.DisplayText(failure.Error))
+		}
+	}
+	if len(execution.SkippedByYou) > 0 {
+		lines = append(lines, "", "Skipped by you:")
+		for _, op := range execution.SkippedByYou {
+			lines = append(lines, "↷ "+restoreStepLabel(op))
+		}
+	}
+	if len(execution.Blocked) > 0 {
+		lines = append(lines, "", "Held back (they depend on a step that didn't complete):")
+		for _, blocked := range execution.Blocked {
+			lines = append(lines, "↷ "+restoreStepLabel(blocked.Operation)+" (waits on "+components.DisplayText(blocked.Dependency)+")")
+		}
+	}
+	if missing := r.result.Verification.Missing; len(missing) > 0 {
+		lines = append(lines, "", "Still not matching the profile:")
+		for _, item := range missing {
+			lines = append(lines, "  "+components.DisplayText(item))
+		}
+	}
+	if r.result.Journal != "" {
+		lines = append(lines, "", "Journal: "+components.DisplayText(r.result.Journal))
+	}
+	return lines
+}
+
+// lastRunLines summarizes the last apply in at most limit lines: what
+// failed and why first, then what was skipped or held back, and where to
+// see everything.
+func (s *Restore) lastRunLines(width, limit int) []string {
+	run := s.lastRun
+	execution := run.result.Execution
+	style := s.styles.Muted
+	if run.failedCount() > 0 || run.err != nil {
+		style = s.styles.Error
+	} else if len(execution.SkippedByYou) > 0 || (!run.result.Verification.OK && run.result.Applied) {
+		style = s.styles.Warning
+	}
+	headline := run.headline()
+	if len(run.report()) > 2 {
+		headline += " (o details)"
+	}
+	lines := []string{style(components.WrapText(headline, width)[0])}
+	var detail []string
+	for _, failure := range execution.Failed {
+		detail = append(detail, "✗ "+restoreStepLabel(failure.Operation)+": "+components.DisplayText(failure.Error))
+	}
+	if len(execution.SkippedByYou) > 0 {
+		names := make([]string, 0, len(execution.SkippedByYou))
+		for _, op := range execution.SkippedByYou {
+			names = append(names, restoreStepLabel(op))
+		}
+		detail = append(detail, "↷ Skipped by you: "+strings.Join(names, ", "))
+	}
+	if len(execution.Blocked) > 0 {
+		detail = append(detail, fmt.Sprintf("↷ %d held back because they depend on a step that didn't complete", len(execution.Blocked)))
+	}
+	if run.result.Journal != "" && run.failedCount() > 0 {
+		detail = append(detail, "Journal: "+components.DisplayText(run.result.Journal))
+	}
+	room := limit - 1
+	for i, line := range detail {
+		if room <= 0 {
+			break
+		}
+		if room == 1 && i < len(detail)-1 {
+			lines = append(lines, s.styles.Muted(fmt.Sprintf("… %d more (o details)", len(detail)-i)))
+			break
+		}
+		lines = append(lines, style(components.WrapText(line, width)[0]))
+		room--
+	}
+	return lines
+}
+
+func restoreStepLabel(op model.Operation) string {
+	if op.Label != "" {
+		return components.DisplayText(op.Label)
+	}
+	return operationAction(op) + " " + components.DisplayText(op.Resource)
+}
+
+// restoreProgressLine is one terminal line per step for the terminal
+// handoff; long steps report about every 30 seconds.
+func restoreProgressLine(event restore.Progress) string {
+	label := restoreStepLabel(event.Operation)
+	switch event.Type {
+	case restore.ProgressStarted:
+		if event.Operation.AwaitsYou != "" {
+			return "→ " + label + "\n! This step waits for you: " + components.DisplayText(event.Operation.AwaitsYou) + ". (Ctrl+C skips this step; the rest of the restore continues.)"
+		}
+		return "→ " + label
+	case restore.ProgressSkipped:
+		return "↷ Skipped " + label + " (you pressed Ctrl+C); continuing with the rest of the restore"
+	case restore.ProgressCompleted:
+		return fmt.Sprintf("✓ %s (%s)", label, event.Elapsed.Round(time.Second))
+	case restore.ProgressFailed:
+		return fmt.Sprintf("✗ %s failed after %s", label, event.Elapsed.Round(time.Second))
+	case restore.ProgressHeartbeat:
+		if int(event.Elapsed.Seconds())%30 < 5 {
+			line := fmt.Sprintf("  still running: %s (%s)", label, event.Elapsed.Round(time.Second))
+			if event.Operation.AwaitsYou != "" {
+				line += "; it may be waiting for you to " + components.DisplayText(event.Operation.AwaitsYou) + " (Ctrl+C skips this step; the rest of the restore continues)"
+			}
+			return line
+		}
+	}
+	return ""
+}
+
 type restorePlanMsg struct {
 	requestID       uint64
 	plan            model.RestorePlan
@@ -102,7 +249,7 @@ func NewRestore(session *workflow.Session) *Restore {
 	return NewRestoreContext(context.Background(), session)
 }
 func NewRestoreContext(ctx context.Context, session *workflow.Session) *Restore {
-	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions(), exec: tea.Exec}
+	return &Restore{ctx: ctx, session: session, options: policy.DefaultRestoreOptions(), exec: requestTerminal}
 }
 func (s *Restore) SetStyles(styles components.Styles) { s.styles = styles }
 func (s *Restore) SetSize(width, height int)          { s.width, s.height = width, height }
@@ -127,12 +274,15 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 		}
 		s.selected = min(s.selected, max(0, s.currentEntryCount()-1))
 		return nil
+	case restoreEventMsg:
+		return s.handleRestoreEvent(msg)
 	case restoreAppliedMsg:
-		s.err, s.confirm, s.busy = msg.err, false, false
-		if msg.err == nil {
-			return s.refreshPlan()
-		}
-		return nil
+		// An apply outcome, failed or not, is reported above the plan; it is
+		// never a planning error. The machine may have changed either way, so
+		// always plan again.
+		s.confirm, s.busy, s.stopRequested, s.stopApply = false, false, false, nil
+		s.lastRun = &restoreRun{result: msg.result, err: msg.err}
+		return s.refreshPlan()
 	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -156,6 +306,11 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	if s.busy || s.planning {
 		return nil
 	}
+	if s.err != nil && key.String() != "r" {
+		// The plan could not be prepared, so there is nothing on screen to
+		// navigate or apply; only planning again does anything.
+		return nil
+	}
 	switch key.String() {
 	case "a":
 		s.ensureOptions()
@@ -173,6 +328,21 @@ func (s *Restore) Update(msg tea.Msg) tea.Cmd {
 	case "v":
 		s.compatibilityExpanded = !s.compatibilityExpanded
 		s.layoutPlan()
+	case "r":
+		return s.refreshPlan()
+	case "o":
+		if s.lastRun != nil {
+			s.lastRunExpanded = !s.lastRunExpanded
+		}
+	case "d":
+		if len(s.deferred) > 0 {
+			s.deferred = nil
+			return s.refreshPlan()
+		}
+		if s.CanDefer() {
+			s.deferred = compatibility.NotReadyCategories(s.current)
+			return s.refreshPlan()
+		}
 	case "j", "down":
 		if s.selected < s.currentEntryCount()-1 {
 			s.selected++
@@ -221,10 +391,10 @@ func (s *Restore) View() string {
 		return s.activationReviewView()
 	}
 	if s.err != nil {
-		return "Unable to prepare restore: " + components.DisplayText(s.err.Error())
+		return strings.Join(append(components.WrapText("Unable to prepare restore: "+components.DisplayText(s.err.Error()), s.widthOrDefault()), "", "Press r to plan again."), "\n")
 	}
 	if s.busy {
-		return "Applying restore..."
+		return s.busyView()
 	}
 	if s.planning {
 		return "Refreshing plan..."
@@ -239,12 +409,19 @@ func (s *Restore) View() string {
 	return s.currentPlanView()
 }
 func (s *Restore) DetailView() string {
+	if s.lastRunExpanded && s.lastRun != nil {
+		return strings.Join(s.lastRun.report(), "\n")
+	}
 	if s.compatibilityExpanded {
 		return strings.Join(s.compatibilityReportLines(s.widthOrDefault(), false), "\n")
 	}
 	if s.selected < len(s.current.Operations) {
 		op := s.current.Operations[s.selected]
-		return fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t\n%s", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive, components.DisplayText(op.Notice))
+		detail := fmt.Sprintf("Restore operation\nCategory: %s\nTarget: %s\nAction: %s\nOutcome: %s\nRisk: %s\nInteractive: %t\n%s", components.DisplayText(restoreCategoryLabel(op.Provider)), components.DisplayText(op.Resource), operationAction(op), titleMode(string(operationOutcome(op))), operationRisk(op), op.Interactive, components.DisplayText(op.Notice))
+		if op.AwaitsYou != "" {
+			detail += "\nWaits for you: " + components.DisplayText(op.AwaitsYou)
+		}
+		return detail
 	}
 	skipIndex := s.selected - len(s.current.Operations)
 	if skipIndex >= 0 && skipIndex < len(s.current.Skipped) {
@@ -290,14 +467,14 @@ func (s *Restore) refreshPlan() tea.Cmd {
 		copied := effectiveOptions
 		options = &copied
 	}
-	session, ctx := s.session, s.ctx
+	session, ctx, scope := s.session, s.ctx, s.scope()
 	return func() tea.Msg {
 		cycle, err := session.BeginRead(ctx)
 		if err != nil {
 			return restorePlanMsg{requestID: requestID, err: err}
 		}
 		defer cycle.Close()
-		preview, err := cycle.PreviewRestore(ctx, restoreScopeAll, options)
+		preview, err := cycle.PreviewRestoreScope(ctx, scope, options)
 		if err != nil {
 			return restorePlanMsg{requestID: requestID, err: err}
 		}
@@ -307,7 +484,7 @@ func (s *Restore) refreshPlan() tea.Cmd {
 		if effectiveOptions.Conflicts == policy.ConflictForce {
 			safe := effectiveOptions
 			safe.Conflicts = policy.ConflictSafe
-			if safePreview, safeErr := cycle.PreviewRestore(ctx, restoreScopeAll, &safe); safeErr == nil {
+			if safePreview, safeErr := cycle.PreviewRestoreScope(ctx, scope, &safe); safeErr == nil {
 				forcedOverrides = countForcedOverrides(plan, safePreview.Plan)
 			}
 		}
@@ -321,10 +498,8 @@ func (s *Restore) currentPlanView() string {
 		var blocked *workflow.BlockedCompatibilityError
 		var unmet *workflow.UnmetRequirementsError
 		applicability := workflow.CheckRestoreApplicable(s.plan(), true)
-		if errors.As(applicability, &blocked) {
-			message = "Restore cannot apply; review Compatibility findings."
-		} else if errors.As(applicability, &unmet) {
-			message = "Restore cannot apply; complete Requirements and replan."
+		if errors.As(applicability, &blocked) || errors.As(applicability, &unmet) {
+			message = "Restore can't apply yet; see what isn't ready above."
 		}
 		return strings.Join(append(header, "", message), "\n")
 	}
@@ -379,6 +554,12 @@ func (s *Restore) fullPlanHeader(width int) []string {
 		}, width, 6, s.styles,
 	)
 	sections := []string{components.SectionDivider("Run settings", width, s.styles) + "\n" + settings}
+	if s.lastRun != nil {
+		sections = append([]string{strings.Join(s.lastRunLines(width, restoreLastRunLines), "\n")}, sections...)
+	}
+	if deferred := s.deferredLine(width); deferred != "" {
+		sections = append(sections, deferred)
+	}
 	if len(s.current.ActivationReview) > 0 {
 		sections = append(sections, "Review activation: press Enter to select individual starts before applying.")
 	}
@@ -388,7 +569,7 @@ func (s *Restore) fullPlanHeader(width int) []string {
 	if compatibility := s.compatibilityLines(width, false); len(compatibility) > 0 {
 		sections = append(sections, strings.Join(compatibility, "\n"))
 	}
-	if len(s.current.Requirements) > 0 {
+	if len(s.unlinkedRequirements()) > 0 {
 		sections = append(sections, components.SectionDivider("Requires before applying", width, s.styles)+"\n"+s.requirementsView())
 	}
 	summary := s.summaryTable.Render(
@@ -407,6 +588,9 @@ func (s *Restore) compactPlanHeader(width int) []string {
 	counts := outcomeCounts(s.current)
 	machine, conflicts, _, convergence, _, defaults, _ := s.runSettings()
 	lines := []string{}
+	if s.lastRun != nil {
+		lines = append(lines, s.lastRunLines(width, 1)...)
+	}
 	for _, line := range components.WrapText(fmt.Sprintf("Run: %s (f) · %s (e) · %s activation (a) · %s · %s", conflicts, convergence, activationLabel(s.options.ActivationMode()), defaults, machine), width) {
 		lines = append(lines, s.styles.SubtleAccent(line))
 	}
@@ -414,6 +598,9 @@ func (s *Restore) compactPlanHeader(width int) []string {
 		for _, line := range components.WrapText("! Exact removes Blueprint-managed extras; Resource data is never deleted.", width) {
 			lines = append(lines, s.styles.Warning(line))
 		}
+	}
+	if deferred := s.deferredLine(width); deferred != "" {
+		lines = append(lines, strings.Split(deferred, "\n")...)
 	}
 	requirementLines := s.compactRequirementLines(width)
 	summary := fmt.Sprintf("Plan: %d create · %d modify · %d replace · %d removals · %d commands · %d policy skips · %d forced", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides)
@@ -434,7 +621,7 @@ func (s *Restore) compactPlanHeader(width int) []string {
 			budget = s.height - len(lines) - len(requirementLines) - reserve
 		}
 		if budget < restoreMinBlockerLines && len(requirementLines) > 1 {
-			first := s.current.Requirements[0]
+			first := s.unlinkedRequirements()[0]
 			hint := "Requires: " + components.DisplayText(strings.Join(first.Remediation, " "))
 			requirementLines = []string{s.styles.Warning(components.WrapText(hint, width)[0])}
 			budget = s.height - len(lines) - len(requirementLines) - reserve
@@ -450,15 +637,16 @@ func (s *Restore) compactPlanHeader(width int) []string {
 }
 
 func (s *Restore) compactRequirementLines(width int) []string {
-	if len(s.current.Requirements) == 0 {
+	requirements := s.unlinkedRequirements()
+	if len(requirements) == 0 {
 		return nil
 	}
-	first := s.current.Requirements[0]
-	remediation := components.WrapText("Run "+components.DisplayText(strings.Join(first.Remediation, " "))+" then replan: "+components.DisplayText(first.Reason), width)
+	first := requirements[0]
+	remediation := components.WrapText("Run "+components.DisplayText(strings.Join(first.Remediation, " "))+", then press r: "+components.DisplayText(first.Reason), width)
 	lines := []string{s.styles.Warning("Requires before applying")}
 	lines = append(lines, remediation[0])
-	if len(s.current.Requirements) > 1 {
-		more := fmt.Sprintf("… %d more requirements (expand Restore)", len(s.current.Requirements)-1)
+	if len(requirements) > 1 {
+		more := fmt.Sprintf("… %d more requirements (expand Restore)", len(requirements)-1)
 		lines = append(lines, s.styles.Muted(components.WrapText(more, width)[0]))
 	} else if len(remediation) > 1 {
 		lines = append(lines, s.styles.Muted(components.WrapText("… more readiness detail (expand Restore)", width)[0]))
@@ -496,17 +684,100 @@ func (s *Restore) compatibilityLines(width int, compact bool) []string {
 		}
 		return components.WrapText(s.styles.Muted("Compatibility: Ready · no compatibility blockers (v details)"), width)
 	}
-	lines := []string{s.styles.Error(fmt.Sprintf("Compatibility: Blocked · %d categories (v details)", len(blocked)))}
-	for _, category := range blocked {
-		lines = append(lines, components.WrapText(s.styles.Error(components.DisplayText(restoreCategoryLabel(category.Category)+": "+titleMode(string(category.State))+" · Blocked")), width)...)
-		for _, finding := range category.Findings {
-			if finding.Authority != model.CompatibilityBlocked {
-				continue
-			}
-			lines = append(lines, components.WrapText(s.styles.Error(components.DisplayText(finding.Target+": "+finding.Summary)), width)...)
+	return s.blockerLines(width, len(blocked))
+}
+
+// restoreBlockerGroupBudget bounds the blocker section so it can never push
+// the plan off screen, however many targets are blocked (ADR 0028).
+const restoreBlockerGroupBudget = 4
+
+// blockerLines summarizes what blocks the plan: one entry per category and
+// cause with a target count, the fix when a requirement names one, and the
+// ways forward. Every finding stays available in the details view (v).
+func (s *Restore) blockerLines(width, categories int) []string {
+	heading := fmt.Sprintf("Compatibility: Blocked · %d %s not ready (v details)", categories, pluralWord(categories, "category", "categories"))
+	lines := components.WrapText(s.styles.Error(heading), width)
+	states := map[string]model.CompatibilityState{}
+	for _, category := range s.current.Compatibility.Categories {
+		states[category.Category] = category.State
+	}
+	groups := compatibility.BlockerGroups(s.current)
+	for i, group := range groups {
+		if i == restoreBlockerGroupBudget {
+			lines = append(lines, s.styles.Muted(components.WrapText(fmt.Sprintf("… %d more causes (v details)", len(groups)-i), width)[0]))
+			break
+		}
+		count := ""
+		if len(group.Targets) > 1 {
+			count = fmt.Sprintf(" · %d targets", len(group.Targets))
+		} else if len(group.Targets) == 1 {
+			count = " · " + group.Targets[0]
+		}
+		title := components.DisplayText(restoreCategoryLabel(group.Category) + " · " + titleMode(string(states[group.Category])) + " · Blocked" + count)
+		for _, line := range components.WrapText(title, width) {
+			lines = append(lines, s.styles.Error(line))
+		}
+		reason := components.WrapText(components.DisplayText(group.Summary), max(1, width-2))
+		if len(reason) > 2 {
+			reason = append(reason[:1], strings.TrimSuffix(reason[1], " ")+" …")
+		}
+		for _, line := range reason {
+			lines = append(lines, s.styles.Error("  "+line))
+		}
+		if group.Requirement != nil {
+			fix := "  Fix: run `" + strings.Join(group.Requirement.Remediation, " ") + "` in a terminal, then press r to plan again."
+			lines = append(lines, components.WrapText(s.styles.Warning(components.DisplayText(fix)), width)...)
 		}
 	}
-	return lines
+	return append(lines, s.nextStepLines(width)...)
+}
+
+// nextStepLines states the ways forward from a plan that cannot apply.
+// Force is never offered: it does not override compatibility.
+func (s *Restore) nextStepLines(width int) []string {
+	text := "Fix the cause and press r to plan again"
+	if s.CanDefer() {
+		labels := []string{}
+		for _, category := range compatibility.NotReadyCategories(s.current) {
+			labels = append(labels, restoreCategoryLabel(category))
+		}
+		text += ", or press d to restore everything else now and leave " + strings.Join(labels, ", ") + " for later"
+	}
+	return components.WrapText(s.styles.SubtleAccent(text+"."), width)
+}
+
+// deferredLine names the categories this run leaves out and how to bring
+// them back; they are planned again only when the person asks.
+func (s *Restore) deferredLine(width int) string {
+	if len(s.current.Deferred) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(s.current.Deferred))
+	for _, category := range s.current.Deferred {
+		labels = append(labels, restoreCategoryLabel(category))
+	}
+	text := "Deferred for later: " + strings.Join(labels, ", ") + " · not part of this restore · press d to plan them again"
+	return strings.Join(components.WrapText(s.styles.Warning(components.DisplayText(text)), width), "\n")
+}
+
+// HasLastRun reports whether an apply outcome is available to show.
+func (s *Restore) HasLastRun() bool { return s.lastRun != nil }
+
+// CanDefer reports whether d would narrow this plan: something is not ready,
+// nothing is deferred yet, and at least one category would remain.
+func (s *Restore) CanDefer() bool {
+	if len(s.deferred) > 0 || s.planning || s.busy || s.err != nil {
+		return false
+	}
+	notReady := compatibility.NotReadyCategories(s.current)
+	return len(notReady) > 0 && len(notReady) < len(s.current.Compatibility.Categories)
+}
+
+func pluralWord(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func (s *Restore) compatibilityReportLines(width int, compact bool) []string {
@@ -866,29 +1137,34 @@ func skipReasonLabel(reason string) string {
 	return "Skipped"
 }
 
-// apply runs the approved plan through the shared workflow. A plan with
-// interactive operations gets the real terminal via tea.Exec; any other plan
-// applies without leaving the interface. Either way the workflow refuses a
-// plan that changed after approval.
-func (s *Restore) apply() tea.Cmd {
-	var options *policy.RestoreOptions
-	if s.override {
-		options = &s.options
+// busyView shows which step is running while a plan applies, so a long
+// step is visibly working rather than looking stuck.
+func (s *Restore) busyView() string {
+	width := s.widthOrDefault()
+	var run restoreRunSnapshot
+	if s.run != nil {
+		run = s.run.snapshot()
 	}
-	approved := s.plan()
-	if s.hasInteractiveOperation() {
-		command := &restoreTerminalCommand{ctx: s.ctx, session: s.session, options: options, approved: approved}
-		return s.exec(command, func(err error) tea.Msg { return restoreAppliedMsg{command.result, err} })
+	lines := []string{s.styles.SubtleAccent(fmt.Sprintf("Applying restore · %d of %d steps done", run.done, run.total))}
+	if run.failed > 0 {
+		lines = append(lines, s.styles.Error(fmt.Sprintf("%d failed so far; Restore continues with independent steps", run.failed)))
 	}
-	return func() tea.Msg {
-		if s.session == nil {
-			return restoreAppliedMsg{err: fmt.Errorf("restore session is unavailable")}
+	if run.skipped > 0 {
+		lines = append(lines, s.styles.Warning(fmt.Sprintf("%d skipped by you", run.skipped)))
+	}
+	if run.current != "" {
+		now := "Now: " + run.current
+		if run.elapsed > 0 {
+			now += " · " + run.elapsed.Round(time.Second).String()
 		}
-		// Review selection happened interactively in this terminal. No command
-		// here needs stdin; those use the tea.Exec handoff above.
-		result, err := s.session.ApplyApprovedRestore(s.ctx, restoreScopeAll, options, approved, s.options.ActivationMode() == policy.ActivationReview)
-		return restoreAppliedMsg{result, err}
+		lines = append(lines, components.WrapText(now, width)...)
 	}
+	lines = append(lines, "")
+	if s.stopRequested {
+		lines = append(lines, components.WrapText(s.styles.Warning("Press Ctrl+C again to stop the restore: the running step is asked to stop, and no further step starts."), width)...)
+	}
+	lines = append(lines, components.WrapText(s.styles.Muted("Steps that need you, such as a sudo password or a sign-in, borrow the terminal and Blueprint comes back afterwards. Other steps can't prompt: anything that would ask for a password stops with an error instead of waiting."), width)...)
+	return strings.Join(lines, "\n")
 }
 func (s *Restore) plan() model.RestorePlan { return s.current }
 
@@ -925,9 +1201,9 @@ func (s *Restore) ApplyDisabledReason() string {
 		var unmet *workflow.UnmetRequirementsError
 		switch {
 		case errors.As(err, &blocked):
-			return "Compatibility blocks the selected restore plan"
+			return "some categories aren't ready; fix them and press r, or press d to defer them"
 		case errors.As(err, &unmet):
-			return "Requirements must be completed before applying"
+			return "requirements must be completed first; press r after completing them"
 		default:
 			return "restore plan cannot be applied yet"
 		}
@@ -1040,17 +1316,40 @@ func (s *Restore) confirmation() string {
 	if s.hasInteractiveOperation() {
 		prompt += " Some operations may ask for administrator authentication in this terminal; Blueprint steps aside while they run."
 	}
+	for _, op := range s.plan().Operations {
+		if op.AwaitsYou != "" {
+			prompt += " " + components.DisplayText(restoreStepLabel(op)) + " waits for you: " + components.DisplayText(op.AwaitsYou) + "."
+		}
+	}
 	if s.options.ActivationMode() != policy.ActivationPersistentOnly {
 		prompt += " Services activation: " + activationLabel(s.options.ActivationMode()) + "."
 	}
 	return prompt
 }
 
+// unlinkedRequirements are the requirements no blocker already shows with
+// its fix, so the same instruction never appears twice.
+func (s *Restore) unlinkedRequirements() []model.Requirement {
+	shown := map[string]bool{}
+	for _, group := range compatibility.BlockerGroups(s.current) {
+		if group.Requirement != nil {
+			shown[group.Requirement.ID] = true
+		}
+	}
+	var requirements []model.Requirement
+	for _, requirement := range s.current.Requirements {
+		if !shown[requirement.ID] {
+			requirements = append(requirements, requirement)
+		}
+	}
+	return requirements
+}
+
 // requirementsView explains what the user must do before this plan applies.
 func (s *Restore) requirementsView() string {
 	var b strings.Builder
-	for _, requirement := range s.plan().Requirements {
-		fmt.Fprintf(&b, "%s\nRun `%s` in a terminal, then open Restore again to replan.\n", components.DisplayText(requirement.Reason), components.DisplayText(strings.Join(requirement.Remediation, " ")))
+	for _, requirement := range s.unlinkedRequirements() {
+		fmt.Fprintf(&b, "%s\nRun `%s` in a terminal, then press r to plan again.\n", components.DisplayText(requirement.Reason), components.DisplayText(strings.Join(requirement.Remediation, " ")))
 	}
 	return s.wrapCurrentPlan(strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n"))
 }

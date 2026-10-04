@@ -59,7 +59,7 @@ func TestMissingSyncMetadataMakesPackageReadinessAPlanRequirement(t *testing.T) 
 	}
 	want := []model.Requirement{{
 		ID: "packages.metadata", Provider: "packages", Kind: "package-metadata",
-		Reason:      "package metadata unavailable: pacman sync databases missing for core, extra; installing packages needs Omarchy's own system update first",
+		Reason:      "pacman's package databases aren't set up on this machine yet (missing: core, extra); Omarchy's own update creates them, and installing packages needs them",
 		Remediation: []string{"omarchy", "update"},
 		Operations:  []string{"packages.install.aur.yay-bin", "packages.install.official", "packages.preinstall.install.obsidian"},
 	}}

@@ -38,7 +38,16 @@ makepkg -si
 
 `makepkg` downloads the release's source archive, checks it against the
 SHA-256 pinned in the `PKGBUILD`, builds and tests it, and installs it with
-pacman. Check the result:
+pacman. `-s` installs the declared build dependencies it needs, notably the
+`go` package, with pacman (it asks first). Omarchy's own Go comes from mise,
+which pacman doesn't track, so `-s` installs pacman's `go` alongside it; use
+`makepkg -sri` instead to remove the build dependencies again afterwards.
+
+`makepkg -di` builds with whatever `go` is on your `PATH`, but `-d`
+(`--nodeps`) turns off *all* of makepkg's dependency checks. Use it only if
+you have already satisfied every dependency the `PKGBUILD` declares.
+
+Check the result:
 
 ```sh
 omarchy-blueprint --version          # omarchy-blueprint version <release>

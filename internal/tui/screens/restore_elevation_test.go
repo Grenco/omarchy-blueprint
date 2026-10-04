@@ -1,7 +1,6 @@
 package screens
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
@@ -31,15 +30,14 @@ func TestRestoreShowsReadinessRequirementAndRefusesToApply(t *testing.T) {
 	}
 }
 
-func TestRestoreHandsTheTerminalToApprovedInteractiveRestore(t *testing.T) {
+func TestRestoreAppliesInteractivePlansFromTheInterface(t *testing.T) {
 	screen := NewRestore(nil)
 	plan := readinessPlan()
 	plan.Requirements = nil
 	screen.current = plan
-	var handed tea.ExecCommand
-	screen.exec = func(c tea.ExecCommand, fn tea.ExecCallback) tea.Cmd {
-		handed = c
-		return func() tea.Msg { return fn(nil) }
+	screen.exec = func(tea.ExecCommand, tea.ExecCallback) tea.Cmd {
+		t.Fatal("the whole restore was handed to the terminal; only steps that need it borrow it")
+		return nil
 	}
 	if !screen.CanApply() {
 		t.Fatal("an interactive plan must be applicable from the TUI")
@@ -50,15 +48,12 @@ func TestRestoreHandsTheTerminalToApprovedInteractiveRestore(t *testing.T) {
 	if confirmation := screen.confirmation(); !strings.Contains(confirmation, "administrator authentication") {
 		t.Fatalf("confirmation hides the terminal authentication step: %s", confirmation)
 	}
-	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
-		t.Fatal("approval dispatched nothing")
+	cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil || !screen.Applying() {
+		t.Fatal("approval did not start an in-interface apply")
 	}
-	command, ok := handed.(*restoreTerminalCommand)
-	if !ok {
-		t.Fatalf("interactive restore did not hand over the terminal: %#v", handed)
-	}
-	if !reflect.DeepEqual(command.approved, plan) {
-		t.Fatalf("terminal restore does not apply the approved plan: %#v", command.approved)
+	if _, ok := appliedFromBatch(cmd()); !ok {
+		t.Fatal("apply produced no result")
 	}
 }
 
@@ -72,7 +67,26 @@ func TestRestoreKeepsNonInteractivePlansInsideTheTUI(t *testing.T) {
 	screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd := screen.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
 		t.Fatal("approval dispatched nothing")
-	} else if msg, ok := cmd().(restoreAppliedMsg); !ok || msg.err == nil {
+	} else if msg, ok := appliedFromBatch(cmd()); !ok || msg.err == nil {
 		t.Fatalf("expected in-TUI apply result, got %#v", msg)
 	}
+}
+
+// appliedFromBatch runs an in-TUI apply batch (the apply and its progress
+// listener) in order and returns the apply result.
+func appliedFromBatch(msg tea.Msg) (restoreAppliedMsg, bool) {
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		applied, ok := msg.(restoreAppliedMsg)
+		return applied, ok
+	}
+	for _, cmd := range batch {
+		if cmd == nil {
+			continue
+		}
+		if applied, ok := cmd().(restoreAppliedMsg); ok {
+			return applied, true
+		}
+	}
+	return restoreAppliedMsg{}, false
 }

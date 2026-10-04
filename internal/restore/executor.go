@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,9 @@ const (
 	ProgressHeartbeat ProgressType = "heartbeat"
 	ProgressCompleted ProgressType = "completed"
 	ProgressFailed    ProgressType = "failed"
+	// ProgressSkipped is a step the person stopped with Ctrl+C while it
+	// owned the terminal; the rest of the plan continues (ADR 0028).
+	ProgressSkipped ProgressType = "skipped"
 )
 
 type Progress struct {
@@ -45,6 +49,10 @@ type Result struct {
 	Completed []model.Operation `json:"completed"`
 	Failed    []Failure         `json:"failed"`
 	Blocked   []Blocked         `json:"blocked,omitempty"`
+	// SkippedByYou are steps the person chose to skip. Like failures, they
+	// hold back the steps that depend on them; unlike failures, they are not
+	// errors.
+	SkippedByYou []model.Operation `json:"skipped_by_you,omitempty"`
 }
 
 type Blocked struct {
@@ -115,6 +123,13 @@ func Execute(ctx context.Context, runner command.Runner, plan model.RestorePlan,
 			}
 		}
 		ticker.Stop()
+		if err != nil && ctx.Err() == nil && errors.Is(err, command.ErrSkippedByUser) {
+			failed[op.ID] = true
+			_ = journal.Write(Event{Time: now().UTC(), Type: "OPERATION_SKIPPED_BY_USER", Operation: op.ID, Message: err.Error()})
+			notify(progress, Progress{Type: ProgressSkipped, Operation: op, Elapsed: time.Since(started).Round(time.Second)})
+			execution.SkippedByYou = append(execution.SkippedByYou, op)
+			continue
+		}
 		if err != nil {
 			failed[op.ID] = true
 			eventType := "OPERATION_FAILED"
@@ -200,7 +215,7 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 		}
 		return interactive.RunInteractive(ctx, op.Command[0], op.Command[1:]...)
 	}
-	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
+	_, err := command.RunNonInteractive(ctx, runner, op.Command[0], op.Command[1:]...)
 	return err
 }
 
@@ -223,7 +238,7 @@ func executeGitPatch(ctx context.Context, runner command.Runner, action model.Gi
 		args = append(args, "--index")
 	}
 	args = append(args, action.Source)
-	_, err = runner.Run(ctx, "git", args...)
+	_, err = command.RunNonInteractive(ctx, runner, "git", args...)
 	return err
 }
 

@@ -21,15 +21,26 @@ type RestorePreview struct {
 }
 
 func (s *Session) PreviewRestore(ctx context.Context, only string, options *policy.RestoreOptions) (RestorePreview, error) {
+	return s.PreviewRestoreScope(ctx, onlyRestoreScope(only), options)
+}
+
+// PreviewRestoreScope previews the plan for an explicit RestoreScope.
+func (s *Session) PreviewRestoreScope(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions) (RestorePreview, error) {
 	r, e := s.BeginRead(ctx)
 	if e != nil {
 		return RestorePreview{}, e
 	}
 	defer r.Close()
-	return r.PreviewRestore(ctx, only, options)
+	return r.PreviewRestoreScope(ctx, scope, options)
 }
 
 func (r *ReadCycle) PreviewRestore(ctx context.Context, only string, options *policy.RestoreOptions) (RestorePreview, error) {
+	return r.PreviewRestoreScope(ctx, onlyRestoreScope(only), options)
+}
+
+// PreviewRestoreScope previews the plan for an explicit RestoreScope inside
+// this read cycle.
+func (r *ReadCycle) PreviewRestoreScope(ctx context.Context, scope RestoreScope, options *policy.RestoreOptions) (RestorePreview, error) {
 	ctx, stop := r.withContext(ctx)
 	defer stop()
 	if e := r.check(ctx); e != nil {
@@ -45,16 +56,9 @@ func (r *ReadCycle) PreviewRestore(ctx context.Context, only string, options *po
 	if e := policy.ValidateRestoreOptions(resolved); e != nil {
 		return RestorePreview{}, e
 	}
-	selected := capturedProviders(r.providers, profile.CloneData(r.profile))
-	if only != "" {
-		p, ok := ProviderByID(r.providers, only)
-		if !ok {
-			return RestorePreview{}, fmt.Errorf("unknown category %s", only)
-		}
-		if !p.Captured(profile.CloneData(r.profile)) {
-			return RestorePreview{}, CaptureRequiredError(p.ID())
-		}
-		selected = []ReadProvider{p}
+	selected, deferred, err := selectRestoreScope(r.providers, profile.CloneData(r.profile), scope)
+	if err != nil {
+		return RestorePreview{}, err
 	}
 	providers := make([]ReadRestoreProvider, 0, len(selected))
 	for _, p := range selected {
@@ -68,7 +72,7 @@ func (r *ReadCycle) PreviewRestore(ctx context.Context, only string, options *po
 	if err != nil {
 		return RestorePreview{}, err
 	}
-	plan := model.RestorePlan{ProfileVersion: r.profile.Manifest.Schema, OmarchyFrom: r.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version}
+	plan := model.RestorePlan{ProfileVersion: r.profile.Manifest.Schema, OmarchyFrom: r.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version, Deferred: deferred}
 	if resolved.Activation != "" {
 		plan.ActivationMode = string(resolved.ActivationMode())
 	}
@@ -107,6 +111,10 @@ func (r *ReadCycle) PreviewRestore(ctx context.Context, only string, options *po
 			return RestorePreview{}, fmt.Errorf("finalize restore plan: %w", e)
 		}
 	} else if e := restore.ValidatePlan(plan); e != nil {
+		return RestorePreview{}, e
+	}
+	plan.Operations = restore.AwaitingStepsLast(plan.Operations)
+	if e := restore.ValidatePlan(plan); e != nil {
 		return RestorePreview{}, e
 	}
 	plan.Compatibility = compatibility.NormalizeReport(plan.Compatibility)

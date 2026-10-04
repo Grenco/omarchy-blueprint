@@ -19,6 +19,7 @@ import (
 
 	"github.com/Grenco/omarchy-blueprint/internal/buildinfo"
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/omarchy"
@@ -734,8 +735,12 @@ func statusCommand(deps Dependencies, opt *options, diff bool) *cobra.Command {
 func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	var dryRun, yes, force, exact bool
 	var conflictsFlag, convergenceFlag, activationFlag string
+	var deferred []string
 	providers := stateProviders(deps, opt)
-	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|resources|config|defaults|shell|hooks]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "restore [packages|themes|plugins|resources|config|defaults|shell|hooks|services]", Args: supportedCategory(providers), Short: "Plan or restore system state", RunE: func(cmd *cobra.Command, args []string) error {
+		if len(deferred) > 0 && len(args) > 0 {
+			return fmt.Errorf("--defer leaves categories out of a full restore and cannot be combined with restoring only %s", selectedCategory(args))
+		}
 		override, err := parseRestoreOverride(force, exact, conflictsFlag, convergenceFlag)
 		if err != nil {
 			return err
@@ -757,6 +762,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 			return profileError(opt.profileDir, err)
 		}
 		if len(args) == 0 {
+			override.Defer = deferred
 			return restoreAll(cmd.Context(), deps, opt, d, providers, dryRun, yes, override)
 		}
 		provider, ok := categoryProvider(providers, selectedCategory(args))
@@ -775,6 +781,7 @@ func restoreCommand(deps Dependencies, opt *options) *cobra.Command {
 	cmd.Flags().StringVar(&conflictsFlag, "conflicts", "", `one-run Restore conflict override: "safe" or "force"`)
 	cmd.Flags().StringVar(&convergenceFlag, "convergence", "", `one-run Restore convergence override: "additive" or "exact"`)
 	cmd.Flags().StringVar(&activationFlag, "activation", "", "one-run Services activation: persistent, working, or interactive review (default persistent)")
+	cmd.Flags().StringSliceVar(&deferred, "defer", nil, "leave these categories out of this run so the rest can apply, e.g. --defer packages,services")
 	return cmd
 }
 
@@ -790,6 +797,8 @@ type restoreOverride struct {
 	Convergence      *policy.ConvergenceMode
 	Activation       *policy.ActivationMode
 	ReviewActivation *policy.ActivationReviewSelection
+	// Defer narrows this run's scope rather than its options (ADR 0028).
+	Defer []string
 }
 
 func (o restoreOverride) any() bool {
@@ -1747,6 +1756,9 @@ func renderNonConfigChanges(title string, changes []model.Change) string {
 
 type restorePlanOptions struct {
 	Force bool
+	// SingleCategory is the one category this run selected, if any; a
+	// deferral is only suggested for a full restore.
+	SingleCategory string
 }
 
 func restoreAll(ctx context.Context, deps Dependencies, opt *options, d profile.Data, providers []stateProvider, dryRun, yes bool, override restoreOverride) error {
@@ -1759,9 +1771,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	if err != nil {
 		return profileError(opt.profileDir, err)
 	}
-	onlyProvider := ""
-	if len(providers) == 1 {
-		onlyProvider = providers[0].ID()
+	scope := workflow.RestoreScope{Defer: override.Defer}
+	if len(providers) == 1 && len(override.Defer) == 0 {
+		scope.Only = providers[0].ID()
 	}
 	// override.resolve only needs a base to merge onto when it actually
 	// overrides something; a nil result here correctly lets
@@ -1775,7 +1787,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			base = m.EffectiveRestoreDefaults()
 		}
 	}
-	preview, err := session.PreviewRestore(ctx, onlyProvider, override.resolve(base))
+	preview, err := session.PreviewRestoreScope(ctx, scope, override.resolve(base))
 	if err != nil {
 		return err
 	}
@@ -1783,6 +1795,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	var restoreProviders []workflow.RestoreProvider
 	var contexts map[string]workflow.RestoreContext
 	planOptions := restorePlanOptionsFromPolicy(resolved)
+	planOptions.SingleCategory = scope.Only
 	d = preview.Profile
 	if dryRun {
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"dry_run": true, "plan": plan}, renderPlanWithOptions(plan, true, planOptions))
@@ -1811,7 +1824,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			}
 		}
 		override.ReviewActivation = selection
-		preview, err = session.PreviewRestore(ctx, onlyProvider, override.resolve(base))
+		preview, err = session.PreviewRestoreScope(ctx, scope, override.resolve(base))
 		if err != nil {
 			return err
 		}
@@ -1820,9 +1833,10 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 			return err
 		}
 		planOptions = restorePlanOptionsFromPolicy(resolved)
+		planOptions.SingleCategory = scope.Only
 	}
 	if len(plan.Operations) == 0 {
-		fresh, providers, freshContexts, freshOptions, err := session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+		fresh, providers, freshContexts, freshOptions, err := session.PlanRestoreScopeWithContext(ctx, scope, override.resolve(base))
 		if err != nil {
 			return fmt.Errorf("revalidate no-op restore plan: %w", err)
 		}
@@ -1851,6 +1865,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		if len(providers) == 1 && providers[0].ID() == "packages" {
 			message = "All desired packages are installed. No changes applied.\n"
 		}
+		if len(plan.Deferred) > 0 {
+			message = "Everything except the deferred categories is already restored. No changes applied.\n" + deferredFollowUp(plan.Deferred)
+		}
 		return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification}, message)
 	}
 	if err := requireInteractiveTerminal(plan, deps.IsTTY(), opt.json); err != nil {
@@ -1872,7 +1889,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	// Approval applies to the inspected plan, not merely the command line.
 	// Reinspect immediately before creating the journal so external changes
 	// (especially a changed Mise declaration) cannot retain stale authority.
-	recalculated, recalculatedProviders, recalculatedContexts, recalculatedOptions, err := session.PlanRestoreWithContext(ctx, onlyProvider, override.resolve(base))
+	recalculated, recalculatedProviders, recalculatedContexts, recalculatedOptions, err := session.PlanRestoreScopeWithContext(ctx, scope, override.resolve(base))
 	if err != nil {
 		return fmt.Errorf("recalculate approved restore plan: %w", err)
 	}
@@ -1881,6 +1898,7 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 	}
 	plan, restoreProviders, contexts, resolved = recalculated, recalculatedProviders, recalculatedContexts, recalculatedOptions
 	planOptions = restorePlanOptionsFromPolicy(resolved)
+	planOptions.SingleCategory = scope.Only
 	d = session.Profile()
 	stateHome, err := deps.StateHome()
 	if err != nil {
@@ -1914,6 +1932,9 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		return fmt.Errorf("restore completed with %d failed operation(s)", len(execution.Failed))
 	}
 	if !verification.OK {
+		if message := skippedFollowUp(execution, verification.Missing); message != "" {
+			return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "execution": execution, "verification": verification, "journal": journal.Path}, message+fmt.Sprintf("Journal: %s\n", journal.Path)+deferredFollowUp(plan.Deferred))
+		}
 		if message, ok := unresolvedShellConflictMessage(plan); ok {
 			if err := emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, message); err != nil {
 				return err
@@ -1922,7 +1943,16 @@ func restoreProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 		return fmt.Errorf("restore completed but verification failed: missing %s", strings.Join(verification.Missing, ", "))
 	}
-	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path))
+	return emit(deps.Out, opt.json, "restore", true, map[string]any{"plan": plan, "verification": verification, "journal": journal.Path}, fmt.Sprintf("Restore verified. Journal: %s\n", journal.Path)+deferredFollowUp(plan.Deferred))
+}
+
+// deferredFollowUp reminds the person which categories this run left out
+// and how to plan them again; Blueprint never resumes them on its own.
+func deferredFollowUp(deferred []string) string {
+	if len(deferred) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Deferred: %s. When they're ready, run `omarchy-blueprint restore` to plan them again.\n", strings.Join(deferred, ", "))
 }
 
 func requireInteractiveTerminal(plan model.RestorePlan, isTTY, jsonOutput bool) error {
@@ -2018,6 +2048,9 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 	for _, candidate := range plan.ActivationReview {
 		fmt.Fprintf(&b, "Activation review: %s (approved=%t) — %s\n", candidate.Unit, candidate.Approved, candidate.Reason)
 	}
+	if len(plan.Deferred) > 0 {
+		fmt.Fprintf(&b, "Deferred for later: %s (not part of this restore)\n", strings.Join(plan.Deferred, ", "))
+	}
 	b.WriteString(renderCompatibility(plan.Compatibility))
 	b.WriteString(renderRequirements(plan))
 	if len(plan.Operations) == 0 && len(plan.Skipped) == 0 {
@@ -2028,6 +2061,9 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 		fmt.Fprintf(&b, "+ %s %s (risk: %s, reversible: %t)\n", op.Action, op.Resource, op.Risk, op.Reversible)
 		if op.Notice != "" && (op.Interactive || op.Provider == "services") {
 			fmt.Fprintf(&b, "! %s\n", op.Notice)
+		}
+		if op.AwaitsYou != "" {
+			fmt.Fprintf(&b, "! Waits for you: %s.\n", op.AwaitsYou)
 		}
 	}
 	for _, op := range plan.Operations {
@@ -2080,15 +2116,48 @@ func renderPlan(plan model.RestorePlan, dry bool) string {
 
 func renderPlanWithOptions(plan model.RestorePlan, dry bool, options restorePlanOptions) string {
 	rendered := renderPlan(plan, dry)
-	if !options.Force {
-		return rendered
-	}
-	for _, operation := range plan.Operations {
-		if operation.Provider == "shell" {
-			return rendered + "! Force enabled: conflicting Shell values will be replaced by captured profile intent; unrelated target-only Shell customization is preserved.\n"
+	if options.Force {
+		for _, operation := range plan.Operations {
+			if operation.Provider == "shell" {
+				rendered += "! Force enabled: conflicting Shell values will be replaced by captured profile intent; unrelated target-only Shell customization is preserved.\n"
+				break
+			}
 		}
 	}
-	return rendered
+	return rendered + renderBlockedNextSteps(plan, options.SingleCategory)
+}
+
+// renderBlockedNextSteps tells the person how to proceed when the plan
+// cannot apply (ADR 0028): fix the cause and plan again, defer what isn't
+// ready, or skip specific targets for good. Force is never offered; it does
+// not override compatibility.
+func renderBlockedNextSteps(plan model.RestorePlan, single string) string {
+	notReady := compatibility.NotReadyCategories(plan)
+	if len(notReady) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nRestore can't apply yet: %s %s ready.\n", strings.Join(notReady, ", "), pluralVerb(len(notReady), "isn't", "aren't"))
+	fixes := map[string]bool{}
+	for _, requirement := range plan.Requirements {
+		fix := strings.Join(requirement.Remediation, " ")
+		if !fixes[fix] {
+			fixes[fix] = true
+			fmt.Fprintf(&b, "  Fix %s: run `%s`, then plan the restore again.\n", requirement.Provider, fix)
+		}
+	}
+	if single == "" && len(notReady) < len(plan.Compatibility.Categories) {
+		fmt.Fprintf(&b, "  Restore everything else now and leave these for later:\n    omarchy-blueprint restore --defer %s\n", strings.Join(notReady, ","))
+	}
+	b.WriteString("  Leave a specific target out of Restore on this machine for good:\n    omarchy-blueprint policy set restore <category> skip <target>\n")
+	return b.String()
+}
+
+func pluralVerb(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // renderCompatibility presents provider evidence already normalized into the
@@ -2109,15 +2178,26 @@ func renderCompatibility(report model.CompatibilityReport) string {
 			continue
 		}
 		fmt.Fprintf(&b, "  %s: %s · %s\n", label, compatibilityTitle(string(category.State)), compatibilityTitle(string(category.Authority)))
-		for _, finding := range category.Findings {
-			target := ""
-			if finding.Target != "" {
-				target = finding.Target + ": "
-			}
-			fmt.Fprintf(&b, "    ! %s%s [%s; %s · %s]\n", target, finding.Summary, finding.Code, compatibilityTitle(string(finding.State)), compatibilityTitle(string(finding.Authority)))
+		for _, group := range compatibility.GroupFindings(category) {
+			fmt.Fprintf(&b, "    ! %s%s [%s; %s · %s]\n", groupTargets(group.Targets), group.Summary, group.Code, compatibilityTitle(string(group.State)), compatibilityTitle(string(group.Authority)))
 		}
 	}
 	return b.String()
+}
+
+// groupTargets names a finding group's targets without listing hundreds:
+// one target by name, more as a count with a few examples (ADR 0028).
+func groupTargets(targets []string) string {
+	switch {
+	case len(targets) == 0:
+		return ""
+	case len(targets) == 1:
+		return targets[0] + ": "
+	case len(targets) <= 3:
+		return strings.Join(targets, ", ") + ": "
+	default:
+		return fmt.Sprintf("%d targets (%s, … +%d more): ", len(targets), strings.Join(targets[:2], ", "), len(targets)-2)
+	}
 }
 
 func compatibilityEnvironment(env model.CompatibilityEnvironment) string {
@@ -2145,12 +2225,20 @@ func renderRequirements(plan model.RestorePlan) string {
 	var b strings.Builder
 	b.WriteString("Requires before applying:\n")
 	for _, requirement := range plan.Requirements {
-		fmt.Fprintf(&b, "! %s\n  Run: %s\n  Needed by: %s\n", requirement.Reason, strings.Join(requirement.Remediation, " "), strings.Join(requirement.Operations, ", "))
+		neededBy := strings.Join(requirement.Operations, ", ")
+		if len(requirement.Operations) > 3 {
+			neededBy = fmt.Sprintf("%d operations (%s, … +%d more)", len(requirement.Operations), strings.Join(requirement.Operations[:2], ", "), len(requirement.Operations)-2)
+		}
+		fmt.Fprintf(&b, "! %s\n  Run: %s\n  Needed by: %s\n", requirement.Reason, strings.Join(requirement.Remediation, " "), neededBy)
 	}
 	return b.String()
 }
 
 func renderProgress(w io.Writer, event restore.Progress) {
+	if event.Type == restore.ProgressSkipped {
+		fmt.Fprintf(w, "↷ Skipped %s (you pressed Ctrl+C); continuing with the rest of the restore\n", operationName(event.Operation))
+		return
+	}
 	if event.Operation.Provider == "resources" {
 		name := strings.TrimPrefix(event.Operation.Resource, "resource:")
 		verb, past := "Restoring resource", "Restored resource"
@@ -2277,6 +2365,10 @@ func renderProgress(w io.Writer, event restore.Progress) {
 		}
 		return
 	}
+	if event.Operation.Label != "" {
+		renderLabelledProgress(w, event)
+		return
+	}
 	kind := strings.SplitN(event.Operation.Resource, ":", 2)[0]
 	count := len(event.Operation.Items)
 	label := fmt.Sprintf("%d %s package", count, kind)
@@ -2295,15 +2387,89 @@ func renderProgress(w io.Writer, event restore.Progress) {
 	}
 }
 
+// renderLabelledProgress reports a step by its own name, such as an Omarchy
+// setup recipe. A step that may wait for the person says so when it starts
+// and about every 30 seconds while it runs, so a wait never looks like a
+// hang.
+func renderLabelledProgress(w io.Writer, event restore.Progress) {
+	op := event.Operation
+	switch event.Type {
+	case restore.ProgressStarted:
+		fmt.Fprintf(w, "Running %s...\n", op.Label)
+		if op.AwaitsYou != "" {
+			fmt.Fprintf(w, "! This step waits for you: %s. (Ctrl+C skips this step; the rest of the restore continues.)\n", op.AwaitsYou)
+		}
+	case restore.ProgressHeartbeat:
+		switch {
+		case op.AwaitsYou == "":
+			fmt.Fprintf(w, "  Still running %s (%s elapsed)...\n", op.Label, event.Elapsed)
+		case int(event.Elapsed.Seconds())%30 < 5:
+			fmt.Fprintf(w, "  Still running %s (%s elapsed); it may be waiting for you to %s. (Ctrl+C skips this step; the rest of the restore continues.)\n", op.Label, event.Elapsed, op.AwaitsYou)
+		}
+	case restore.ProgressCompleted:
+		fmt.Fprintf(w, "✓ Finished %s (%s)\n", op.Label, event.Elapsed)
+	case restore.ProgressFailed:
+		fmt.Fprintf(w, "✗ %s failed after %s\n", op.Label, event.Elapsed)
+	}
+}
+
+// operationName is how a step is named to people: its label when it has
+// one, otherwise its target.
+func operationName(op model.Operation) string {
+	if op.Label != "" {
+		return op.Label
+	}
+	return op.Resource
+}
+
+// skippedFollowUp explains a restore that finished except for steps the
+// person skipped. It is empty when anything still missing is not explained
+// by those skips (or the steps waiting on them), which remains a
+// verification failure.
+func skippedFollowUp(execution restore.Result, missing []string) string {
+	if len(execution.SkippedByYou) == 0 {
+		return ""
+	}
+	held := append([]model.Operation(nil), execution.SkippedByYou...)
+	for _, blocked := range execution.Blocked {
+		held = append(held, blocked.Operation)
+	}
+	covered := map[string]bool{}
+	for _, op := range held {
+		covered[op.Resource] = true
+		kind, _, _ := strings.Cut(op.Resource, ":")
+		for _, item := range op.Items {
+			covered[kind+":"+item] = true
+		}
+	}
+	for _, resource := range missing {
+		if !covered[resource] {
+			return ""
+		}
+	}
+	names := make([]string, 0, len(execution.SkippedByYou))
+	for _, op := range execution.SkippedByYou {
+		names = append(names, operationName(op))
+	}
+	message := "Restore finished, except what you skipped: " + strings.Join(names, ", ") + ".\n"
+	if len(execution.Blocked) > 0 {
+		message += fmt.Sprintf("%d step(s) that depend on it were held back too.\n", len(execution.Blocked))
+	}
+	return message + "Run `omarchy-blueprint restore` again when you're ready to finish it.\n"
+}
+
 func renderRestoreFailures(w io.Writer, execution restore.Result, verification model.VerificationResult, journal string) {
 	fmt.Fprintf(w, "\nRestore completed with %d successful and %d failed operation(s).\n", len(execution.Completed), len(execution.Failed))
 	for _, failure := range execution.Failed {
 		fmt.Fprintf(w, "✗ %s: %s\n", failure.Operation.Resource, failure.Error)
 	}
+	for _, op := range execution.SkippedByYou {
+		fmt.Fprintf(w, "↷ %s (skipped by you)\n", operationName(op))
+	}
 	if len(execution.Blocked) > 0 {
 		fmt.Fprintf(w, "%d dependent operation(s) skipped.\n", len(execution.Blocked))
 		for _, blocked := range execution.Blocked {
-			fmt.Fprintf(w, "↷ %s (dependency %s failed)\n", blocked.Operation.Resource, blocked.Dependency)
+			fmt.Fprintf(w, "↷ %s (waits on %s, which didn't complete)\n", blocked.Operation.Resource, blocked.Dependency)
 		}
 	}
 	if len(verification.Missing) > 0 {

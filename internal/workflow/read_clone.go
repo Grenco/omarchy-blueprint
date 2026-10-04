@@ -33,6 +33,7 @@ func cloneTargets(source []TargetInspection) []TargetInspection {
 func cloneReadPlan(p model.RestorePlan) model.RestorePlan {
 	p.ActivationReview = slices.Clone(p.ActivationReview)
 	p.Skipped = slices.Clone(p.Skipped)
+	p.Deferred = slices.Clone(p.Deferred)
 	p.Requirements = slices.Clone(p.Requirements)
 	for i := range p.Requirements {
 		p.Requirements[i].Remediation = slices.Clone(p.Requirements[i].Remediation)

@@ -180,8 +180,12 @@ func (p *Provider) Plan(ctx context.Context, data profile.Data, _ omarchy.Info, 
 				fragment.Compatibility, err = assessment.category(true)
 				return fragment, err
 			}
+			names := make([]string, 0, len(selected))
 			for _, unit := range selected {
-				assessment.finding(unit.Name, "services.unit.invalid", "Systemd could not validate the proposed effective user-service set", true)
+				names = append(names, unit.Name)
+			}
+			for name, summary := range rejectedUnitSummaries(err, names) {
+				assessment.finding(name, "services.unit.invalid", summary, true)
 			}
 			fragment.Compatibility, err = assessment.category(true)
 			return fragment, err
