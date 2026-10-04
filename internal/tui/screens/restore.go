@@ -43,7 +43,7 @@ type Restore struct {
 	deferred        []string
 	forcedOverrides int
 	// run is the in-progress apply's shared state; stopApply cancels it
-	// after the current step, once stopRequested confirms (Ctrl+C twice).
+	// once stopRequested confirms (Ctrl+C twice); the running step is asked to stop.
 	run           *restoreRunState
 	stopRequested bool
 	stopApply     context.CancelFunc
@@ -1161,7 +1161,7 @@ func (s *Restore) busyView() string {
 	}
 	lines = append(lines, "")
 	if s.stopRequested {
-		lines = append(lines, components.WrapText(s.styles.Warning("Press Ctrl+C again to stop the restore after the current step."), width)...)
+		lines = append(lines, components.WrapText(s.styles.Warning("Press Ctrl+C again to stop the restore: the running step is asked to stop, and no further step starts."), width)...)
 	}
 	lines = append(lines, components.WrapText(s.styles.Muted("Steps that need you, such as a sudo password or a sign-in, borrow the terminal and Blueprint comes back afterwards. Other steps can't prompt: anything that would ask for a password stops with an error instead of waiting."), width)...)
 	return strings.Join(lines, "\n")

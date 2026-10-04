@@ -160,8 +160,8 @@ the step can show its own prompt, and comes back as soon as the next ordinary
 step starts. Other steps run without a terminal, so anything that would ask
 for a password (a Git credential or SSH passphrase, say) fails with an error
 instead of waiting on a prompt you can't see. While a restore is applying,
-Ctrl+C doesn't quit: press it twice to stop the restore after the current
-step. Steps that wait for you on purpose, such as signing in to Tailscale, are
+Ctrl+C doesn't quit: press it twice to stop the restore. The running step is
+asked to stop, Blueprint waits for it to settle, and no further step starts. Steps that wait for you on purpose, such as signing in to Tailscale, are
 marked in the plan and run last; while one has the terminal, Ctrl+C skips
 just that step and the rest of the restore continues. Restore then shows what
 you skipped, which stays in the plan until you apply it.

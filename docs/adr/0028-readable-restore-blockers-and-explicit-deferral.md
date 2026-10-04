@@ -165,8 +165,10 @@ The TUI no longer hands the terminal over for a whole plan that contains a
 borrows the terminal (kept across consecutive interactive steps) and prints
 its progress there; the interface returns as soon as an ordinary step starts.
 While a restore applies, Ctrl+C in the interface no longer quits, which would
-abandon the running step: pressing it twice stops the restore after the
-current step, and the outcome is shown with the refreshed plan. Progress comes from the executor's
+abandon the running step. Pressing it twice stops the restore: a running
+command is asked to stop (as in §8), an in-progress local file operation
+finishes, Blueprint waits for the step to settle and records its outcome, and
+no further step starts. The outcome is shown with the refreshed plan. Progress comes from the executor's
 existing events, so it adds no new authority or state.
 
 A step can name itself (`label`) and say what it may wait for from the person
@@ -174,20 +176,27 @@ A step can name itself (`label`) and say what it may wait for from the person
 sign-in. The plan shows that before approval, and progress repeats it while the
 step runs, so waiting for the person never looks like a hang.
 
-### 8. Non-interactive commands can never prompt
+### 8. Restore's non-interactive operations can never prompt
 
-Operations not marked interactive run detached from the terminal: in their own
-session with no controlling terminal, and with `GIT_TERMINAL_PROMPT=0`. Any
-attempt to prompt (`sudo`, `ssh`, Git credentials) therefore fails at once with
-an error the plan reports, instead of waiting on a prompt nobody can see.
-Operations that legitimately prompt keep the existing interactive path, which
-hands them the terminal (ADR 0022).
+Restore operations not marked interactive run detached from the terminal
+(`RunDetached`): in their own session with no controlling terminal, and with
+`GIT_TERMINAL_PROMPT=0`. Any attempt to prompt (`sudo`, `ssh`, Git
+credentials) therefore fails at once with an error the plan reports, instead
+of waiting on a prompt nobody can see. Operations that legitimately prompt
+keep the interactive path, which gives them the terminal (ADR 0022).
+
+This is scoped to Restore's executor. The ordinary runner, and so every other
+caller, including profile Git sync, keeps its terminal: an SSH passphrase or
+first-host confirmation during `sync` still prompts as before. Giving Sync an
+explicit authentication design is a separate decision.
 
 Because detached commands no longer receive the terminal's interrupt, an
-interrupt cancels Blueprint's context instead. Cancellation asks a detached
-command's whole process group to stop (SIGTERM, then a kill after a grace
-period) and sends interactive commands the interrupt they would have received,
-so `pacman` can release its database lock.
+interrupt cancels Blueprint's context instead. Cancelling a detached command
+sends SIGTERM to its whole process group, so helpers such as Git's `ssh` are
+asked to stop too, and SIGKILL to the whole group after a grace period, so
+nothing it started outlives a stopped restore. Interactive commands are sent
+the interrupt they would have received, so `pacman` can release its database
+lock.
 
 ### 9. Steps that wait for the person run last and can be skipped
 

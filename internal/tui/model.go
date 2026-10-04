@@ -201,13 +201,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, isKey := keyName(msg)
 	if isKey && (key == "ctrl+c" || key == "q" && m.modal == modalNone) {
 		// Quitting while a restore applies would abandon the running step.
-		// Ctrl+C stops the restore after the current step instead (twice, so
-		// it is never accidental); q explains that.
+		// Ctrl+C stops the restore instead, asking the running step to stop
+		// and waiting for it (twice, so it is never accidental); q explains
+		// that.
 		if restore, ok := m.screens[ScreenRestore].(*restoreScreen); ok && restore.Applying() {
 			if key == "ctrl+c" {
 				m.notification = restore.InterruptApply()
 			} else {
-				m.notification = "A restore is running; press Ctrl+C to stop it after the current step."
+				m.notification = "A restore is running; press Ctrl+C twice to stop it."
 			}
 			return m, nil
 		}

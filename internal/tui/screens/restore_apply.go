@@ -236,18 +236,20 @@ func (s *Restore) handleRestoreEvent(msg restoreEventMsg) tea.Cmd {
 func (s *Restore) Applying() bool { return s.busy }
 
 // InterruptApply is Ctrl+C while a restore applies in the interface: the
-// first press explains, the second stops the restore after the current
-// step. Quitting outright would abandon a running step.
+// first press explains, the second stops the restore. The running command
+// is asked to stop (a local file operation finishes), Blueprint waits for
+// it to settle, and no further step starts. Quitting outright would abandon
+// a running step.
 func (s *Restore) InterruptApply() string {
 	if !s.busy {
 		return ""
 	}
 	if !s.stopRequested {
 		s.stopRequested = true
-		return "A restore is running. Press Ctrl+C again to stop it after the current step."
+		return "A restore is running. Press Ctrl+C again to stop it: the running step is asked to stop, and no further step starts."
 	}
 	if s.stopApply != nil {
 		s.stopApply()
 	}
-	return "Stopping the restore after the current step…"
+	return "Stopping the restore: waiting for the running step to stop…"
 }
