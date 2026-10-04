@@ -76,6 +76,15 @@ and your Blueprint profile:
 
 Open an item to jump to the screen where you can review or act on it.
 
+When a newer Blueprint release is out, Overview shows one line such as
+`↑ Update available · v0.1.1 → v0.1.2`. Press `u` for how to update and the
+release page, and `b` while the details are open to view the release in your
+browser. Blueprint only tells you; it never downloads or installs anything.
+The check runs in the background at most once a day (a few hours after a
+failed one), never delays the interface, and is silent when you're offline.
+CLI commands never check. Set `OMARCHY_BLUEPRINT_NO_UPDATE_CHECK=1` to turn
+it off.
+
 ### Capture
 
 Capture reads the current system and saves selected categories into your

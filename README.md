@@ -54,8 +54,10 @@ omarchy-blueprint --version          # omarchy-blueprint version <release>
 pacman -Qo /usr/bin/omarchy-blueprint
 ```
 
-To update, repeat these steps in a fresh directory. Once the package is on the
-AUR, pacman and AUR helpers treat it as the same package.
+To update, repeat these steps in a fresh directory. The TUI's Overview tells
+you when a newer release is out (it never installs anything itself; set
+`OMARCHY_BLUEPRINT_NO_UPDATE_CHECK=1` to turn the check off). Once the package
+is on the AUR, pacman and AUR helpers treat it as the same package.
 
 To uninstall:
 

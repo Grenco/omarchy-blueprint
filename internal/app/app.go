@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,6 +34,7 @@ import (
 	themesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/themes"
 	"github.com/Grenco/omarchy-blueprint/internal/restore"
 	"github.com/Grenco/omarchy-blueprint/internal/tui"
+	"github.com/Grenco/omarchy-blueprint/internal/updates"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -57,6 +59,8 @@ type Dependencies struct {
 	ServicesRoots     func() servicesprovider.Roots
 	IsTTY             func() bool
 	RunTUI            func(context.Context, tui.Options, tui.Dependencies) error
+	// UpdateSource is where the TUI looks for a newer Blueprint release.
+	UpdateSource updates.Source
 }
 
 type options struct {
@@ -69,6 +73,25 @@ type options struct {
 type driftError struct{}
 
 func (driftError) Error() string { return "profile drift detected" }
+
+// releaseRepository is where Blueprint's own releases are published.
+const releaseRepository = "Grenco/omarchy-blueprint"
+
+// updateCheck is the TUI's passive, once-a-day check for a newer release.
+// Only the interactive interface uses it; CLI commands never touch the
+// network for it. OMARCHY_BLUEPRINT_NO_UPDATE_CHECK turns it off.
+func updateCheck(deps Dependencies) tui.UpdateCheck {
+	if deps.UpdateSource == nil || os.Getenv("OMARCHY_BLUEPRINT_NO_UPDATE_CHECK") != "" {
+		return nil
+	}
+	return func(ctx context.Context) (updates.Notice, bool) {
+		state, err := deps.StateHome()
+		if err != nil {
+			return updates.Notice{}, false
+		}
+		return updates.Checker{Current: buildinfo.Current(), Source: deps.UpdateSource, Cache: updates.Cache{Path: updates.CachePath(state)}, Now: deps.Now}.Check(ctx)
+	}
+}
 
 func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	if deps.Runner == nil {
@@ -88,6 +111,9 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.StateHome == nil {
 		deps.StateHome = restore.StateHome
+	}
+	if deps.UpdateSource == nil {
+		deps.UpdateSource = updates.GitHubReleases{Repo: releaseRepository, Client: &http.Client{Timeout: 10 * time.Second}}
 	}
 	if deps.ThemeDirs == nil {
 		deps.ThemeDirs = defaultThemeDirs
@@ -138,7 +164,7 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 
 func newRoot(deps Dependencies) *cobra.Command {
 	opt := &options{}
-	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", Version: buildinfo.Version, SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+	root := &cobra.Command{Use: "omarchy-blueprint", Short: "Capture and restore portable Omarchy state", Version: buildinfo.Current(), SilenceErrors: true, SilenceUsage: true, PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		if flag := cmd.Root().PersistentFlags().Lookup("profile"); flag != nil {
 			opt.profileExplicit = flag.Changed
 		}
@@ -159,7 +185,7 @@ func newRoot(deps Dependencies) *cobra.Command {
 				return nil, err
 			}
 			return openWorkflowOptions(deps, opt, workflow.Options{ProfileDir: dir, ExplicitMachine: opt.machine})
-		}})
+		}, CheckForUpdate: updateCheck(deps)})
 	}}
 	root.PersistentFlags().StringVar(&opt.profileDir, "profile", ".", "profile directory")
 	root.PersistentFlags().BoolVar(&opt.json, "json", false, "emit machine-readable JSON")
@@ -185,7 +211,7 @@ func tuiCommand(deps Dependencies, opt *options) *cobra.Command {
 				return nil, err
 			}
 			return openWorkflowOptions(deps, opt, workflow.Options{ProfileDir: dir, ExplicitMachine: opt.machine})
-		}})
+		}, CheckForUpdate: updateCheck(deps)})
 	}}
 }
 

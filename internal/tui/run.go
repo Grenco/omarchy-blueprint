@@ -21,6 +21,8 @@ type Dependencies struct {
 	Workflow      workflow.Dependencies
 	OpenSession   func(workflow.Options) (*workflow.Session, error)
 	CreateProfile func(context.Context, string, string) (*workflow.Session, error)
+	// CheckForUpdate, when set, runs once in the background per launch.
+	CheckForUpdate UpdateCheck
 }
 
 func Run(ctx context.Context, options Options, deps Dependencies) error {
@@ -46,6 +48,7 @@ func Run(ctx context.Context, options Options, deps Dependencies) error {
 	if chooser {
 		m.enableProfileChooser(deps.OpenSession, options.Machine)
 	}
+	m.updates = &updateTracker{check: deps.CheckForUpdate}
 	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	return err
 }
