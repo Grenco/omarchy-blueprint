@@ -192,9 +192,11 @@ omarchy-blueprint restore --defer services            # packages now install
 omarchy-blueprint restore                             # services verify once their programs exist
 ```
 
-Commands that don't need your terminal run detached from it, so anything that
-would ask for a password, such as a Git credential or SSH passphrase, fails
-with an error instead of waiting on an invisible prompt.
+Restore steps that don't need your terminal run detached from it, so anything
+that would ask for a password, such as a Git credential or SSH passphrase,
+fails with an error instead of waiting on an invisible prompt. This applies
+only to Restore's steps; other commands, such as profile sync, can still
+prompt as usual.
 
 Some steps wait for you on purpose, such as Omarchy's Tailscale setup, which
 waits until you sign in with the link it prints. The plan marks them

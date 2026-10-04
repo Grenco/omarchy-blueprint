@@ -231,6 +231,12 @@ func (r hostedRunner) RunInteractive(ctx context.Context, name string, args ...s
 	return r.host(ctx, func() error { return r.interactive.RunInteractive(ctx, name, args...) })
 }
 
+// RunDetached keeps the wrapped runner's detached execution for Restore's
+// non-interactive operations.
+func (r hostedRunner) RunDetached(ctx context.Context, name string, args ...string) (string, error) {
+	return command.RunNonInteractive(ctx, r.Runner, name, args...)
+}
+
 func interactiveOperation(plan model.RestorePlan) (model.Operation, bool) {
 	for _, operation := range plan.Operations {
 		if operation.Interactive {

@@ -215,7 +215,7 @@ func executeOperation(ctx context.Context, runner command.Runner, op model.Opera
 		}
 		return interactive.RunInteractive(ctx, op.Command[0], op.Command[1:]...)
 	}
-	_, err := runner.Run(ctx, op.Command[0], op.Command[1:]...)
+	_, err := command.RunNonInteractive(ctx, runner, op.Command[0], op.Command[1:]...)
 	return err
 }
 
@@ -238,7 +238,7 @@ func executeGitPatch(ctx context.Context, runner command.Runner, action model.Gi
 		args = append(args, "--index")
 	}
 	args = append(args, action.Source)
-	_, err = runner.Run(ctx, "git", args...)
+	_, err = command.RunNonInteractive(ctx, runner, "git", args...)
 	return err
 }
 

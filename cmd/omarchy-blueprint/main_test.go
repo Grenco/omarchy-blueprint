@@ -25,3 +25,24 @@ func TestInterruptSkipsAnInteractiveStepOtherwiseStopsThenExits(t *testing.T) {
 		t.Fatalf("cancelled=%d exited=%d; want the step's interrupt ignored, SIGTERM to cancel and the next interrupt to exit", cancelled, exited)
 	}
 }
+
+// While an interactive child owns the terminal, every interrupt is left to
+// it, however many there are: Blueprint does not escalate over a child that
+// ignores Ctrl+C until the child gives the terminal back (ADR 0028).
+func TestInterruptsAreLeftToAChildThatOwnsTheTerminal(t *testing.T) {
+	signals := make(chan os.Signal, 8)
+	cancelled, exited := 0, -1
+	done := make(chan struct{})
+	go func() {
+		handleInterrupts(signals, func() bool { return true }, func() { cancelled++ }, func(code int) { exited = code })
+		close(done)
+	}()
+	for range 5 {
+		signals <- os.Interrupt
+	}
+	close(signals)
+	<-done
+	if cancelled != 0 || exited != -1 {
+		t.Fatalf("cancelled=%d exited=%d; interrupts belong to the child that owns the terminal", cancelled, exited)
+	}
+}
