@@ -157,7 +157,7 @@ What profile-Git work is pending?
 
 Overview aggregates already-available provider status, Config ambiguity, Resources state, machine warnings, restore/check information, and local profile-Git status. Selecting an item navigates to the owning screen rather than duplicating its full interaction.
 
-No network request is performed merely because Overview opened. Remote Git freshness requires an explicit refresh/fetch action.
+No network request is performed merely because Overview opened. Remote Git freshness requires an explicit refresh/fetch action. The one exception is the passive release-availability check at TUI launch described in [Amendment: passive release-availability check](#amendment-passive-release-availability-check).
 
 ### 6. Restore is consequence-first and compares normal versus force
 
@@ -362,6 +362,20 @@ No profile schema bump is required merely to add the TUI or local Git metadata; 
 - palette discovery must tolerate Omarchy implementation changes;
 - two implementation slices are required before the full TUI experience is complete.
 
+## Amendment: passive release-availability check
+
+The prohibition on automatic network requests during ordinary TUI inspection is narrowed to permit one passive Blueprint release-availability check at TUI launch. Its constraints are what make the exception safe, and they are part of this decision:
+
+- **Asynchronous and non-blocking:** it runs in the background, never delays startup or the first frame, and is bounded by a timeout (10 seconds).
+- **Silent on failure:** being offline, rate limits, server errors and malformed responses show nothing and never surface as errors.
+- **Cached in machine-local state:** the result is stored under the state directory (`omarchy-blueprint/update-check.json`), outside profiles, Restore, Sync, policy and reconciliation cursors. A successful check is reused for 24 hours; a failed one is retried after 6 hours. An unversioned (`dev`) build never checks.
+- **Optional:** `OMARCHY_BLUEPRINT_NO_UPDATE_CHECK` turns it off.
+- **Public release metadata only:** it retrieves only the latest published release from Blueprint's canonical release source (GitHub Releases for `Grenco/omarchy-blueprint`). It must not transmit profile or machine state, perform authentication, mutate the profile or system, download release artifacts, or install or update Blueprint. The interface only shows a notice and a link to the release page.
+
+CLI commands remain network-silent. Remote Git freshness and all other network-backed inspection remain explicitly user-triggered.
+
+The release source sits behind a source-neutral interface, so it can later become package-manager or AUR metadata within the same constraints.
+
 ## Rejected alternatives
 
 - **TUI shells out to `omarchy-blueprint --json`:** creates subprocess/protocol coupling, duplicates error handling, and prevents native composition.
@@ -373,4 +387,4 @@ No profile schema bump is required merely to add the TUI or local Git metadata; 
 - **Build a full Git client:** conflict resolution/history manipulation are better handled by Git/LazyGit.
 - **Hard-code a Blueprint colour palette:** fights Omarchy/terminal theming and performs poorly across light/dark themes.
 - **Require a user-installed Omarchy theme hook:** makes optional appearance integration a runtime prerequisite.
-- **Automatic network fetch on startup:** introduces latency, prompts, and network side effects into basic inspection.
+- **Automatic network fetch on startup:** introduces latency, prompts, and network side effects into basic inspection. (Narrowed by the amendment above for one passive, cached, optional release-availability check; Git fetch and all other inspection remain user-triggered.)

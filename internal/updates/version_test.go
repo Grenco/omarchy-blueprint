@@ -33,3 +33,30 @@ func TestParseVersionRejectsMalformedVersions(t *testing.T) {
 		t.Fatalf("ParseVersion(v0.1.10) = %v, %v", v, err)
 	}
 }
+
+func TestCompareNumericPrereleaseIdentifiersOfAnyLength(t *testing.T) {
+	huge := "184467440737095516160" // larger than any uint64
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0-" + huge, "1.0.0-" + huge + "1", -1},
+		{"1.0.0-" + huge + "1", "1.0.0-" + huge, 1},
+		{"1.0.0-" + huge, "1.0.0-" + huge, 0},
+		{"1.0.0-99999999999999999999", "1.0.0-99999999999999999998", 1},
+		{"1.0.0-9", "1.0.0-10", -1},
+		{"1.0.0-" + huge, "1.0.0-alpha", -1},
+	} {
+		a, err := ParseVersion(tc.a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := ParseVersion(tc.b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := a.Compare(b); got != tc.want {
+			t.Fatalf("Compare(%s, %s) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

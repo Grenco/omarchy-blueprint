@@ -85,9 +85,13 @@ func (v Version) Compare(other Version) int {
 		aNum, bNum := numeric(a), numeric(b)
 		switch {
 		case aNum && bNum:
-			x, _ := strconv.ParseUint(a, 10, 64)
-			y, _ := strconv.ParseUint(b, 10, 64)
-			return cmpUint(x, y)
+			// Numeric identifiers compare numerically at any length:
+			// without leading zeros (rejected by ParseVersion), the longer
+			// one is larger, and equal lengths compare lexically.
+			if len(a) != len(b) {
+				return cmpUint(uint64(len(a)), uint64(len(b)))
+			}
+			return strings.Compare(a, b)
 		case aNum:
 			return -1 // numeric identifiers sort before alphanumeric ones
 		case bNum:
