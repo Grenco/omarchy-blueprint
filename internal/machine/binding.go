@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -83,11 +84,8 @@ func (s BindingStore) bindingPath(profileDir string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	dir, err := ProfileStateDir(s.StateHome, profile)
-	if err != nil {
-		return "", "", err
-	}
-	return profile, filepath.Join(dir, "machine.toml"), nil
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(profile)))
+	return profile, filepath.Join(s.StateHome, "omarchy-blueprint", "profiles", key, "machine.toml"), nil
 }
 
 // CanonicalProfileRoot returns the absolute, clean profile root, resolving
