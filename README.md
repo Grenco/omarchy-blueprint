@@ -11,6 +11,8 @@ Blueprint captures that meaningful intent into a portable, readable profile
 you can version-control and restore onto another Omarchy machine — preferring
 to reconstruct things natively rather than blindly snapshot bytes.
 
+![Blueprint's Overview screen: what differs between this machine and the profile, grouped into needs attention, changes available, intentional differences and no action needed](docs/images/overview.png)
+
 ## Installation
 
 Blueprint is in early public beta. It requires Omarchy 4 or newer on x86_64.
@@ -165,6 +167,8 @@ inspect → calculate → preview → approve → apply → verify
 - Blueprint does not intentionally capture secrets into the profile.
 
 See the [Guide](docs/guide.md#safety-model) for the full safety picture.
+
+![Blueprint's Restore review: run settings, a deferred category, the compatibility summary, plan counts and every change it would make, before anything is applied](docs/images/restore-review.jpg)
 
 ## TUI and CLI
 
