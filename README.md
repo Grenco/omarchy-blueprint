@@ -11,6 +11,8 @@ Blueprint captures that meaningful intent into a portable, readable profile
 you can version-control and restore onto another Omarchy machine — preferring
 to reconstruct things natively rather than blindly snapshot bytes.
 
+![Blueprint's Overview screen: what differs between this machine and the profile, grouped into needs attention, changes available, intentional differences and no action needed](docs/images/overview.png)
+
 ## Installation
 
 Blueprint is in early public beta. It requires Omarchy 4 or newer on x86_64.
@@ -54,8 +56,10 @@ omarchy-blueprint --version          # omarchy-blueprint version <release>
 pacman -Qo /usr/bin/omarchy-blueprint
 ```
 
-To update, repeat these steps in a fresh directory. Once the package is on the
-AUR, pacman and AUR helpers treat it as the same package.
+To update, repeat these steps in a fresh directory. The TUI's Overview tells
+you when a newer release is out (it never installs anything itself; set
+`OMARCHY_BLUEPRINT_NO_UPDATE_CHECK=1` to turn the check off). Once the package
+is on the AUR, pacman and AUR helpers treat it as the same package.
 
 To uninstall:
 
@@ -163,6 +167,8 @@ inspect → calculate → preview → approve → apply → verify
 - Blueprint does not intentionally capture secrets into the profile.
 
 See the [Guide](docs/guide.md#safety-model) for the full safety picture.
+
+![Blueprint's Restore review: run settings, a deferred category, the compatibility summary, plan counts and every change it would make, before anything is applied](docs/images/restore-review.jpg)
 
 ## TUI and CLI
 

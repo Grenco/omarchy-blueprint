@@ -34,6 +34,8 @@ func (m model) handleProfileCreated(created profileCreatedMsg) (tea.Model, tea.C
 		dir = m.profileDir
 	}
 	fresh := newModelWithContext(m.ctx, m.cancel, m.themeLoader, created.session, dir, m.createProfile)
+	fresh.updates = m.updates // one check per launch; its result lands here
+	fresh.applyUpdateNotice()
 	fresh.width, fresh.height = m.width, m.height
 	fresh.setScreenSizes()
 	return fresh, fresh.Init()

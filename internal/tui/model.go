@@ -79,6 +79,7 @@ type model struct {
 	welcomeName           components.TextInputModal
 	welcomeError          error
 	welcomeBusy           bool
+	updates               *updateTracker
 }
 
 func newModel(loader ThemeLoader) model {
@@ -111,7 +112,7 @@ func newModelWithContext(ctx context.Context, cancel context.CancelFunc, loader 
 }
 
 func (m model) Init() tea.Cmd {
-	commands := []tea.Cmd{themeTickCmd()}
+	commands := []tea.Cmd{themeTickCmd(), m.startUpdateCheck()}
 	if m.modal == modalWelcome {
 		commands = append(commands, m.welcomeName.Focus())
 	}
@@ -161,6 +162,9 @@ func (m model) activeScreen() screen { return m.screens[m.screenID()] }
 func (m model) screenID() ScreenID   { return screenOrder[m.selected] }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if checked, ok := msg.(updateCheckedMsg); ok {
+		return m.handleUpdateChecked(checked), nil
+	}
 	if created, ok := msg.(profileCreatedMsg); ok {
 		return m.handleProfileCreated(created)
 	}

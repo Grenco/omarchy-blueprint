@@ -336,10 +336,11 @@ func (s *overviewScreen) Actions() []Action {
 	return []Action{
 		{ID: "overview.open", Label: label, Enabled: enabled, Visible: true, DisabledReason: reason, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }},
 		{ID: "overview.refresh", Label: "Refresh Overview", Enabled: true, Visible: true, Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'r'}) }},
+		{ID: "overview.update", Label: "Show/hide Blueprint update details", Group: "Application", Keywords: "update upgrade new version release", Enabled: s.HasUpdateNotice(), Visible: s.HasUpdateNotice(), Run: func() tea.Cmd { return s.Update(tea.KeyPressMsg{Code: 'u'}) }},
 	}
 }
 func (s *overviewScreen) Bindings() []Binding {
-	return []Binding{{ActionID: "overview.open", Key: "enter"}, {ActionID: "overview.refresh", Key: "r"}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
+	return []Binding{{ActionID: "overview.open", Key: "enter"}, {ActionID: "overview.refresh", Key: "r"}, {ActionID: "overview.update", Key: "u", HideFromFooter: !s.HasUpdateNotice()}, {Label: "Previous group", Key: "[", HideFromFooter: true}, {Label: "Next group", Key: "]", HideFromFooter: true}}
 }
 
 func bindingsFromResourceActions(actions []screens.ResourceAction, prefix string) []Binding {

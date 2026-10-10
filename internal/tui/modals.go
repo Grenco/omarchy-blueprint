@@ -81,6 +81,10 @@ func (m model) updateRequestedModal(msg tea.Msg, key string, isKey bool) (model,
 	if m.requestedModal == nil {
 		return m, nil, false
 	}
+	if (m.requestedModal.Input != "" || m.requestedModal.Placeholder != "") && !isKey {
+		// Cursor blink and other input messages keep the cursor alive.
+		return m, m.requestedModalInput.Update(msg), true
+	}
 	if (m.requestedModal.Input != "" || m.requestedModal.Placeholder != "") && isKey {
 		switch key {
 		case "esc":

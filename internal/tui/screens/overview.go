@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
+	"github.com/Grenco/omarchy-blueprint/internal/updates"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
 
@@ -46,6 +47,10 @@ type Overview struct {
 	err       error
 	busy      bool
 	requestID uint64
+	// update is a newer Blueprint release, when one was found; showUpdate
+	// shows its details in the Details pane.
+	update     *updates.Notice
+	showUpdate bool
 }
 type overviewMsg struct {
 	requestID uint64
@@ -79,6 +84,9 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
+	}
+	if cmd, handled := s.updateKey(key.String()); handled {
+		return cmd
 	}
 	if s.list.Vim(key.String(), len(s.rows()), s.listHeight()) {
 		s.selected = s.list.Selected
@@ -117,19 +125,23 @@ func (s *Overview) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 func (s *Overview) View() string {
+	width := s.width
+	if width == 0 {
+		width = 120
+	}
+	notice := ""
+	if s.update != nil {
+		notice = s.updateLine(width) + "\n"
+	}
 	if s.err != nil {
-		return "Unable to load overview: " + components.DisplayText(s.err.Error())
+		return notice + "Unable to load overview: " + components.DisplayText(s.err.Error())
 	}
 	if s.session != nil && !profileHasCapturedState(s.desiredProfile(s.session)) {
-		return renderEmptyState(s.styles, s.width, emptyStateCopy{
+		return notice + renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "Nothing has been captured yet",
 			Explanation: "Capture is where you choose which parts of this machine Blueprint should remember. You can still explore the other sections to understand what each category covers.",
 			Guidance:    "Next: open Capture when you're ready to save something.",
 		})
-	}
-	width := s.width
-	if width == 0 {
-		width = 120
 	}
 	lines := make([]string, 0, len(s.rows()))
 	for i, row := range s.rows() {
@@ -184,9 +196,12 @@ func (s *Overview) View() string {
 	if len(lines) == 0 {
 		lines = append(lines, "✓ Nothing needs review.")
 	}
-	return s.list.View(lines, width, s.listHeight())
+	return notice + s.list.View(lines, width, s.listHeight())
 }
 func (s *Overview) DetailView() string {
+	if s.showUpdate && s.update != nil {
+		return s.updateDetailView()
+	}
 	row := s.selectedRow()
 	if row.isSection() {
 		lines := []string{components.DisplayText(row.section), overviewSectionMeaning[row.section], "", "Press Enter to " + map[bool]string{true: "expand", false: "collapse"}[s.isCollapsed(row.section)] + " this section."}
@@ -349,6 +364,9 @@ func (s *Overview) HeaderState() string {
 func (s *Overview) listHeight() int {
 	if s.height == 0 {
 		return max(1, len(s.rows()))
+	}
+	if s.update != nil {
+		return max(1, s.height-2) // the update notice takes one line
 	}
 	return max(1, s.height-1)
 }
