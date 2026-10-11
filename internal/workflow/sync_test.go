@@ -2,12 +2,15 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/gittest"
 	"github.com/Grenco/omarchy-blueprint/internal/observation"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +18,40 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func syncFixtureTreeHash(t *testing.T, root string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == ".git" {
+			return filepath.SkipDir
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%o\x00", rel, info.Mode())
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			h.Write(data)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
 
 type syncCountingRunner struct{ fetches atomic.Int32 }
 
@@ -157,6 +194,7 @@ func TestSyncInspectTwoClonesReadOnlyOneCycle(t *testing.T) {
 	s.providers[0].(*syncLiveFake).live = left
 	status, index := syncGit(t, root, "status", "--porcelain=v2"), syncGit(t, root, "write-tree")
 	before, _ := os.ReadFile(filepath.Join(root, "packages", "official.txt"))
+	treeBefore := syncFixtureTreeHash(t, root)
 	plan, err := s.InspectSync(context.Background(), SyncInspectOptions{Fetch: true})
 	if err != nil {
 		t.Fatal(err)
@@ -177,6 +215,9 @@ func TestSyncInspectTwoClonesReadOnlyOneCycle(t *testing.T) {
 		t.Fatal("duplicate fetch/cycle/observation", runner.fetches.Load(), binds.Load(), observes.Load())
 	}
 	after, _ := os.ReadFile(filepath.Join(root, "packages", "official.txt"))
+	if syncFixtureTreeHash(t, root) != treeBefore {
+		t.Fatal("profile tree changed")
+	}
 	if !reflect.DeepEqual(before, after) || syncGit(t, root, "status", "--porcelain=v2") != status || syncGit(t, root, "write-tree") != index || syncGit(t, root, "rev-parse", "HEAD") != local {
 		t.Fatal("checkout/index changed")
 	}
