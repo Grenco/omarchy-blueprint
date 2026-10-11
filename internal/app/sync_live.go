@@ -150,12 +150,22 @@ func syncPackagesObserved(hints profile.Data, histories []profile.Data, current 
 	if err != nil {
 		return workflow.SyncLiveObservation{}, err
 	}
+	var evidence []workflow.SyncDesiredInspection
 	for _, d := range histories {
 		part, err := targetsFromPackages(d, current)
 		if err != nil {
 			return workflow.SyncLiveObservation{}, err
 		}
 		inspections = append(inspections, part...)
+		desired, err := p.SyncDesired(d)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		bound, err := workflow.BindSyncDesiredInspections(desired, part)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		evidence = append(evidence, bound...)
 	}
 	variants, err := syncHistories(histories, p.SyncDesired)
 	if err != nil {
@@ -164,5 +174,7 @@ func syncPackagesObserved(hints profile.Data, histories []profile.Data, current 
 	if current.OriginUnavailable {
 		return workflow.SyncLiveObservation{}, fmt.Errorf("sync: package origin cannot be established")
 	}
-	return syncLiveFacts("packages", normalized, inspections, variants)
+	result, err := syncLiveFacts("packages", normalized, inspections, variants)
+	result.DesiredInspections = evidence
+	return result, err
 }

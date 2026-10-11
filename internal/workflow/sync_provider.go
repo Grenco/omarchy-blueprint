@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"github.com/Grenco/omarchy-blueprint/internal/syncprofile"
@@ -34,9 +35,35 @@ type SyncNormalizeProvider interface {
 	NormalizeSyncProfile(context.Context, profile.Data) (profile.Data, error)
 }
 type SyncLiveObservation struct {
-	Targets     []syncengine.DesiredTarget
-	Inspections []TargetInspection
-	Blockers    []syncengine.Blocker
+	Targets            []syncengine.DesiredTarget
+	Inspections        []TargetInspection
+	DesiredInspections []SyncDesiredInspection
+	Blockers           []syncengine.Blocker
+}
+
+// SyncDesiredInspection binds safety to semantic intent, not merely a target
+// identity. Providers derive it from the same frozen live facts. It is read
+// evidence only, never permission to execute Restore.
+type SyncDesiredInspection struct {
+	Key        syncengine.TargetKey
+	Desired    syncengine.State
+	Inspection TargetInspection
+}
+
+func BindSyncDesiredInspections(targets []syncengine.DesiredTarget, inspections []TargetInspection) ([]SyncDesiredInspection, error) {
+	byKey := map[string]TargetInspection{}
+	for _, t := range cloneTargets(inspections) {
+		byKey[t.Key] = t
+	}
+	var out []SyncDesiredInspection
+	for _, target := range targets {
+		t, ok := byKey[target.Key.Target]
+		if !ok {
+			return nil, fmt.Errorf("sync: desired target lacks provider safety inspection")
+		}
+		out = append(out, SyncDesiredInspection{Key: target.Key, Desired: target.State, Inspection: t})
+	}
+	return out, nil
 }
 
 func cloneSyncHistories(ds []profile.Data) []profile.Data {

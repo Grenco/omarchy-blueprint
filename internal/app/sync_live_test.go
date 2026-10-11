@@ -15,6 +15,42 @@ import (
 	"time"
 )
 
+func TestSyncDefaultsSafetyFollowsRemoteDesiredValue(t *testing.T) {
+	local := profile.Data{}
+	local.Manifest.Capture.Defaults = true
+	local.Defaults.Browser = "firefox"
+	remote := profile.CloneData(local)
+	remote.Defaults.Browser = "custom.desktop"
+	p := defaultsStateProvider{}
+	facts, err := syncDerivedLive("defaults", local, []profile.Data{remote, local}, local, p.SyncDesired, func(d profile.Data) ([]workflow.TargetInspection, error) {
+		return targetsFromDefaults(d, local.Defaults)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted, err := p.SyncDesired(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range wanted {
+		if target.Key.Target != "browser" {
+			continue
+		}
+		found := false
+		for _, evidence := range facts.DesiredInspections {
+			if evidence.Key == target.Key && evidence.Desired.Equal(target.State) {
+				found = true
+				if evidence.Inspection.RestoreEligible {
+					t.Fatal("remote non-portable default inherits local eligibility")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("missing remote desired safety evidence")
+		}
+	}
+}
+
 func TestSyncPackagesCanonicalAliasesShareOneContext(t *testing.T) {
 	p, _, runner, _ := packageReadFixture(t)
 	// Canonicalize once from the immutable live catalogue, not per-history

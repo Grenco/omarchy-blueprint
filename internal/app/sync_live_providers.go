@@ -26,18 +26,30 @@ func syncDerivedLive(category string, hints profile.Data, histories []profile.Da
 	if err != nil {
 		return workflow.SyncLiveObservation{}, err
 	}
+	var evidence []workflow.SyncDesiredInspection
 	for _, d := range histories {
 		part, err := inspect(d)
 		if err != nil {
 			return workflow.SyncLiveObservation{}, err
 		}
 		inspections = append(inspections, part...)
+		desired, err := projection(d)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		bound, err := workflow.BindSyncDesiredInspections(desired, part)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		evidence = append(evidence, bound...)
 	}
 	variants, err := syncHistories(histories, projection)
 	if err != nil {
 		return workflow.SyncLiveObservation{}, err
 	}
-	return syncLiveFacts(category, normalized, inspections, variants)
+	result, err := syncLiveFacts(category, normalized, inspections, variants)
+	result.DesiredInspections = evidence
+	return result, err
 }
 
 func (p themesStateProvider) SyncObserve(ctx context.Context, hints profile.Data, histories []profile.Data) (workflow.SyncLiveObservation, error) {

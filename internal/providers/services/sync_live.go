@@ -54,6 +54,21 @@ func (v *readView) SyncObserve(ctx context.Context, hints profile.Data, historie
 		targetByName[x.Key] = x
 	}
 	result := workflow.SyncLiveObservation{}
+	for _, d := range histories {
+		desired, err := p.SyncDesired(d)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		part, err := p.inspectTargets(ctx, d)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		bound, err := workflow.BindSyncDesiredInspections(desired, part)
+		if err != nil {
+			return workflow.SyncLiveObservation{}, err
+		}
+		result.DesiredInspections = append(result.DesiredInspections, bound...)
+	}
 	for _, saved := range union.Services.Units {
 		if err := ctx.Err(); err != nil {
 			return workflow.SyncLiveObservation{}, err
