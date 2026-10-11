@@ -6,7 +6,9 @@ Scope: approved implementation plan tasks 5–9, read-only Sync planning.
 - Worktree: isolated `sync-engine-pr-b`, branch `feat/sync-engine-read-planning`.
 - Pre-review implementation head: `e4fe89073edcfffaf3d3d13b6d09046bd8c73894`.
 - Runtime used for local verification: Go 1.27.1, linux/amd64.
-- Final implementation SHA: `b8b982fad4ff6f6b77f0829fc01a6edd6a059fcc`.
+- Original implementation SHA: `b8b982fad4ff6f6b77f0829fc01a6edd6a059fcc`.
+- Final implementation SHA after external review fixes:
+  `5fd7bb29e3c939d103befb0379c4029a33c4b6c7`.
 - Fresh-context review: five Important findings, all addressed in one TDD fix
   pass; no Critical findings or deferred Minor findings.
 
@@ -34,6 +36,38 @@ Sync semantic deferral is distinct from Restore execution-scope deferral.
 Descriptive action candidates and convergence eligibility are not execution or
 cursor-settlement authority. Later execution still requires fresh authoritative
 planning, approval, no deferred/skipped/blocked work, and fresh verification.
+
+## External review follow-up (PR #71)
+
+Reviewed publication head: `59bc32f1e015a6c46220f6a4f0e875718e372ba1`.
+Starting main remains `4fb4e55438f0e38455c90d7a36fa5a8af983c183`.
+Both reported P2 findings were reproduced and addressed within PR B:
+
+- Providers now bind Restore safety evidence to each historical semantic
+  desired state, derived from the same frozen live facts. Reconciliation selects
+  evidence for the effective desired outcome, not the first local inspection.
+  Missing evidence fails closed. When equal intent has differing safety evidence
+  across historical views, every matching view must allow Restore (conservative
+  blocking, not new authority). Capture evidence remains separate.
+- Sync uses the existing bounded read-provider scheduler with its approved
+  four-worker limit. Results aggregate in provider order. Meaningful failures
+  cancel workers; all launched workers and shared slot loaders are joined before
+  returning, without partial observations. Capture/Restore scheduling is unchanged.
+
+The remote-only Defaults `firefox` → `custom.desktop` regression fails with the
+old safety selection and passes with `restore-ineligible` using one Defaults
+scan and one Packages detection. Its disposable fixture verifies unchanged HEAD,
+index, checkout and cursor. Services inventory-sharing tests remain green.
+Scheduler regressions prove peak work of four, deliberately reversed completion
+with deterministic results, meaningful-error preservation, caller cancellation,
+loader joining and rejection of late successful results after cycle termination.
+
+Fresh verification on the final code: focused suites, `go test ./... -count=1`,
+`go test -race ./... -count=1`, `go vet ./...`, `go build ./...`, and all 66
+release/helper tests passed (Go 1.27.1 linux/amd64). No additional review agent
+was launched; external review remains the human's workflow. Hosted checks must
+rerun on the new publication head. Reconstruction Assurance is unchanged.
+No real user profile or machine state was inspected or mutated. PR C has not begun.
 
 ## Tests and evidence before final review
 
