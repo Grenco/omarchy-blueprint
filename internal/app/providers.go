@@ -304,6 +304,10 @@ func (p resourcesStateProvider) InspectTargets(ctx context.Context, d profile.Da
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromResources(d, current)
+}
+
+func targetsFromResources(d profile.Data, current profile.Resources) ([]workflow.TargetInspection, error) {
 	currentByID := map[string]profile.Resource{}
 	for _, item := range current.Items {
 		currentByID[item.ID] = item
@@ -1352,6 +1356,10 @@ func (p themesStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromThemes(d, current)
+}
+
+func targetsFromThemes(d profile.Data, current profile.Themes) ([]workflow.TargetInspection, error) {
 	targets := []workflow.TargetInspection{{
 		Key:             "active",
 		Label:           "active",
@@ -1771,6 +1779,10 @@ func (p pluginsStateProvider) InspectTargets(ctx context.Context, d profile.Data
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromPlugins(d, current)
+}
+
+func targetsFromPlugins(d profile.Data, current profile.Plugins) ([]workflow.TargetInspection, error) {
 	desiredThirdParty, desiredBuiltin, currentThirdParty, currentBuiltin := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, plugin := range d.Plugins.Items {
 		if plugin.Source == "builtin" || plugin.Source == "" {
@@ -2213,6 +2225,10 @@ func (p configStateProvider) InspectTargets(ctx context.Context, d profile.Data)
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromConfig(d, scan)
+}
+
+func targetsFromConfig(d profile.Data, scan configprovider.ScanSummary) ([]workflow.TargetInspection, error) {
 	desiredFiles := map[string]bool{}
 	for _, file := range d.Config.Files {
 		desiredFiles[file.Path] = true
@@ -2612,6 +2628,10 @@ func (p defaultsStateProvider) InspectTargets(ctx context.Context, d profile.Dat
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromDefaults(d, current)
+}
+
+func targetsFromDefaults(d profile.Data, current profile.Defaults) ([]workflow.TargetInspection, error) {
 	fields := []struct{ key, desired, current string }{
 		{"terminal", d.Defaults.Terminal, current.Terminal},
 		{"browser", d.Defaults.Browser, current.Browser},
@@ -2832,6 +2852,10 @@ func (p shellStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromShell(d, current)
+}
+
+func targetsFromShell(d profile.Data, current shellprovider.State) ([]workflow.TargetInspection, error) {
 	eligible, reason := true, ""
 	if current.Status == shellprovider.StatusUnsupported {
 		eligible, reason = false, "Shell version is unsupported"
@@ -3043,6 +3067,10 @@ func (p hooksStateProvider) InspectTargets(ctx context.Context, d profile.Data) 
 	if err != nil {
 		return nil, err
 	}
+	return targetsFromHooks(d, current)
+}
+
+func targetsFromHooks(d profile.Data, current hooksprovider.State) ([]workflow.TargetInspection, error) {
 	desired, currentManaged, absent := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, hook := range d.Hooks.Items {
 		desired[hook.Path] = true
