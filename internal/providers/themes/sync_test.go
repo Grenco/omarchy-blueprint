@@ -9,7 +9,7 @@ import (
 func TestSyncDesiredThemesNormalization(t *testing.T) {
 	d := profile.Data{}
 	d.Manifest.Capture.Themes = true
-	d.Themes = profile.Themes{Current: "builtin", Items: []profile.Theme{{ID: "custom", Type: "copy", Hash: "a", Enabled: true}}, Absent: []profile.Theme{{ID: "gone", Type: "copy", Hash: "b"}}}
+	d.Themes = profile.Themes{Current: "builtin", Items: []profile.Theme{{ID: "custom", Type: "local", Hash: "a", Enabled: true}}, Absent: []profile.Theme{{ID: "gone", Type: "local", Hash: "b"}}}
 	got, err := (Provider{}).SyncDesired(d)
 	if err != nil {
 		t.Fatal(err)
@@ -38,5 +38,20 @@ func TestSyncDesiredThemesNormalization(t *testing.T) {
 	empty, err := (Provider{}).SyncDesired(d)
 	if err != nil || len(empty) != 0 {
 		t.Fatal("uncaptured managed intent")
+	}
+}
+
+func TestSyncGitThemeUsesProviderEquivalence(t *testing.T) {
+	d := profile.Data{}
+	d.Manifest.Capture.Themes = true
+	d.Themes.Items = []profile.Theme{{ID: "demo", Type: "git", URL: "https://example.test/theme", Revision: "abc", Hash: "first"}}
+	first, err := (Provider{}).SyncDesired(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Themes.Items[0].Hash = "second"
+	second, err := (Provider{}).SyncDesired(d)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatal("non-semantic Git snapshot hash changed intent")
 	}
 }

@@ -25,6 +25,32 @@ type syncOverlay interface {
 	OverlaySyncTarget(context.Context, *syncprofile.Builder, syncprofile.View, string) error
 }
 
+func TestSyncConfigDeletionOverlayRetainsBaselineEvidence(t *testing.T) {
+	src := syncprofile.View{Root: t.TempDir(), Profile: profile.New("test", time.Time{})}
+	src.Profile.Manifest.Capture.Config = true
+	src.Profile.Config.Deletes = []profile.ConfigDelete{{Path: ".config/demo", BaselineHash: "baseline"}}
+	artifact := "config/baseline/.config/demo"
+	path := filepath.Join(src.Root, artifact)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("baseline evidence"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := syncprofile.NewBuilder(profile.New("test", time.Time{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := (config.Provider{}).OverlaySyncTarget(context.Background(), b, src, ".config/demo"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(b.Root(), artifact))
+	if err != nil || string(got) != "baseline evidence" {
+		t.Fatal("deletion lost baseline authority evidence", err)
+	}
+}
+
 func TestSyncProviderOverlayOneTargetAndUnmanaged(t *testing.T) {
 	cases := []struct {
 		p         syncOverlay
@@ -120,6 +146,9 @@ func TestSyncProviderOverlayOneTargetAndUnmanaged(t *testing.T) {
 			stale := src
 			stale.Profile = profile.CloneData(src.Profile)
 			stale.Profile.Manifest.Capture = profile.CaptureMeta{}
+			// Packages predate capture metadata: stored declarations remain
+			// managed even when the manifest flag is absent. Empty is unmanaged.
+			stale.Profile.Packages = profile.Packages{}
 			if err := c.p.OverlaySyncTarget(context.Background(), b, stale, c.target); err != nil {
 				t.Fatal(err)
 			}

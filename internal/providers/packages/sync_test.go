@@ -46,9 +46,18 @@ func TestSyncDesiredPackagesSemanticIdentity(t *testing.T) {
 		t.Fatal("meaningful tool change invisible")
 	}
 	d.Manifest.Capture.Packages = false
+	d.Packages = profile.Packages{}
 	empty, err := (Provider{}).SyncDesired(d)
 	if err != nil || len(empty) != 0 {
 		t.Fatal("uncaptured category became managed")
+	}
+}
+
+func TestSyncDesiredPackagesLegacyIntentDoesNotDependOnCaptureFlag(t *testing.T) {
+	d := profile.Data{Packages: profile.Packages{Official: []string{"legacy"}}}
+	targets, err := (Provider{}).SyncDesired(d)
+	if err != nil || len(targets) != 1 || targets[0].Key.Target != "official:legacy" || targets[0].State.Kind != syncengine.StatePresent {
+		t.Fatal("legacy committed package intent silently lost", targets, err)
 	}
 }
 

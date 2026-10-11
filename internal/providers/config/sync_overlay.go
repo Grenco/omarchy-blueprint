@@ -38,6 +38,13 @@ func (Provider) OverlaySyncTarget(ctx context.Context, b *syncprofile.Builder, v
 			}
 		}
 	}
+	for _, x := range src.Deletes {
+		if x.Path == target {
+			if err := b.ReplaceArtifact(ctx, view.Root, "config/baseline/"+target); err != nil {
+				return err
+			}
+		}
+	}
 	b.Profile.Manifest.Capture.Config = b.Profile.Manifest.Capture.Config || view.Profile.Manifest.Capture.Config
 	return nil
 }

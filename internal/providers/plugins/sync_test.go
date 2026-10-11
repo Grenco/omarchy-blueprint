@@ -10,7 +10,7 @@ func TestSyncDesiredPluginsNormalization(t *testing.T) {
 	d := profile.Data{}
 	d.Manifest.Capture.Plugins = true
 	d.Manifest.Capture.Shell = true
-	d.Plugins = profile.Plugins{Items: []profile.Plugin{{ID: "custom", Source: "copy", Hash: "a", Enabled: true}, {ID: "builtin", Source: "builtin"}}, Absent: []profile.Plugin{{ID: "gone", Source: "copy", Hash: "b"}}}
+	d.Plugins = profile.Plugins{Items: []profile.Plugin{{ID: "custom", Source: "local", Hash: "a", Enabled: true}, {ID: "builtin", Source: "builtin"}}, Absent: []profile.Plugin{{ID: "gone", Source: "local", Hash: "b"}}}
 	got, err := (Provider{}).SyncDesired(d)
 	if err != nil {
 		t.Fatal(err)
@@ -40,5 +40,20 @@ func TestSyncDesiredPluginsNormalization(t *testing.T) {
 	empty, err := (Provider{}).SyncDesired(d)
 	if err != nil || len(empty) != 0 {
 		t.Fatal("uncaptured managed intent")
+	}
+}
+
+func TestSyncGitPluginUsesProviderEquivalence(t *testing.T) {
+	d := profile.Data{}
+	d.Manifest.Capture.Plugins = true
+	d.Plugins.Items = []profile.Plugin{{ID: "demo", Source: "git", URL: "https://example.test/plugin", Revision: "abc", Hash: "first"}}
+	first, err := (Provider{}).SyncDesired(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Plugins.Items[0].Hash = "second"
+	second, err := (Provider{}).SyncDesired(d)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatal("non-semantic Git snapshot hash changed intent")
 	}
 }

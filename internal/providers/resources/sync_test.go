@@ -41,3 +41,18 @@ func TestSyncDesiredResourcesNormalization(t *testing.T) {
 		t.Fatal("uncaptured managed intent")
 	}
 }
+
+func TestSyncResourcePathIsControlNotTargetValue(t *testing.T) {
+	d := profile.Data{}
+	d.Manifest.Capture.Resources = true
+	d.Resources.Items = []profile.Resource{{ID: "demo", Path: "~/first", Strategy: "copy", Kind: "directory", Hash: "same"}}
+	first, err := (Provider{}).SyncDesired(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Resources.Items[0].Path = "~/second"
+	second, err := (Provider{}).SyncDesired(d)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatal("resource path mapping became runtime intent")
+	}
+}

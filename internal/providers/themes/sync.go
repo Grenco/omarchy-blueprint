@@ -20,16 +20,28 @@ func (Provider) SyncDesired(d profile.Data) ([]syncengine.DesiredTarget, error) 
 		if t.Type == "builtin" {
 			continue
 		}
-		t.Enabled = false
+		t = normalizeSyncTheme(t)
 		if err := s.Add("theme:"+t.ID, syncengine.StatePresent, t); err != nil {
 			return nil, err
 		}
 	}
 	for _, t := range d.Themes.Absent {
-		t.Enabled = false
+		t = normalizeSyncTheme(t)
 		if err := s.Add("theme:"+t.ID, syncengine.StateAbsent, t); err != nil {
 			return nil, err
 		}
 	}
 	return s.Targets(), nil
+}
+
+func normalizeSyncTheme(t profile.Theme) profile.Theme {
+	// Match provider equivalence rather than incidental capture metadata.
+	out := profile.Theme{ID: t.ID, Type: t.Type}
+	switch t.Type {
+	case "git":
+		out.URL, out.Revision = t.URL, t.Revision
+	case "local", "overlay":
+		out.Hash = t.Hash
+	}
+	return out
 }

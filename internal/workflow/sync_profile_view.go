@@ -53,6 +53,15 @@ func loadSyncView(ctx context.Context, git profilegit.Service, sha string, provi
 	if err := validateLoadedPolicyTargets(providers, data); err != nil {
 		return SyncProfileView{}, nil, fmt.Errorf("sync: historical policy targets are invalid")
 	}
+	for _, p := range providers {
+		if v, ok := p.(interface {
+			ValidateSyncArtifacts(context.Context, string, profile.Data) error
+		}); ok {
+			if err := v.ValidateSyncArtifacts(ctx, root, profile.CloneData(data)); err != nil {
+				return SyncProfileView{}, nil, fmt.Errorf("sync: historical provider artifacts are invalid")
+			}
+		}
+	}
 	targets, err := projectSyncProfile(data, providers)
 	if err != nil {
 		return SyncProfileView{}, nil, err

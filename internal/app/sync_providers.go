@@ -16,6 +16,24 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/syncprofile"
 )
 
+func (themesStateProvider) ValidateSyncArtifacts(ctx context.Context, root string, d profile.Data) error {
+	return (themesprovider.Provider{}).ValidateSyncArtifacts(ctx, root, d)
+}
+func (pluginsStateProvider) ValidateSyncArtifacts(ctx context.Context, root string, d profile.Data) error {
+	return (pluginsprovider.Provider{}).ValidateSyncArtifacts(ctx, root, d)
+}
+func (configStateProvider) ValidateSyncArtifacts(ctx context.Context, root string, d profile.Data) error {
+	return (configprovider.Provider{}).ValidateSyncArtifacts(ctx, root, d)
+}
+func (hooksStateProvider) ValidateSyncArtifacts(ctx context.Context, root string, d profile.Data) error {
+	return (hooksprovider.Provider{}).ValidateSyncArtifacts(ctx, root, d)
+}
+func (shellStateProvider) ValidateSyncArtifacts(ctx context.Context, root string, d profile.Data) error {
+	return (shellprovider.Provider{}).ValidateSyncArtifacts(ctx, root, d)
+}
+func (resourcesStateProvider) ValidateSyncArtifacts(ctx context.Context, root string, d profile.Data) error {
+	return (resourcesprovider.Provider{}).ValidateSyncArtifacts(ctx, root, d)
+}
 func (p restoreProviderAdapter) SyncDesired(d profile.Data) ([]syncengine.DesiredTarget, error) {
 	v, ok := p.stateProvider.(interface {
 		SyncDesired(profile.Data) ([]syncengine.DesiredTarget, error)

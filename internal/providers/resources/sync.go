@@ -15,6 +15,9 @@ func (Provider) SyncDesired(d profile.Data) ([]syncengine.DesiredTarget, error) 
 	data := profile.CloneData(d)
 	for _, r := range data.Resources.Items {
 		r.Dirty = false
+		// Portable paths and machine mappings are interpretation inputs,
+		// fingerprinted independently by the workflow control plane.
+		r.Path = ""
 		sort.Slice(r.Untracked, func(i, j int) bool { return r.Untracked[i].Path < r.Untracked[j].Path })
 		links := []profile.ResourceLink{}
 		for _, l := range data.Resources.Links {

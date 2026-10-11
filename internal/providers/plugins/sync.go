@@ -18,6 +18,14 @@ func (Provider) SyncDesired(d profile.Data) ([]syncengine.DesiredTarget, error) 
 		if t.Source == "" {
 			t.Source = "builtin"
 		}
+		out := profile.Plugin{ID: t.ID, Source: t.Source, Enabled: t.Enabled}
+		switch t.Source {
+		case "git":
+			out.URL, out.Revision = t.URL, t.Revision
+		case "local":
+			out.Hash, out.ClonedFrom = t.Hash, t.ClonedFrom
+		}
+		t = out
 		return s.Add("plugin:"+t.ID, kind, t)
 	}
 	for _, t := range d.Plugins.Items {

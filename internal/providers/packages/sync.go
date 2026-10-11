@@ -9,9 +9,8 @@ import (
 // Omarchy catalogue. Historical interpretation must not depend on today's host.
 func (Provider) SyncDesired(d profile.Data) ([]syncengine.DesiredTarget, error) {
 	s := syncengine.NewTargetSet("packages")
-	if !d.Manifest.Capture.Packages {
-		return s.Targets(), nil
-	}
+	// Packages predate capture metadata; their stored declarations are intent
+	// regardless of this flag, just as the existing workflow adapter reports.
 	p := profile.ClonePackages(d.Packages)
 	excluded := map[string]bool{}
 	for _, key := range p.Excluded {

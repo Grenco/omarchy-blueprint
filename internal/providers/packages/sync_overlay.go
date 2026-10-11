@@ -12,9 +12,6 @@ func (Provider) OverlaySyncTarget(ctx context.Context, b *syncprofile.Builder, v
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !view.Profile.Manifest.Capture.Packages {
-		view.Profile.Packages = profile.Packages{}
-	}
 	src := profile.CloneData(view.Profile).Packages
 	d := &b.Profile.Packages
 	d.Official = syncprofile.Replace(d.Official, src.Official, target, func(x string) string { return "official:" + x })
@@ -25,7 +22,7 @@ func (Provider) OverlaySyncTarget(ctx context.Context, b *syncprofile.Builder, v
 			d.Mise = profile.MiseTools{}
 		}
 		delete(d.Mise, id)
-		if value, found := src.Mise[id]; found && view.Profile.Manifest.Capture.Packages {
+		if value, found := src.Mise[id]; found {
 			d.Mise[id] = value
 		}
 	}

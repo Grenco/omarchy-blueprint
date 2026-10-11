@@ -2,10 +2,10 @@ package app
 
 import (
 	"context"
-	"path/filepath"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
+	"path/filepath"
 	"testing"
 )
 
@@ -51,7 +51,7 @@ func TestSyncProjectionTargetIdentityContract(t *testing.T) {
 // filename-derived namespace for the same live/desired target.
 func TestSyncProjectionMatchesInspectTargets(t *testing.T) {
 	dir, deps := configSandbox(t)
-	deps.MiseGlobalConfig=func()(string,error){return filepath.Join(t.TempDir(),"mise.toml"),nil}
+	deps.MiseGlobalConfig = func() (string, error) { return filepath.Join(t.TempDir(), "mise.toml"), nil }
 	d := profile.Data{}
 	d.Manifest.Capture.Packages = true
 	d.Packages.Official = []string{"ripgrep"}
