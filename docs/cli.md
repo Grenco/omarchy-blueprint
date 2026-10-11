@@ -29,6 +29,11 @@ Restore policy, and descriptive candidate actions. A successful query may contai
 blockers; it is not approval or mutation authority. Sync semantic deferral is
 unresolved intent, not Restore execution-scope deferral.
 
+Legacy package aliases are normalized consistently against one frozen live
+preinstall catalogue for that inspection. Changed resource paths or selected
+machine mappings block settlement pending inspection under the selected
+interpretation; observations of old roots cannot certify the new destination.
+
 ## Read-only observation diagnostics
 
 Set `BLUEPRINT_DEBUG_OBSERVATION=1` to print request-local observation and

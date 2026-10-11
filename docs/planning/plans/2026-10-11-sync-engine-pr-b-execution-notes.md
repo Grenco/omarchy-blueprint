@@ -6,7 +6,9 @@ Scope: approved implementation plan tasks 5–9, read-only Sync planning.
 - Worktree: isolated `sync-engine-pr-b`, branch `feat/sync-engine-read-planning`.
 - Pre-review implementation head: `e4fe89073edcfffaf3d3d13b6d09046bd8c73894`.
 - Runtime used for local verification: Go 1.27.1, linux/amd64.
-- Final implementation SHA and review disposition: pending final review.
+- Final implementation SHA: `b8b982fad4ff6f6b77f0829fc01a6edd6a059fcc`.
+- Fresh-context review: five Important findings, all addressed in one TDD fix
+  pass; no Critical findings or deferred Minor findings.
 
 ## Implemented boundary
 
@@ -35,7 +37,7 @@ planning, approval, no deferred/skipped/blocked work, and fresh verification.
 
 ## Tests and evidence before final review
 
-Passed on pre-review implementation head:
+Passed before review and again on the complete post-review implementation:
 
 - `go test ./... -count=1`
 - `go test -race ./... -count=1`
@@ -79,5 +81,36 @@ or mutation of the user's active Blueprint profile or real machine was performed
    remain fresh execution concerns rather than historical normalization probes.
 9. Sync uses a narrow optional-lock-free status path; ordinary Profile Git status
    behavior is unchanged.
+10. Legacy package identities use one provider-owned canonicalization context
+    from the immutable live catalogue, consistently across B/L/R/M, policy alias
+    precedence and disposable composition. Historical metadata is normalized in
+    detached values, not rewritten on disk. Cost: semantic key interpretation is
+    bound to this inspection's catalogue rather than independent per-revision
+    catalogues; fresh future execution must establish its own matching context.
+11. Changed resource interpretation blocks the read-only plan pending reinspection
+    under the selected mapping. Cost: even a one-sided remap requires external
+    control-plane reconciliation/new inspection in this slice; no target may be
+    declared settled from the old location.
+
+## Final review fixes
+
+- Preinstall children remain managed/absent independently of group management;
+  copying a child never enables the group.
+- Legacy official/AUR aliases and tombstones share canonical preinstall IDs.
+  Existing canonical policy rules win over legacy aliases; exclusions remain
+  unmanaged. CLI coverage exercises a legacy historical declaration with one
+  shared Packages detection.
+- Overlay themes retain their snapshots; composed trees rerun provider-owned
+  artifact validation, not just metadata projection.
+- Services gather template instance identities and owned artifact evidence across
+  all captured histories without another inventory, including remote-added
+  instances whose actual state already matches upstream.
+- Resource remaps cannot produce settlement using an observation bound to old
+  roots. The plan blocks before returning misleading target results.
+
+Each finding has a regression observed failing before its fix and passing after.
+Post-fix focused suites, full tests, full race tests, vet and build all passed.
+The unchanged release/helper suite passed 66 tests. Hosted checks are not claimed
+as complete locally and must run on the eventual PR head.
 
 PR C has not begun and remains gated on human review and merge of PR B.
