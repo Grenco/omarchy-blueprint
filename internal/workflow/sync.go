@@ -54,7 +54,7 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 		return block("remote-revision", "Configured upstream commit is unavailable; fetch explicitly")
 	}
 	plan.Identity.Remote = remote
-	status, err := r.profileGit.Status(ctx)
+	status, err := r.profileGit.ReadOnlyStatus(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return plan, ctx.Err()

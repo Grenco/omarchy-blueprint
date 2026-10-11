@@ -76,7 +76,7 @@ func (s *Session) InspectSyncBootstrap(ctx context.Context, opts SyncInspectOpti
 		return block("remote-revision", "Upstream revision is unavailable; fetch explicitly")
 	}
 	plan.Identity.Remote = remote
-	status, err := r.profileGit.Status(ctx)
+	status, err := r.profileGit.ReadOnlyStatus(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return plan, ctx.Err()
