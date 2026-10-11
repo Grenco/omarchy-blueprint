@@ -3,14 +3,95 @@ package app
 import (
 	"context"
 	"github.com/Grenco/omarchy-blueprint/internal/observation"
+	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	resourcesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/resources"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
+	"github.com/Grenco/omarchy-blueprint/internal/syncprofile"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestSyncPackagesCanonicalAliasesShareOneContext(t *testing.T) {
+	p, _, runner, _ := packageReadFixture(t)
+	// Canonicalize once from the immutable live catalogue, not per-history
+	// metadata or a second machine probe.
+	current := profile.Packages{Preinstalls: profile.Preinstalls{Items: map[string]bool{"foo": true}}}
+	base := profile.Data{}
+	base.Packages.Official = []string{"foo"}
+	local := profile.CloneData(base)
+	local.Packages.Official = nil
+	local.Packages.Absent = []profile.PackageAbsence{{Ref: "aur:foo"}}
+	base.Policy.Restore = []policy.Rule{{Category: "packages", Target: "official:foo", Setting: policy.SettingDisabled}, {Category: "packages", Target: "preinstall:foo", Setting: policy.SettingEnabled}}
+	base = normalizeSyncPackages(base, current.Preinstalls.Items)
+	local = normalizeSyncPackages(local, current.Preinstalls.Items)
+	want, err := p.SyncDesired(base)
+	if err != nil || len(want) != 1 || want[0].Key.Target != "preinstall:foo" {
+		t.Fatal("alias identity lost", want, err)
+	}
+	absent, err := p.SyncDesired(local)
+	if err != nil || len(absent) != 1 || absent[0].State.Kind != syncengine.StateAbsent {
+		t.Fatal(absent, err)
+	}
+	if len(base.Policy.Restore) != 1 || base.Policy.Restore[0].Target != "preinstall:foo" || base.Policy.Restore[0].Setting != policy.SettingEnabled {
+		t.Fatal("canonical policy precedence lost")
+	}
+	facts, err := syncPackagesObserved(base, []profile.Data{base, local}, current)
+	if err != nil {
+		t.Fatal("canonical live observation failed", err)
+	}
+	found := false
+	for _, x := range facts.Targets {
+		if x.Key.Target == "preinstall:foo" {
+			found = x.State.Equal(want[0].State)
+		}
+	}
+	if !found {
+		t.Fatal("B/L/R/M keyspaces differ", facts.Targets, want)
+	}
+	b, err := syncprofile.NewBuilder(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := (packagesprovider.Provider{}).OverlaySyncTarget(context.Background(), b, syncprofile.View{Profile: local}, "preinstall:foo"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := p.SyncDesired(b.Profile)
+	if len(got) != 1 || !got[0].State.Equal(absent[0].State) {
+		t.Fatal("canonical overlay differs", got, absent)
+	}
+	cycle := observation.New(context.Background())
+	defer cycle.Close()
+	view := p.BindReadCycle(cycle)
+	n, ok := view.(workflow.SyncNormalizeProvider)
+	if !ok {
+		t.Fatal("missing read-bound identity context")
+	}
+	if _, err := n.NormalizeSyncProfile(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := view.Diff(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if runner.detections != 1 {
+		t.Fatal("normalization re-probed packages", runner.detections)
+	}
+}
+
+func TestSyncPackageAliasCanonicalizationRetainsUnmanagedExclusion(t *testing.T) {
+	d := profile.Data{}
+	d.Packages.Official = []string{"foo"}
+	d.Packages.Excluded = []string{"official:foo"}
+	d = normalizeSyncPackages(d, map[string]bool{"foo": true})
+	got, err := (packagesprovider.Provider{}).SyncDesired(d)
+	if err != nil || len(got) != 0 {
+		t.Fatal("canonicalization turned excluded alias into managed child", got, err)
+	}
+}
 
 func TestSyncPackagesSharesObservationWithOtherReadProjections(t *testing.T) {
 	p, d, runner, _ := packageReadFixture(t)

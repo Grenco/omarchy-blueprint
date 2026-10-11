@@ -112,6 +112,12 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 		views[sha] = v
 		cleanups = append(cleanups, cleanup)
 	}
+	if err := r.normalizeSyncViews(ctx, views, providers); err != nil {
+		if ctx.Err() != nil {
+			return plan, ctx.Err()
+		}
+		return block("semantic-identity", "Provider identity context could not be established from the shared observation")
+	}
 	b, l, remoteView := views[cursor.Revision], views[info.SHA], views[remote]
 	useLocalControl, conflict := chooseSyncControl(b.Control, l.Control, remoteView.Control)
 	chosen := remoteView
@@ -121,6 +127,9 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 	plan.Identity.ControlFingerprint = chosen.Control.Fingerprint
 	if conflict {
 		plan.Blockers = append(plan.Blockers, syncengine.Blocker{Code: "control-conflict", Message: "Two-sided control-plane disagreement requires explicit resolution outside target Sync"})
+	}
+	if syncResourceInterpretationChanged(l.Profile, chosen.Profile, r.machine.Name) {
+		return block("control-reinspection", "Resource interpretation changed; inspect under the selected mapping before claiming target settlement")
 	}
 	// Audit every divergent commit, including reverted non-managed changes.
 	if plan.Git.Diverged {

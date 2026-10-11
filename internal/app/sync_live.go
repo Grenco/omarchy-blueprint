@@ -4,10 +4,43 @@ import (
 	"context"
 	"fmt"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	packagesprovider "github.com/Grenco/omarchy-blueprint/internal/providers/packages"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 	"sort"
+	"strings"
 )
+
+func normalizeSyncPackages(d profile.Data, catalogue map[string]bool) profile.Data {
+	d = profile.CloneData(d)
+	d.Packages = packagesprovider.CanonicalizePreinstallOwnership(d.Packages, catalogue)
+	canonicalRefs := func(refs []string) []string {
+		for i, ref := range refs {
+			kind, id, ok := strings.Cut(ref, ":")
+			if ok && (kind == "official" || kind == "aur") {
+				if _, found := catalogue[id]; found {
+					refs[i] = "preinstall:" + id
+				}
+			}
+		}
+		return refs
+	}
+	d.Packages.Excluded = canonicalRefs(d.Packages.Excluded)
+	d.Packages.MachineSpecific = canonicalRefs(d.Packages.MachineSpecific)
+	migrateLegacyPreinstallPolicyAliases(&d.Policy, catalogue)
+	for i := range d.Machines.Items {
+		migrateLegacyPreinstallPolicyAliases(&d.Machines.Items[i].Policy, catalogue)
+	}
+	return d
+}
+
+func (v *packagesReadView) NormalizeSyncProfile(ctx context.Context, d profile.Data) (profile.Data, error) {
+	facts, err := v.slot.Get(ctx)
+	if err != nil {
+		return profile.Data{}, err
+	}
+	return normalizeSyncPackages(d, facts.observed.Packages().Preinstalls.Items), nil
+}
 
 // syncLiveFacts combines provider-normalized values with provider-reported
 // physical presence. It never reconstructs meaning from capture fingerprints.
@@ -99,6 +132,12 @@ func (v *packagesReadView) SyncObserve(ctx context.Context, hints profile.Data, 
 	return syncPackagesObserved(hints, histories, facts.observed.Packages())
 }
 func syncPackagesObserved(hints profile.Data, histories []profile.Data, current profile.Packages) (workflow.SyncLiveObservation, error) {
+	hints = normalizeSyncPackages(hints, current.Preinstalls.Items)
+	normalizedHistories := make([]profile.Data, len(histories))
+	for i, d := range histories {
+		normalizedHistories[i] = normalizeSyncPackages(d, current.Preinstalls.Items)
+	}
+	histories = normalizedHistories
 	p := packagesStateProvider{}
 	currentData := profile.CloneData(hints)
 	currentData.Packages = current

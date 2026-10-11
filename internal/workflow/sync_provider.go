@@ -26,6 +26,13 @@ type SyncComposeProvider interface {
 type SyncLiveProvider interface {
 	SyncObserve(context.Context, profile.Data, []profile.Data) (SyncLiveObservation, error)
 }
+
+// SyncNormalizeProvider freezes provider-specific semantic identity using the
+// already shared observation. It returns detached historical metadata only;
+// no active profile files or authority are changed.
+type SyncNormalizeProvider interface {
+	NormalizeSyncProfile(context.Context, profile.Data) (profile.Data, error)
+}
 type SyncLiveObservation struct {
 	Targets     []syncengine.DesiredTarget
 	Inspections []TargetInspection

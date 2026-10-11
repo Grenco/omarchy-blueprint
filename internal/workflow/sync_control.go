@@ -4,8 +4,29 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
+	"reflect"
 	"sort"
 )
+
+// A read cycle is bound to the current machine selection. Do not certify a
+// different resource interpretation using observations of the old roots.
+func syncResourceInterpretationChanged(local, chosen profile.Data, selected string) bool {
+	paths := func(d profile.Data) map[string]string {
+		out := map[string]string{}
+		for _, r := range d.Resources.Items {
+			out[r.ID] = r.Path
+		}
+		for _, m := range d.Machines.Items {
+			if m.Name == selected {
+				for _, mapping := range m.ResourcePaths {
+					out[mapping.Resource] = mapping.Path
+				}
+			}
+		}
+		return out
+	}
+	return !reflect.DeepEqual(paths(local), paths(chosen))
+}
 
 // Control state is separate from runtime targets and includes all definitions,
 // not just today's selected overlay. Two-sided disagreement is never merged by

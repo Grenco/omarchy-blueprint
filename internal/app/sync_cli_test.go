@@ -40,7 +40,7 @@ func TestSyncCLIExplicitFetchOfflineAndJSON(t *testing.T) {
 	root, deps := configSandbox(t)
 	d := profile.New("test", time.Time{})
 	d.Manifest.Capture.Packages = true
-	d.Packages.Official = []string{"zoxide"}
+	d.Packages.Official = []string{"aether"}
 	d.Machines.Items = []profile.Machine{{Name: "test-machine"}}
 	if err := profile.Save(root, d); err != nil {
 		t.Fatal(err)
@@ -58,6 +58,7 @@ func TestSyncCLIExplicitFetchOfflineAndJSON(t *testing.T) {
 	sha := strings.TrimSpace(gitRun(t, "-C", root, "rev-parse", "HEAD"))
 	before, index := gitRun(t, "-C", root, "status", "--porcelain=v2"), gitRun(t, "-C", root, "write-tree")
 	runner := &syncCLIRunner{machine: deps.Runner.(*machineRunner)}
+	runner.machine.preinstalls = map[string]bool{"aether": true}
 	deps.Runner = runner
 	home := t.TempDir()
 	deps.HomeDir = func() (string, error) { return home, nil }
@@ -101,6 +102,10 @@ func TestSyncCLIExplicitFetchOfflineAndJSON(t *testing.T) {
 			Data struct {
 				Sync struct {
 					Identity syncengine.Identity `json:"identity"`
+					Items    []struct {
+						Key   syncengine.TargetKey `json:"key"`
+						Local syncengine.State     `json:"local"`
+					} `json:"items"`
 				} `json:"sync"`
 			} `json:"data"`
 		}
@@ -109,6 +114,20 @@ func TestSyncCLIExplicitFetchOfflineAndJSON(t *testing.T) {
 		}
 		if envelope.Data.Sync.Identity.Local != sha || envelope.Data.Sync.Identity.Remote != sha {
 			t.Fatal("lost exact revisions", out.String())
+		}
+		if wantDetect == 1 {
+			found := false
+			for _, x := range envelope.Data.Sync.Items {
+				if x.Key.Target == "official:aether" {
+					t.Fatal("legacy alias retained duplicate authority")
+				}
+				if x.Key.Target == "preinstall:aether" && x.Local.Kind == syncengine.StatePresent {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("historical alias not normalized through shared live context", out.String())
+			}
 		}
 		if strings.Contains(out.String(), root) || strings.Contains(out.String(), origin) || strings.Contains(out.String(), "blueprint-sync-revision") {
 			t.Fatal("private materialization/transport leaked")

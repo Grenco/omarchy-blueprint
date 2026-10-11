@@ -107,9 +107,20 @@ func (s *Session) InspectSyncBootstrap(ctx context.Context, opts SyncInspectOpti
 		}
 		defer cleanupRemote()
 	}
+	views := map[string]SyncProfileView{info.SHA: local, remote: rv}
+	if err := r.normalizeSyncViews(ctx, views, providers); err != nil {
+		if ctx.Err() != nil {
+			return plan, ctx.Err()
+		}
+		return block("semantic-identity", "Provider identity context could not be established from the shared observation")
+	}
+	local, rv = views[info.SHA], views[remote]
 	plan.Identity.ControlFingerprint = rv.Control.Fingerprint
 	if local.Control.Fingerprint != rv.Control.Fingerprint {
 		plan.Blockers = append(plan.Blockers, syncengine.Blocker{Code: "bootstrap-control-difference", Message: "Without a baseline, differing control planes require explicit external reconciliation"})
+	}
+	if syncResourceInterpretationChanged(local.Profile, rv.Profile, r.machine.Name) {
+		return block("control-reinspection", "Resource interpretation differs; no convergence claim can use the current mapping")
 	}
 	facts, err := r.observeSync(ctx, local.Profile, []profile.Data{rv.Profile, local.Profile})
 	if err != nil {

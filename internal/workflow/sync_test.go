@@ -346,3 +346,27 @@ func TestSyncInspectionBlocksUnsafeRepositoryStates(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncRemoteResourceRemapCannotSettleOldLocation(t *testing.T) {
+	s, _, d, _, peer, _, observes := syncTwoClones(t)
+	// A selected machine mapping is interpretation even when no target value
+	// changes. The existing observation is bound to the local selection.
+	d.Machines.Items[0].ResourcePaths = []profile.MachineResourcePath{{Resource: "demo", Path: "~/new"}}
+	if err := profile.Save(peer, d); err != nil {
+		t.Fatal(err)
+	}
+	syncGit(t, peer, "add", ".")
+	syncGit(t, peer, "commit", "-m", "remap")
+	syncGit(t, peer, "push")
+	p, err := s.InspectSync(context.Background(), SyncInspectOptions{Fetch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, b := range p.Blockers {
+		found = found || b.Code == "control-reinspection"
+	}
+	if !found || len(p.Items) != 0 || observes.Load() != 0 {
+		t.Fatal("old interpretation accepted as settled", p, observes.Load())
+	}
+}
