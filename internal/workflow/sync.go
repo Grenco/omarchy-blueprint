@@ -184,7 +184,7 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 	}
 	reconciled.Blockers = plan.Blockers
 	for _, item := range reconciled.Items {
-		reconciled.Blockers = append(reconciled.Blockers, syncSafetyBlockers(item, inspections[item.Key])...)
+		reconciled.Blockers = append(reconciled.Blockers, syncDesiredSafetyBlockers(item, inspections[item.Key], live.DesiredInspections)...)
 	}
 	if err := r.check(ctx); err != nil {
 		return syncengine.Plan{}, err
@@ -193,9 +193,10 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 }
 
 type syncCycleObservation struct {
-	Targets     []syncengine.DesiredTarget
-	Inspections map[string][]TargetInspection
-	Blockers    []syncengine.Blocker
+	Targets            []syncengine.DesiredTarget
+	Inspections        map[string][]TargetInspection
+	DesiredInspections []SyncDesiredInspection
+	Blockers           []syncengine.Blocker
 }
 
 func (r *ReadCycle) observeSync(ctx context.Context, hints profile.Data, histories []profile.Data) (syncCycleObservation, error) {
@@ -207,6 +208,7 @@ func (r *ReadCycle) observeSync(ctx context.Context, hints profile.Data, histori
 	ctx, stop := r.withContext(ctx)
 	defer stop()
 	result := syncCycleObservation{Inspections: map[string][]TargetInspection{}}
+	var participatingProviders []ReadProvider
 	for _, p := range r.providers {
 		if err := r.check(ctx); err != nil {
 			return syncCycleObservation{}, err
@@ -218,36 +220,52 @@ func (r *ReadCycle) observeSync(ctx context.Context, hints profile.Data, histori
 		if !participating {
 			continue
 		}
+		participatingProviders = append(participatingProviders, p)
+	}
+	factsByProvider, err := observeReadProviders(ctx, participatingProviders, readProviderConcurrency, func(ctx context.Context, p ReadProvider) (SyncLiveObservation, error) {
 		source := readCapabilitySource(p)
 		observer, ok := source.(SyncLiveProvider)
 		if !ok {
-			return syncCycleObservation{}, fmt.Errorf("sync: provider %s lacks read-bound live projection", p.ID())
+			return SyncLiveObservation{}, fmt.Errorf("sync: provider %s lacks read-bound live projection", p.ID())
 		}
 		facts, err := observer.SyncObserve(ctx, profile.CloneData(hints), cloneSyncHistories(histories))
 		if err != nil {
-			return syncCycleObservation{}, err
+			return SyncLiveObservation{}, err
 		}
 		seen := map[syncengine.TargetKey]bool{}
 		for _, x := range facts.Targets {
 			if x.Key.Category != p.ID() || x.Key.Target == "" || seen[x.Key] {
-				return syncCycleObservation{}, fmt.Errorf("sync: live provider returned wrong category")
+				return SyncLiveObservation{}, fmt.Errorf("sync: live provider returned wrong category")
 			}
 			seen[x.Key] = true
 			switch x.State.Kind {
 			case syncengine.StateUnmanaged:
 				if x.State.Fingerprint != "" {
-					return syncCycleObservation{}, fmt.Errorf("sync: unmanaged live state has fingerprint")
+					return SyncLiveObservation{}, fmt.Errorf("sync: unmanaged live state has fingerprint")
 				}
 			case syncengine.StatePresent, syncengine.StateAbsent:
 				if len(x.State.Fingerprint) != 64 {
-					return syncCycleObservation{}, fmt.Errorf("sync: live fingerprint is invalid")
+					return SyncLiveObservation{}, fmt.Errorf("sync: live fingerprint is invalid")
 				}
 			default:
-				return syncCycleObservation{}, fmt.Errorf("sync: live state is invalid")
+				return SyncLiveObservation{}, fmt.Errorf("sync: live state is invalid")
 			}
 		}
+		return facts, nil
+	})
+	if err != nil {
+		// Shared slot loaders belong to the cycle, not the scheduler waiter.
+		// End this failed inspection and join them before returning. Release
+		// our enrollment first so Close cannot wait on its own caller.
+		release()
+		r.Close()
+		return syncCycleObservation{}, err
+	}
+	for i, facts := range factsByProvider {
+		p := participatingProviders[i]
 		result.Targets = append(result.Targets, facts.Targets...)
 		result.Inspections[p.ID()] = cloneTargets(facts.Inspections)
+		result.DesiredInspections = append(result.DesiredInspections, facts.DesiredInspections...)
 		result.Blockers = append(result.Blockers, facts.Blockers...)
 	}
 	if err := r.check(ctx); err != nil {

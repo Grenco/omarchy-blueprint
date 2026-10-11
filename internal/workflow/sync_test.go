@@ -78,11 +78,11 @@ type syncLiveFake struct {
 
 func (p *syncLiveFake) BindReadCycle(c *observation.Cycle) ReadProvider {
 	p.binds.Add(1)
-	return &syncLiveFakeRead{statusTestProvider: p.statusTestProvider, slot: observation.NewSlot(c, func(context.Context) (profile.Data, error) { p.observes.Add(1); return p.live, nil }, profile.CloneData)}
+	return &syncLiveFakeRead{ReadProvider: narrowReadProvider(p.statusTestProvider), slot: observation.NewSlot(c, func(context.Context) (profile.Data, error) { p.observes.Add(1); return p.live, nil }, profile.CloneData)}
 }
 
 type syncLiveFakeRead struct {
-	statusTestProvider
+	ReadProvider
 	slot *observation.Slot[profile.Data]
 }
 
@@ -115,7 +115,19 @@ func (p *syncLiveFakeRead) SyncObserve(ctx context.Context, _ profile.Data, hist
 	for _, x := range targets {
 		inspections = append(inspections, TargetInspection{Key: x.Key.Target, Current: TargetPresent, CaptureEligible: true, RestoreEligible: true, Capabilities: TargetCapabilities{SupportsCapture: true, SupportsRestore: true, SupportsDesiredAbsence: true}})
 	}
-	return SyncLiveObservation{Targets: targets, Inspections: inspections}, nil
+	result := SyncLiveObservation{Targets: targets, Inspections: inspections}
+	for _, historical := range histories {
+		items, err := (packages.Provider{}).SyncDesired(historical)
+		if err != nil {
+			return SyncLiveObservation{}, err
+		}
+		bound, err := BindSyncDesiredInspections(items, inspections)
+		if err != nil {
+			return SyncLiveObservation{}, err
+		}
+		result.DesiredInspections = append(result.DesiredInspections, bound...)
+	}
+	return result, nil
 }
 
 func syncTwoClones(t *testing.T) (*Session, *syncCountingRunner, profile.Data, string, string, *atomic.Int32, *atomic.Int32) {
