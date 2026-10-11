@@ -57,14 +57,14 @@ func (Provider) SyncDesired(d profile.Data) ([]syncengine.DesiredTarget, error) 
 		if err := s.Add("preinstalls", kind, !p.Preinstalls.RemovedAll); err != nil {
 			return nil, err
 		}
-		for id, present := range p.Preinstalls.Items {
-			kind := syncengine.StatePresent
-			if !present {
-				kind = syncengine.StateAbsent
-			}
-			if err := s.Add("preinstall:"+id, kind, present); err != nil {
-				return nil, err
-			}
+	}
+	for id, present := range p.Preinstalls.Items {
+		kind := syncengine.StatePresent
+		if !present {
+			kind = syncengine.StateAbsent
+		}
+		if err := add("preinstall:"+id, kind, present); err != nil {
+			return nil, err
 		}
 	}
 	return s.Targets(), nil

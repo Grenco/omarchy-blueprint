@@ -32,7 +32,7 @@ func (Provider) OverlaySyncTarget(ctx context.Context, b *syncprofile.Builder, v
 			return err
 		}
 		for _, x := range src.Items {
-			if x.ID == id && x.Type == "local" {
+			if x.ID == id && (x.Type == "local" || x.Type == "overlay") {
 				if err := b.ReplaceArtifact(ctx, view.Root, rel); err != nil {
 					return err
 				}

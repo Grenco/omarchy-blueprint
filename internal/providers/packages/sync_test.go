@@ -1,12 +1,37 @@
 package packages
 
 import (
+	"context"
+	"github.com/Grenco/omarchy-blueprint/internal/syncprofile"
 	"reflect"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 )
+
+func TestSyncPreinstallChildrenSurviveUnmanagedGroupAndOverlay(t *testing.T) {
+	d := profile.Data{}
+	d.Packages.Preinstalls.Items = map[string]bool{"present": true, "absent": false}
+	items, err := (Provider{}).SyncDesired(d)
+	if err != nil || len(items) != 2 {
+		t.Fatal("child intent lost with unmanaged group", items, err)
+	}
+	b, err := syncprofile.NewBuilder(profile.Data{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := (Provider{}).OverlaySyncTarget(context.Background(), b, syncprofile.View{Profile: d}, "preinstall:absent"); err != nil {
+		t.Fatal(err)
+	}
+	if b.Profile.Packages.Preinstalls.Managed {
+		t.Fatal("child overlay changed independent group intent")
+	}
+	if present, ok := b.Profile.Packages.Preinstalls.Items["absent"]; !ok || present {
+		t.Fatal("explicit child absence lost")
+	}
+}
 
 // Catches collapsing tombstones into unmanaged, ordering-sensitive hashes,
 // and accidentally fingerprinting detection-only fields.

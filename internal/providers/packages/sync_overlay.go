@@ -37,7 +37,6 @@ func (Provider) OverlaySyncTarget(ctx context.Context, b *syncprofile.Builder, v
 		delete(d.Preinstalls.Items, id)
 		if v, found := src.Preinstalls.Items[id]; found {
 			d.Preinstalls.Items[id] = v
-			d.Preinstalls.Managed = true
 		}
 	}
 	b.Profile.Manifest.Capture.Packages = b.Profile.Manifest.Capture.Packages || view.Profile.Manifest.Capture.Packages

@@ -21,19 +21,7 @@ func (v *readView) SyncObserve(ctx context.Context, hints profile.Data, historie
 	p := v.source.observedProvider(o)
 	// All historical identities participate; current-only candidates still need
 	// reviewed adoption and must never become implicitly owned Sync targets.
-	union := profile.CloneData(hints)
-	seen := map[string]bool{}
-	for _, u := range union.Services.Units {
-		seen[u.Name] = true
-	}
-	for _, d := range histories {
-		for _, u := range d.Services.Units {
-			if !seen[u.Name] {
-				seen[u.Name] = true
-				union.Services.Units = append(union.Services.Units, u)
-			}
-		}
-	}
+	union := unionSyncServices(hints, histories)
 	inspections, err := p.inspectTargets(ctx, union)
 	if err != nil {
 		return workflow.SyncLiveObservation{}, err
@@ -142,6 +130,73 @@ func (v *readView) SyncObserve(ctx context.Context, hints profile.Data, historie
 		result.Inspections = append(result.Inspections, inspection)
 	}
 	return result, nil
+}
+
+// Union only historically owned identities/artifacts, not arbitrary live
+// adoption candidates. Earlier history supplies normalization preference;
+// physical values for all identities come from the same observation.
+func unionSyncServices(hints profile.Data, histories []profile.Data) profile.Data {
+	out := profile.CloneData(hints)
+	if !hints.Manifest.Capture.Services {
+		out.Services = profile.Services{}
+	}
+	mergeArtifacts := func(dst *[]profile.ServiceArtifact, src []profile.ServiceArtifact) {
+		seen := map[string]bool{}
+		for _, a := range *dst {
+			seen[a.Path] = true
+		}
+		for _, a := range src {
+			if !seen[a.Path] {
+				*dst = append(*dst, a)
+				seen[a.Path] = true
+			}
+		}
+	}
+	for _, d := range cloneSyncServiceHistories(histories) {
+		if !d.Manifest.Capture.Services {
+			continue
+		}
+		for _, unit := range d.Services.Units {
+			n := -1
+			for i := range out.Services.Units {
+				if out.Services.Units[i].Name == unit.Name {
+					n = i
+					break
+				}
+			}
+			if n < 0 {
+				out.Services.Units = append(out.Services.Units, unit)
+				continue
+			}
+			u := &out.Services.Units[n]
+			mergeArtifacts(&u.DropIns, unit.DropIns)
+			for _, instance := range unit.Instances {
+				j := -1
+				for i := range u.Instances {
+					if u.Instances[i].Name == instance.Name {
+						j = i
+						break
+					}
+				}
+				if j < 0 {
+					u.Instances = append(u.Instances, instance)
+					continue
+				}
+				mergeArtifacts(&u.Instances[j].DropIns, instance.DropIns)
+				if u.Instances[j].Mask == nil {
+					u.Instances[j].Mask = instance.Mask
+				}
+			}
+		}
+	}
+	return out
+}
+func cloneSyncServiceHistories(ds []profile.Data) []profile.Data {
+	out := make([]profile.Data, len(ds))
+	for i, d := range ds {
+		out[i] = profile.CloneData(d)
+	}
+	return out
 }
 
 func observeSyncDropIn(prior profile.ServiceArtifact, path string) (profile.ServiceArtifact, error) {

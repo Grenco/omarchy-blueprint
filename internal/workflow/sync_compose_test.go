@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+type syncRejectArtifacts struct{ syncPackageProvider }
+
+func (syncRejectArtifacts) ValidateSyncArtifacts(context.Context, string, profile.Data) error {
+	return os.ErrNotExist
+}
+func TestSyncComposeValidatesReferencedArtifacts(t *testing.T) {
+	s, d, _ := syncViewRepo(t)
+	v := syncTestView(t, s, d)
+	root, cleanup, err := composeSyncTree(context.Background(), v, v, v, nil, []Provider{syncRejectArtifacts{syncPackageProvider{statusTestProvider{id: "packages"}}}}, s.machine.Name)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("accepted invalid staged artifacts", root)
+	}
+}
+
 func syncTestView(t *testing.T, s *Session, d profile.Data) SyncProfileView {
 	t.Helper()
 	root := t.TempDir()

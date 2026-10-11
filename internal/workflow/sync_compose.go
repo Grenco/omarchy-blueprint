@@ -145,6 +145,9 @@ func composeSyncTree(ctx context.Context, base, local, remote SyncProfileView, r
 	if err != nil {
 		return "", nil, fmt.Errorf("sync: composed profile is invalid")
 	}
+	if err := validateSyncArtifacts(ctx, b.Root(), loaded, providers); err != nil {
+		return "", nil, err
+	}
 	actual, err := projectSyncProfile(loaded, providers)
 	if err != nil {
 		return "", nil, err

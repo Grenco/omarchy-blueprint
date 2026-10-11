@@ -53,14 +53,8 @@ func loadSyncView(ctx context.Context, git profilegit.Service, sha string, provi
 	if err := validateLoadedPolicyTargets(providers, data); err != nil {
 		return SyncProfileView{}, nil, fmt.Errorf("sync: historical policy targets are invalid")
 	}
-	for _, p := range providers {
-		if v, ok := p.(interface {
-			ValidateSyncArtifacts(context.Context, string, profile.Data) error
-		}); ok {
-			if err := v.ValidateSyncArtifacts(ctx, root, profile.CloneData(data)); err != nil {
-				return SyncProfileView{}, nil, fmt.Errorf("sync: historical provider artifacts are invalid")
-			}
-		}
+	if err := validateSyncArtifacts(ctx, root, data, providers); err != nil {
+		return SyncProfileView{}, nil, err
 	}
 	targets, err := projectSyncProfile(data, providers)
 	if err != nil {
@@ -75,6 +69,22 @@ func loadSyncView(ctx context.Context, git profilegit.Service, sha string, provi
 	}
 	success = true
 	return SyncProfileView{Revision: sha, Root: root, Profile: data, Targets: targets, Control: control}, cleanup, nil
+}
+
+func validateSyncArtifacts(ctx context.Context, root string, data profile.Data, providers []Provider) error {
+	for _, p := range providers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if v, ok := p.(interface {
+			ValidateSyncArtifacts(context.Context, string, profile.Data) error
+		}); ok {
+			if err := v.ValidateSyncArtifacts(ctx, root, profile.CloneData(data)); err != nil {
+				return fmt.Errorf("sync: provider artifacts are invalid")
+			}
+		}
+	}
+	return ctx.Err()
 }
 
 func syncCapturedCategories(d profile.Data) map[string]bool {

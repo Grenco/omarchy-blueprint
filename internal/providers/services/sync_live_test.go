@@ -87,3 +87,23 @@ func TestSyncServiceArtifactUnreadableIsNotAbsence(t *testing.T) {
 		t.Fatal("missing artifact lost provenance", got, err)
 	}
 }
+
+func TestSyncServicesObservesRemoteOnlyTemplateInstance(t *testing.T) {
+	p, left, sd, path := persistentTemplateFixture(t)
+	right := profile.CloneData(*left)
+	right.Services.Units[0].Instances = []profile.ServiceInstance{{Name: "backup@new.service", Presence: profile.ServicePresent, StartIntent: profile.ServiceStartEnabled}}
+	actual := observedService("backup@new.service", path)
+	actual.StartIntent = profile.ServiceStartEnabled
+	sd.units = append(sd.units, actual)
+	cycle := observation.New(context.Background())
+	defer cycle.Close()
+	view := p.BindReadCycle(cycle).(workflow.SyncLiveProvider)
+	got, err := view.SyncObserve(context.Background(), *left, []profile.Data{right, *left})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := p.SyncDesired(right)
+	if err != nil || len(got.Targets) != 1 || !got.Targets[0].State.Equal(want[0].State) {
+		t.Fatal("remote-only instance not observed", got.Targets, want, err)
+	}
+}

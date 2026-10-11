@@ -83,6 +83,10 @@ func TestSyncProviderOverlayOneTargetAndUnmanaged(t *testing.T) {
 			d.Manifest.Capture.Plugins = true
 			d.Plugins.Items = []profile.Plugin{{ID: "demo", Source: "local", Hash: "hash"}}
 		}, []string{"plugins/local/demo/content"}},
+		{themes.Provider{}, "theme:overlay", func(d *profile.Data) {
+			d.Manifest.Capture.Themes = true
+			d.Themes.Items = []profile.Theme{{ID: "overlay", Type: "overlay", Hash: "hash"}}
+		}, []string{"themes/local/overlay/content"}},
 		{defaults.Provider{}, "browser", func(d *profile.Data) { d.Manifest.Capture.Defaults = true; d.Defaults.Browser = "firefox" }, nil},
 		{resources.Provider{}, "resource:demo", func(d *profile.Data) {
 			d.Manifest.Capture.Resources = true
