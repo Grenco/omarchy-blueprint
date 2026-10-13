@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -706,38 +707,64 @@ func (s *Capture) reviewView() string {
 	if review.hiddenAdvanced > 0 {
 		summary += fmt.Sprintf(" · %d advanced hidden (v to show)", review.hiddenAdvanced)
 	}
-	lines := []string{}
-	for i, line := range components.WrapText(summary, width) {
-		if i == 0 && strings.HasPrefix(line, "Review Capture") {
-			line = s.styles.Accent("Review Capture") + strings.TrimPrefix(line, "Review Capture")
+	accent := func(line string) string {
+		if strings.HasPrefix(line, "Review Capture") {
+			return s.styles.Accent("Review Capture") + strings.TrimPrefix(line, "Review Capture")
 		}
-		lines = append(lines, line)
+		return line
+	}
+	summaryBlock := []string{}
+	for i, line := range components.WrapText(summary, width) {
+		if i == 0 {
+			line = accent(line)
+		}
+		summaryBlock = append(summaryBlock, line)
 	}
 	active := review.selectedMachine(s.session).Name
 	scopeLine := captureScopeLabelFor(review.scope, active)
 	if review.scope.Machine != active {
 		scopeLine += " · outcomes are for " + machineLabel(active)
 	}
+	scopeBlock := []string{}
 	for _, line := range components.WrapText(scopeLine, width) {
-		lines = append(lines, s.styles.SubtleAccent(line))
+		scopeBlock = append(scopeBlock, s.styles.SubtleAccent(line))
 	}
+	var messageBlock []string
+	message, messageStyle := "", s.styles.Warning
 	switch {
 	case review.loading:
-		return strings.Join(append(lines, "", "Inspecting "+strings.Join(review.categories, ", ")+"..."), "\n")
 	case review.err != nil:
-		for _, line := range components.WrapText("Unable to review Capture: "+components.DisplayText(review.err.Error()), width) {
-			lines = append(lines, s.styles.Error(line))
-		}
+		message, messageStyle = "Unable to review Capture: "+components.DisplayText(review.err.Error()), s.styles.Error
 	case review.notice != "":
-		for _, line := range components.WrapText(review.notice, width) {
-			lines = append(lines, s.styles.Warning(line))
+		message = review.notice
+	}
+	for _, line := range components.WrapText(message, width) {
+		if message != "" {
+			messageBlock = append(messageBlock, messageStyle(line))
 		}
 	}
-	if len(review.sections) == 0 {
-		if review.hiddenAdvanced > 0 {
-			return strings.Join(append(lines, "", "Advanced service candidates are hidden. Press v to review them."), "\n")
-		}
-		return strings.Join(append(lines, "", "Nothing to review: the chosen categories already match this profile."), "\n")
+	// The header must leave the table its column header and selected row (or
+	// the loading/empty message its blank line and text). On a short or
+	// narrow workspace each block collapses to one truncated line, then the
+	// counts summary gives way; whose outcomes these are and any error stay.
+	// What goes below the header: a short status in place of the table when
+	// there is nothing to list.
+	var status []string
+	switch {
+	case review.loading:
+		status = components.WrapText("Inspecting "+strings.Join(review.categories, ", ")+"...", width)
+	case len(review.sections) == 0 && review.hiddenAdvanced > 0:
+		status = components.WrapText("Advanced service candidates are hidden. Press v to review them.", width)
+	case len(review.sections) == 0:
+		status = components.WrapText("Nothing to review: the chosen categories already match this profile.", width)
+	}
+	below := captureMinReviewTable
+	if status != nil {
+		below = 1 + len(status) // a blank line, then the status
+	}
+	lines := captureReviewHeader(s.height, width, below, summaryBlock, scopeBlock, messageBlock)
+	if status != nil {
+		return strings.Join(append(append(lines, ""), status...), "\n")
 	}
 	rows, selectedRow, index := []components.Row{}, 0, 0
 	for _, section := range review.sections {
@@ -755,10 +782,47 @@ func (s *Capture) reviewView() string {
 	if s.height <= 0 {
 		height = len(rows) + 1
 	}
-	height = max(3, height)
+	height = max(captureMinReviewTable, height)
 	review.table.Ensure(selectedRow, len(rows), height-1)
 	columns := []components.Column{{Title: "CATEGORY", Width: 10, MinWidth: 8}, {Title: "TARGET", MinWidth: 12}, {Title: "OUTCOME", Width: 18, MinWidth: 12}, {Title: "CAPTURE", Width: 11, MinWidth: 9}}
 	return strings.Join(append(lines, review.table.Render(columns, rows, width, height, s.styles)), "\n")
+}
+
+// captureMinReviewTable is the smallest review table: its column header and
+// the selected row.
+const captureMinReviewTable = 2
+
+// captureReviewHeader fits the review's header blocks above below lines of
+// content (the table's minimum, or a status). Wrapped blocks are used when
+// they fit; otherwise each collapses to one truncated line, and then the
+// summary is dropped before the scope or message.
+func captureReviewHeader(height, width, below int, summary, scope, message []string) []string {
+	join := func(blocks ...[]string) []string {
+		var lines []string
+		for _, block := range blocks {
+			lines = append(lines, block...)
+		}
+		return lines
+	}
+	wrapped := join(summary, scope, message)
+	if height <= 0 || len(wrapped)+below <= height {
+		return wrapped
+	}
+	first := func(block []string) []string {
+		if len(block) == 0 {
+			return nil
+		}
+		line := block[0]
+		if len(block) > 1 {
+			line = ansi.Truncate(line, max(1, width-1), "") + "…"
+		}
+		return []string{line}
+	}
+	compact := join(first(summary), first(scope), first(message))
+	if len(compact)+below <= height {
+		return compact
+	}
+	return join(first(scope), first(message))
 }
 
 func (s *Capture) reviewCells(target workflow.CaptureTarget, selected bool) []string {
