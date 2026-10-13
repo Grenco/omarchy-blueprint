@@ -8,7 +8,7 @@ Starting main: `73f00cd45430d5a1a0a1008e14d6f9971a395a17` (PR #71 merge).
 
 Worktree: `.worktrees/sync-engine-pr-c`; branch: `feat/sync-engine-interactive-execution`.
 
-Final implementation SHA: `8191cfd57c4c696555842fd116214fa5dbad9228`.
+Initial PR C implementation SHA: `8191cfd57c4c696555842fd116214fa5dbad9228`.
 The subsequent execution-notes commit changes documentation only; the PR head
 identifies that documentation-inclusive review revision.
 
@@ -146,3 +146,59 @@ claim that the hosted VM reconstruction gate has already completed.
 Commits separate Git history primitives, authority orchestration, and CLI/docs.
 Raise PR C against main for the user's independent reviewer. Do not merge and
 do not begin PR D/TUI/acceptance or auto-sync. Preserve the worktree for feedback.
+
+## PR #73 review remediation — safe execution failures
+
+Reviewed starting head: `134bd35279ca67538cfed09f85ff2ccc537cda48`.
+Remediated implementation SHA: `cab53e5956eb3b2efe75b9ed83a7ecba0f884607`.
+The following notes-only commit identifies the documentation-inclusive PR head.
+
+The reviewer identified that the CLI replaced every ExecuteSync error with the
+same generic receipt, suppressing repository repair instructions after failed
+semantic merge recovery. Repair signals now have identifiable error markers,
+preserved through wrapping/joining rather than inferred from error strings.
+The CLI maps those markers to fixed, safe diagnostics and additive JSON
+`data.failure` fields: code, severity, message, guidance and repair_required.
+
+Ordinary execution failure remains distinct from repository rollback failure,
+uncertain reconciliation outcome and scoped Capture recovery failure.
+Repair-required diagnostics explicitly say not to retry Sync until manual repair
+and repository/profile validation. They take precedence over cancellation and
+remain available on stderr if writing the failure receipt itself fails.
+Raw causes, private paths, credentials and subprocess output are never rendered
+by this failure boundary. Cursor and execution-authority behavior are unchanged.
+
+Regression evidence:
+
+- Real CLI tests run disposable bare remotes/two clones with the actual package
+  adapters and fake machine facts. Injected commit failure with successful abort
+  leaves original HEAD and clean index/worktree; injected abort failure leaves
+  MERGE_HEAD and reports high-severity repair-required guidance.
+- Both human and JSON cases keep the cursor unchanged and omit injected private
+  paths, credentials and raw output. The old CLI handler was restored temporarily
+  after fixture validation: all four cases failed for missing classification and
+  repair guidance; restoring the fix made them pass.
+- Wrapped/joined errors retain repair classification over cancellation. A raw
+  error merely containing matching repair words cannot impersonate a marker.
+- A failing output writer was reproduced red before fixing its stderr fallback;
+  repair guidance survives without printing the writer's private error body.
+
+Final focused and full verification passed:
+
+```sh
+go test ./internal/app ./internal/profilegit ./internal/workflow -run 'Sync|SemanticMerge|CaptureTargetScope' -count=1
+go test ./internal/app -run 'SyncFailure|SyncApplyReports' -count=1
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+python3 -m unittest discover -s scripts/release/tests -p 'test_*.py'
+python3 -m unittest discover -s test/reconstruction/tests -p 'test_*.py'
+git diff --check
+```
+
+Helper results remain 66 release tests and 103 Reconstruction tests. No race
+failures were observed. RA contracts/workflow, SystemRunner, read-cycle ownership,
+Capture/Restore authority and cursor settlement gates were not changed.
+Push the remediation to PR #73 for independent re-review; do not merge or start
+PR D. No user profile or machine state was mutated.
