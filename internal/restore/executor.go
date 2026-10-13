@@ -513,6 +513,33 @@ func validateSymlinkParents(destination string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("file write destination parent is not a directory: %s", parent)
 		}
+		if err := trustedParent(parent, info, uint32(os.Geteuid())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// trustedParent refuses a destination parent another user could change.
+// These checks are by path, so a parent swapped for a symlink between a
+// check and the write it guards would redirect that write (SEC-02). Only
+// someone who can rename entries in a parent can do that. If every parent
+// is owned by this user or root, and none is writable by everyone without
+// the sticky bit, that is only this user or root, who could already write
+// the destination directly. Sticky, root-owned directories such as /tmp
+// stay usable: other users cannot rename this user's entries in them.
+// Group-writable directories are accepted, as user-private-group setups
+// (umask 002) make most of a home directory group-writable.
+func trustedParent(path string, info os.FileInfo, uid uint32) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+	if stat.Uid != 0 && stat.Uid != uid {
+		return fmt.Errorf("file write destination parent is owned by another user: %s", path)
+	}
+	if info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("file write destination parent is writable by every user: %s", path)
 	}
 	return nil
 }
