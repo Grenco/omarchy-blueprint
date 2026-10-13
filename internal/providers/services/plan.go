@@ -276,6 +276,9 @@ func serviceCommand(verb, name, target string) model.Operation {
 }
 
 func (p *Provider) desiredServiceFile(relative, hash, mode string) (capturedFile, error) {
+	if err := checkServiceDirs(p.ProfileDir); err != nil {
+		return capturedFile{}, err
+	}
 	file, err := readServiceFile(filepath.Join(p.ProfileDir, "services", filepath.FromSlash(relative)))
 	if err != nil {
 		return capturedFile{}, err

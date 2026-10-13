@@ -32,11 +32,17 @@ func (s *Session) TrackResource(ctx context.Context, request TrackRequest) (prof
 	if !ok {
 		return profile.Resource{}, nil, fmt.Errorf("resources tracking is unavailable")
 	}
-	next, resource, changes, err := actions.TrackResource(ctx, s.profile, request)
+	end, err := s.beginMutation()
 	if err != nil {
 		return profile.Resource{}, nil, err
 	}
-	s.profile = next
+	defer end()
+	next, resource, changes, err := actions.TrackResource(ctx, s.Profile(), request)
+	s.noteSaveError(err)
+	if err != nil {
+		return profile.Resource{}, nil, err
+	}
+	s.setProfile(next)
 	return resource, changes, nil
 }
 
@@ -50,10 +56,16 @@ func (s *Session) UntrackResource(ctx context.Context, id string) ([]string, err
 	if !ok {
 		return nil, fmt.Errorf("resources tracking is unavailable")
 	}
-	next, removed, err := actions.UntrackResource(ctx, s.profile, id)
+	end, err := s.beginMutation()
 	if err != nil {
 		return nil, err
 	}
-	s.profile = next
+	defer end()
+	next, removed, err := actions.UntrackResource(ctx, s.Profile(), id)
+	s.noteSaveError(err)
+	if err != nil {
+		return nil, err
+	}
+	s.setProfile(next)
 	return removed, nil
 }

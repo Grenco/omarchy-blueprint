@@ -162,15 +162,13 @@ func (p Provider) Capture(state State, saved profile.Shell, enabled bool) (profi
 	if p.ProfileDir == "" {
 		return profile.Shell{}, fmt.Errorf("profile directory is required to capture shell state")
 	}
-	shellDir := filepath.Join(p.ProfileDir, "shell")
-	if err := os.MkdirAll(shellDir, 0o755); err != nil {
-		return profile.Shell{}, err
-	}
+	// Snapshots are written and removed confined to the profile, so a
+	// symlinked shell/ cannot redirect them.
 	if state.Status == StatusCustomized {
-		if err := atomicWrite(filepath.Join(shellDir, "shell.json"), state.Current.Raw); err != nil {
+		if err := profile.WriteManagedFile(p.ProfileDir, "shell/shell.json", state.Current.Raw); err != nil {
 			return profile.Shell{}, err
 		}
-		if err := atomicWrite(filepath.Join(shellDir, "baseline.json"), state.Baseline.Raw); err != nil {
+		if err := profile.WriteManagedFile(p.ProfileDir, "shell/baseline.json", state.Baseline.Raw); err != nil {
 			return profile.Shell{}, err
 		}
 		return profile.Shell{
@@ -179,7 +177,7 @@ func (p Provider) Capture(state State, saved profile.Shell, enabled bool) (profi
 			BaselineHash: state.BaselineHash,
 		}, nil
 	}
-	if err := removeStaleSnapshots(shellDir); err != nil {
+	if err := removeStaleSnapshots(p.ProfileDir); err != nil {
 		return profile.Shell{}, err
 	}
 	return profile.Shell{
@@ -243,9 +241,9 @@ func (p Provider) Analyze(saved profile.Shell, current State, options MergeOptio
 	return reconcileBarLayout(intent.Baseline.Value, intent.Desired.Value, target.Value, result, options), nil
 }
 
-func removeStaleSnapshots(dir string) error {
+func removeStaleSnapshots(profileDir string) error {
 	for _, name := range []string{"shell.json", "baseline.json"} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := profile.RemoveManagedFile(profileDir, "shell/"+name); err != nil {
 			return fmt.Errorf("remove stale shell snapshot %s: %w", name, err)
 		}
 	}
@@ -341,29 +339,4 @@ func (p Provider) Check(saved profile.Shell, plugins profile.Plugins) error {
 		return fmt.Errorf("baseline shell snapshot version %d does not match recorded %d", baseline.Version, saved.Version)
 	}
 	return ValidatePluginReferences(desired.References, plugins)
-}
-
-func atomicWrite(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".omarchy-blueprint-shell-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err := f.Chmod(0o644); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }

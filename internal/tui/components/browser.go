@@ -3,6 +3,7 @@ package components
 import (
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,6 +87,7 @@ type Browser struct {
 	filtering          bool
 	bookmarksOpen      bool
 	bookmark           int
+	bookmarkList       Selectable
 	closed             bool
 	readErr            error
 	inspectErr         error
@@ -193,8 +195,10 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 			b.bookmarksOpen = false
 		case "j", "down":
 			b.bookmark = min(len(b.bookmarks)-1, b.bookmark+1)
+			b.bookmarkList.SetSelected(b.bookmark, len(b.bookmarks), b.bookmarkHeight())
 		case "k", "up":
 			b.bookmark = max(0, b.bookmark-1)
+			b.bookmarkList.SetSelected(b.bookmark, len(b.bookmarks), b.bookmarkHeight())
 		case "enter", "l", "right":
 			if b.bookmark < len(b.bookmarks) {
 				b.path, b.filter, b.bookmarksOpen = b.bookmarks[b.bookmark].Path, "", false
@@ -254,6 +258,7 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 	case "b":
 		b.bookmarksOpen = !b.bookmarksOpen
 		b.bookmark = 0
+		b.bookmarkList.SetSelected(0, len(b.bookmarks), b.bookmarkHeight())
 	case "/":
 		b.filtering = true
 	default:
@@ -267,14 +272,16 @@ func (b *Browser) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (b Browser) View() string {
-	lines := []string{"Current: " + DisplayText(b.path)}
-	if b.readErr != nil {
-		lines = append(lines, "Unable to read directory: "+DisplayText(b.readErr.Error()))
-	}
+	lines := b.headerLines()
 	if b.bookmarksOpen {
 		lines = append(lines, "Bookmarks")
-		for i, bookmark := range b.bookmarks {
-			line := fmt.Sprintf("  %s  %s", DisplayText(bookmark.Label), DisplayText(bookmark.Path))
+		list := b.bookmarkList
+		height := b.bookmarkHeight()
+		list.SetSelected(b.bookmark, len(b.bookmarks), height)
+		end := min(len(b.bookmarks), list.offset+height)
+		for i := list.offset; i < end; i++ {
+			bookmark := b.bookmarks[i]
+			line := b.fit(fmt.Sprintf("  %s  %s", DisplayText(bookmark.Label), DisplayText(bookmark.Path)))
 			if i == b.bookmark {
 				if !b.styles.Palette.ColorEnabled {
 					line = Icons.Selected + line[1:]
@@ -285,24 +292,74 @@ func (b Browser) View() string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	if b.width == 0 {
+	switch {
+	case b.width == 0:
 		lines = append(lines, b.currentView())
-	} else if b.width >= 90 {
-		parent := b.parentView()
-		current := b.currentView()
-		preview := b.childView()
+	case b.width >= 90 && b.atRoot():
+		// At / there is no parent column; Current and Next share its space.
+		pane := max(18, (b.width-1)/2)
+		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(b.currentView()), " ",
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(b.childView())))
+	case b.width >= 90:
 		pane := max(18, b.width/3-1)
 		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(parent), " ",
-			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(current), " ",
-			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(preview)))
-	} else {
-		lines = append(lines, b.currentView(), b.DetailView())
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(b.parentView()), " ",
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(b.currentView()), " ",
+			lipgloss.NewStyle().Width(pane).MaxWidth(pane).Render(b.childView())))
+	default:
+		lines = append(lines, b.currentView())
+		lines = append(lines, b.narrowDetailLines()...)
 	}
+	return strings.Join(append(lines, b.footerLines()...), "\n")
+}
+
+// atRoot reports whether the browser is at the filesystem root, which is
+// its own parent.
+func (b Browser) atRoot() bool { return filepath.Dir(b.path) == b.path }
+
+// fit truncates a line to the browser's width.
+func (b Browser) fit(line string) string {
+	if b.width <= 0 {
+		return line
+	}
+	return ansi.Truncate(line, b.width, "…")
+}
+
+// headerLines are the lines above the panes: the current path and any read
+// error.
+func (b Browser) headerLines() []string {
+	lines := []string{b.fit("Current: " + DisplayText(b.path))}
+	if b.readErr != nil {
+		lines = append(lines, b.fit("Unable to read directory: "+DisplayText(b.readErr.Error())))
+	}
+	return lines
+}
+
+func (b Browser) footerLines() []string {
 	if b.filtering || b.filter != "" {
-		lines = append(lines, "Filter: "+b.filter)
+		return []string{b.fit("Filter: " + DisplayText(b.filter))}
 	}
-	return strings.Join(lines, "\n")
+	return nil
+}
+
+// narrowDetailLines is the selection preview shown under the list when the
+// panes don't fit side by side.
+func (b Browser) narrowDetailLines() []string {
+	lines := strings.Split(b.DetailView(), "\n")
+	for i := range lines {
+		lines[i] = b.fit(lines[i])
+	}
+	return lines
+}
+
+// bookmarkHeight is how many bookmarks fit below the header and the
+// "Bookmarks" title.
+func (b Browser) bookmarkHeight() int {
+	if b.height == 0 {
+		return max(1, len(b.bookmarks))
+	}
+	return max(1, b.height-len(b.headerLines())-1)
 }
 
 func (b Browser) Entries() []BrowserEntry { return append([]BrowserEntry(nil), b.filteredEntries()...) }
@@ -347,7 +404,12 @@ func (b *Browser) readDir() tea.Cmd {
 	candidates, loadBookmarks := append([]Bookmark(nil), b.bookmarkCandidates...), b.bookmarks == nil
 	return func() tea.Msg {
 		entries, err := readBrowserEntries(path)
-		parentEntries, parentErr := readBrowserEntries(filepath.Dir(path))
+		var parentEntries []BrowserEntry
+		var parentErr error
+		if parent := filepath.Dir(path); parent != path {
+			// The filesystem root has no parent to show.
+			parentEntries, parentErr = readBrowserEntries(parent)
+		}
 		var bookmarks []Bookmark
 		if loadBookmarks {
 			bookmarks = resolveBookmarks(candidates)
@@ -481,7 +543,7 @@ func (b Browser) currentView() string {
 	end := min(len(entries), start+b.listHeight())
 	for i := start; i < end; i++ {
 		entry := entries[i]
-		line := fmt.Sprintf("  %s %s", browserIcon(entry.Type), DisplayText(entry.Name))
+		line := b.fit(fmt.Sprintf("  %s %s", browserIcon(entry.Type), DisplayText(entry.Name)))
 		if i == b.selected {
 			if !b.styles.Palette.ColorEnabled {
 				line = Icons.Selected + line[1:]
@@ -505,10 +567,22 @@ func (b Browser) parentView() string {
 	if b.parentErr != nil {
 		return strings.Join(append(lines, "  "+DisplayText(b.parentErr.Error())), "\n")
 	}
+	var directories []BrowserEntry
+	current := 0
 	for _, entry := range b.parentEntries {
 		if entry.Type != "directory" {
 			continue
 		}
+		if entry.Path == b.path {
+			current = len(directories)
+		}
+		directories = append(directories, entry)
+	}
+	// Show the window of siblings around the current directory that fits.
+	height := b.listHeight()
+	start := max(0, min(current-height/2, len(directories)-height))
+	for i := start; i < min(len(directories), start+height); i++ {
+		entry := directories[i]
 		line := "  " + Icons.Folder + " " + DisplayText(entry.Name)
 		if entry.Path == b.path {
 			if !b.styles.Palette.ColorEnabled {
@@ -517,9 +591,6 @@ func (b Browser) parentView() string {
 			line = b.styles.Selection(line, false)
 		}
 		lines = append(lines, line)
-	}
-	if len(lines) == 1 {
-		lines = append(lines, "  /")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -551,11 +622,18 @@ func (b Browser) childView() string {
 	return strings.Join(lines, "\n")
 }
 
+// listHeight is how many entries each pane shows: the workspace less the
+// header, each pane's title, the filter line and, when the panes are
+// stacked, the selection preview below the list.
 func (b Browser) listHeight() int {
 	if b.height == 0 {
 		return len(b.filteredEntries()) + 1
 	}
-	return max(1, b.height-6)
+	fixed := len(b.headerLines()) + 1 + len(b.footerLines())
+	if b.width > 0 && b.width < 90 {
+		fixed += len(b.narrowDetailLines())
+	}
+	return max(1, b.height-fixed)
 }
 
 func browserIcon(kind string) string {

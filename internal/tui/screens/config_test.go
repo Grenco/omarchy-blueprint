@@ -191,7 +191,10 @@ func TestConfigScreenRowsFilterAndViewportKeepSelectedCandidateVisible(t *testin
 	for i := range candidates {
 		candidates[i] = config.Candidate{Path: ".config/item-" + string(rune('a'+i)), Classification: config.ConfigAdded}
 	}
-	screen := &Config{width: 80, height: 4, candidates: candidates}
+	// Six lines: the tab bar, review counts, and a table with its header
+	// and two rows. (This test once used four, which only passed because
+	// the view overflowed its workspace.)
+	screen := &Config{width: 80, height: 6, candidates: candidates}
 	// group row plus six candidates; move to the final candidate.
 	for range candidates {
 		screen.Update(tea.KeyPressMsg{Code: tea.KeyDown})

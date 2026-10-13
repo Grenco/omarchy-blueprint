@@ -119,12 +119,13 @@ func (v DiffViewer) sideBySideLines() []string {
 	for _, hunk := range v.document.Hunks {
 		lines = append(lines, truncate(fmt.Sprintf("@@ -%d,%d +%d,%d @@", hunk.OldStart, hunk.OldCount, hunk.NewStart, hunk.NewCount), v.width))
 		for _, line := range hunk.Lines {
+			// The -/+ markers carry the meaning without colour (NO_COLOR).
 			old, new := "", ""
 			if line.Kind != "add" {
-				old = fmt.Sprintf("%4s %s", lineNumber(line.OldLine), v.text(line.Text))
+				old = fmt.Sprintf("%s%4s %s", map[bool]string{true: "-", false: " "}[line.Kind == "remove"], lineNumber(line.OldLine), v.text(line.Text))
 			}
 			if line.Kind != "remove" {
-				new = fmt.Sprintf("%4s %s", lineNumber(line.NewLine), v.text(line.Text))
+				new = fmt.Sprintf("%s%4s %s", map[bool]string{true: "+", false: " "}[line.Kind == "add"], lineNumber(line.NewLine), v.text(line.Text))
 			}
 			lines = append(lines, v.styleLine(line.Kind, diffPad(old, column)+" | "+diffPad(new, column)))
 		}

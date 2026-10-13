@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -13,8 +14,27 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 )
 
+// Session is shared by the CLI and by the TUI, whose asynchronous commands
+// call it from other goroutines while the interface reads it.
+//
+// Locking (STATE-02):
+//   - stateMu guards profile and machine. It is a leaf lock, held only to
+//     read or replace them; reads return deep copies (Profile, Machine), so
+//     nothing outside the Session aliases its state.
+//   - mutationMu serializes every read-modify-save (and Reload, and profile
+//     Git operations that change the profile), so two mutations cannot both
+//     start from the same profile and lose one update. It is taken once, at
+//     a public entry point; helpers never take it. Reads never wait for it,
+//     so a long Capture does not block the interface.
+//   - configMu guards opts, providers and finalizers.
+//   - needsReload is guarded by mutationMu.
+//
+// Lock order: mutationMu, then configMu, then stateMu.
 type Session struct {
+	mutationMu          sync.Mutex
 	configMu            sync.Mutex
+	stateMu             sync.RWMutex
+	needsReload         bool
 	deps                Dependencies
 	opts                Options
 	profile             profile.Data
@@ -48,6 +68,13 @@ func Open(deps Dependencies, opts Options) (*Session, error) {
 // profile, even though opening that same profile fresh would fail in
 // SetProviders. s.profile is left untouched on validation failure.
 func (s *Session) Reload() error {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	return s.reloadLocked()
+}
+
+// reloadLocked is Reload for a caller that already holds mutationMu.
+func (s *Session) reloadLocked() error {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	dir, err := machine.CanonicalProfileRoot(s.opts.ProfileDir)
@@ -59,13 +86,101 @@ func (s *Session) Reload() error {
 	if err != nil {
 		return err
 	}
+	s.stateMu.Lock()
 	s.profile, s.machine = data, selection
+	s.stateMu.Unlock()
+	s.needsReload = false
 	return nil
 }
 
-func (s *Session) Profile() profile.Data      { return s.profile }
-func (s *Session) Machine() machine.Selection { return s.machine }
-func (s *Session) ProfileDir() string         { return filepath.Clean(s.opts.ProfileDir) }
+// beginMutation serializes a read-modify-save; call the returned function
+// to end it. If an earlier save committed but could not finish applying,
+// the profile is reloaded first (loading completes that save), so no
+// mutation can start from a profile older than what is on disk and
+// overwrite the committed save with it. A mutation that cannot reload is
+// refused.
+//
+//	end, err := s.beginMutation()
+//	if err != nil {
+//		return err
+//	}
+//	defer end()
+func (s *Session) beginMutation() (func(), error) {
+	s.mutationMu.Lock()
+	if s.needsReload {
+		if err := s.reloadLocked(); err != nil {
+			s.mutationMu.Unlock()
+			return nil, fmt.Errorf("an earlier profile save did not finish and the profile cannot be reloaded to complete it: %w", err)
+		}
+	}
+	return s.mutationMu.Unlock, nil
+}
+
+// saveProfile saves data inside a mutation. A save that passed its commit
+// point but could not finish applying is durable: data becomes the
+// Session's profile, and the next mutation reloads (completing the save)
+// before it starts. Its error is still returned.
+func (s *Session) saveProfile(data profile.Data, options profile.SaveOptions) error {
+	err := profile.SaveWithOptions(s.opts.ProfileDir, data, options)
+	if committedSave(err) {
+		s.setProfile(data)
+	}
+	s.noteSaveError(err)
+	return err
+}
+
+// noteSaveError makes the next mutation reload when err says a profile save
+// committed without finishing, including a save made by a provider.
+func (s *Session) noteSaveError(err error) {
+	if committedSave(err) {
+		s.needsReload = true
+	}
+}
+
+func committedSave(err error) bool {
+	var committed *profile.CommittedSaveError
+	return errors.As(err, &committed)
+}
+
+// workingProfile is a private deep copy of the loaded profile for a
+// mutation to change; the Session itself changes only once it is saved.
+func (s *Session) workingProfile() *profile.Data {
+	data := s.Profile()
+	return &data
+}
+
+// setProfile replaces the loaded profile with a saved one.
+func (s *Session) setProfile(data profile.Data) {
+	s.stateMu.Lock()
+	s.profile = data
+	s.stateMu.Unlock()
+}
+
+// view returns the loaded profile and machine for reading inside the
+// Session. Mutations never change a loaded profile in place (they save a
+// deep copy and replace it), so this shallow copy stays valid and
+// unchanged however long the caller holds it. It must not be modified.
+func (s *Session) view() (profile.Data, machine.Selection) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.profile, s.machine
+}
+
+// Profile returns a snapshot of the loaded profile: changing it never
+// changes the Session.
+func (s *Session) Profile() profile.Data {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return profile.CloneData(s.profile)
+}
+
+// Machine returns a snapshot of the selected machine.
+func (s *Session) Machine() machine.Selection {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return cloneMachine(s.machine)
+}
+func (s *Session) ProfileDir() string { return filepath.Clean(s.opts.ProfileDir) }
 func (s *Session) HomeDir() string {
 	if s.deps.HomeDir != nil {
 		if home, err := s.deps.HomeDir(); err == nil && home != "" {
@@ -78,7 +193,12 @@ func (s *Session) HomeDir() string {
 // SetProviderCaptured changes whether an optional provider participates in
 // capture and restore without making a screen write profile files directly.
 func (s *Session) SetProviderCaptured(_ context.Context, id string, captured bool) error {
-	data := s.profile
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
+	data := s.Profile()
 	switch id {
 	case "themes":
 		data.Manifest.Capture.Themes = captured
@@ -93,10 +213,10 @@ func (s *Session) SetProviderCaptured(_ context.Context, id string, captured boo
 	default:
 		return fmt.Errorf("%s cannot be toggled as an optional provider", id)
 	}
-	if err := profile.Save(s.opts.ProfileDir, data); err != nil {
+	if err := s.saveProfile(data, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
-	s.profile = data
+	s.setProfile(data)
 	return nil
 }
 
@@ -111,7 +231,14 @@ func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, k
 		return fmt.Errorf("package group %s cannot be toggled", section)
 	}
 	ref := kind + ":" + key
-	return s.SetPackageExcluded(ref, !s.packageExcluded(ref))
+	// Read and toggle as one mutation, so two toggles cannot both read the
+	// same state.
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
+	return s.setPackageExcluded(ref, !s.packageExcluded(ref))
 }
 
 // Profile Git operations remain owned by profilegit; workflow only exposes the
@@ -137,15 +264,31 @@ func (s *Session) ProfileGitRemoveRemote(ctx context.Context) (profilegit.Result
 func (s *Session) ProfileGitFetch(ctx context.Context) (profilegit.Result, error) {
 	return s.profileGit.Fetch(ctx)
 }
+
+// ProfileGitCommit commits the managed profile files. It waits for any
+// mutation in progress, so a commit never stages half of a save.
 func (s *Session) ProfileGitCommit(ctx context.Context, message string) (profilegit.Result, error) {
+	end, err := s.beginMutation()
+	if err != nil {
+		return profilegit.Result{}, err
+	}
+	defer end()
 	return s.profileGit.Commit(ctx, message)
 }
+
+// ProfileGitPull fast-forwards the profile and reloads it, as one mutation:
+// no local mutation can interleave with the pull and be lost.
 func (s *Session) ProfileGitPull(ctx context.Context) (profilegit.Result, error) {
+	end, err := s.beginMutation()
+	if err != nil {
+		return profilegit.Result{}, err
+	}
+	defer end()
 	result, err := s.profileGit.Pull(ctx)
 	if err != nil {
 		return result, err
 	}
-	if err := s.Reload(); err != nil {
+	if err := s.reloadLocked(); err != nil {
 		return result, fmt.Errorf("reload profile after pull: %w", err)
 	}
 	return result, nil
@@ -168,7 +311,7 @@ func (s *Session) ProfileGitPush(ctx context.Context) (profilegit.Result, error)
 func (s *Session) SetProviders(providers []Provider) error {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	if err := validateLoadedPolicyTargets(providers, s.profile); err != nil {
+	if err := validateLoadedPolicyTargets(providers, s.Profile()); err != nil {
 		return err
 	}
 	s.providers = append([]Provider(nil), providers...)
