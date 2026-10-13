@@ -192,6 +192,7 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root.PersistentFlags().StringVar(&opt.machine, "machine", "", "use machine overlay for this invocation")
 	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), inspectCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), configAutoCommand(deps, opt), policyCommand(deps, opt), machineCommand(deps, opt), profileCommand(deps, opt), tuiCommand(deps, opt))
 	root.SetOut(deps.Out)
+	root.AddCommand(syncCommand(deps, opt))
 	return root
 }
 

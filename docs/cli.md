@@ -1,5 +1,39 @@
 # CLI guide
 
+## Read-only Sync inspection
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync inspect
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync bootstrap inspect
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop --json sync inspect --no-fetch
+```
+
+Sync inspection explicitly fetches the configured upstream once, then pins exact
+historical revisions. Use `--no-fetch` for offline inspection of cached upstream
+refs. Ordinary Status, Overview and startup do not fetch for Sync.
+
+One inspection owns one shared, short-lived observation cycle. Historical
+profiles are loaded in isolated temporary trees; inspection does not modify the
+active checkout, index, profile files, machine, or Sync cursor. Fetch may update
+Git objects and remote-tracking refs. There is no Sync execution or TUI in this
+slice.
+
+Select a named machine. Missing or invalid cursor lineage requires explicit
+bootstrap review; inspection never guesses a baseline or writes a cursor.
+Bootstrap reports baseless reconciliation/adoption/cancel choices and whether
+shared history is already converged, without executing any choice.
+
+Human output groups semantic history classifications and blockers. JSON contains
+full pinned SHAs, typed unmanaged/present/absent states, independent Capture and
+Restore policy, and descriptive candidate actions. A successful query may contain
+blockers; it is not approval or mutation authority. Sync semantic deferral is
+unresolved intent, not Restore execution-scope deferral.
+
+Legacy package aliases are normalized consistently against one frozen live
+preinstall catalogue for that inspection. Changed resource paths or selected
+machine mappings block settlement pending inspection under the selected
+interpretation; observations of old roots cannot certify the new destination.
+
 ## Read-only observation diagnostics
 
 Set `BLUEPRINT_DEBUG_OBSERVATION=1` to print request-local observation and

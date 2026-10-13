@@ -61,6 +61,20 @@ func (p *readForward) Diff(ctx context.Context, d profile.Data) ([]model.Change,
 func (p *readForward) InspectTargets(ctx context.Context, d profile.Data) ([]TargetInspection, error) {
 	return p.source.InspectTargets(ctx, profile.CloneData(d))
 }
+
+func (p *readForward) SyncObserve(ctx context.Context, d profile.Data, histories []profile.Data) (SyncLiveObservation, error) {
+	v, ok := p.source.(SyncLiveProvider)
+	if !ok {
+		return SyncLiveObservation{}, fmt.Errorf("sync: provider %s lacks live projection", p.ID())
+	}
+	return v.SyncObserve(ctx, profile.CloneData(d), cloneSyncHistories(histories))
+}
+func (p *readScanForward) SyncObserve(ctx context.Context, d profile.Data, histories []profile.Data) (SyncLiveObservation, error) {
+	return p.ReadProvider.(SyncLiveProvider).SyncObserve(ctx, d, histories)
+}
+func (p *readResourceForward) SyncObserve(ctx context.Context, d profile.Data, histories []profile.Data) (SyncLiveObservation, error) {
+	return p.ReadProvider.(SyncLiveProvider).SyncObserve(ctx, d, histories)
+}
 func (p *readForward) CategoryEnabled() bool {
 	c, ok := p.source.(categoryProvider)
 	return ok && c.CategoryEnabled()

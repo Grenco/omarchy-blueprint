@@ -25,6 +25,12 @@ func observationCanceled(err error) bool {
 // Independent meaningful failures are selected in provider order after join;
 // secondary cancellation never replaces the initiating meaningful failure.
 func observeProviders(ctx context.Context, providers []ReadProvider, limit int, observe func(context.Context, ReadProvider) (ProviderStatus, error)) ([]ProviderStatus, error) {
+	return observeReadProviders(ctx, providers, limit, observe)
+}
+
+// observeReadProviders shares the same authority boundary and lifecycle for
+// Status and Sync; only the immutable result type differs.
+func observeReadProviders[T any](ctx context.Context, providers []ReadProvider, limit int, observe func(context.Context, ReadProvider) (T, error)) ([]T, error) {
 	if limit < 1 {
 		return nil, fmt.Errorf("read provider concurrency must be positive")
 	}
@@ -41,7 +47,7 @@ func observeProviders(ctx context.Context, providers []ReadProvider, limit int, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	results := make([]ProviderStatus, len(providers))
+	results := make([]T, len(providers))
 	if len(providers) == 0 {
 		return results, nil
 	}
