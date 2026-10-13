@@ -202,3 +202,48 @@ failures were observed. RA contracts/workflow, SystemRunner, read-cycle ownershi
 Capture/Restore authority and cursor settlement gates were not changed.
 Push the remediation to PR #73 for independent re-review; do not merge or start
 PR D. No user profile or machine state was mutated.
+
+## Re-review remediation — post-commit verification requires repair
+
+Reviewed starting head: `1561df266d2e9d9de14952c06e3e939325e7ce28`.
+Implementation SHA: `115e6341179d661215f88da929f1e25d4ee96644`.
+
+Every error after successful semantic commit now carries
+`ErrReconciliationPostCommitVerificationFailed`, including failed parent/tree/
+checkout verification probes and cancellation. No committed history is silently
+rolled back. The safe CLI classification is
+`repository-post-commit-verification-failed`, severity `high`, repair required.
+Human and JSON receipts explicitly explain that a commit may already exist and
+was not rolled back, and require manual repository repair/HEAD/index/worktree
+validation before retrying. Only allowlisted text is rendered.
+
+TDD evidence: before changing production code, both new real CLI human/JSON
+post-commit cases failed because they returned `execution-stopped` without a
+repair warning. Disposable Git repositories actually committed injected
+unapproved content; the tests verify the changed HEAD and committed blob rather
+than relying only on injected runner errors. With the fix, they pass and verify
+the original cursor remains unchanged, publication has not occurred, and private
+paths, credentials and raw output are absent. The existing Git primitive
+regression now asserts the repair marker and retained unapproved commit.
+Wrapped/joined marker tests prove repair guidance takes precedence over
+cancellation without leaking causes.
+
+Fresh verification passed on Linux amd64 / Go 1.27.1:
+
+```sh
+go test ./internal/app ./internal/profilegit ./internal/workflow -run 'Sync|SemanticMerge|CaptureTargetScope' -count=1
+go test ./internal/app -run 'SyncFailure|SyncApplyReports' -count=1
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+python3 -m unittest discover -s scripts/release/tests -p 'test_*.py'
+python3 -m unittest discover -s test/reconstruction/tests -p 'test_*.py'
+git diff --check
+```
+
+Release helpers: 66 tests; Reconstruction helpers: 103 tests. No race failures.
+Execution authority, rollback decisions, cursor settlement, observation-cycle
+ownership, SystemRunner and RA contracts are unchanged. No user profile/machine
+mutation, merge or PR D work. Push to existing PR #73 for independent re-review;
+hosted checks must run again on the updated head.
