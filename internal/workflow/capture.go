@@ -67,9 +67,13 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	if err := ctx.Err(); err != nil {
 		return CaptureResult{}, err
 	}
-	if err := s.Reload(); err != nil {
+	// One mutation from reload to save: nothing else can change the profile
+	// underneath this capture, and reads continue meanwhile.
+	defer s.beginMutation()()
+	if err := s.reloadLocked(); err != nil {
 		return CaptureResult{}, fmt.Errorf("reload capture authority: %w", err)
 	}
+	previous, selection := s.view()
 	if err := ctx.Err(); err != nil {
 		return CaptureResult{}, err
 	}
@@ -97,13 +101,15 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
 			return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
 		}
-		authority, contexts = fresh, fresh.captureContexts(s.machine.Name, ids)
+		authority, contexts = fresh, fresh.captureContexts(selection.Name, ids)
 	}
 	info, err := omarchy.Detect(ctx, s.deps.Runner)
 	if err != nil {
 		return CaptureResult{}, err
 	}
-	data := s.profile
+	// Providers capture into a private copy; the Session changes only once
+	// it is saved.
+	data := profile.CloneData(previous)
 	result := CaptureResult{Profile: data}
 	var transactions []captureTransaction
 	resourcesInstalled := false
@@ -164,7 +170,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 			if errors.As(err, &committed) {
 				// The new profile is durable and completes on the next load;
 				// undoing provider work now would split it from its metadata.
-				s.profile = data
+				s.setProfile(data)
 				return CaptureResult{}, fmt.Errorf("save profile: %w", err)
 			}
 			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", err), rollback())
@@ -172,11 +178,11 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		for _, transaction := range transactions {
 			if err := transaction.CommitCapture(); err != nil {
 				rollbackErr := rollback()
-				restoreErr := profile.Save(s.opts.ProfileDir, s.profile)
+				restoreErr := profile.Save(s.opts.ProfileDir, previous)
 				return CaptureResult{}, errors.Join(fmt.Errorf("commit capture: %w", err), rollbackErr, restoreErr)
 			}
 		}
-		s.profile = data
+		s.setProfile(data)
 		result.Profile = data
 		var finalizeErr error
 		for _, transaction := range transactions {
@@ -186,7 +192,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 			return result, PostCommitWarning{Err: finalizeErr}
 		}
 	}
-	s.profile = data
+	s.setProfile(data)
 	result.Profile = data
 	return result, nil
 }
@@ -209,5 +215,6 @@ func (s *Session) resolveCaptureContext(ctx context.Context, provider Provider, 
 		}
 		decisions[target.Key] = decision
 	}
-	return CaptureContext{Machine: s.machine.Name, Targets: decisions}, nil
+	_, selection := s.view()
+	return CaptureContext{Machine: selection.Name, Targets: decisions}, nil
 }

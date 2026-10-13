@@ -180,7 +180,8 @@ func (s *Session) inspectCaptureFresh(ctx context.Context, onlyProvider string) 
 }
 
 func (s *Session) inspectProviderCapture(ctx context.Context, provider Provider) ([]CaptureTarget, error) {
-	return inspectProviderCapture(ctx, provider, s.profile, s.resolveCaptureTarget)
+	data, _ := s.view()
+	return inspectProviderCapture(ctx, provider, data, s.resolveCaptureTarget)
 }
 
 func inspectProviderCapture(ctx context.Context, provider ReadProvider, data profile.Data, resolve func(context.Context, string, TargetInspection) (policy.EffectiveSetting, CaptureDecision, error)) ([]CaptureTarget, error) {
@@ -228,7 +229,8 @@ func (s *Session) recheckCapture(ctx context.Context, ids []string, authority Ca
 		if !ok {
 			return CaptureInspection{}, fmt.Errorf("unknown category %s", id)
 		}
-		targets, err := provider.InspectTargets(ctx, s.profile)
+		data, _ := s.view()
+		targets, err := provider.InspectTargets(ctx, profile.CloneData(data))
 		if err != nil {
 			return CaptureInspection{}, fmt.Errorf("inspect %s targets: %w", id, err)
 		}

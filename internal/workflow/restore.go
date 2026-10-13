@@ -186,7 +186,8 @@ func (s *Session) executeRestore(ctx context.Context, result RestoreResult, prov
 	}
 	var err error
 	if len(plan.Operations) == 0 {
-		result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
+		data, _ := s.view()
+		result.Verification, err = verifyRestoreProviders(ctx, data, providers, contexts)
 		return result, err
 	}
 	stateHome, err := s.deps.StateHome()
@@ -208,7 +209,8 @@ func (s *Session) executeRestore(ctx context.Context, result RestoreResult, prov
 		return result, err
 	}
 	contexts = WithRestoreExecution(contexts, result.Execution)
-	result.Verification, err = verifyRestoreProviders(ctx, s.profile, providers, contexts)
+	data, _ := s.view()
+	result.Verification, err = verifyRestoreProviders(ctx, data, providers, contexts)
 	if err != nil {
 		return result, err
 	}
@@ -250,11 +252,13 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 	if err := s.Reload(); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
+	// One stable snapshot for the whole plan.
+	data, selection := s.view()
 	resolved, err := s.resolveRestoreOptions(options)
 	if err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
-	selected, deferred, err := selectRestoreScope(s.providers, s.profile, scope)
+	selected, deferred, err := selectRestoreScope(s.providers, data, scope)
 	if err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
@@ -271,18 +275,18 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
 	contexts := make(map[string]RestoreContext, len(providers))
-	plan := model.RestorePlan{ProfileVersion: s.profile.Manifest.Schema, OmarchyFrom: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version, Deferred: deferred}
+	plan := model.RestorePlan{ProfileVersion: data.Manifest.Schema, OmarchyFrom: data.Manifest.Omarchy.CapturedVersion, OmarchyTo: info.Version, Deferred: deferred}
 	if resolved.Activation != "" {
 		plan.ActivationMode = string(resolved.ActivationMode())
 	}
 	plan.Compatibility = model.CompatibilityReport{
-		ProfileLastCapture: model.CompatibilityEnvironment{Known: s.profile.Manifest.Omarchy.CapturedVersion != "", OmarchyVersion: s.profile.Manifest.Omarchy.CapturedVersion, OmarchyChannel: s.profile.Manifest.Omarchy.Channel},
+		ProfileLastCapture: model.CompatibilityEnvironment{Known: data.Manifest.Omarchy.CapturedVersion != "", OmarchyVersion: data.Manifest.Omarchy.CapturedVersion, OmarchyChannel: data.Manifest.Omarchy.Channel},
 		Target:             model.CompatibilityEnvironment{Known: info.Version != "", OmarchyVersion: info.Version, OmarchyChannel: info.Channel},
 	}
 	selectedIDs := make([]string, 0, len(providers))
 	targets := make(map[string]map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		restoreCtx, err := s.resolveRestoreContext(ctx, provider, s.profile, s.machine.Name, resolved)
+		restoreCtx, err := s.resolveRestoreContext(ctx, provider, data, selection.Name, resolved)
 		if err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
 		}
@@ -291,7 +295,7 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 		for key := range restoreCtx.Targets {
 			targets[provider.ID()][key] = struct{}{}
 		}
-		part, err := provider.Plan(ctx, s.profile, info, restoreCtx)
+		part, err := provider.Plan(ctx, data, info, restoreCtx)
 		if err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("plan %s restore: %w", provider.ID(), err)
 		}
@@ -302,7 +306,7 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 		contexts[provider.ID()] = restoreCtx
 	}
 	if s.finalizeRestore != nil {
-		if err := s.finalizeRestore(ctx, s.profile, selected, &plan, resolved); err != nil {
+		if err := s.finalizeRestore(ctx, data, selected, &plan, resolved); err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("finalize restore plan: %w", err)
 		}
 	} else if err := restore.ValidatePlan(plan); err != nil {
@@ -357,8 +361,8 @@ func (s *Session) resolveRestoreOptions(options *policy.RestoreOptions) (policy.
 		}
 		return *options, nil
 	}
-	if s.machine.Machine != nil {
-		return s.machine.Machine.EffectiveRestoreDefaults(), nil
+	if _, selection := s.view(); selection.Machine != nil {
+		return selection.Machine.EffectiveRestoreDefaults(), nil
 	}
 	return policy.DefaultRestoreOptions(), nil
 }

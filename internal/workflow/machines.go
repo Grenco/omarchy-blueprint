@@ -16,14 +16,16 @@ import (
 
 // AddMachine creates a portable overlay and optionally selects it locally.
 func (s *Session) AddMachine(_ context.Context, name string, use bool) error {
+	defer s.beginMutation()()
+	w := s.workingProfile()
 	if err := machine.ValidateName(name); err != nil {
 		return err
 	}
-	if _, err := machine.Select(name, "", s.profile.Machines.Items); err == nil {
+	if _, err := machine.Select(name, "", w.Machines.Items); err == nil {
 		return fmt.Errorf("machine %q already exists", name)
 	}
-	s.profile.Machines.Items = append(s.profile.Machines.Items, profile.Machine{Name: name})
-	if err := s.saveMachines(); err != nil {
+	w.Machines.Items = append(w.Machines.Items, profile.Machine{Name: name})
+	if err := s.saveMachines(w); err != nil {
 		return err
 	}
 	if use {
@@ -35,11 +37,13 @@ func (s *Session) AddMachine(_ context.Context, name string, use bool) error {
 			return err
 		}
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) UseMachine(_ context.Context, name string) error {
-	if _, err := machine.Select(name, "", s.profile.Machines.Items); err != nil {
+	defer s.beginMutation()()
+	w := s.workingProfile()
+	if _, err := machine.Select(name, "", w.Machines.Items); err != nil {
 		return err
 	}
 	store, err := s.bindingStore()
@@ -49,10 +53,11 @@ func (s *Session) UseMachine(_ context.Context, name string) error {
 	if err := store.Save(s.opts.ProfileDir, name); err != nil {
 		return err
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) ClearMachine(_ context.Context) error {
+	defer s.beginMutation()()
 	store, err := s.bindingStore()
 	if err != nil {
 		return err
@@ -60,7 +65,7 @@ func (s *Session) ClearMachine(_ context.Context) error {
 	if err := store.Clear(s.opts.ProfileDir); err != nil {
 		return err
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 // SuggestedMachineName returns an available name without deriving identity from
@@ -70,15 +75,17 @@ func (s *Session) SuggestedMachineName() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return machine.SuggestName(hostname, s.profile.Machines.Items), nil
+	return machine.SuggestName(hostname, s.Profile().Machines.Items), nil
 }
 
 func (s *Session) RenameMachine(_ context.Context, oldName, newName string) error {
+	defer s.beginMutation()()
+	w := s.workingProfile()
 	if err := machine.ValidateName(newName); err != nil {
 		return err
 	}
 	old := -1
-	for i, item := range s.profile.Machines.Items {
+	for i, item := range w.Machines.Items {
 		if item.Name == oldName {
 			old = i
 		}
@@ -89,8 +96,8 @@ func (s *Session) RenameMachine(_ context.Context, oldName, newName string) erro
 	if old < 0 {
 		return fmt.Errorf("machine %q does not exist", oldName)
 	}
-	s.profile.Machines.Items[old].Name = newName
-	if err := s.saveMachines(); err != nil {
+	w.Machines.Items[old].Name = newName
+	if err := s.saveMachines(w); err != nil {
 		return err
 	}
 	store, err := s.bindingStore()
@@ -106,12 +113,14 @@ func (s *Session) RenameMachine(_ context.Context, oldName, newName string) erro
 			return err
 		}
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) RemoveMachine(_ context.Context, name string) error {
+	defer s.beginMutation()()
+	w := s.workingProfile()
 	index := -1
-	for i, item := range s.profile.Machines.Items {
+	for i, item := range w.Machines.Items {
 		if item.Name == name {
 			index = i
 			break
@@ -120,8 +129,8 @@ func (s *Session) RemoveMachine(_ context.Context, name string) error {
 	if index < 0 {
 		return fmt.Errorf("machine %q does not exist", name)
 	}
-	s.profile.Machines.Items = append(s.profile.Machines.Items[:index], s.profile.Machines.Items[index+1:]...)
-	if err := s.saveMachines(); err != nil {
+	w.Machines.Items = append(w.Machines.Items[:index], w.Machines.Items[index+1:]...)
+	if err := s.saveMachines(w); err != nil {
 		return err
 	}
 	store, err := s.bindingStore()
@@ -137,16 +146,18 @@ func (s *Session) RemoveMachine(_ context.Context, name string) error {
 			return err
 		}
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) MapResource(_ context.Context, machineName, resourceID, path string) error {
-	selected, err := s.machineByName(machineName)
+	defer s.beginMutation()()
+	w := s.workingProfile()
+	selected, err := s.machineByName(w, machineName)
 	if err != nil {
 		return err
 	}
 	resourceID = strings.TrimPrefix(resourceID, "resource:")
-	if !hasResource(s.profile.Resources.Items, resourceID) {
+	if !hasResource(w.Resources.Items, resourceID) {
 		return fmt.Errorf("resource %q is not tracked", resourceID)
 	}
 	home, err := s.deps.HomeDir()
@@ -168,22 +179,24 @@ func (s *Session) MapResource(_ context.Context, machineName, resourceID, path s
 	if !found {
 		candidate.ResourcePaths = append(candidate.ResourcePaths, profile.MachineResourcePath{Resource: resourceID, Path: path})
 	}
-	if err := s.validateMachineMappings(home, &candidate); err != nil {
+	if err := s.validateMachineMappings(w, home, &candidate); err != nil {
 		return err
 	}
-	for i := range s.profile.Machines.Items {
-		if s.profile.Machines.Items[i].Name == candidate.Name {
-			s.profile.Machines.Items[i] = candidate
+	for i := range w.Machines.Items {
+		if w.Machines.Items[i].Name == candidate.Name {
+			w.Machines.Items[i] = candidate
 		}
 	}
-	if err := s.saveMachines(); err != nil {
+	if err := s.saveMachines(w); err != nil {
 		return err
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) UnmapResource(_ context.Context, machineName, resourceID string) error {
-	selected, err := s.machineByName(machineName)
+	defer s.beginMutation()()
+	w := s.workingProfile()
+	selected, err := s.machineByName(w, machineName)
 	if err != nil {
 		return err
 	}
@@ -198,15 +211,15 @@ func (s *Session) UnmapResource(_ context.Context, machineName, resourceID strin
 	if len(candidate.ResourcePaths) == len(selected.ResourcePaths) {
 		return nil
 	}
-	for i := range s.profile.Machines.Items {
-		if s.profile.Machines.Items[i].Name == candidate.Name {
-			s.profile.Machines.Items[i] = candidate
+	for i := range w.Machines.Items {
+		if w.Machines.Items[i].Name == candidate.Name {
+			w.Machines.Items[i] = candidate
 		}
 	}
-	if err := s.saveMachines(); err != nil {
+	if err := s.saveMachines(w); err != nil {
 		return err
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) bindingStore() (machine.BindingStore, error) {
@@ -217,24 +230,26 @@ func (s *Session) bindingStore() (machine.BindingStore, error) {
 	return machine.BindingStore{StateHome: state}, nil
 }
 
-func (s *Session) saveMachines() error {
+// saveMachines saves the working profile w of a mutation in progress.
+func (s *Session) saveMachines(w *profile.Data) error {
 	if s.deps.Now == nil {
 		return errors.New("workflow clock is unavailable")
 	}
-	s.profile.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
-	if err := profile.Save(s.opts.ProfileDir, s.profile); err != nil {
+	w.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
+	if err := profile.Save(s.opts.ProfileDir, *w); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
 	return nil
 }
 
-func (s *Session) machineByName(name string) (*profile.Machine, error) {
+// machineByName finds name in the working profile w of a mutation.
+func (s *Session) machineByName(w *profile.Data, name string) (*profile.Machine, error) {
 	if name == "" {
 		return nil, errors.New("no machine selected; use `machine use <name>` or pass `--machine <name>`")
 	}
-	for i := range s.profile.Machines.Items {
-		if s.profile.Machines.Items[i].Name == name {
-			return &s.profile.Machines.Items[i], nil
+	for i := range w.Machines.Items {
+		if w.Machines.Items[i].Name == name {
+			return &w.Machines.Items[i], nil
 		}
 	}
 	return nil, fmt.Errorf("machine %q does not exist", name)
@@ -249,12 +264,12 @@ func hasResource(items []profile.Resource, id string) bool {
 	return false
 }
 
-func (s *Session) validateMachineMappings(home string, candidate *profile.Machine) error {
+func (s *Session) validateMachineMappings(w *profile.Data, home string, candidate *profile.Machine) error {
 	state, err := s.deps.StateHome()
 	if err != nil {
 		return err
 	}
-	roots, _, err := machine.ResolveEffectiveRoots(home, s.opts.ProfileDir, filepath.Join(state, "omarchy-blueprint"), s.profile.Resources, candidate)
+	roots, _, err := machine.ResolveEffectiveRoots(home, s.opts.ProfileDir, filepath.Join(state, "omarchy-blueprint"), w.Resources, candidate)
 	if err != nil {
 		return err
 	}
