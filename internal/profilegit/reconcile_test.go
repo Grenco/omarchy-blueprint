@@ -86,8 +86,11 @@ func (r addUnmanagedCommitRunner) Run(ctx context.Context, name string, args ...
 func TestSemanticMergeRejectsUnapprovedCommittedTree(t *testing.T) {
 	s, req := semanticMergeFixture(t)
 	s.Runner = addUnmanagedCommitRunner{}
-	if _, err := s.CommitSemanticMerge(context.Background(), req); err == nil {
-		t.Fatal("unapproved unmanaged tree was accepted")
+	if _, err := s.CommitSemanticMerge(context.Background(), req); !errors.Is(err, ErrReconciliationPostCommitVerificationFailed) {
+		t.Fatalf("unapproved committed tree lacked repair-required classification: %v", err)
+	}
+	if gitOutput(t, s.Root, "rev-parse", "HEAD") == req.LocalSHA || gitOutput(t, s.Root, "show", "HEAD:unapproved.txt") != "not approved" {
+		t.Fatal("unapproved commit was not retained for manual repair")
 	}
 }
 

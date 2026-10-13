@@ -98,9 +98,12 @@ Execution failures return a nonzero exit code and a safe classification. JSON
 includes `data.failure` with `code`, `severity`, `message`, `guidance`, and
 `repair_required`, alongside the execution receipt. Ordinary failures use
 `execution-stopped`; interrupted execution uses `execution-cancelled`.
-`repository-rollback-failed` and `repository-outcome-uncertain` are high-severity
+`repository-rollback-failed`, `repository-outcome-uncertain`, and
+`repository-post-commit-verification-failed` are high-severity
 repair-required failures: **do not retry Sync** until the profile repository has
 been manually repaired and its HEAD, index and worktree checked.
+Post-commit verification failure means a commit may already exist and was not
+rolled back; validate that committed history before attempting Sync again.
 `profile-recovery-failed` similarly requires profile repair after failed scoped
 Capture recovery. Human output and stderr retain that guidance; neither output
 mode prints raw wrapped errors, private paths or subprocess output. A repair

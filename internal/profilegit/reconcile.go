@@ -217,6 +217,13 @@ func (s Service) CommitSemanticMerge(ctx context.Context, req SemanticMergeReque
 		return Result{}, revisionError(ctx, "commit semantic reconciliation", err)
 	}
 	started = false // A committed result must never be silently rolled back.
+	// Every subsequent failure leaves an existing, unverified commit. Preserve
+	// that distinction even for cancellation or failed verification probes.
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, ErrReconciliationPostCommitVerificationFailed)
+		}
+	}()
 	parents, err := s.revisionRun(ctx, "show", "-s", "--format=%P", "HEAD")
 	if err != nil {
 		return Result{}, revisionError(ctx, "verify semantic parents", err)

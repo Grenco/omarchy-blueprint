@@ -20,12 +20,27 @@ import (
 
 type syncFailureRunner struct {
 	gitMachineRunner
-	failAbort bool
+	failAbort        bool
+	unapprovedCommit bool
 }
 
 func (r *syncFailureRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	if name == "git" {
 		for _, arg := range args {
+			if arg == "commit" && r.unapprovedCommit {
+				for i, v := range args {
+					if v == "-C" && i+1 < len(args) {
+						root := args[i+1]
+						if err := os.WriteFile(filepath.Join(root, "unapproved.txt"), []byte("raw-secret-body"), 0600); err != nil {
+							return "", err
+						}
+						if _, err := r.gitMachineRunner.Run(ctx, "git", "-C", root, "add", "unapproved.txt"); err != nil {
+							return "", err
+						}
+					}
+				}
+				return r.gitMachineRunner.Run(ctx, name, args...)
+			}
 			if arg == "commit" || (r.failAbort && arg == "--abort") {
 				return "raw-secret-body", errors.New("https://user:credential@host.invalid/private /private/profile")
 			}
@@ -36,11 +51,12 @@ func (r *syncFailureRunner) Run(ctx context.Context, name string, args ...string
 
 func TestSyncApplyReportsOrdinaryVersusRepairRequiredExecutionFailure(t *testing.T) {
 	for _, asJSON := range []bool{false, true} {
-		for _, repair := range []bool{false, true} {
-			t.Run(fmt.Sprintf("json=%t/repair=%t", asJSON, repair), func(t *testing.T) {
+		for _, scenario := range []string{"ordinary", "rollback", "post-commit"} {
+			t.Run(fmt.Sprintf("json=%t/%s", asJSON, scenario), func(t *testing.T) {
+				repair := scenario != "ordinary"
 				root, deps := configSandbox(t)
 				deps.IsTTY = func() bool { return false }
-				runner := &syncFailureRunner{failAbort: repair}
+				runner := &syncFailureRunner{failAbort: scenario == "rollback", unapprovedCommit: scenario == "post-commit"}
 				runner.official = map[string]bool{"zoxide": true, "local": true}
 				runner.aur = map[string]bool{}
 				deps.Runner = runner
@@ -110,15 +126,23 @@ func TestSyncApplyReportsOrdinaryVersusRepairRequiredExecutionFailure(t *testing
 					t.Fatalf("failure exit=%d output=%s", code, out.String())
 				}
 				_, mergeErr := os.Stat(filepath.Join(root, ".git", "MERGE_HEAD"))
-				if repair && mergeErr != nil {
+				if scenario == "rollback" && mergeErr != nil {
 					t.Fatal("fixture did not exercise failed Git rollback")
 				}
 				if !repair && (!os.IsNotExist(mergeErr) || strings.TrimSpace(gitRun(t, "-C", root, "rev-parse", "HEAD")) != localSHA || strings.TrimSpace(gitRun(t, "-C", root, "status", "--porcelain")) != "") {
 					t.Fatal("ordinary failure did not safely restore the repository")
 				}
 				wantCode, wantSeverity := "execution-stopped", "error"
+				if scenario == "post-commit" {
+					if !os.IsNotExist(mergeErr) || strings.TrimSpace(gitRun(t, "-C", root, "rev-parse", "HEAD")) == localSHA || strings.TrimSpace(gitRun(t, "-C", root, "show", "HEAD:unapproved.txt")) != "raw-secret-body" {
+						t.Fatal("fixture did not exercise an unapproved committed tree")
+					}
+				}
 				if repair {
 					wantCode, wantSeverity = "repository-rollback-failed", "high"
+				}
+				if scenario == "post-commit" {
+					wantCode = "repository-post-commit-verification-failed"
 				}
 				if asJSON {
 					var envelope struct {
@@ -135,7 +159,7 @@ func TestSyncApplyReportsOrdinaryVersusRepairRequiredExecutionFailure(t *testing
 						t.Fatalf("invalid failure JSON: %v %s", err, out.String())
 					}
 					f := envelope.Data.Failure
-					if envelope.OK || envelope.Data.Execution.CursorAdvanced || f.Code != wantCode || f.Severity != wantSeverity || f.RepairRequired != repair {
+					if envelope.OK || envelope.Data.Execution.CursorAdvanced || envelope.Data.Execution.Published || f.Code != wantCode || f.Severity != wantSeverity || f.RepairRequired != repair {
 						t.Fatalf("failure classification lost: %s", out.String())
 					}
 					if repair && !strings.Contains(f.Guidance, "Do not retry Sync") {

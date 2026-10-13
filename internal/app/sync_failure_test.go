@@ -36,6 +36,7 @@ func TestSyncFailureRepairMarkersSurviveWrappingWithoutLeakingCauses(t *testing.
 		code   string
 		repair bool
 	}{
+		{profilegit.ErrReconciliationPostCommitVerificationFailed, "repository-post-commit-verification-failed", true},
 		{profilegit.ErrReconciliationRollbackFailed, "repository-rollback-failed", true},
 		{profilegit.ErrReconciliationOutcomeUncertain, "repository-outcome-uncertain", true},
 		{workflow.ErrScopedCaptureRepairRequired, "profile-recovery-failed", true},

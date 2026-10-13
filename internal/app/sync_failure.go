@@ -28,6 +28,10 @@ func classifySyncExecutionFailure(err error) syncExecutionFailure {
 		Guidance: "Inspect Profile Git and Sync before retrying; reviewed local history, published history or partial machine changes may remain.",
 	}
 	switch {
+	case errors.Is(err, profilegit.ErrReconciliationPostCommitVerificationFailed):
+		f.Code, f.Severity, f.RepairRequired = "repository-post-commit-verification-failed", "high", true
+		f.Message = "HIGH SEVERITY: post-commit semantic verification failed; a commit may already exist and was not rolled back. The repository requires manual repair. Cursor was not advanced."
+		f.Guidance = "Do not retry Sync. Manually repair the profile repository and verify its HEAD, index and worktree before a new Sync inspection."
 	case errors.Is(err, profilegit.ErrReconciliationRollbackFailed):
 		f.Code, f.Severity, f.RepairRequired = "repository-rollback-failed", "high", true
 		f.Message = "HIGH SEVERITY: automatic semantic merge rollback failed; the repository requires manual repair. Cursor was not advanced."
