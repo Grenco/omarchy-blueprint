@@ -20,8 +20,10 @@ func safeDisplay(value string) string {
 }
 
 func syncCommand(deps Dependencies, opt *options) *cobra.Command {
-	requireInspection := func(*cobra.Command, []string) error { return fmt.Errorf("sync: choose a read-only inspect command") }
-	root := &cobra.Command{Use: "sync", Short: "Inspect semantic reconciliation (read-only)", Args: cobra.NoArgs, RunE: requireInspection}
+	requireInspection := func(*cobra.Command, []string) error {
+		return fmt.Errorf("sync: choose inspect or an explicit execution command")
+	}
+	root := &cobra.Command{Use: "sync", Short: "Inspect and explicitly reconcile semantic intent", Args: cobra.NoArgs, RunE: requireInspection}
 	inspection := func(bootstrap bool) *cobra.Command {
 		noFetch := false
 		cmd := &cobra.Command{Use: "inspect", Short: "Inspect pinned profile revisions and live machine intent without applying changes", Args: cobra.NoArgs}
@@ -47,9 +49,16 @@ func syncCommand(deps Dependencies, opt *options) *cobra.Command {
 		}
 		return cmd
 	}
-	bootstrap := &cobra.Command{Use: "bootstrap", Short: "Inspect baseless first-Sync choices", Args: cobra.NoArgs, RunE: requireInspection}
+	bootstrap := &cobra.Command{Use: "bootstrap", Short: "Review and explicitly establish first-Sync lineage", Args: cobra.NoArgs, RunE: requireInspection}
 	bootstrap.AddCommand(inspection(true))
-	root.AddCommand(inspection(false), bootstrap)
+	for _, name := range []string{"reconcile-upstream", "adopt-machine"} {
+		choice := workflow.SyncBootstrapChoice(name)
+		bootstrap.AddCommand(syncApplyCommand(deps, opt, &choice))
+	}
+	bootstrap.AddCommand(&cobra.Command{Use: "cancel", Short: "Cancel bootstrap without reading or writing profile state", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
+		return emit(deps.Out, opt.json, "sync bootstrap cancel", true, map[string]any{"cancelled": true}, "Bootstrap cancelled; no writes.\n")
+	}})
+	root.AddCommand(inspection(false), bootstrap, syncApplyCommand(deps, opt, nil))
 	return root
 }
 

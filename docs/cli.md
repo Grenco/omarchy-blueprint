@@ -15,8 +15,9 @@ refs. Ordinary Status, Overview and startup do not fetch for Sync.
 One inspection owns one shared, short-lived observation cycle. Historical
 profiles are loaded in isolated temporary trees; inspection does not modify the
 active checkout, index, profile files, machine, or Sync cursor. Fetch may update
-Git objects and remote-tracking refs. There is no Sync execution or TUI in this
-slice.
+Git objects and remote-tracking refs. Inspection remains read-only even though
+explicit CLI execution is available separately. There is no semantic Sync TUI
+or background automation in this slice.
 
 Select a named machine. Missing or invalid cursor lineage requires explicit
 bootstrap review; inspection never guesses a baseline or writes a cursor.
@@ -33,6 +34,80 @@ Legacy package aliases are normalized consistently against one frozen live
 preinstall catalogue for that inspection. Changed resource paths or selected
 machine mappings block settlement pending inspection under the selected
 interpretation; observations of old roots cannot certify the new destination.
+
+## Explicit Sync execution
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync apply --dry-run
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync apply
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync apply \
+  --keep-local packages:official:git --keep-profile defaults:browser
+```
+
+`apply` fetches only on this explicit invocation; `--no-fetch` uses reviewed
+cached upstream intent instead. Publication still needs transport access.
+The confirmation summary names exact B/L/R revisions and the ordered history,
+Capture, publish, Restore and settlement stages. Each execution takes an
+exclusive per-profile Sync lock and revalidates the reviewed inspection.
+
+Resolution flags are repeatable and apply only to this invocation:
+`--keep-local` / `--accept-remote` resolve committed-history conflicts;
+`--keep-machine` / `--keep-profile` resolve machine disagreements;
+`--defer` leaves semantic intent unresolved. Use the exact
+`category:provider-target` IDs from inspection. Unknown, duplicate,
+conflicting or meaningless choices fail. Unresolved or deferred intent prevents
+execution and cursor advancement; resolutions are never persisted separately.
+
+Capture is restricted to selected targets and requires a fresh fingerprinted
+review plus post-staging reinspection and rollback. Restore is freshly planned
+and approved only **after** the chosen history is published. Normal policy,
+compatibility, Safe/Exact and activation checks still apply. `--force`, `--exact`
+and `--activation persistent|working|review` are one-run Restore choices, not
+permission bypasses. Interactive activation review still requires a terminal.
+
+Noninteractive or JSON execution requires explicit `--yes`. This accepts this
+invocation's fresh plans; it does not bypass reinspection or safety checks.
+`--dry-run` never executes, writes the cursor or asks for confirmation.
+
+First establish lineage with a baseless review and an explicit choice:
+
+```sh
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync bootstrap inspect
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync bootstrap reconcile-upstream
+omarchy-blueprint --profile ~/omarchy-profile --machine desktop sync bootstrap adopt-machine
+omarchy-blueprint sync bootstrap cancel
+```
+
+`reconcile-upstream` follows upstream intent through normal fresh Restore;
+`adopt-machine` captures permitted current machine intent, then publishes it.
+Both require a missing (not invalid or existing) cursor and fresh verification.
+Neither invents a baseline or arbitrarily marks HEAD reconciled. Baseless
+divergent history requires external Git reconciliation; upstream reconciliation
+also refuses different local-ahead committed intent rather than silently losing
+it. Cancel does not open the profile or write state.
+
+The cursor records only the exact published revision actually settled after
+fresh live verification. Skipped, blocked, deferred or failed Restore work keeps
+it behind. A failed push cannot start Restore. Later failures can leave published
+profile history or partial machine work; inspect Profile Git and Sync before
+retrying. Sync never force-pushes, rebases, or adopts an unreviewed newer tip.
+Unsupported symlink rollback artifacts and hidden ignored managed content fail
+closed before semantic history replacement.
+
+Execution failures return a nonzero exit code and a safe classification. JSON
+includes `data.failure` with `code`, `severity`, `message`, `guidance`, and
+`repair_required`, alongside the execution receipt. Ordinary failures use
+`execution-stopped`; interrupted execution uses `execution-cancelled`.
+`repository-rollback-failed`, `repository-outcome-uncertain`, and
+`repository-post-commit-verification-failed` are high-severity
+repair-required failures: **do not retry Sync** until the profile repository has
+been manually repaired and its HEAD, index and worktree checked.
+Post-commit verification failure means a commit may already exist and was not
+rolled back; validate that committed history before attempting Sync again.
+`profile-recovery-failed` similarly requires profile repair after failed scoped
+Capture recovery. Human output and stderr retain that guidance; neither output
+mode prints raw wrapped errors, private paths or subprocess output. A repair
+warning takes precedence over an accompanying cancellation.
 
 ## Read-only observation diagnostics
 

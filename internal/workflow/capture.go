@@ -61,6 +61,10 @@ func (s *Session) CaptureApproved(ctx context.Context, ids []string, approved Ca
 }
 
 func (s *Session) captureMany(ctx context.Context, ids []string, approved *CaptureInspection) (CaptureResult, error) {
+	return s.captureManyTargets(ctx, ids, approved, nil)
+}
+
+func (s *Session) captureManyTargets(ctx context.Context, ids []string, approved *CaptureInspection, scope TargetSelection) (CaptureResult, error) {
 	// Read previews intentionally never publish desired state into Session.
 	// Mutation must freshly load and validate it as well as re-inspecting live
 	// facts, or saving Capture could overwrite edits already seen by a preview.
@@ -102,6 +106,12 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 			return CaptureResult{}, err
 		}
 		fresh = replayCaptureSelections(fresh, *approved)
+		if scope != nil {
+			fresh, err = narrowCaptureInspection(fresh, scope)
+			if err != nil {
+				return CaptureResult{}, err
+			}
+		}
 		if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
 			return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
 		}
@@ -114,6 +124,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	// Providers capture into a private copy; the Session changes only once
 	// it is saved.
 	data := profile.CloneData(previous)
+	beforeScope := profile.CloneData(data)
 	result := CaptureResult{Profile: data}
 	var transactions []captureTransaction
 	resourcesInstalled := false
@@ -159,6 +170,12 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		if err != nil {
 			return CaptureResult{}, errors.Join(fmt.Errorf("re-check capture: %w", err), rollback())
 		}
+		if scope != nil {
+			after, err = narrowCaptureInspection(after, scope)
+			if err != nil {
+				return CaptureResult{}, errors.Join(err, rollback())
+			}
+		}
 		if changes := approved.ChangesFrom(after); len(changes) > 0 {
 			if rollbackErr := rollback(); rollbackErr != nil {
 				return CaptureResult{}, errors.Join(&CaptureReviewChangedError{Fresh: after, Changes: changes}, rollbackErr)
@@ -167,6 +184,11 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		}
 	}
 	if len(result.Providers) > 0 {
+		if scope != nil {
+			if err := checkCaptureTargetBoundary(beforeScope, data, s.providers, scope); err != nil {
+				return CaptureResult{}, errors.Join(err, rollback())
+			}
+		}
 		data.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 		data.Manifest.Omarchy.CapturedVersion, data.Manifest.Omarchy.Channel = info.Version, info.Channel
 		// A save that committed without finishing is durable and completes
