@@ -3,50 +3,40 @@ package profile
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
-func savePreinstallFile(dir string, state Preinstalls) error {
-	path := filepath.Join(dir, "packages", "preinstalls.toml")
+// addPreinstallFile writes packages/preinstalls.toml in t, or removes it
+// when nothing is managed.
+func addPreinstallFile(t *saveTransaction, state Preinstalls) error {
 	if !state.Managed && len(state.Items) == 0 {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+		t.remove("packages/preinstalls.toml")
 		return nil
 	}
 	b, err := toml.Marshal(state)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return atomicWrite(path, b)
+	t.write("packages/preinstalls.toml", b)
+	return nil
 }
 
-// savePackageAbsenceFile writes packages/absent.toml, or removes it when
-// absent is empty: only tombstones that actually exist need to be written.
-func savePackageAbsenceFile(dir string, absent []PackageAbsence) error {
-	path := filepath.Join(dir, "packages", "absent.toml")
+// addPackageAbsenceFile writes packages/absent.toml in t, or removes it
+// when absent is empty: only tombstones that actually exist need to be
+// written.
+func addPackageAbsenceFile(t *saveTransaction, absent []PackageAbsence) error {
 	if len(absent) == 0 {
-		err := os.Remove(path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+		t.remove("packages/absent.toml")
 		return nil
 	}
 	b, err := toml.Marshal(packageAbsenceFile{Package: absent})
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
-		return err
-	}
-	return atomicWrite(path, b)
+	t.write("packages/absent.toml", b)
+	return nil
 }
 
 // validateProviderDesiredState enforces, for every provider with desired

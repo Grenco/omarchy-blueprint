@@ -364,7 +364,12 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 		m.Policy = removePolicyRule(removePolicyRule(m.Policy, policy.AxisCapture, category, target), policy.AxisRestore, category, target)
 	}
 	transaction, hasTransaction := provider.(captureTransaction)
-	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
+	if err := profile.SaveWithOptions(s.opts.ProfileDir, next, profile.SaveOptions{CommitResourcesCapture: hasTransaction && category == "resources"}); err != nil {
+		var committed *profile.CommittedSaveError
+		if errors.As(err, &committed) {
+			s.profile = next
+			return fmt.Errorf("save profile: %w", err)
+		}
 		if hasTransaction {
 			_ = transaction.RollbackCapture()
 		}

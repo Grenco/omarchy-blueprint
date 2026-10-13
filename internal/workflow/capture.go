@@ -106,6 +106,7 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	data := s.profile
 	result := CaptureResult{Profile: data}
 	var transactions []captureTransaction
+	resourcesInstalled := false
 	rollback := func() error {
 		var rollbackErr error
 		for i := len(transactions) - 1; i >= 0; i-- {
@@ -127,6 +128,9 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		}
 		if transaction, ok := provider.(captureTransaction); ok {
 			transactions = append(transactions, transaction)
+			// A Resources capture installs its generation before this save;
+			// the save commits it together with the metadata.
+			resourcesInstalled = resourcesInstalled || provider.ID() == "resources"
 		}
 		if state == nil {
 			continue
@@ -155,7 +159,14 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	if len(result.Providers) > 0 {
 		data.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 		data.Manifest.Omarchy.CapturedVersion, data.Manifest.Omarchy.Channel = info.Version, info.Channel
-		if err := profile.Save(s.opts.ProfileDir, data); err != nil {
+		if err := profile.SaveWithOptions(s.opts.ProfileDir, data, profile.SaveOptions{CommitResourcesCapture: resourcesInstalled}); err != nil {
+			var committed *profile.CommittedSaveError
+			if errors.As(err, &committed) {
+				// The new profile is durable and completes on the next load;
+				// undoing provider work now would split it from its metadata.
+				s.profile = data
+				return CaptureResult{}, fmt.Errorf("save profile: %w", err)
+			}
 			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", err), rollback())
 		}
 		for _, transaction := range transactions {
