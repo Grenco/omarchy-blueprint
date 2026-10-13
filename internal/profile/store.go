@@ -2,6 +2,7 @@ package profile
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,10 @@ const (
 // saveFault lets tests interrupt a save at a named point, as a crash would.
 // It is a no-op in production.
 var saveFault = func(point string) error { return nil }
+
+// dirSynced lets tests observe the durability barriers a save makes. It is
+// a no-op in production.
+var dirSynced = func(rel string) {}
 
 // profileStore is an open, confined profile directory.
 type profileStore struct {
@@ -122,7 +127,43 @@ func (s *profileStore) syncDir(rel string) error {
 		return err
 	}
 	defer f.Close()
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	dirSynced(rel)
+	return nil
+}
+
+// syncDirs makes every directory in dirs durable, with each ancestor up to
+// the profile root, so a directory created on the way exists after a power
+// loss too. Deepest directories go first.
+func (s *profileStore) syncDirs(dirs map[string]bool) error {
+	all := map[string]bool{}
+	for dir := range dirs {
+		for {
+			all[dir] = true
+			if dir == "." {
+				break
+			}
+			dir = pathpkg.Dir(dir)
+		}
+	}
+	ordered := make([]string, 0, len(all))
+	for dir := range all {
+		ordered = append(ordered, dir)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if di, dj := strings.Count(ordered[i], "/"), strings.Count(ordered[j], "/"); di != dj {
+			return di > dj
+		}
+		return ordered[i] > ordered[j]
+	})
+	for _, dir := range ordered {
+		if err := s.syncDir(dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeFileDurable writes rel through a temporary sibling and an atomic
@@ -164,6 +205,9 @@ func randomSuffix() string {
 type saveTransaction struct {
 	Writes  []string `json:"writes"`
 	Removes []string `json:"removes"`
+	// Hashes is each write's SHA-256, so recovery can tell a write that
+	// was already applied from a staged file that was lost.
+	Hashes map[string]string `json:"hashes"`
 	// CommitResourcesCapture marks the Resources generation installed for
 	// this save committed together with it (see SaveOptions).
 	CommitResourcesCapture bool `json:"commit_resources_capture,omitempty"`
@@ -193,17 +237,27 @@ func (s *profileStore) commit(t *saveTransaction) error {
 	if err := s.root.RemoveAll(transactionDir); err != nil {
 		return err
 	}
+	t.Hashes = map[string]string{}
+	staged := map[string]bool{transactionDir: true}
 	for _, rel := range t.Writes {
 		if err := validateTransactionPath(rel); err != nil {
 			return err
 		}
-		staged := pathpkg.Join(transactionFiles, rel)
-		if err := s.root.MkdirAll(pathpkg.Dir(staged), 0o755); err != nil {
+		path := pathpkg.Join(transactionFiles, rel)
+		if err := s.root.MkdirAll(pathpkg.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := writeSynced(s.root, staged, t.contents[rel]); err != nil {
+		if err := writeSynced(s.root, path, t.contents[rel]); err != nil {
 			return err
 		}
+		t.Hashes[rel] = contentHash(t.contents[rel])
+		staged[pathpkg.Dir(path)] = true
+	}
+	// Every staged file's directory entry must be durable before the
+	// manifest can be: a manifest that survived a power loss without them
+	// would name files that are gone.
+	if err := s.syncDirs(staged); err != nil {
+		return err
 	}
 	for _, rel := range t.Removes {
 		if err := validateTransactionPath(rel); err != nil {
@@ -247,6 +301,11 @@ func (s *profileStore) apply(t *saveTransaction) error {
 		}
 		staged := pathpkg.Join(transactionFiles, rel)
 		if _, err := s.root.Lstat(staged); errors.Is(err, fs.ErrNotExist) {
+			// Already moved into place, unless it was lost: never
+			// complete a save with a file it does not hold.
+			if err := s.confirmApplied(t, rel); err != nil {
+				return err
+			}
 			continue
 		} else if err != nil {
 			return err
@@ -273,10 +332,8 @@ func (s *profileStore) apply(t *saveTransaction) error {
 		}
 		dirs[pathpkg.Dir(rel)] = true
 	}
-	for dir := range dirs {
-		if err := s.syncDir(dir); err != nil {
-			return err
-		}
+	if err := s.syncDirs(dirs); err != nil {
+		return err
 	}
 	if t.CommitResourcesCapture {
 		// Only a generation still waiting for this save is committed.
@@ -292,6 +349,23 @@ func (s *profileStore) apply(t *saveTransaction) error {
 		return err
 	}
 	return s.syncDir(".")
+}
+
+// confirmApplied checks that a write whose staged file is gone was already
+// moved into place, by its content.
+func (s *profileStore) confirmApplied(t *saveTransaction, rel string) error {
+	want, ok := t.Hashes[rel]
+	if ok {
+		if live, err := s.root.ReadFile(rel); err == nil && contentHash(live) == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("the interrupted profile save cannot be completed: its staged %s is missing and the profile's copy does not match it. The profile may be partly saved; check it, then remove %s to keep it as it is", rel, transactionDir)
+}
+
+func contentHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // recover finishes or discards a save that was interrupted: a committed
