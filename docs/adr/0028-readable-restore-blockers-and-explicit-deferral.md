@@ -196,7 +196,9 @@ sends SIGTERM to its whole process group, so helpers such as Git's `ssh` are
 asked to stop too, and SIGKILL to the whole group after a grace period, so
 nothing it started outlives a stopped restore. Interactive commands are sent
 the interrupt they would have received, so `pacman` can release its database
-lock.
+lock. One that ignores it is sent SIGTERM after a grace period and killed
+after another, so a stopped restore never waits forever on a step that will
+not stop.
 
 ### 9. Steps that wait for the person run last and can be skipped
 
@@ -213,7 +215,10 @@ Two rules keep the wait from holding the restore hostage:
   terminal delivers the interrupt to the step, which stops; Blueprint ignores
   it itself, records the step as skipped by the person (not failed), holds
   back the steps that depend on it, and continues with the rest. At any other
-  moment Ctrl+C still stops the restore, and a second one exits at once.
+  moment Ctrl+C still stops the restore, and a second one exits at once. A
+  step that ignores Ctrl+C (or hangs) cannot hold Blueprint hostage: the
+  first two presses are left to it (the second with a note), the third stops
+  the restore as above, and a fourth exits.
   The summary names what was skipped and that `restore` will plan it again.
   A skipped step that leaves its target unverified is not reported as a
   verification failure, but anything else still missing is.

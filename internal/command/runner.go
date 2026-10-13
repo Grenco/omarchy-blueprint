@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Runner implementations used by read observation must support concurrent
@@ -81,17 +83,20 @@ func (SystemRunner) Run(ctx context.Context, name string, args ...string) (strin
 	return out.String(), nil
 }
 
+// interactiveGrace is how long a cancelled interactive command has after
+// each stop signal before the next, stronger one.
+var interactiveGrace = 10 * time.Second
+
 func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
 	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
 		defer finish()
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
-	// Interactive commands (sudo pacman) get the terminal's own interrupt.
-	// Cancellation sends the same signal rather than killing them, so they
-	// can clean up (pacman releases its database lock).
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	if err := ctx.Err(); err != nil {
+		return &RunError{Name: name, Args: args, ExitCode: -1, Err: err}
+	}
+	cmd := exec.Command(name, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err, interrupted := runInteractive(cmd.Run)
+	err, interrupted := runInteractive(func() error { return runInteractiveCommand(ctx, cmd) })
 	if err != nil {
 		exitCode := -1
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -103,6 +108,42 @@ func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...str
 		return &RunError{Name: name, Args: args, ExitCode: exitCode, Err: err}
 	}
 	return nil
+}
+
+// runInteractiveCommand runs cmd until it exits. Interactive commands (sudo
+// pacman) get the terminal's own interrupt; cancellation first sends the
+// same signal rather than killing them, so they can clean up (pacman
+// releases its database lock). One that ignores it is sent SIGTERM after
+// interactiveGrace and killed after another, so a cancelled restore can
+// never wait forever on a command that will not stop.
+func runInteractiveCommand(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+	for _, stop := range []os.Signal{os.Interrupt, syscall.SIGTERM} {
+		_ = cmd.Process.Signal(stop)
+		select {
+		case err := <-done:
+			return orCancelled(ctx, err)
+		case <-time.After(interactiveGrace):
+		}
+	}
+	_ = cmd.Process.Kill()
+	return orCancelled(ctx, <-done)
+}
+
+func orCancelled(ctx context.Context, err error) error {
+	if err == nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 var errOutputLimit = errors.New("output limit exceeded")
