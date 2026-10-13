@@ -43,6 +43,10 @@ type Restore struct {
 	// ready (ADR 0028). It is never persisted.
 	deferred        []string
 	forcedOverrides int
+	// Sync's fresh approval has no same-observation Safe comparison. Do not
+	// present an unmeasured count as zero; ordinary workspace previews retain
+	// their measured count.
+	forcedOverridesUnavailable bool
 	// run is the in-progress apply's shared state; stopApply cancels it
 	// once stopRequested confirms (Ctrl+C twice); the running step is asked to stop.
 	run           *restoreRunState
@@ -575,7 +579,7 @@ func (s *Restore) fullPlanHeader(width int) []string {
 	}
 	summary := s.summaryTable.Render(
 		[]components.Column{{Title: "CREATE", MinWidth: 6}, {Title: "MODIFY", MinWidth: 6}, {Title: "REPLACE", MinWidth: 7}, {Title: "REMOVALS", MinWidth: 8}, {Title: "COMMANDS", MinWidth: 8}, {Title: "POLICY SKIPS", MinWidth: 12}, {Title: "FORCED OVERRIDES", MinWidth: 16}},
-		[]components.Row{{Cells: []string{fmt.Sprint(counts.create), fmt.Sprint(counts.modify), fmt.Sprint(counts.replace), fmt.Sprint(counts.delete), fmt.Sprint(counts.commands), fmt.Sprint(policySkipCount(s.current)), fmt.Sprint(s.forcedOverrides)}}},
+		[]components.Row{{Cells: []string{fmt.Sprint(counts.create), fmt.Sprint(counts.modify), fmt.Sprint(counts.replace), fmt.Sprint(counts.delete), fmt.Sprint(counts.commands), fmt.Sprint(policySkipCount(s.current)), s.forcedOverrideCountLabel()}}},
 		width, 2, s.styles,
 	)
 	sections = append(sections, components.SectionDivider("Plan summary", width, s.styles)+"\n"+summary)
@@ -604,7 +608,7 @@ func (s *Restore) compactPlanHeader(width int) []string {
 		lines = append(lines, strings.Split(deferred, "\n")...)
 	}
 	requirementLines := s.compactRequirementLines(width)
-	summary := fmt.Sprintf("Plan: %d create · %d modify · %d replace · %d removals · %d commands · %d policy skips · %d forced", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrides)
+	summary := fmt.Sprintf("Plan: %d create · %d modify · %d replace · %d removals · %d commands · %d policy skips · %s forced", counts.create, counts.modify, counts.replace, counts.delete, counts.commands, policySkipCount(s.current), s.forcedOverrideCountLabel())
 	summaryLines := components.WrapText(summary, width)
 	reserve := 2 // blank line and no-operations message
 	if s.currentEntryCount() > 0 {
@@ -899,6 +903,13 @@ func restoreCompatibilityEnvironment(env model.CompatibilityEnvironment) string 
 		return env.OmarchyVersion + " (" + env.OmarchyChannel + ")"
 	}
 	return env.OmarchyVersion
+}
+
+func (s *Restore) forcedOverrideCountLabel() string {
+	if s.forcedOverridesUnavailable {
+		return "not assessed"
+	}
+	return fmt.Sprint(s.forcedOverrides)
 }
 
 func (s *Restore) runSettings() (machine, conflicts, conflictMeaning, convergence, convergenceMeaning, defaults, defaultsMeaning string) {
@@ -1330,7 +1341,9 @@ func (s *Restore) confirmation() string {
 	if high > 0 {
 		prompt += fmt.Sprintf(" %d high-risk.", high)
 	}
-	if s.forcedOverrides > 0 {
+	if s.forcedOverridesUnavailable {
+		prompt += " Forced override count not assessed; review all listed operations."
+	} else if s.forcedOverrides > 0 {
 		prompt += fmt.Sprintf(" %d forced override(s).", s.forcedOverrides)
 	}
 	if s.hasInteractiveOperation() {

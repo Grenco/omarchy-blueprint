@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
@@ -131,15 +132,7 @@ func (e *reconcileExec) Run() error {
 		return confirm(ctx, "Approve this fresh Capture")
 	}
 	e.request.ApproveRestore = func(ctx context.Context, plan model.RestorePlan) error {
-		review := NewRestoreContext(ctx, nil)
-		review.current = plan
-		review.width = 100
-		review.options = policy.DefaultRestoreOptions()
-		if session, ok := e.session.(*workflow.Session); ok {
-			if machine := session.Machine().Machine; machine != nil {
-				review.options = machine.EffectiveRestoreDefaults()
-			}
-		}
+		review := e.restoreReview(ctx, plan)
 		review.compatibilityExpanded = true
 		fmt.Fprintln(e.out, "Review fresh Restore", review.View(), review.DetailView())
 		for i := range plan.Operations {
@@ -183,6 +176,27 @@ func (e *reconcileExec) Run() error {
 	// Only the safe receipt crosses the presentation boundary; tea.Exec must
 	// not render a raw wrapped transport/provider error itself.
 	return nil
+}
+
+func (e *reconcileExec) restoreReview(ctx context.Context, plan model.RestorePlan) *Restore {
+	review := NewRestoreContext(ctx, nil)
+	// Freeze descriptive context for this approval, not another observation or
+	// mutation authority. ExecuteSync revalidated the selected identity and
+	// owns the fresh authoritative plan. Do not replan just to count overrides.
+	snapshot := workflow.ReadSnapshot{Machine: machine.Selection{Name: e.request.ReviewedPlan.Identity.Machine}}
+	review.current, review.width = plan, 100
+	if session, ok := e.session.(*workflow.Session); ok {
+		snapshot.Profile, snapshot.Machine = session.Profile(), session.Machine()
+		if selected := snapshot.Machine.Machine; selected != nil {
+			review.options = selected.EffectiveRestoreDefaults()
+		}
+	}
+	if e.request.RestoreOptions != nil {
+		review.options, review.override = *e.request.RestoreOptions, true
+	}
+	review.acceptSnapshot(snapshot)
+	review.forcedOverridesUnavailable = review.options.Conflicts == policy.ConflictForce
+	return review
 }
 
 func reconcileFailure(err error) string {
