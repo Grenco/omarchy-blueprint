@@ -60,8 +60,8 @@ before machine observation. Only then is baseless inspection requested (no secon
 fetch), owning the single live observation cycle. Execution remains separately
 fresh; no manufactured B or cursor write is introduced by the screen.
 
-Task 16: documentation/authority audit done; final committed-tree verification
-pending. README, CLI/TUI/Guide and the manual checklist separate Profile Git,
+Task 16: documentation/authority audit and final committed-tree automated
+verification complete. README, CLI/TUI/Guide and the manual checklist separate Profile Git,
 semantic Sync and future Auto Sync. Phase 10 stays pending review/merge of PR D;
 Phase 11 remains not started.
 
@@ -82,3 +82,14 @@ and real two-machine Omarchy acceptance are not claimed by automated fixtures.
 Local full container package validation could not run because Docker socket
 access is denied. No privileged workaround or host package installation was
 attempted; the existing hosted AUR validation and RA checks remain required.
+
+Final implementation SHA: `d76d2f04992d1400601517809a1645a1a4ccec82`.
+TUI implementation commit: `3258259`.
+After both implementation commits, the worktree was clean and the complete Go
+test/race suites, vet/build, all 11 Sync/PTY acceptance tests (23.103s), 66 release
+helper tests and 103 reconstruction helper tests passed again. All shell helpers
+passed `bash -n`; `git diff --check` passed. The final follow-up commit changes
+execution notes/manual wording only, not the verified implementation.
+Latest origin/main was re-fetched and remained the exact starting SHA above.
+PR D is ready for independent code review with the explicit human/hosted gaps
+listed above. No merge, release, PR E or Auto Sync work was begun.
