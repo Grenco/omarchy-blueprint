@@ -145,6 +145,11 @@ func (c *PreparedCapture) Rollback() error {
 	return first
 }
 
+// Release ends this capture without touching the generation on disk, for
+// a profile save that committed it but could not finish: the next profile
+// load completes the save and resolves the generation with it.
+func (c *PreparedCapture) Release() { c.close() }
+
 func (c *PreparedCapture) Finalize() error {
 	var first error
 	for _, name := range captureComponents {

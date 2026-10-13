@@ -16,7 +16,11 @@ import (
 
 // AddMachine creates a portable overlay and optionally selects it locally.
 func (s *Session) AddMachine(_ context.Context, name string, use bool) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	if err := machine.ValidateName(name); err != nil {
 		return err
@@ -41,7 +45,11 @@ func (s *Session) AddMachine(_ context.Context, name string, use bool) error {
 }
 
 func (s *Session) UseMachine(_ context.Context, name string) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	if _, err := machine.Select(name, "", w.Machines.Items); err != nil {
 		return err
@@ -57,7 +65,11 @@ func (s *Session) UseMachine(_ context.Context, name string) error {
 }
 
 func (s *Session) ClearMachine(_ context.Context) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	store, err := s.bindingStore()
 	if err != nil {
 		return err
@@ -79,7 +91,11 @@ func (s *Session) SuggestedMachineName() (string, error) {
 }
 
 func (s *Session) RenameMachine(_ context.Context, oldName, newName string) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	if err := machine.ValidateName(newName); err != nil {
 		return err
@@ -117,7 +133,11 @@ func (s *Session) RenameMachine(_ context.Context, oldName, newName string) erro
 }
 
 func (s *Session) RemoveMachine(_ context.Context, name string) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	index := -1
 	for i, item := range w.Machines.Items {
@@ -150,7 +170,11 @@ func (s *Session) RemoveMachine(_ context.Context, name string) error {
 }
 
 func (s *Session) MapResource(_ context.Context, machineName, resourceID, path string) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	selected, err := s.machineByName(w, machineName)
 	if err != nil {
@@ -194,7 +218,11 @@ func (s *Session) MapResource(_ context.Context, machineName, resourceID, path s
 }
 
 func (s *Session) UnmapResource(_ context.Context, machineName, resourceID string) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	selected, err := s.machineByName(w, machineName)
 	if err != nil {
@@ -236,7 +264,7 @@ func (s *Session) saveMachines(w *profile.Data) error {
 		return errors.New("workflow clock is unavailable")
 	}
 	w.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
-	if err := profile.Save(s.opts.ProfileDir, *w); err != nil {
+	if err := s.saveProfile(*w, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
 	return nil

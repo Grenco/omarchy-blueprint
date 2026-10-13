@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -26,12 +27,14 @@ import (
 //     a public entry point; helpers never take it. Reads never wait for it,
 //     so a long Capture does not block the interface.
 //   - configMu guards opts, providers and finalizers.
+//   - needsReload is guarded by mutationMu.
 //
 // Lock order: mutationMu, then configMu, then stateMu.
 type Session struct {
 	mutationMu          sync.Mutex
 	configMu            sync.Mutex
 	stateMu             sync.RWMutex
+	needsReload         bool
 	deps                Dependencies
 	opts                Options
 	profile             profile.Data
@@ -65,7 +68,8 @@ func Open(deps Dependencies, opts Options) (*Session, error) {
 // profile, even though opening that same profile fresh would fail in
 // SetProviders. s.profile is left untouched on validation failure.
 func (s *Session) Reload() error {
-	defer s.beginMutation()()
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	return s.reloadLocked()
 }
 
@@ -85,14 +89,57 @@ func (s *Session) reloadLocked() error {
 	s.stateMu.Lock()
 	s.profile, s.machine = data, selection
 	s.stateMu.Unlock()
+	s.needsReload = false
 	return nil
 }
 
 // beginMutation serializes a read-modify-save; call the returned function
-// to end it: defer s.beginMutation()().
-func (s *Session) beginMutation() func() {
+// to end it. If an earlier save committed but could not finish applying,
+// the profile is reloaded first (loading completes that save), so no
+// mutation can start from a profile older than what is on disk and
+// overwrite the committed save with it. A mutation that cannot reload is
+// refused.
+//
+//	end, err := s.beginMutation()
+//	if err != nil {
+//		return err
+//	}
+//	defer end()
+func (s *Session) beginMutation() (func(), error) {
 	s.mutationMu.Lock()
-	return s.mutationMu.Unlock
+	if s.needsReload {
+		if err := s.reloadLocked(); err != nil {
+			s.mutationMu.Unlock()
+			return nil, fmt.Errorf("an earlier profile save did not finish and the profile cannot be reloaded to complete it: %w", err)
+		}
+	}
+	return s.mutationMu.Unlock, nil
+}
+
+// saveProfile saves data inside a mutation. A save that passed its commit
+// point but could not finish applying is durable: data becomes the
+// Session's profile, and the next mutation reloads (completing the save)
+// before it starts. Its error is still returned.
+func (s *Session) saveProfile(data profile.Data, options profile.SaveOptions) error {
+	err := profile.SaveWithOptions(s.opts.ProfileDir, data, options)
+	if committedSave(err) {
+		s.setProfile(data)
+	}
+	s.noteSaveError(err)
+	return err
+}
+
+// noteSaveError makes the next mutation reload when err says a profile save
+// committed without finishing, including a save made by a provider.
+func (s *Session) noteSaveError(err error) {
+	if committedSave(err) {
+		s.needsReload = true
+	}
+}
+
+func committedSave(err error) bool {
+	var committed *profile.CommittedSaveError
+	return errors.As(err, &committed)
 }
 
 // workingProfile is a private deep copy of the loaded profile for a
@@ -146,7 +193,11 @@ func (s *Session) HomeDir() string {
 // SetProviderCaptured changes whether an optional provider participates in
 // capture and restore without making a screen write profile files directly.
 func (s *Session) SetProviderCaptured(_ context.Context, id string, captured bool) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	data := s.Profile()
 	switch id {
 	case "themes":
@@ -162,7 +213,7 @@ func (s *Session) SetProviderCaptured(_ context.Context, id string, captured boo
 	default:
 		return fmt.Errorf("%s cannot be toggled as an optional provider", id)
 	}
-	if err := profile.Save(s.opts.ProfileDir, data); err != nil {
+	if err := s.saveProfile(data, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
 	s.setProfile(data)
@@ -182,7 +233,11 @@ func (s *Session) SetProviderItemEnabled(_ context.Context, provider, section, k
 	ref := kind + ":" + key
 	// Read and toggle as one mutation, so two toggles cannot both read the
 	// same state.
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	return s.setPackageExcluded(ref, !s.packageExcluded(ref))
 }
 
@@ -213,14 +268,22 @@ func (s *Session) ProfileGitFetch(ctx context.Context) (profilegit.Result, error
 // ProfileGitCommit commits the managed profile files. It waits for any
 // mutation in progress, so a commit never stages half of a save.
 func (s *Session) ProfileGitCommit(ctx context.Context, message string) (profilegit.Result, error) {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return profilegit.Result{}, err
+	}
+	defer end()
 	return s.profileGit.Commit(ctx, message)
 }
 
 // ProfileGitPull fast-forwards the profile and reloads it, as one mutation:
 // no local mutation can interleave with the pull and be lost.
 func (s *Session) ProfileGitPull(ctx context.Context) (profilegit.Result, error) {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return profilegit.Result{}, err
+	}
+	defer end()
 	result, err := s.profileGit.Pull(ctx)
 	if err != nil {
 		return result, err

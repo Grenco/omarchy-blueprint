@@ -287,7 +287,11 @@ func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, targe
 // mutatePolicy changes the policy rules at scope in a private copy of the
 // profile, saves it, and only then makes it the Session's profile.
 func (s *Session) mutatePolicy(scope PolicyScope, change func(policy.Rules) policy.Rules) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	if scope.Machine == "" {
 		w.Policy = change(w.Policy)
@@ -360,7 +364,11 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 	if !ok {
 		return fmt.Errorf("%s does not support Stop Managing", category)
 	}
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	next, err := actions.StopManaging(ctx, s.Profile(), target)
 	if err != nil {
 		return err
@@ -371,16 +379,14 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 		m.Policy = removePolicyRule(removePolicyRule(m.Policy, policy.AxisCapture, category, target), policy.AxisRestore, category, target)
 	}
 	transaction, hasTransaction := provider.(captureTransaction)
-	if err := profile.SaveWithOptions(s.opts.ProfileDir, next, profile.SaveOptions{CommitResourcesCapture: hasTransaction && category == "resources"}); err != nil {
-		var committed *profile.CommittedSaveError
-		if errors.As(err, &committed) {
-			s.setProfile(next)
-			return fmt.Errorf("save profile: %w", err)
-		}
+	// A save that committed without finishing is durable: the staged
+	// removal goes ahead with it, and its error is returned afterwards.
+	saveErr := s.saveProfile(next, profile.SaveOptions{CommitResourcesCapture: hasTransaction && category == "resources"})
+	if saveErr != nil && !committedSave(saveErr) {
 		if hasTransaction {
 			_ = transaction.RollbackCapture()
 		}
-		return fmt.Errorf("save profile: %w", err)
+		return fmt.Errorf("save profile: %w", saveErr)
 	}
 	if hasTransaction {
 		if err := transaction.CommitCapture(); err != nil {
@@ -388,10 +394,13 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 		}
 		if err := transaction.FinalizeCapture(); err != nil {
 			s.setProfile(next)
-			return fmt.Errorf("finalize stop managing: %w", err)
+			return errors.Join(fmt.Errorf("finalize stop managing: %w", err), saveErr)
 		}
 	}
 	s.setProfile(next)
+	if saveErr != nil {
+		return fmt.Errorf("save profile: %w", saveErr)
+	}
 	return nil
 }
 
@@ -403,7 +412,11 @@ func (s *Session) SetMachineRestoreDefaults(machineName string, options policy.R
 	if err := policy.ValidateRestoreOptions(options); err != nil {
 		return err
 	}
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	m, err := s.machineByName(w, machineName)
 	if err != nil {
@@ -516,7 +529,11 @@ func (s *Session) packageExcluded(ref string) bool {
 // the save succeeds, so a caller never observes "desired state removed but
 // only one policy axis persisted."
 func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	return s.setPackageExcluded(ref, excluded)
 }
 
@@ -543,7 +560,7 @@ func (s *Session) setPackageExcluded(ref string, excluded bool) error {
 		next.Policy = removePolicyRule(next.Policy, policy.AxisRestore, "packages", canonical)
 	}
 	next.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
-	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
+	if err := s.saveProfile(next, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
 	s.setProfile(next)

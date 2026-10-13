@@ -69,7 +69,11 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	}
 	// One mutation from reload to save: nothing else can change the profile
 	// underneath this capture, and reads continue meanwhile.
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	defer end()
 	if err := s.reloadLocked(); err != nil {
 		return CaptureResult{}, fmt.Errorf("reload capture authority: %w", err)
 	}
@@ -165,20 +169,21 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 	if len(result.Providers) > 0 {
 		data.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 		data.Manifest.Omarchy.CapturedVersion, data.Manifest.Omarchy.Channel = info.Version, info.Channel
-		if err := profile.SaveWithOptions(s.opts.ProfileDir, data, profile.SaveOptions{CommitResourcesCapture: resourcesInstalled}); err != nil {
-			var committed *profile.CommittedSaveError
-			if errors.As(err, &committed) {
-				// The new profile is durable and completes on the next load;
-				// undoing provider work now would split it from its metadata.
-				s.setProfile(data)
-				return CaptureResult{}, fmt.Errorf("save profile: %w", err)
-			}
-			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", err), rollback())
+		// A save that committed without finishing is durable and completes
+		// on the next load: the provider work it describes is committed
+		// with it, never undone, and the incomplete save is reported as a
+		// warning once the capture is complete.
+		saveErr := s.saveProfile(data, profile.SaveOptions{CommitResourcesCapture: resourcesInstalled})
+		if saveErr != nil && !committedSave(saveErr) {
+			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", saveErr), rollback())
 		}
 		for _, transaction := range transactions {
 			if err := transaction.CommitCapture(); err != nil {
 				rollbackErr := rollback()
-				restoreErr := profile.Save(s.opts.ProfileDir, previous)
+				restoreErr := s.saveProfile(previous, profile.SaveOptions{})
+				if restoreErr == nil {
+					s.setProfile(previous)
+				}
 				return CaptureResult{}, errors.Join(fmt.Errorf("commit capture: %w", err), rollbackErr, restoreErr)
 			}
 		}
@@ -187,6 +192,9 @@ func (s *Session) captureMany(ctx context.Context, ids []string, approved *Captu
 		var finalizeErr error
 		for _, transaction := range transactions {
 			finalizeErr = errors.Join(finalizeErr, transaction.FinalizeCapture())
+		}
+		if saveErr != nil {
+			finalizeErr = errors.Join(fmt.Errorf("save profile: %w", saveErr), finalizeErr)
 		}
 		if finalizeErr != nil {
 			return result, PostCommitWarning{Err: finalizeErr}

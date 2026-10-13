@@ -105,10 +105,13 @@ func (s *Session) InspectConfig(ctx context.Context, logical string) (ConfigInsp
 // SetConfigPolicy changes one explicit Config discovery policy, saves it, and
 // reloads the session so subsequent scans always use the persisted state.
 func (s *Session) SetConfigPolicy(ctx context.Context, logical string, policy string) error {
-	defer s.beginMutation()()
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
 	w := s.workingProfile()
 	_ = ctx
-	var err error
 	switch policy {
 	case "include":
 		w.Config, _, err = configprovider.RemoveExclusion(w.Config, logical)
@@ -128,7 +131,7 @@ func (s *Session) SetConfigPolicy(ctx context.Context, logical string, policy st
 	if s.deps.Now != nil {
 		w.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 	}
-	if err := profile.Save(s.opts.ProfileDir, *w); err != nil {
+	if err := s.saveProfile(*w, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
 	return s.reloadLocked()
