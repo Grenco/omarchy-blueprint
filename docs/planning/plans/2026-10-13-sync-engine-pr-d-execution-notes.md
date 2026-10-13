@@ -93,3 +93,30 @@ execution notes/manual wording only, not the verified implementation.
 Latest origin/main was re-fetched and remained the exact starting SHA above.
 PR D is ready for independent code review with the explicit human/hosted gaps
 listed above. No merge, release, PR E or Auto Sync work was begun.
+
+## PR D review remediation — fresh Restore approval context
+
+Reviewed head: `ab5b4e100c41def4e85a5375136f72db1f07420e`.
+Remediation implementation: `09a14a700a9e5e939d3362591c115b490561017d`.
+
+Verified the P2: the temporary presenter lacked selected-machine identity and
+treated an unmeasured Force-vs-Safe difference as zero. The new regression first
+failed with “Profile defaults”, Safe/Additive and zero forced overrides while
+reviewing a real Config Force-only high-risk replacement (Safe produces no
+operation). After the fix, approval names the selected machine, respects explicit
+run settings or its saved machine defaults, and labels the Force override count
+“not assessed” in the wide/compact summary and confirmation. Actual operations
+and risk details remain fully presented. A real Session test covers named-machine
+saved Force/Exact defaults and proves no additional live observation.
+
+The presenter freezes descriptive machine/profile context; it does not replan,
+observe live state to compute presentation counts, or change execution authority.
+Normal Restore workspace measured override counts are unchanged. No Capture,
+Restore, Sync settlement, cursor, or Reconstruction Assurance logic changed.
+
+Verification on the remediation tree passed: full TUI tests, `go test ./...
+-count=1`, `go test -race ./... -count=1`, `go vet ./...`, `go build ./...`, all
+11 Sync/PTY acceptance tests (22.021s), and `git diff --check`.
+Hosted CI/AUR/RA had all passed on the previously reviewed head; the updated head
+requires fresh hosted checks. Phase 10 stays incomplete pending review/merge;
+no merge or Auto Sync work is authorized or undertaken.
