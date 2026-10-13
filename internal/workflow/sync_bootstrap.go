@@ -122,6 +122,9 @@ func (s *Session) InspectSyncBootstrap(ctx context.Context, opts SyncInspectOpti
 	if syncResourceInterpretationChanged(local.Profile, rv.Profile, r.machine.Name) {
 		return block("control-reinspection", "Resource interpretation differs; no convergence claim can use the current mapping")
 	}
+	if syncObservationScopeChanged(local.Profile, rv.Profile) {
+		return block("control-reinspection", "Observation scope differs; no convergence claim can use the current Config or resource link exclusions")
+	}
 	facts, err := r.observeSync(ctx, local.Profile, []profile.Data{rv.Profile, local.Profile})
 	if err != nil {
 		if ctx.Err() != nil {

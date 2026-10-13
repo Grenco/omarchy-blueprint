@@ -83,6 +83,9 @@ func syncBlockerText(bs []syncengine.Blocker) string {
 func formatSyncPlan(p syncengine.Plan) string {
 	var b strings.Builder
 	b.WriteString(syncHeader(p.Identity, p.Git))
+	if p.Control != nil {
+		fmt.Fprintf(&b, "\nControl plane\n  history=%s selected=%s (separate from runtime targets)\n", safeDisplay(string(p.Control.History)), safeDisplay(string(p.Control.SelectedSource)))
+	}
 	b.WriteString(syncBlockerText(p.Blockers))
 	items := append([]syncengine.Item(nil), p.Items...)
 	sort.Slice(items, func(i, j int) bool {

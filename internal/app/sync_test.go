@@ -1,10 +1,34 @@
 package app
 
 import (
+	"encoding/json"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"strings"
 	"testing"
 )
+
+func TestSyncHumanOutputShowsControlApartFromUnchangedTargets(t *testing.T) {
+	for _, tc := range []struct{ history, source string }{
+		{"unchanged", "remote"}, {"local", "local"}, {"remote", "remote"}, {"converged", "remote"}, {"conflict", "none"},
+	} {
+		t.Run(tc.history, func(t *testing.T) {
+			var plan syncengine.Plan
+			data := `{"control":{"history":"` + tc.history + `","selected_source":"` + tc.source + `","base":"` + strings.Repeat("a", 64) + `","local":"` + strings.Repeat("b", 64) + `","remote":"` + strings.Repeat("c", 64) + `"},"items":[{"key":{"category":"defaults","target":"browser"},"history":"unchanged"}]}`
+			if err := json.Unmarshal([]byte(data), &plan); err != nil {
+				t.Fatal(err)
+			}
+			got := formatSyncPlan(plan)
+			for _, want := range []string{"Control plane", "history=" + tc.history, "selected=" + tc.source, "Unchanged", "defaults:browser"} {
+				if !strings.Contains(got, want) {
+					t.Fatal("control change hidden by unchanged runtime", want, got)
+				}
+			}
+			if strings.Contains(got, strings.Repeat("a", 64)) {
+				t.Fatal("human output needlessly exposes full control fingerprints")
+			}
+		})
+	}
+}
 
 func TestSyncCLIReadOnlySurface(t *testing.T) {
 	_, deps := configSandbox(t)

@@ -137,12 +137,33 @@ type PlanRequest struct {
 	Targets  []TargetInput
 }
 
+type ControlSource string
+
+const (
+	ControlSourceNone   ControlSource = "none"
+	ControlSourceLocal  ControlSource = "local"
+	ControlSourceRemote ControlSource = "remote"
+)
+
+// ControlChange describes pinned control intent separately from machine
+// targets. Only canonical fingerprints escape; no policy values, paths or
+// other private interpretation inputs are included. Selection is descriptive,
+// not mutation authority. A conflict has no selected source.
+type ControlChange struct {
+	Base           string        `json:"base"`
+	Local          string        `json:"local"`
+	Remote         string        `json:"remote"`
+	History        HistoryClass  `json:"history"`
+	SelectedSource ControlSource `json:"selected_source"`
+}
+
 // Plan is a value-owned descriptive artifact. Reconcile copies its inputs; a
 // consumer must not mutate a shared Plan or treat it as Apply/Verify authority.
 type Plan struct {
-	Identity          Identity  `json:"identity"`
-	Git               GitState  `json:"git"`
-	Items             []Item    `json:"items"`
-	Blockers          []Blocker `json:"blockers,omitempty"`
-	BootstrapRequired bool      `json:"bootstrap_required"`
+	Identity          Identity       `json:"identity"`
+	Control           *ControlChange `json:"control,omitempty"`
+	Git               GitState       `json:"git"`
+	Items             []Item         `json:"items"`
+	Blockers          []Blocker      `json:"blockers,omitempty"`
+	BootstrapRequired bool           `json:"bootstrap_required"`
 }

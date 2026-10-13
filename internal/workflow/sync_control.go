@@ -8,6 +8,25 @@ import (
 	"sort"
 )
 
+// Config scope and resource-link exclusions influence what local-hint discovery
+// can see. A changed selected interpretation cannot be certified by that scan.
+// Policy-only changes do not affect acquisition of the frozen machine facts.
+func syncObservationScopeChanged(local, chosen profile.Data) bool {
+	sameSet := func(a, b []string) bool {
+		set := func(xs []string) map[string]bool {
+			out := map[string]bool{}
+			for _, x := range xs {
+				out[x] = true
+			}
+			return out
+		}
+		return reflect.DeepEqual(set(a), set(b))
+	}
+	return !sameSet(local.Config.Included, chosen.Config.Included) ||
+		!sameSet(local.Config.Excluded, chosen.Config.Excluded) ||
+		!sameSet(local.Resources.IgnoredLinks, chosen.Resources.IgnoredLinks)
+}
+
 // A read cycle is bound to the current machine selection. Do not certify a
 // different resource interpretation using observations of the old roots.
 func syncResourceInterpretationChanged(local, chosen profile.Data, selected string) bool {
@@ -85,15 +104,29 @@ func syncControl(data profile.Data, selected string) (SyncControlState, error) {
 }
 
 func chooseSyncControl(base, local, remote SyncControlState) (bool, bool) {
-	// Returns use-local, blocked. Whole-plane conservative conflict detection is
-	// intentional v1: independent two-sided policy edits still require review.
-	if local.Fingerprint == base.Fingerprint || local.Fingerprint == remote.Fingerprint {
-		return false, false
+	control := classifySyncControl(base, local, remote)
+	return control.SelectedSource == syncengine.ControlSourceLocal, control.History == syncengine.HistoryConflict
+}
+
+func classifySyncControl(base, local, remote SyncControlState) syncengine.ControlChange {
+	// Whole-plane conservative conflict detection is intentional v1:
+	// independent two-sided policy edits still require external review.
+	control := syncengine.ControlChange{Base: base.Fingerprint, Local: local.Fingerprint, Remote: remote.Fingerprint, SelectedSource: syncengine.ControlSourceRemote}
+	switch {
+	case local.Fingerprint == base.Fingerprint && remote.Fingerprint == base.Fingerprint:
+		control.History = syncengine.HistoryUnchanged
+	case local.Fingerprint == base.Fingerprint:
+		control.History = syncengine.HistoryRemote
+	case remote.Fingerprint == base.Fingerprint:
+		control.History = syncengine.HistoryLocal
+		control.SelectedSource = syncengine.ControlSourceLocal
+	case local.Fingerprint == remote.Fingerprint:
+		control.History = syncengine.HistoryConverged
+	default:
+		control.History = syncengine.HistoryConflict
+		control.SelectedSource = syncengine.ControlSourceNone
 	}
-	if remote.Fingerprint == base.Fingerprint {
-		return true, false
-	}
-	return false, true
+	return control
 }
 
 func overlaySyncControl(dst *profile.Data, src profile.Data) {

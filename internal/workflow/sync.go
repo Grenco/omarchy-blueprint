@@ -119,17 +119,21 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 		return block("semantic-identity", "Provider identity context could not be established from the shared observation")
 	}
 	b, l, remoteView := views[cursor.Revision], views[info.SHA], views[remote]
-	useLocalControl, conflict := chooseSyncControl(b.Control, l.Control, remoteView.Control)
+	control := classifySyncControl(b.Control, l.Control, remoteView.Control)
+	plan.Control = &control
+	if control.History == syncengine.HistoryConflict {
+		return block("control-conflict", "Two-sided control-plane disagreement requires explicit resolution outside target Sync")
+	}
 	chosen := remoteView
-	if useLocalControl {
+	if control.SelectedSource == syncengine.ControlSourceLocal {
 		chosen = l
 	}
 	plan.Identity.ControlFingerprint = chosen.Control.Fingerprint
-	if conflict {
-		plan.Blockers = append(plan.Blockers, syncengine.Blocker{Code: "control-conflict", Message: "Two-sided control-plane disagreement requires explicit resolution outside target Sync"})
-	}
 	if syncResourceInterpretationChanged(l.Profile, chosen.Profile, r.machine.Name) {
 		return block("control-reinspection", "Resource interpretation changed; inspect under the selected mapping before claiming target settlement")
+	}
+	if syncObservationScopeChanged(l.Profile, chosen.Profile) {
+		return block("control-reinspection", "Observation scope changed; reconcile Config include/exclude or resource link exclusions before claiming target settlement")
 	}
 	// Audit every divergent commit, including reverted non-managed changes.
 	if plan.Git.Diverged {
@@ -183,6 +187,7 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 		return plan, err
 	}
 	reconciled.Blockers = plan.Blockers
+	reconciled.Control = plan.Control
 	for _, item := range reconciled.Items {
 		reconciled.Blockers = append(reconciled.Blockers, syncDesiredSafetyBlockers(item, inspections[item.Key], live.DesiredInspections)...)
 	}
