@@ -1,7 +1,15 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/gittest"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 	"os"
@@ -9,6 +17,152 @@ import (
 	"strings"
 	"testing"
 )
+
+type syncFailureRunner struct {
+	gitMachineRunner
+	failAbort bool
+}
+
+func (r *syncFailureRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	if name == "git" {
+		for _, arg := range args {
+			if arg == "commit" || (r.failAbort && arg == "--abort") {
+				return "raw-secret-body", errors.New("https://user:credential@host.invalid/private /private/profile")
+			}
+		}
+	}
+	return r.gitMachineRunner.Run(ctx, name, args...)
+}
+
+func TestSyncApplyReportsOrdinaryVersusRepairRequiredExecutionFailure(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		for _, repair := range []bool{false, true} {
+			t.Run(fmt.Sprintf("json=%t/repair=%t", asJSON, repair), func(t *testing.T) {
+				root, deps := configSandbox(t)
+				deps.IsTTY = func() bool { return false }
+				runner := &syncFailureRunner{failAbort: repair}
+				runner.official = map[string]bool{"zoxide": true, "local": true}
+				runner.aur = map[string]bool{}
+				deps.Runner = runner
+				d, err := profile.Load(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				d.Manifest.Capture.Packages = true
+				d.Packages.Official = []string{"zoxide"}
+				d.Packages.Preinstalls.Managed = true
+				d.Packages.Preinstalls.Items = map[string]bool{"aether": false, "libreoffice-fresh": false}
+				d.Machines.Items = []profile.Machine{{Name: "desktop"}}
+				if err := profile.Save(root, d); err != nil {
+					t.Fatal(err)
+				}
+				gitRun(t, "-C", root, "init", "-b", "main")
+				gitRun(t, "-C", root, "config", "user.email", "test@example.invalid")
+				gitRun(t, "-C", root, "config", "user.name", "Blueprint Test")
+				gitRun(t, "-C", root, "add", ".")
+				gitRun(t, "-C", root, "commit", "-m", "baseline")
+				origin := filepath.Join(t.TempDir(), "origin.git")
+				gitRun(t, "init", "--bare", origin)
+				gittest.ConfigureRemote(t, origin)
+				gitRun(t, "-C", root, "remote", "add", "origin", origin)
+				gitRun(t, "-C", root, "push", "-u", "origin", "main")
+				service, err := profilegit.New(command.SystemRunner{}, root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				info, err := service.CurrentRevisionInfo(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				state, _ := deps.StateHome()
+				store := syncengine.CursorStore{StateHome: state, ProfileRoot: root}
+				cursor := syncengine.Cursor{Version: 1, Machine: "desktop", Revision: info.SHA, Branch: info.Branch, Upstream: info.Upstream, RemoteFingerprint: info.OriginFingerprint}
+				if err := store.Save(cursor); err != nil {
+					t.Fatal(err)
+				}
+				peer := filepath.Join(t.TempDir(), "peer")
+				gitRun(t, "clone", "-b", "main", origin, peer)
+				gitRun(t, "-C", peer, "config", "user.email", "test@example.invalid")
+				gitRun(t, "-C", peer, "config", "user.name", "Blueprint Test")
+				d.Packages.Official = append(d.Packages.Official, "remote")
+				if err := profile.Save(peer, d); err != nil {
+					t.Fatal(err)
+				}
+				gitRun(t, "-C", peer, "add", ".")
+				gitRun(t, "-C", peer, "commit", "-m", "remote")
+				gitRun(t, "-C", peer, "push")
+				d.Packages.Official = []string{"zoxide", "local"}
+				if err := profile.Save(root, d); err != nil {
+					t.Fatal(err)
+				}
+				gitRun(t, "-C", root, "add", ".")
+				gitRun(t, "-C", root, "commit", "-m", "local")
+				localSHA := strings.TrimSpace(gitRun(t, "-C", root, "rev-parse", "HEAD"))
+				gitRun(t, "-C", root, "fetch")
+				out, stderr := deps.Out.(*bytes.Buffer), deps.Err.(*bytes.Buffer)
+				out.Reset()
+				stderr.Reset()
+				args := []string{"--profile", root, "--machine", "desktop", "sync", "apply", "--no-fetch", "--yes"}
+				if asJSON {
+					args = append(args, "--json")
+				}
+				if code := Execute(context.Background(), args, deps); code != 1 {
+					t.Fatalf("failure exit=%d output=%s", code, out.String())
+				}
+				_, mergeErr := os.Stat(filepath.Join(root, ".git", "MERGE_HEAD"))
+				if repair && mergeErr != nil {
+					t.Fatal("fixture did not exercise failed Git rollback")
+				}
+				if !repair && (!os.IsNotExist(mergeErr) || strings.TrimSpace(gitRun(t, "-C", root, "rev-parse", "HEAD")) != localSHA || strings.TrimSpace(gitRun(t, "-C", root, "status", "--porcelain")) != "") {
+					t.Fatal("ordinary failure did not safely restore the repository")
+				}
+				wantCode, wantSeverity := "execution-stopped", "error"
+				if repair {
+					wantCode, wantSeverity = "repository-rollback-failed", "high"
+				}
+				if asJSON {
+					var envelope struct {
+						OK   bool `json:"ok"`
+						Data struct {
+							Execution workflow.SyncExecutionResult `json:"execution"`
+							Failure   struct {
+								Code, Severity, Guidance string
+								RepairRequired           bool `json:"repair_required"`
+							} `json:"failure"`
+						} `json:"data"`
+					}
+					if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+						t.Fatalf("invalid failure JSON: %v %s", err, out.String())
+					}
+					f := envelope.Data.Failure
+					if envelope.OK || envelope.Data.Execution.CursorAdvanced || f.Code != wantCode || f.Severity != wantSeverity || f.RepairRequired != repair {
+						t.Fatalf("failure classification lost: %s", out.String())
+					}
+					if repair && !strings.Contains(f.Guidance, "Do not retry Sync") {
+						t.Fatal("missing repair-before-retry guidance")
+					}
+				} else {
+					if !strings.Contains(out.String(), wantCode) {
+						t.Fatalf("failure classification lost: %s %s", out.String(), stderr.String())
+					}
+					if repair && (!strings.Contains(out.String(), "HIGH SEVERITY") || !strings.Contains(out.String(), "Manually repair") || !strings.Contains(stderr.String(), "Do not retry Sync")) {
+						t.Fatal("critical repair instructions suppressed")
+					}
+				}
+				output := out.String() + stderr.String()
+				for _, secret := range []string{"credential", "raw-secret-body", "/private/profile", root, origin} {
+					if strings.Contains(output, secret) {
+						t.Fatal("failure output exposed sensitive context")
+					}
+				}
+				after, ok, err := store.Load()
+				if err != nil || !ok || after != cursor {
+					t.Fatal("failed execution advanced cursor")
+				}
+			})
+		}
+	}
+}
 
 func TestSyncApplyHasExplicitOneShotFlagsAndNoPersistedResolution(t *testing.T) {
 	_, deps := configSandbox(t)

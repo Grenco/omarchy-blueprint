@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+var ErrScopedCaptureRepairRequired = errors.New("HIGH SEVERITY: scoped Capture recovery failed; repair profile before continuing")
+
 // A scoped Capture may call a provider whose artifacts are finalized inside
 // Capture itself. Keep a private complete managed-tree checkpoint in addition
 // to the existing provider transactions, until fingerprint rechecks and Save
@@ -43,11 +45,11 @@ func (s *Session) captureScopedWithCheckpoint(ctx context.Context, ids []string,
 		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		if err := restoreCaptureCheckpoint(recovery, backup.Root(), root); err != nil {
-			resultErr = errors.Join(resultErr, errors.New("HIGH SEVERITY: scoped Capture rollback failed; repair profile before continuing"))
+			resultErr = errors.Join(resultErr, ErrScopedCaptureRepairRequired)
 			return
 		}
 		if err := s.Reload(); err != nil {
-			resultErr = errors.Join(resultErr, errors.New("scoped Capture rollback profile reload failed"))
+			resultErr = errors.Join(resultErr, ErrScopedCaptureRepairRequired)
 		}
 	}()
 	return s.captureManyTargets(ctx, ids, approved, scope)

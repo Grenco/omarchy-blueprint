@@ -213,10 +213,7 @@ func syncApplyCommand(deps Dependencies, opt *options, bootstrap *workflow.SyncB
 		}
 		result, err := s.ExecuteSync(cmd.Context(), req)
 		if err != nil {
-			if emitErr := emit(deps.Out, opt.json, "sync apply", false, map[string]any{"execution": result}, "Sync stopped; inspect profile Git and Sync before retrying. Cursor not advanced.\n"); emitErr != nil {
-				return emitErr
-			}
-			return errors.New("Sync execution stopped; published history may remain, machine may be unsettled, cursor was not advanced")
+			return emitSyncExecutionFailure(deps, opt, result, err)
 		}
 		return emit(deps.Out, opt.json, "sync apply", true, map[string]any{"execution": result}, fmt.Sprintf("Sync settled through %s; cursor advanced.\n", syncShortSHA(result.FinalRevision)))
 	}

@@ -143,7 +143,7 @@ func (s Service) CommitSemanticMerge(ctx context.Context, req SemanticMergeReque
 		defer cancel()
 		head, err := s.ResolveCommit(recovery, "HEAD")
 		if err != nil || head != req.LocalSHA {
-			resultErr = errors.Join(resultErr, errors.New("reconciliation outcome uncertain; repair repository before continuing"))
+			resultErr = errors.Join(resultErr, ErrReconciliationOutcomeUncertain)
 			return
 		}
 		_, abortErr := s.revisionRun(recovery, "merge", "--abort")
@@ -151,7 +151,7 @@ func (s Service) CommitSemanticMerge(ctx context.Context, req SemanticMergeReque
 		index, indexErr := s.revisionRun(recovery, "write-tree")
 		status, statusErr := s.ReadOnlyStatus(recovery)
 		if abortErr != nil || copyErr != nil || indexErr != nil || statusErr != nil || index != beforeIndex || status.Head != req.LocalSHA || len(status.Changes) != 0 {
-			resultErr = errors.Join(resultErr, errors.New("HIGH SEVERITY: semantic merge rollback failed; repair repository before continuing"))
+			resultErr = errors.Join(resultErr, ErrReconciliationRollbackFailed)
 		}
 	}()
 	started = true
