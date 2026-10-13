@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/Grenco/omarchy-blueprint/internal/content"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -23,9 +24,38 @@ import (
 
 const maxAuthoredUnitBytes = 1 << 20
 
+// preparedCapture is a staged unit generation. It holds the Services
+// capture lock from staging until it is finalized or rolled back, so no
+// other Blueprint process can stage, swap or recover the same profile's
+// Services generation meanwhile.
 type preparedCapture struct {
 	stage, old string
 	committed  bool
+	lock       *os.File
+}
+
+func (c *preparedCapture) release() {
+	if c.lock != nil {
+		_ = syscall.Flock(int(c.lock.Fd()), syscall.LOCK_UN)
+		_ = c.lock.Close()
+		c.lock = nil
+	}
+}
+
+// lockServicesCapture takes the profile's Services capture lock, which a
+// capture holds from staging until it is finalized or rolled back. A
+// process holds it only while alive, so staging left behind while it is
+// free was abandoned.
+func lockServicesCapture(parent string) (*os.File, error) {
+	lock, err := os.OpenFile(filepath.Join(parent, ".capture.lock"), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("Services capture already in progress: %w", err)
+	}
+	return lock, nil
 }
 
 type capturedFile struct {
@@ -146,11 +176,11 @@ func (p *Provider) Capture(ctx context.Context, data *profile.Data, capCtx workf
 	if p.ProfileDir == "" {
 		return nil, nil, fmt.Errorf("profile directory is required to capture Services")
 	}
-	stage, err := p.stageServiceFiles(next, fresh)
+	prepared, err := p.stageServiceFiles(next, fresh)
 	if err != nil {
 		return nil, nil, err
 	}
-	owner.prepared = &preparedCapture{stage: stage}
+	owner.prepared = prepared
 	data.Services = next
 	data.Manifest.Capture.Services = true
 	return next, changes, nil
@@ -233,27 +263,37 @@ func (p *Provider) projectServiceUnit(candidate Candidate, old profile.ServiceUn
 	return unit, artifacts, nil
 }
 
-func (p *Provider) stageServiceFiles(next profile.Services, fresh map[string]capturedFile) (string, error) {
+func (p *Provider) stageServiceFiles(next profile.Services, fresh map[string]capturedFile) (*preparedCapture, error) {
 	if err := checkServiceDirs(p.ProfileDir); err != nil {
-		return "", err
+		return nil, err
 	}
 	parent := filepath.Join(p.ProfileDir, "services")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return "", err
+		return nil, err
 	}
-	if err := recoverServiceGeneration(parent); err != nil {
-		return "", fmt.Errorf("recover interrupted Services capture: %w", err)
-	}
-	stage, err := os.MkdirTemp(parent, ".capture-*")
+	lock, err := lockServicesCapture(parent)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	prepared := &preparedCapture{lock: lock}
 	keep := false
 	defer func() {
 		if !keep {
-			_ = os.RemoveAll(stage)
+			if prepared.stage != "" {
+				_ = os.RemoveAll(prepared.stage)
+			}
+			prepared.release()
 		}
 	}()
+	// Holding the lock, any staging or swap left behind was abandoned.
+	if err := recoverServiceGeneration(parent); err != nil {
+		return nil, fmt.Errorf("recover interrupted Services capture: %w", err)
+	}
+	stage, err := os.MkdirTemp(parent, ".capture-*")
+	if err != nil {
+		return nil, err
+	}
+	prepared.stage = stage
 	files := map[string]string{}
 	for _, unit := range next.Units {
 		if unit.Presence == profile.ServicePresent && unit.Definition != "" {
@@ -267,28 +307,28 @@ func (p *Provider) stageServiceFiles(next profile.Services, fresh map[string]cap
 	}
 	for rel, wantHash := range files {
 		if wantHash == "" {
-			return "", fmt.Errorf("service artifact %q has no captured content hash", rel)
+			return nil, fmt.Errorf("service artifact %q has no captured content hash", rel)
 		}
 		file, ok := fresh[rel]
 		if !ok {
 			file, err = readServiceFile(filepath.Join(parent, filepath.FromSlash(rel)))
 			if err != nil {
-				return "", fmt.Errorf("preserve service artifact %q: %w", rel, err)
+				return nil, fmt.Errorf("preserve service artifact %q: %w", rel, err)
 			}
 		}
 		if file.hash != wantHash {
-			return "", fmt.Errorf("service artifact %q changed since Capture", rel)
+			return nil, fmt.Errorf("service artifact %q changed since Capture", rel)
 		}
 		target := filepath.Join(stage, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return "", err
+			return nil, err
 		}
 		if err := os.WriteFile(target, file.data, 0o644); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 	keep = true
-	return stage, nil
+	return prepared, nil
 }
 
 func (p *Provider) CommitCapture() error {
@@ -333,6 +373,7 @@ func (p *Provider) FinalizeCapture() error {
 	}
 	prepared := p.prepared
 	p.prepared = nil
+	defer prepared.release()
 	return errors.Join(os.RemoveAll(prepared.stage), removeIfSet(prepared.old))
 }
 
@@ -349,6 +390,7 @@ func (p *Provider) RollbackCapture() error {
 	}
 	prepared := p.prepared
 	p.prepared = nil
+	defer prepared.release()
 	var err error
 	if prepared.committed {
 		destination := filepath.Join(p.ProfileDir, "services", "units")
@@ -462,7 +504,8 @@ func checkServiceDirs(profileDir string) error {
 // and then moves the new generation in: if it stopped between the two,
 // units/ is missing and the previous generation is restored; if it stopped
 // after, the previous generation is stale. Either way, leftover staging
-// is removed, so an interruption never blocks the next capture.
+// is removed, so an interruption never blocks the next capture. The caller
+// holds the Services capture lock, so no staging it removes is in use.
 func recoverServiceGeneration(parent string) error {
 	units, previous := filepath.Join(parent, "units"), filepath.Join(parent, ".units-previous")
 	if _, err := os.Lstat(previous); err == nil {

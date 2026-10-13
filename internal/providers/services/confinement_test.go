@@ -3,6 +3,7 @@ package services
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
@@ -70,4 +71,78 @@ func TestInterruptedServicesSwapRecovers(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(parent, "units", "a.service")); err != nil {
 		t.Fatal("the current units were lost")
 	}
+}
+
+// Two Blueprint processes on one profile (two independent providers): one
+// must never remove or swap the other's staged generation.
+func TestServicesCaptureIsSerialisedAcrossProviders(t *testing.T) {
+	profileDir := t.TempDir()
+	first, second := &Provider{ProfileDir: profileDir}, &Provider{ProfileDir: profileDir}
+	prepared, err := first.stageServiceFiles(profile.Services{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.prepared = prepared
+	if _, err := second.stageServiceFiles(profile.Services{}, nil); err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("a second capture staged during the first: %v", err)
+	}
+	if _, err := os.Stat(prepared.stage); err != nil {
+		t.Fatalf("the first capture's staging was removed: %v", err)
+	}
+	if err := first.CommitCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.stageServiceFiles(profile.Services{}, nil); err == nil {
+		t.Fatal("a second capture staged before the first was finalized")
+	}
+	if err := first.FinalizeCapture(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := second.stageServiceFiles(profile.Services{}, nil)
+	if err != nil {
+		t.Fatalf("capture stayed locked after the first finished: %v", err)
+	}
+	second.prepared = next
+	if err := second.RollbackCapture(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.stageServiceFiles(profile.Services{}, nil); err != nil {
+		t.Fatalf("a rollback left Services locked: %v", err)
+	}
+}
+
+// Staging left by a process that is gone (its lock released) is abandoned
+// and removed by the next capture.
+func TestAbandonedServicesStagingIsRemoved(t *testing.T) {
+	profileDir := t.TempDir()
+	abandoned := filepath.Join(profileDir, "services", ".capture-abandoned")
+	if err := os.MkdirAll(abandoned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &Provider{ProfileDir: profileDir}
+	prepared, err := p.stageServiceFiles(profile.Services{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.prepared = prepared
+	defer p.RollbackCapture()
+	if _, err := os.Lstat(abandoned); !os.IsNotExist(err) {
+		t.Fatal("abandoned staging was kept")
+	}
+}
+
+// A capture that fails while staging releases the lock.
+func TestFailedServicesStagingReleasesTheLock(t *testing.T) {
+	profileDir := t.TempDir()
+	p := &Provider{ProfileDir: profileDir}
+	bad := profile.Services{Units: []profile.ServiceUnit{{Name: "a.service", Presence: profile.ServicePresent, Definition: "units/a.service"}}}
+	if _, err := p.stageServiceFiles(bad, nil); err == nil {
+		t.Fatal("staging an artifact without a hash succeeded")
+	}
+	prepared, err := p.stageServiceFiles(profile.Services{}, nil)
+	if err != nil {
+		t.Fatalf("a failed staging left Services locked: %v", err)
+	}
+	p.prepared = prepared
+	_ = p.RollbackCapture()
 }
