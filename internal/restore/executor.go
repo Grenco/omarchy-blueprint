@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -495,14 +496,22 @@ func validateSymlinkParents(destination string) error {
 		return err
 	}
 	parent := root
+	shared := false // others can add entries to the last existing parent
 	for _, part := range strings.Split(relative, string(os.PathSeparator)) {
 		if part == "." || part == "" {
 			continue
 		}
+		previous := parent
 		parent = filepath.Join(parent, part)
 		info, err := os.Lstat(parent)
 		if os.IsNotExist(err) {
-			continue
+			// Restore creates the rest; nothing below a missing directory
+			// exists. Another user who can add entries to the last
+			// existing one could create this one first, as a symlink.
+			if shared {
+				return fmt.Errorf("file write destination parent %s is missing, and other users can create it in %s", parent, previous)
+			}
+			return nil
 		}
 		if err != nil {
 			return err
@@ -513,8 +522,120 @@ func validateSymlinkParents(destination string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("file write destination parent is not a directory: %s", parent)
 		}
+		if shared, err = trustedParent(parent, info, uint32(os.Geteuid())); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// trustedParent refuses a destination parent another user could change.
+// These checks are by path, so a parent swapped for a symlink between a
+// check and the write it guards would redirect that write (SEC-02). Only
+// someone who can rename entries in a parent can do that, so every parent
+// must be owned by this user or root and writable by no one else: not by
+// every user, and not through a group that has any other member. A
+// group-writable parent whose group holds only this user (a user private
+// group, as umask 002 setups use) or root is fine.
+//
+// A sticky directory, such as /tmp, is the exception: other users can add
+// entries to it but cannot rename or remove this user's, so it is accepted
+// and reported as shared. The caller then requires the next component to
+// exist already, since another user could create a missing one first.
+func trustedParent(path string, info os.FileInfo, uid uint32) (shared bool, err error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, nil
+	}
+	if stat.Uid != 0 && stat.Uid != uid {
+		return false, fmt.Errorf("file write destination parent is owned by another user: %s", path)
+	}
+	sticky := info.Mode()&os.ModeSticky != 0
+	if info.Mode().Perm()&0o002 != 0 {
+		if !sticky {
+			return false, fmt.Errorf("file write destination parent is writable by every user: %s", path)
+		}
+		return true, nil
+	}
+	if info.Mode().Perm()&0o020 != 0 {
+		if err := groupHasOnly(stat.Gid, uid); err != nil {
+			if !sticky {
+				return false, fmt.Errorf("file write destination parent is group-writable and %v: %s", err, path)
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// groupMembers lists every user in a group: its listed members and the
+// users whose primary group it is. Tests replace it.
+var groupMembers = systemGroupMembers
+
+// groupHasOnly returns nil if group gid holds no user but uid and root.
+func groupHasOnly(gid, uid uint32) error {
+	members, err := groupMembers(gid)
+	if err != nil {
+		return fmt.Errorf("its group's members cannot be confirmed (%v)", err)
+	}
+	for _, member := range members {
+		if member != uid && member != 0 {
+			return fmt.Errorf("its group %d has other members", gid)
+		}
+	}
+	return nil
+}
+
+// systemGroupMembers reads /etc/group and /etc/passwd. A group or member
+// they do not define (one served by a directory service, say) cannot be
+// confirmed, which refuses the directory rather than trusting it.
+func systemGroupMembers(gid uint32) ([]uint32, error) {
+	passwd, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return nil, err
+	}
+	groups, err := os.ReadFile("/etc/group")
+	if err != nil {
+		return nil, err
+	}
+	uids := map[string]uint32{}
+	var members []uint32
+	for _, line := range strings.Split(string(passwd), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 4 {
+			continue
+		}
+		uid, uidErr := strconv.ParseUint(fields[2], 10, 32)
+		primary, gidErr := strconv.ParseUint(fields[3], 10, 32)
+		if uidErr != nil || gidErr != nil {
+			continue
+		}
+		uids[fields[0]] = uint32(uid)
+		if uint32(primary) == gid {
+			members = append(members, uint32(uid))
+		}
+	}
+	for _, line := range strings.Split(string(groups), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 4 {
+			continue
+		}
+		if id, err := strconv.ParseUint(fields[2], 10, 32); err != nil || uint32(id) != gid {
+			continue
+		}
+		for _, name := range strings.Split(fields[3], ",") {
+			if name = strings.TrimSpace(name); name == "" {
+				continue
+			}
+			uid, ok := uids[name]
+			if !ok {
+				return nil, fmt.Errorf("group %d member %s is not a local user", gid, name)
+			}
+			members = append(members, uid)
+		}
+		return members, nil
+	}
+	return nil, fmt.Errorf("group %d is not a local group", gid)
 }
 
 func hashFileWriteSource(reader io.Reader) (string, error) {

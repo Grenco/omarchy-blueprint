@@ -26,7 +26,8 @@ type PolicyScope struct {
 // actually viewing.
 func (s *Session) EffectivePolicy(ctx context.Context, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error) {
 	_ = ctx
-	return effectivePolicy(s.profile, scope, category, target)
+	data, _ := s.view()
+	return effectivePolicy(data, scope, category, target)
 }
 
 func effectivePolicy(data profile.Data, scope PolicyScope, category string, target TargetInspection) (policy.Effective, error) {
@@ -121,7 +122,8 @@ func remapLegacyPreinstallPolicyRules(rules policy.Rules, category, target strin
 // returns the raw resolved policy.EffectiveSetting alongside the decision so
 // callers (InspectCapture) can show why, without a second resolution.
 func (s *Session) resolveCaptureTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, CaptureDecision, error) {
-	return resolveCaptureTarget(s.profile, s.machine.Name, category, target)
+	data, selection := s.view()
+	return resolveCaptureTarget(data, selection.Name, category, target)
 }
 func (s *ReadCycle) resolveCaptureTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, CaptureDecision, error) {
 	if e := s.check(ctx); e != nil {
@@ -152,7 +154,8 @@ func resolveCaptureTarget(data profile.Data, machine, category string, target Ta
 // Skip. It returns the raw resolved policy.EffectiveSetting alongside the
 // decision so callers can show why, without a second resolution.
 func (s *Session) resolveRestoreTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, RestoreDecision, error) {
-	return resolveRestoreTarget(s.profile, s.machine.Name, category, target)
+	data, selection := s.view()
+	return resolveRestoreTarget(data, selection.Name, category, target)
 }
 func (s *ReadCycle) resolveRestoreTarget(ctx context.Context, category string, target TargetInspection) (policy.EffectiveSetting, RestoreDecision, error) {
 	if e := s.check(ctx); e != nil {
@@ -278,16 +281,32 @@ func (s *Session) SetPolicy(scope PolicyScope, axis policy.Axis, category, targe
 		return err
 	}
 	rule := policy.Rule{Category: category, Target: target, Setting: setting}
-	if scope.Machine == "" {
-		s.profile.Policy = upsertPolicyRule(s.profile.Policy, axis, rule)
-		return s.saveMachines()
-	}
-	m, err := s.machineByName(scope.Machine)
+	return s.mutatePolicy(scope, func(rules policy.Rules) policy.Rules { return upsertPolicyRule(rules, axis, rule) })
+}
+
+// mutatePolicy changes the policy rules at scope in a private copy of the
+// profile, saves it, and only then makes it the Session's profile.
+func (s *Session) mutatePolicy(scope PolicyScope, change func(policy.Rules) policy.Rules) error {
+	end, err := s.beginMutation()
 	if err != nil {
 		return err
 	}
-	m.Policy = upsertPolicyRule(m.Policy, axis, rule)
-	return s.saveMachines()
+	defer end()
+	w := s.workingProfile()
+	if scope.Machine == "" {
+		w.Policy = change(w.Policy)
+	} else {
+		m, err := s.machineByName(w, scope.Machine)
+		if err != nil {
+			return err
+		}
+		m.Policy = change(m.Policy)
+	}
+	if err := s.saveMachines(w); err != nil {
+		return err
+	}
+	s.setProfile(*w)
+	return nil
 }
 
 // ClearPolicy removes an explicit override for one category or target at
@@ -306,16 +325,7 @@ func (s *Session) ClearPolicy(scope PolicyScope, axis policy.Axis, category, tar
 		}
 		target = canonical
 	}
-	if scope.Machine == "" {
-		s.profile.Policy = removePolicyRule(s.profile.Policy, axis, category, target)
-		return s.saveMachines()
-	}
-	m, err := s.machineByName(scope.Machine)
-	if err != nil {
-		return err
-	}
-	m.Policy = removePolicyRule(m.Policy, axis, category, target)
-	return s.saveMachines()
+	return s.mutatePolicy(scope, func(rules policy.Rules) policy.Rules { return removePolicyRule(rules, axis, category, target) })
 }
 
 // stopManagingActions is implemented by every provider's stateProvider,
@@ -354,7 +364,12 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 	if !ok {
 		return fmt.Errorf("%s does not support Stop Managing", category)
 	}
-	next, err := actions.StopManaging(ctx, s.profile, target)
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
+	next, err := actions.StopManaging(ctx, s.Profile(), target)
 	if err != nil {
 		return err
 	}
@@ -364,22 +379,28 @@ func (s *Session) StopManaging(ctx context.Context, category, target string) err
 		m.Policy = removePolicyRule(removePolicyRule(m.Policy, policy.AxisCapture, category, target), policy.AxisRestore, category, target)
 	}
 	transaction, hasTransaction := provider.(captureTransaction)
-	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
+	// A save that committed without finishing is durable: the staged
+	// removal goes ahead with it, and its error is returned afterwards.
+	saveErr := s.saveProfile(next, profile.SaveOptions{CommitResourcesCapture: hasTransaction && category == "resources"})
+	if saveErr != nil && !committedSave(saveErr) {
 		if hasTransaction {
 			_ = transaction.RollbackCapture()
 		}
-		return fmt.Errorf("save profile: %w", err)
+		return fmt.Errorf("save profile: %w", saveErr)
 	}
 	if hasTransaction {
 		if err := transaction.CommitCapture(); err != nil {
 			return fmt.Errorf("commit stop managing: %w", err)
 		}
 		if err := transaction.FinalizeCapture(); err != nil {
-			s.profile = next
-			return fmt.Errorf("finalize stop managing: %w", err)
+			s.setProfile(next)
+			return errors.Join(fmt.Errorf("finalize stop managing: %w", err), saveErr)
 		}
 	}
-	s.profile = next
+	s.setProfile(next)
+	if saveErr != nil {
+		return fmt.Errorf("save profile: %w", saveErr)
+	}
 	return nil
 }
 
@@ -391,20 +412,31 @@ func (s *Session) SetMachineRestoreDefaults(machineName string, options policy.R
 	if err := policy.ValidateRestoreOptions(options); err != nil {
 		return err
 	}
-	m, err := s.machineByName(machineName)
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
+	w := s.workingProfile()
+	m, err := s.machineByName(w, machineName)
 	if err != nil {
 		return err
 	}
 	m.RestoreConflicts = options.Conflicts
 	m.RestoreConvergence = options.Convergence
-	return s.saveMachines()
+	if err := s.saveMachines(w); err != nil {
+		return err
+	}
+	s.setProfile(*w)
+	return nil
 }
 
 // scopedMachineRules returns the machine rules Resolve should consult for
 // scope: none at profile-defaults scope (Resolve itself rejects a Machine
 // override supplied there), or the named machine's own policy.
 func (s *Session) scopedMachineRules(scope PolicyScope) (policy.Rules, error) {
-	return scopedMachineRules(s.profile, scope)
+	data, _ := s.view()
+	return scopedMachineRules(data, scope)
 }
 func scopedMachineRules(data profile.Data, scope PolicyScope) (policy.Rules, error) {
 	if scope.Machine == "" {
@@ -466,7 +498,8 @@ func axisRuleList(rules *policy.Rules, axis policy.Axis) *[]policy.Rule {
 // moment of exclusion. This is a read of the current policy-based state,
 // not the retired Packages.Excluded list.
 func (s *Session) packageExcluded(ref string) bool {
-	for _, rule := range s.profile.Policy.Capture {
+	data, _ := s.view()
+	for _, rule := range data.Policy.Capture {
 		if rule.Category == "packages" && rule.Target == ref && rule.Setting == policy.SettingDisabled {
 			return true
 		}
@@ -496,6 +529,16 @@ func (s *Session) packageExcluded(ref string) bool {
 // the save succeeds, so a caller never observes "desired state removed but
 // only one policy axis persisted."
 func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
+	return s.setPackageExcluded(ref, excluded)
+}
+
+// setPackageExcluded is SetPackageExcluded inside a mutation.
+func (s *Session) setPackageExcluded(ref string, excluded bool) error {
 	provider, ok := ProviderByID(s.providers, "packages")
 	if !ok {
 		return fmt.Errorf("workflow: packages provider is unavailable")
@@ -507,7 +550,7 @@ func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
 	if s.deps.Now == nil {
 		return errors.New("workflow clock is unavailable")
 	}
-	next := s.profile
+	next := s.Profile()
 	if excluded {
 		profile.RemoveDesiredPackageState(&next.Packages, canonical)
 		next.Policy = upsertPolicyRule(next.Policy, policy.AxisCapture, policy.Rule{Category: "packages", Target: canonical, Setting: policy.SettingDisabled})
@@ -517,9 +560,9 @@ func (s *Session) SetPackageExcluded(ref string, excluded bool) error {
 		next.Policy = removePolicyRule(next.Policy, policy.AxisRestore, "packages", canonical)
 	}
 	next.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
-	if err := profile.Save(s.opts.ProfileDir, next); err != nil {
+	if err := s.saveProfile(next, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
-	s.profile = next
+	s.setProfile(next)
 	return nil
 }

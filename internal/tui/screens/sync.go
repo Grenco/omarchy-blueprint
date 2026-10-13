@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"time"
 
@@ -63,11 +64,18 @@ func NewSync(session *workflow.Session) *Sync {
 func NewSyncContext(ctx context.Context, session *workflow.Session) *Sync {
 	return &Sync{ctx: ctx, session: session}
 }
-func (s *Sync) SetStyles(styles components.Styles) { s.styles = styles }
+
+// SetStyles applies the theme, including to a diff that is already open.
+func (s *Sync) SetStyles(styles components.Styles) {
+	s.styles = styles
+	if s.diff != nil {
+		s.diff.SetStyles(styles)
+	}
+}
 func (s *Sync) SetSize(width, height int) {
 	s.width, s.height = width, height
 	if s.diff != nil {
-		s.diff.SetSize(width, height)
+		s.diff.SetSize(width, s.diffHeight())
 	}
 }
 func (s *Sync) Init() tea.Cmd         { return s.refresh() }
@@ -120,7 +128,8 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		s.err = msg.err
 		if msg.err == nil && len(msg.diff.Files) > 0 {
 			viewer := components.NewDiffViewer(msg.diff.Files[0].Document)
-			viewer.SetSize(s.width, s.height)
+			viewer.SetSize(s.width, s.diffHeight())
+			viewer.SetStyles(s.styles)
 			s.diff = &viewer
 		}
 		return nil
@@ -234,6 +243,10 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// diffHeight is the diff viewer's share of the workspace: all of it but
+// the title line above it.
+func (s *Sync) diffHeight() int { return max(1, s.height-1) }
+
 func (s *Sync) View() string {
 	if s.diff != nil {
 		return "Profile Git diff\n" + s.diff.View()
@@ -245,18 +258,7 @@ func (s *Sync) View() string {
 			Guidance:    "Press i to initialize a repository if you want to use Sync.",
 		})
 	}
-	branch := s.status.Branch
-	if branch == "" {
-		branch = "detached HEAD"
-	}
-	fetched := "not fetched this session"
-	if !s.lastFetched.IsZero() {
-		fetched = s.lastFetched.Local().Format(time.Kitchen)
-	}
-	lines := []string{"Repository", fmt.Sprintf("  Branch    %s", components.DisplayText(branch)), fmt.Sprintf("  Origin    %s", components.DisplayText(valueOr(s.status.Origin, "not configured"))), fmt.Sprintf("  Upstream  %s", components.DisplayText(valueOr(s.status.Upstream, "not configured"))), fmt.Sprintf("  HEAD      %s", components.DisplayText(valueOr(s.status.Head, "unborn"))), "", "Remote (last fetched)", fmt.Sprintf("  Ahead     %d", s.status.Ahead), fmt.Sprintf("  Behind    %d", s.status.Behind), fmt.Sprintf("  Checked   %s", fetched), "", "Working tree"}
-	if s.err != nil {
-		lines = append(lines, s.styles.Warning("! Last refresh failed; showing last successful status."))
-	}
+	header, footer := s.syncChrome()
 	rows := []components.Row{}
 	for i, change := range s.status.Changes {
 		managed := "[unmanaged]"
@@ -272,18 +274,66 @@ func (s *Sync) View() string {
 	if len(rows) == 0 {
 		rows = append(rows, components.Row{Cells: []string{"[clean]", "", "No changes."}})
 	}
-	tableWidth := s.width
-	if tableWidth == 0 {
-		tableWidth = 80
+	s.table.Ensure(s.selected, len(s.status.Changes), s.tableHeight())
+	lines := append(header, s.table.Render([]components.Column{{Title: "STATE", Width: 6, MinWidth: 6}, {Title: "SCOPE", Width: 11, MinWidth: 9}, {Title: "PATH", MinWidth: 12}}, rows, s.widthOrDefault(), s.tableHeight()+1, s.styles))
+	return strings.Join(append(lines, footer...), "\n")
+}
+
+// syncMinTableRows is the smallest change list worth keeping: one row
+// under its column header.
+const syncMinTableRows = 1
+
+// syncChrome is the content around the change table. Above it is the
+// repository summary: the full Repository/Remote/Working tree block when it
+// fits, otherwise a three-line summary. Below it are the complex-state and
+// unmanaged-changes warnings, which are never dropped. Every line fits the
+// width, so the screen never relies on its panel to clip it.
+func (s *Sync) syncChrome() (header, footer []string) {
+	width := s.widthOrDefault()
+	fit := func(lines ...string) []string {
+		for i, line := range lines {
+			lines[i] = ansi.Truncate(line, width, "…")
+		}
+		return lines
 	}
-	lines = append(lines, s.table.Render([]components.Column{{Title: "STATE", Width: 6, MinWidth: 6}, {Title: "SCOPE", Width: 11, MinWidth: 9}, {Title: "PATH", MinWidth: 12}}, rows, tableWidth, s.tableHeight()+1, s.styles))
+	branch := valueOr(s.status.Branch, "detached HEAD")
+	fetched := "not fetched this session"
+	if !s.lastFetched.IsZero() {
+		fetched = s.lastFetched.Local().Format(time.Kitchen)
+	}
+	origin, upstream, head := valueOr(s.status.Origin, "not configured"), valueOr(s.status.Upstream, "not configured"), valueOr(s.status.Head, "unborn")
+	var warning []string
+	if s.err != nil {
+		warning = components.WrapText(s.styles.Warning("! Last refresh failed; showing last successful status."), width)
+	}
 	if s.complex() {
-		lines = append(lines, "Complex Git state. Use the available handoff actions.")
+		footer = append(footer, components.WrapText("Complex Git state. Use the available handoff actions.", width)...)
 	}
 	if s.hasUnmanagedChanges() {
-		lines = append(lines, "Warning: unmanaged working-tree changes will not be included in Blueprint commits.")
+		footer = append(footer, components.WrapText("Warning: unmanaged working-tree changes will not be included in Blueprint commits.", width)...)
 	}
-	return strings.Join(lines, "\n")
+	full := fit("Repository", "  Branch    "+components.DisplayText(branch), "  Origin    "+components.DisplayText(origin), "  Upstream  "+components.DisplayText(upstream), "  HEAD      "+components.DisplayText(head), "", "Remote (last fetched)", fmt.Sprintf("  Ahead     %d", s.status.Ahead), fmt.Sprintf("  Behind    %d", s.status.Behind), "  Checked   "+fetched, "", "Working tree")
+	full = append(full, warning...)
+	if s.height == 0 || len(full)+len(footer)+1+syncMinTableRows <= s.height {
+		return full, footer
+	}
+	compact := fit(
+		"Branch "+components.DisplayText(branch)+" · HEAD "+components.DisplayText(head),
+		"Origin "+components.DisplayText(origin)+" · upstream "+components.DisplayText(upstream),
+		fmt.Sprintf("Ahead %d · behind %d · checked %s", s.status.Ahead, s.status.Behind, fetched),
+	)
+	compact = append(warning, compact...)
+	// Give way from the bottom of the summary until the table fits; the
+	// refresh warning above it is the last to go.
+	room := max(0, s.height-len(footer)-1-syncMinTableRows)
+	return compact[:min(len(compact), room)], footer
+}
+
+func (s *Sync) widthOrDefault() int {
+	if s.width == 0 {
+		return 80
+	}
+	return s.width
 }
 
 func (s *Sync) Actions() []SyncAction {
@@ -501,11 +551,15 @@ func (s *Sync) nextRequestID() uint64 {
 	s.requestID++
 	return s.requestID
 }
+
+// tableHeight is the number of change rows visible, below the table's
+// column header: the workspace less the summary and warnings around it.
 func (s *Sync) tableHeight() int {
 	if s.height == 0 {
 		return max(1, len(s.status.Changes)+1)
 	}
-	return max(2, s.height-8)
+	header, footer := s.syncChrome()
+	return max(syncMinTableRows, s.height-len(header)-len(footer)-1)
 }
 func (s *Sync) confirmModal() tea.Cmd {
 	label := "Commit managed profile changes"

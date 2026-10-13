@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"reflect"
 	"sort"
 	"strings"
@@ -391,7 +392,7 @@ func (s *Restore) View() string {
 		return s.activationReviewView()
 	}
 	if s.err != nil {
-		return strings.Join(append(components.WrapText("Unable to prepare restore: "+components.DisplayText(s.err.Error()), s.widthOrDefault()), "", "Press r to plan again."), "\n")
+		return strings.Join(fitBlock(components.WrapText("Unable to prepare restore: "+components.DisplayText(s.err.Error()), s.widthOrDefault()), []string{"", "Press r to plan again."}, s.height, s.widthOrDefault()), "\n")
 	}
 	if s.busy {
 		return s.busyView()
@@ -1145,9 +1146,12 @@ func (s *Restore) busyView() string {
 	if s.run != nil {
 		run = s.run.snapshot()
 	}
-	lines := []string{s.styles.SubtleAccent(fmt.Sprintf("Applying restore · %d of %d steps done", run.done, run.total))}
+	// What must stay visible: progress, failures, skips, the running step
+	// and, once asked, the stop prompt. The hint gives way on a short
+	// workspace.
+	lines := []string{s.styles.SubtleAccent(ansi.Truncate(fmt.Sprintf("Applying restore · %d of %d steps done", run.done, run.total), width, "…"))}
 	if run.failed > 0 {
-		lines = append(lines, s.styles.Error(fmt.Sprintf("%d failed so far; Restore continues with independent steps", run.failed)))
+		lines = append(lines, s.styles.Error(ansi.Truncate(fmt.Sprintf("%d failed so far; Restore continues with independent steps", run.failed), width, "…")))
 	}
 	if run.skipped > 0 {
 		lines = append(lines, s.styles.Warning(fmt.Sprintf("%d skipped by you", run.skipped)))
@@ -1157,15 +1161,31 @@ func (s *Restore) busyView() string {
 		if run.elapsed > 0 {
 			now += " · " + run.elapsed.Round(time.Second).String()
 		}
-		lines = append(lines, components.WrapText(now, width)...)
+		lines = append(lines, ansi.Truncate(now, width, "…"))
 	}
-	lines = append(lines, "")
 	if s.stopRequested {
 		lines = append(lines, components.WrapText(s.styles.Warning("Press Ctrl+C again to stop the restore: the running step is asked to stop, and no further step starts."), width)...)
 	}
-	lines = append(lines, components.WrapText(s.styles.Muted("Steps that need you, such as a sudo password or a sign-in, borrow the terminal and Blueprint comes back afterwards. Other steps can't prompt: anything that would ask for a password stops with an error instead of waiting."), width)...)
+	hint := append([]string{""}, components.WrapText(s.styles.Muted("Steps that need you, such as a sudo password or a sign-in, borrow the terminal and Blueprint comes back afterwards. Other steps can't prompt: anything that would ask for a password stops with an error instead of waiting."), width)...)
+	if s.height <= 0 || len(lines)+len(hint) <= s.height {
+		lines = append(lines, hint...)
+	}
 	return strings.Join(lines, "\n")
 }
+
+// fitBlock returns body then tail within height lines. When the body is
+// too long it is cut and its last kept line ends with "…", so the tail
+// (usually what to do next) always stays visible.
+func fitBlock(body, tail []string, height, width int) []string {
+	if height <= 0 || len(body)+len(tail) <= height {
+		return append(body, tail...)
+	}
+	keep := max(1, height-len(tail))
+	body = body[:min(len(body), keep)]
+	body[len(body)-1] = ansi.Truncate(body[len(body)-1], max(1, width-1), "") + "…"
+	return append(body, tail...)
+}
+
 func (s *Restore) plan() model.RestorePlan { return s.current }
 
 // CurrentPlan exposes the shared domain plan used by preview and approval.

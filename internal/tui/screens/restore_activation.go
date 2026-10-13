@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -48,12 +49,17 @@ func (s *Restore) updateActivationReview(key string) tea.Cmd {
 }
 
 func (s *Restore) activationReviewView() string {
-	lines := []string{"Review activation", "Space: approve/unapprove this start · j/k: move · Enter: finish and replan · Esc: cancel", ""}
-	start := max(0, s.activationSelected-max(1, s.height-5)/2)
-	end := min(len(s.current.ActivationReview), start+max(1, s.height-5))
-	if s.height <= 0 {
-		start, end = 0, len(s.current.ActivationReview)
+	width := s.widthOrDefault()
+	lines := []string{"Review activation"}
+	lines = append(lines, components.WrapText("Space: approve/unapprove this start · j/k: move · Enter: finish and replan · Esc: cancel", width)...)
+	lines = append(lines, "")
+	// The candidate list gets the rest, with the selection kept in view.
+	height := len(s.current.ActivationReview)
+	if s.height > 0 {
+		height = max(1, s.height-len(lines))
 	}
+	start := max(0, min(s.activationSelected-height/2, len(s.current.ActivationReview)-height))
+	end := min(len(s.current.ActivationReview), start+height)
 	for i := start; i < end; i++ {
 		candidate := s.current.ActivationReview[i]
 		mark, cursor := "[ ]", "  "
@@ -65,7 +71,7 @@ func (s *Restore) activationReviewView() string {
 		if i == s.activationSelected {
 			cursor = "> "
 		}
-		lines = append(lines, cursor+mark+" "+components.DisplayText(candidate.Unit))
+		lines = append(lines, ansi.Truncate(cursor+mark+" "+components.DisplayText(candidate.Unit), width, "…"))
 	}
 	return strings.Join(lines, "\n")
 }

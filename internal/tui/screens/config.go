@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"path"
 	"sort"
 	"strings"
@@ -30,25 +31,28 @@ type Config struct {
 	terminalWidth           int
 	tab                     string
 	policySelected          int
-	policyExpanded          map[string]bool
-	candidates              []config.Candidate
-	targets                 []workflow.TargetInspection
-	effective               map[string]policy.Effective
-	policyScope             workflow.PolicyScope
-	inspection              workflow.ConfigInspection
-	diff                    *components.DiffViewer
-	confirm                 string
-	filter                  string
-	filtering               bool
-	collapsed               map[configDisplayGroup]bool
-	table                   components.Table
-	navigation              components.Selectable
-	styles                  components.Styles
-	focusPath               string
-	statusID, inspectionID  uint64
-	busy                    bool
-	notice                  string
-	err                     error
+	// policySelectedKey keeps the policy selection on the same target when
+	// a rescan, scope change or expand/collapse changes the rows.
+	policySelectedKey      string
+	policyExpanded         map[string]bool
+	candidates             []config.Candidate
+	targets                []workflow.TargetInspection
+	effective              map[string]policy.Effective
+	policyScope            workflow.PolicyScope
+	inspection             workflow.ConfigInspection
+	diff                   *components.DiffViewer
+	confirm                string
+	filter                 string
+	filtering              bool
+	collapsed              map[configDisplayGroup]bool
+	table                  components.Table
+	navigation             components.Selectable
+	styles                 components.Styles
+	focusPath              string
+	statusID, inspectionID uint64
+	busy                   bool
+	notice                 string
+	err                    error
 }
 
 type configStatusMsg struct {
@@ -90,13 +94,24 @@ func (s *Config) Focus(path string) tea.Cmd {
 func (s *Config) SetSize(width, height int) {
 	s.width, s.height, s.terminalWidth = width, height, width
 	if s.diff != nil {
-		s.diff.SetSize(width, height)
+		s.diff.SetSize(width, s.diffHeight())
 	}
 }
-func (s *Config) SetTerminalWidth(width int)         { s.terminalWidth = width }
-func (s *Config) SetStyles(styles components.Styles) { s.styles = styles }
+
+// diffHeight is the diff viewer's share of the workspace: all of it but the
+// title line above it.
+func (s *Config) diffHeight() int            { return max(1, s.height-1) }
+func (s *Config) SetTerminalWidth(width int) { s.terminalWidth = width }
+
+// SetStyles applies the theme, including to a diff that is already open.
+func (s *Config) SetStyles(styles components.Styles) {
+	s.styles = styles
+	if s.diff != nil {
+		s.diff.SetStyles(styles)
+	}
+}
 func (s *Config) ShowPolicy(machine string) {
-	s.policyScope, s.tab, s.policySelected = workflow.PolicyScope{Machine: machine}, "Capture", 0
+	s.policyScope, s.tab, s.policySelected, s.policySelectedKey = workflow.PolicyScope{Machine: machine}, "Capture", 0, ""
 }
 func (s *Config) Init() tea.Cmd         { return s.rescan() }
 func (s *Config) TransientActive() bool { return s.confirm != "" || s.diff != nil || s.filtering }
@@ -151,7 +166,7 @@ func (s *Config) Update(msg tea.Msg) tea.Cmd {
 				document = s.inspection.ProfileToLive
 			}
 			if document != nil {
-				s.diff = ptrDiff(*document, s.width, s.height)
+				s.diff = ptrDiff(*document, s.width, s.diffHeight(), s.styles)
 			}
 		}
 		return nil
@@ -325,7 +340,8 @@ func (s *Config) View() string {
 		if document == nil {
 			return "No diff available."
 		}
-		return "Config diff: " + components.DisplayText(document.OldLabel) + " <-> " + components.DisplayText(document.NewLabel) + "\n" + s.diff.View()
+		title := ansi.Truncate("Config diff: "+components.DisplayText(document.OldLabel)+" <-> "+components.DisplayText(document.NewLabel), s.widthOrDefault(), "…")
+		return title + "\n" + s.diff.View()
 	}
 	if s.tab == "" {
 		s.tab = "State"
@@ -333,16 +349,7 @@ func (s *Config) View() string {
 	if s.tab == "Capture" || s.tab == "Restore" {
 		return s.policyView()
 	}
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles), "Review  " + s.reviewCounts()}
-	if s.busy {
-		lines = append(lines, "Working...")
-	}
-	if s.err != nil {
-		lines = append(lines, "Last action failed: "+components.DisplayText(s.err.Error()))
-	}
-	if s.notice != "" {
-		lines = append(lines, s.styles.Success(s.notice))
-	}
+	lines, footer := s.stateChrome()
 	rows := s.rows()
 	if len(s.candidates) == 0 {
 		lines = append(lines, renderEmptyState(s.styles, s.widthOrDefault(), emptyStateCopy{
@@ -350,17 +357,11 @@ func (s *Config) View() string {
 			Explanation: "Config is for dotfiles and application/system configuration that differs meaningfully from Omarchy defaults.",
 			Guidance:    "If there is nothing suitable for Config to manage, there is nothing to do here.",
 		}))
-		if s.filtering || s.filter != "" {
-			lines = append(lines, "Filter: "+s.filter)
-		}
-		return strings.Join(lines, "\n")
+		return strings.Join(append(lines, footer...), "\n")
 	}
 	if len(rows) == 0 && s.filter != "" {
 		lines = append(lines, "No configuration matches this filter.")
-		if s.filtering || s.filter != "" {
-			lines = append(lines, "Filter: "+s.filter)
-		}
-		return strings.Join(lines, "\n")
+		return strings.Join(append(lines, footer...), "\n")
 	}
 	tableRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
@@ -400,19 +401,50 @@ func (s *Config) View() string {
 		}
 		tableRows = append(tableRows, components.Row{Cells: []string{"  " + components.DisplayText(row.candidate.Path), state, policy}, Selected: selected, Focused: true})
 	}
+	s.ensureSelection()
 	lines = append(lines, s.table.Render([]components.Column{{Title: "PATH", Width: 0, MinWidth: 12}, {Title: "STATE", Width: 32, MinWidth: 10}, {Title: "POLICY", Width: 12, MinWidth: 6}}, tableRows, s.widthOrDefault(), s.listHeight(), s.styles))
+	return strings.Join(append(lines, footer...), "\n")
+}
+
+// configMinTableHeight is the smallest table worth keeping: its column
+// header and one row. Optional status lines give way to it.
+const configMinTableHeight = 2
+
+// stateChrome is the State view's fixed content around the table: the tab
+// bar, then any error, the review counts, progress and notice (wrapped to
+// the width), and the filter line below. On a short workspace those
+// optional lines give way, least important first, so the table keeps its
+// header and the selected row.
+// The table is given only what remains (listHeight), so the screen never
+// relies on its panel to clip it.
+func (s *Config) stateChrome() (header, footer []string) {
+	width := s.widthOrDefault()
+	header = []string{components.TabBar([]string{"State", "Capture", "Restore"}, "State", s.styles)}
 	if s.filtering || s.filter != "" {
-		lines = append(lines, "Filter: "+s.filter)
+		footer = components.WrapText("Filter: "+components.DisplayText(s.filter), width)
 	}
-	return strings.Join(lines, "\n")
+	var optional []string
+	if s.err != nil {
+		optional = append(optional, components.WrapText("Last action failed: "+components.DisplayText(s.err.Error()), width)...)
+	}
+	optional = append(optional, components.WrapText("Review  "+s.reviewCounts(), width)...)
+	if s.busy {
+		optional = append(optional, "Working...")
+	}
+	if s.notice != "" {
+		optional = append(optional, components.WrapText(s.styles.Success(s.notice), width)...)
+	}
+	if s.height > 0 {
+		room := max(0, s.height-len(header)-len(footer)-configMinTableHeight)
+		optional = optional[:min(len(optional), room)]
+	}
+	return append(header, optional...), footer
 }
 
 func (s *Config) policyView() string {
-	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
-	if scope := s.policyScopeLabel(); scope != "" {
-		lines = append(lines, scope)
-	}
+	lines := s.policyHeader()
 	rows := s.configPolicyRows()
+	s.clampPolicySelection(rows)
 	columns := configPolicyColumns(s.tab, s.presentationWidth())
 	policyRows := make([]components.Row, 0, len(rows))
 	for i, row := range rows {
@@ -448,10 +480,7 @@ func (s *Config) policyView() string {
 		lines = append(lines, "No Config paths available for policy.")
 		return strings.Join(lines, "\n")
 	}
-	height := s.listHeight()
-	if s.height == 0 {
-		height = len(rows) + 1
-	}
+	height := s.policyListHeight()
 	s.table.Ensure(s.policySelected, len(rows), max(1, height-1))
 	lines = append(lines, s.table.Render(columns, policyRows, s.widthOrDefault(), height, s.styles))
 	return strings.Join(lines, "\n")
@@ -561,14 +590,18 @@ func compactStrings(values []string) []string {
 
 func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
 	rows := s.configPolicyRows()
+	s.clampPolicySelection(rows)
 	if len(rows) == 0 {
 		return nil
 	}
+	defer func() { s.clampPolicySelection(s.configPolicyRows()) }()
 	switch key.String() {
 	case "j", "down":
 		s.policySelected = min(len(rows)-1, s.policySelected+1)
+		s.policySelectedKey = rows[s.policySelected].target.Key
 	case "k", "up":
 		s.policySelected = max(0, s.policySelected-1)
+		s.policySelectedKey = rows[s.policySelected].target.Key
 	case "enter":
 		if row := rows[s.policySelected]; row.directory {
 			if s.policyExpanded == nil {
@@ -583,6 +616,28 @@ func (s *Config) updatePolicy(key tea.KeyPressMsg) tea.Cmd {
 	}
 	return nil
 }
+
+// clampPolicySelection keeps the policy selection valid for rows: on the
+// same target when it is still listed, otherwise at the nearest valid row.
+// Asynchronous rescans can shorten the list at any time, so every use of
+// the selection goes through here first.
+func (s *Config) clampPolicySelection(rows []configPolicyRow) {
+	if len(rows) == 0 {
+		s.policySelected, s.policySelectedKey = 0, ""
+		return
+	}
+	if s.policySelectedKey != "" {
+		for i, row := range rows {
+			if row.target.Key == s.policySelectedKey {
+				s.policySelected = i
+				return
+			}
+		}
+	}
+	s.policySelected = max(0, min(s.policySelected, len(rows)-1))
+	s.policySelectedKey = rows[s.policySelected].target.Key
+}
+
 func (s *Config) policyScopeLabel() string {
 	return policyScopeLabel(s.policyScope, s.selectedMachine(s.session).Name)
 }
@@ -595,9 +650,10 @@ func (s *Config) targetPolicy(path string) (workflow.TargetInspection, policy.Ef
 	return workflow.TargetInspection{Key: path, Label: path, CaptureEligible: true, RestoreEligible: true}, policy.Effective{Capture: policy.EffectiveSetting{Enabled: true}, Restore: policy.EffectiveSetting{Enabled: true}}
 }
 
-func ptrDiff(document inspection.DiffDocument, width, height int) *components.DiffViewer {
+func ptrDiff(document inspection.DiffDocument, width, height int, styles components.Styles) *components.DiffViewer {
 	viewer := components.NewDiffViewer(document)
 	viewer.SetSize(width, height)
+	viewer.SetStyles(styles)
 	return &viewer
 }
 func (s *Config) selectedCandidate() config.Candidate {
@@ -673,12 +729,33 @@ func (s *Config) reviewCounts() string {
 		configCount(counts[configNotManaged], "not managed", "not managed"),
 	}, " · ")
 }
+
+// listHeight is the State table's height, its column header included: the
+// workspace less the State view's own header and footer lines.
 func (s *Config) listHeight() int {
 	if s.height == 0 {
 		return max(1, len(s.rows())+1)
 	}
-	// The table's header is a rendered row too; retain one data row below it.
-	return max(2, s.height-1)
+	header, footer := s.stateChrome()
+	return max(1, s.height-len(header)-len(footer))
+}
+
+// policyHeader is the Capture/Restore policy view's fixed lines above its
+// table: the tab bar and the wrapped policy scope.
+func (s *Config) policyHeader() []string {
+	lines := []string{components.TabBar([]string{"State", "Capture", "Restore"}, s.tab, s.styles)}
+	if scope := s.policyScopeLabel(); scope != "" {
+		lines = append(lines, components.WrapText(scope, s.widthOrDefault())...)
+	}
+	return lines
+}
+
+// policyListHeight is the policy table's height, column header included.
+func (s *Config) policyListHeight() int {
+	if s.height == 0 {
+		return len(s.configPolicyRows()) + 1
+	}
+	return max(1, s.height-len(s.policyHeader()))
 }
 func (s *Config) ensureSelection() {
 	s.table.Ensure(s.selected, len(s.rows()), max(1, s.listHeight()-1))

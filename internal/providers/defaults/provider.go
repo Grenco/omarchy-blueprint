@@ -3,7 +3,6 @@ package defaults
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -114,14 +113,12 @@ func (p Provider) Capture(ctx context.Context, saved profile.Defaults, enabled f
 			setValue(&merged, kind, valueOf(saved, kind))
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(p.ProfileDir, "defaults"), 0o755); err != nil {
-		return profile.Defaults{}, err
-	}
 	b, err := tomlMarshal(merged)
 	if err != nil {
 		return profile.Defaults{}, err
 	}
-	return merged, atomicWrite(filepath.Join(p.ProfileDir, "defaults", "defaults.toml"), b)
+	// Confined to the profile: a symlinked defaults/ cannot redirect it.
+	return merged, profile.WriteManagedFile(p.ProfileDir, "defaults/defaults.toml", b)
 }
 
 // Diff compares saved desired defaults with the live machine state. A
@@ -266,29 +263,4 @@ func setValue(d *profile.Defaults, kind, value string) {
 
 func tomlMarshal(d profile.Defaults) ([]byte, error) {
 	return toml.Marshal(d)
-}
-
-func atomicWrite(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".omarchy-blueprint-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err := f.Chmod(0o644); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }

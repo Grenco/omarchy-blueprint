@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -31,8 +30,7 @@ var policyCategories = map[string]bool{
 
 // loadPolicy reads the portable policy overrides. A missing file means no
 // overrides and is valid.
-func loadPolicy(path string) (policy.Rules, error) {
-	b, err := os.ReadFile(path)
+func loadPolicy(b []byte, err error) (policy.Rules, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return policy.Rules{}, nil
 	}
@@ -257,21 +255,17 @@ func upsertRuleIfMissing(rules policy.Rules, axis policy.Axis, rule policy.Rule)
 	return rules
 }
 
-func savePolicyFile(dir string, rules policy.Rules) error {
-	path := filepath.Join(dir, "policy", "policy.toml")
+// addPolicyFile writes policy/policy.toml in t, or removes it when there
+// are no rules.
+func addPolicyFile(t *saveTransaction, rules policy.Rules) error {
 	if len(rules.Capture) == 0 && len(rules.Restore) == 0 {
-		err := os.Remove(path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+		t.remove("policy/policy.toml")
 		return nil
 	}
 	b, err := toml.Marshal(rules)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "policy"), 0o755); err != nil {
-		return err
-	}
-	return atomicWrite(path, b)
+	t.write("policy/policy.toml", b)
+	return nil
 }

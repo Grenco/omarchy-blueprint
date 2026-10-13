@@ -177,14 +177,7 @@ func (p resourcesStateProvider) TrackResource(ctx context.Context, d profile.Dat
 	d.Resources = prepared.State
 	d.Manifest.Capture.Resources = true
 	d.Manifest.Profile.UpdatedAt = p.deps.Now().UTC()
-	if err := profile.Save(p.opt.profileDir, d); err != nil {
-		_ = prepared.Rollback()
-		return d, profile.Resource{}, nil, fmt.Errorf("save profile: %w", err)
-	}
-	if err := prepared.Commit(); err != nil {
-		return d, profile.Resource{}, nil, err
-	}
-	if err := prepared.Finalize(); err != nil {
+	if err := saveResourcesGeneration(p.opt.profileDir, d, prepared); err != nil {
 		return d, profile.Resource{}, nil, err
 	}
 	resource := profile.Resource{}
@@ -216,14 +209,7 @@ func (p resourcesStateProvider) UntrackResource(_ context.Context, d profile.Dat
 	d.Resources = prepared.State
 	d.Manifest.Capture.Resources = true
 	d.Manifest.Profile.UpdatedAt = p.deps.Now().UTC()
-	if err := profile.Save(p.opt.profileDir, d); err != nil {
-		_ = prepared.Rollback()
-		return d, nil, fmt.Errorf("save profile: %w", err)
-	}
-	if err := prepared.Commit(); err != nil {
-		return d, nil, err
-	}
-	if err := prepared.Finalize(); err != nil {
+	if err := saveResourcesGeneration(p.opt.profileDir, d, prepared); err != nil {
 		return d, nil, err
 	}
 	return d, removed, nil
@@ -3373,4 +3359,30 @@ func (p *hooksStateProvider) RollbackCapture() error {
 	err := p.captureProvider.RollbackCapture()
 	p.captureProvider = nil
 	return err
+}
+
+// saveResourcesGeneration saves d, whose Resources generation prepared has
+// installed, committing the generation as part of the same profile save. A
+// save that committed but could not finish is durable and completes on the
+// next load, so the generation is committed with it, never rolled back:
+// undoing it would leave the committed metadata describing files that are
+// gone. That save's error is returned once the generation is committed.
+func saveResourcesGeneration(profileDir string, d profile.Data, prepared *resourcesprovider.PreparedCapture) error {
+	saveErr := profile.SaveWithOptions(profileDir, d, profile.SaveOptions{CommitResourcesCapture: true})
+	var committed *profile.CommittedSaveError
+	if saveErr != nil && !errors.As(saveErr, &committed) {
+		_ = prepared.Rollback()
+		return fmt.Errorf("save profile: %w", saveErr)
+	}
+	if err := prepared.Commit(); err != nil {
+		prepared.Release()
+		return errors.Join(err, saveErr)
+	}
+	if err := prepared.Finalize(); err != nil {
+		return errors.Join(err, saveErr)
+	}
+	if saveErr != nil {
+		return fmt.Errorf("save profile: %w", saveErr)
+	}
+	return nil
 }

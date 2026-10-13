@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
@@ -24,6 +23,11 @@ var captureComponents = []string{"resources.toml", "files", "git-state"}
 var renameCapturePath = os.Rename
 
 func prepareCapture(parent string, state profile.Resources, changes []model.Change) (*PreparedCapture, error) {
+	// The Resources directory is worked on by path, so it must be the
+	// profile's own directory: never a symlink committed into the profile.
+	if err := profile.CheckManagedDir(filepath.Dir(parent), filepath.Base(parent)); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return nil, err
 	}
@@ -141,6 +145,11 @@ func (c *PreparedCapture) Rollback() error {
 	return first
 }
 
+// Release ends this capture without touching the generation on disk, for
+// a profile save that committed it but could not finish: the next profile
+// load completes the save and resolves the generation with it.
+func (c *PreparedCapture) Release() { c.close() }
+
 func (c *PreparedCapture) Finalize() error {
 	var first error
 	for _, name := range captureComponents {
@@ -158,100 +167,10 @@ func (c *PreparedCapture) Finalize() error {
 	return first
 }
 
+// recover resolves a capture an earlier run left behind. The profile
+// package owns this logic so that loading a profile resolves it too.
 func (c *PreparedCapture) recover() error {
-	marker := filepath.Join(c.parent, ".capture-transaction")
-	b, err := os.ReadFile(marker)
-	if err == nil {
-		switch strings.TrimSpace(string(b)) {
-		case "rollback":
-			return c.rollbackStale()
-		case "committed":
-			return c.finalizeStale()
-		default:
-			return fmt.Errorf("invalid resources capture transaction marker")
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	for _, name := range captureComponents {
-		target, previous := filepath.Join(c.parent, name), filepath.Join(c.parent, "."+name+"-previous")
-		if _, err := os.Lstat(target); os.IsNotExist(err) {
-			if _, err := os.Lstat(previous); err == nil {
-				if err := renameCapturePath(previous, target); err != nil {
-					return err
-				}
-			}
-		} else if err == nil {
-			if err := os.RemoveAll(previous); err != nil {
-				return err
-			}
-		}
-	}
-	return c.removeStaleStages()
-}
-
-func (c *PreparedCapture) rollbackStale() error {
-	for _, name := range captureComponents {
-		target, previous := filepath.Join(c.parent, name), filepath.Join(c.parent, "."+name+"-previous")
-		if _, err := os.Lstat(previous); err == nil {
-			if err := os.RemoveAll(target); err != nil {
-				return err
-			}
-			if err := renameCapturePath(previous, target); err != nil {
-				return err
-			}
-		} else if os.IsNotExist(err) && !c.staleStageHas(name) {
-			if err := os.RemoveAll(target); err != nil {
-				return err
-			}
-		}
-	}
-	if err := os.Remove(filepath.Join(c.parent, ".capture-transaction")); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return c.removeStaleStages()
-}
-
-func (c *PreparedCapture) staleStageHas(name string) bool {
-	entries, err := os.ReadDir(c.parent)
-	if err != nil {
-		return true
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".capture-stage-") {
-			if _, err := os.Lstat(filepath.Join(c.parent, entry.Name(), name)); err == nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (c *PreparedCapture) finalizeStale() error {
-	for _, name := range captureComponents {
-		if err := os.RemoveAll(filepath.Join(c.parent, "."+name+"-previous")); err != nil {
-			return err
-		}
-	}
-	if err := os.Remove(filepath.Join(c.parent, ".capture-transaction")); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return c.removeStaleStages()
-}
-
-func (c *PreparedCapture) removeStaleStages() error {
-	entries, err := os.ReadDir(c.parent)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".capture-stage-") {
-			if err := os.RemoveAll(filepath.Join(c.parent, entry.Name())); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return profile.RecoverResourcesCapture(filepath.Dir(c.parent))
 }
 
 func (c *PreparedCapture) writeMarker(phase string) error {

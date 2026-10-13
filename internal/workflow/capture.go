@@ -71,9 +71,17 @@ func (s *Session) captureManyTargets(ctx context.Context, ids []string, approved
 	if err := ctx.Err(); err != nil {
 		return CaptureResult{}, err
 	}
-	if err := s.Reload(); err != nil {
+	// One mutation from reload to save: nothing else can change the profile
+	// underneath this capture, and reads continue meanwhile.
+	end, err := s.beginMutation()
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	defer end()
+	if err := s.reloadLocked(); err != nil {
 		return CaptureResult{}, fmt.Errorf("reload capture authority: %w", err)
 	}
+	previous, selection := s.view()
 	if err := ctx.Err(); err != nil {
 		return CaptureResult{}, err
 	}
@@ -107,19 +115,19 @@ func (s *Session) captureManyTargets(ctx context.Context, ids []string, approved
 		if changes := approved.ChangesFrom(fresh); len(changes) > 0 {
 			return CaptureResult{}, &CaptureReviewChangedError{Fresh: fresh, Changes: changes}
 		}
-		authority, contexts = fresh, fresh.captureContexts(s.machine.Name, ids)
+		authority, contexts = fresh, fresh.captureContexts(selection.Name, ids)
 	}
 	info, err := omarchy.Detect(ctx, s.deps.Runner)
 	if err != nil {
 		return CaptureResult{}, err
 	}
-	data := s.profile
-	if scope != nil {
-		data = profile.CloneData(data)
-	}
+	// Providers capture into a private copy; the Session changes only once
+	// it is saved.
+	data := profile.CloneData(previous)
 	beforeScope := profile.CloneData(data)
 	result := CaptureResult{Profile: data}
 	var transactions []captureTransaction
+	resourcesInstalled := false
 	rollback := func() error {
 		var rollbackErr error
 		for i := len(transactions) - 1; i >= 0; i-- {
@@ -141,6 +149,9 @@ func (s *Session) captureManyTargets(ctx context.Context, ids []string, approved
 		}
 		if transaction, ok := provider.(captureTransaction); ok {
 			transactions = append(transactions, transaction)
+			// A Resources capture installs its generation before this save;
+			// the save commits it together with the metadata.
+			resourcesInstalled = resourcesInstalled || provider.ID() == "resources"
 		}
 		if state == nil {
 			continue
@@ -180,27 +191,38 @@ func (s *Session) captureManyTargets(ctx context.Context, ids []string, approved
 		}
 		data.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 		data.Manifest.Omarchy.CapturedVersion, data.Manifest.Omarchy.Channel = info.Version, info.Channel
-		if err := profile.Save(s.opts.ProfileDir, data); err != nil {
-			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", err), rollback())
+		// A save that committed without finishing is durable and completes
+		// on the next load: the provider work it describes is committed
+		// with it, never undone, and the incomplete save is reported as a
+		// warning once the capture is complete.
+		saveErr := s.saveProfile(data, profile.SaveOptions{CommitResourcesCapture: resourcesInstalled})
+		if saveErr != nil && !committedSave(saveErr) {
+			return CaptureResult{}, errors.Join(fmt.Errorf("save profile: %w", saveErr), rollback())
 		}
 		for _, transaction := range transactions {
 			if err := transaction.CommitCapture(); err != nil {
 				rollbackErr := rollback()
-				restoreErr := profile.Save(s.opts.ProfileDir, s.profile)
+				restoreErr := s.saveProfile(previous, profile.SaveOptions{})
+				if restoreErr == nil {
+					s.setProfile(previous)
+				}
 				return CaptureResult{}, errors.Join(fmt.Errorf("commit capture: %w", err), rollbackErr, restoreErr)
 			}
 		}
-		s.profile = data
+		s.setProfile(data)
 		result.Profile = data
 		var finalizeErr error
 		for _, transaction := range transactions {
 			finalizeErr = errors.Join(finalizeErr, transaction.FinalizeCapture())
 		}
+		if saveErr != nil {
+			finalizeErr = errors.Join(fmt.Errorf("save profile: %w", saveErr), finalizeErr)
+		}
 		if finalizeErr != nil {
 			return result, PostCommitWarning{Err: finalizeErr}
 		}
 	}
-	s.profile = data
+	s.setProfile(data)
 	result.Profile = data
 	return result, nil
 }
@@ -223,5 +245,6 @@ func (s *Session) resolveCaptureContext(ctx context.Context, provider Provider, 
 		}
 		decisions[target.Key] = decision
 	}
-	return CaptureContext{Machine: s.machine.Name, Targets: decisions}, nil
+	_, selection := s.view()
+	return CaptureContext{Machine: selection.Name, Targets: decisions}, nil
 }

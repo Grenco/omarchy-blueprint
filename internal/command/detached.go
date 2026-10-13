@@ -1,7 +1,6 @@
 package command
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -53,8 +52,9 @@ func (SystemRunner) RunDetached(ctx context.Context, name string, args ...string
 	// Don't wait indefinitely for output pipes held open by a lingering
 	// group member once the command itself has exited.
 	cmd.WaitDelay = detachedGrace
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	// Only used to explain a failure: keep a bounded tail.
+	out := newTailBuffer(maxDiagnosticOutput)
+	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
 		return "", &RunError{Name: name, Args: args, ExitCode: -1, Err: err}
 	}

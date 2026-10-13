@@ -305,7 +305,20 @@ func New(name string, now time.Time) Data {
 
 func Load(dir string) (Data, error) {
 	var d Data
-	b, err := os.ReadFile(filepath.Join(dir, "profile.toml"))
+	store, err := openStore(dir)
+	if err != nil {
+		return d, err
+	}
+	defer store.Close()
+	// Finish or discard an interrupted save first, so a load never sees a
+	// mix of two saves; then resolve an abandoned Resources capture.
+	if err := store.recover(); err != nil {
+		return d, err
+	}
+	if err := store.recoverResourcesIfIdle(); err != nil {
+		return d, fmt.Errorf("recover interrupted resources capture: %w", err)
+	}
+	b, err := store.readFile("profile.toml")
 	if err != nil {
 		return d, err
 	}
@@ -324,24 +337,24 @@ func Load(dir string) (Data, error) {
 		}
 		d.Manifest.Schema = Schema
 	}
-	d.Packages.Official, err = readList(filepath.Join(dir, "packages", "official.txt"))
+	d.Packages.Official, err = store.readList("packages/official.txt")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
-	d.Packages.AUR, err = readList(filepath.Join(dir, "packages", "aur.txt"))
+	d.Packages.AUR, err = store.readList("packages/aur.txt")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
-	d.Packages.MachineSpecific, err = readList(filepath.Join(dir, "packages", "machine-specific.txt"))
+	d.Packages.MachineSpecific, err = store.readList("packages/machine-specific.txt")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
-	d.Packages.Excluded, err = readList(filepath.Join(dir, "packages", "excluded.txt"))
+	d.Packages.Excluded, err = store.readList("packages/excluded.txt")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
 	if loadedSchema >= misePackagesSchema {
-		mise, err := os.ReadFile(filepath.Join(dir, "packages", "mise.toml"))
+		mise, err := store.readFile("packages/mise.toml")
 		if err == nil {
 			var file misePackagesFile
 			if err := toml.Unmarshal(mise, &file); err != nil {
@@ -355,7 +368,7 @@ func Load(dir string) (Data, error) {
 	if d.Packages.Mise == nil {
 		d.Packages.Mise = MiseTools{}
 	}
-	absent, err := os.ReadFile(filepath.Join(dir, "packages", "absent.toml"))
+	absent, err := store.readFile("packages/absent.toml")
 	if err == nil {
 		var file packageAbsenceFile
 		if err := toml.Unmarshal(absent, &file); err != nil {
@@ -366,7 +379,7 @@ func Load(dir string) (Data, error) {
 		return d, err
 	}
 	if loadedSchema >= preinstallSchema {
-		preinstalls, err := os.ReadFile(filepath.Join(dir, "packages", "preinstalls.toml"))
+		preinstalls, err := store.readFile("packages/preinstalls.toml")
 		if err == nil {
 			if err := toml.Unmarshal(preinstalls, &d.Packages.Preinstalls); err != nil {
 				return d, fmt.Errorf("parse packages/preinstalls.toml: %w", err)
@@ -375,7 +388,7 @@ func Load(dir string) (Data, error) {
 			return d, err
 		}
 	}
-	themes, err := os.ReadFile(filepath.Join(dir, "themes", "themes.toml"))
+	themes, err := store.readFile("themes/themes.toml")
 	if err == nil {
 		if err := toml.Unmarshal(themes, &d.Themes); err != nil {
 			return d, fmt.Errorf("parse themes/themes.toml: %w", err)
@@ -383,7 +396,7 @@ func Load(dir string) (Data, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return d, err
 	}
-	plugins, err := os.ReadFile(filepath.Join(dir, "plugins", "plugins.toml"))
+	plugins, err := store.readFile("plugins/plugins.toml")
 	if err == nil {
 		if err := toml.Unmarshal(plugins, &d.Plugins); err != nil {
 			return d, fmt.Errorf("parse plugins/plugins.toml: %w", err)
@@ -392,7 +405,7 @@ func Load(dir string) (Data, error) {
 		return d, err
 	}
 	if loadedSchema >= configSchema {
-		configs, err := os.ReadFile(filepath.Join(dir, "config", "config.toml"))
+		configs, err := store.readFile("config/config.toml")
 		if err == nil {
 			if err := toml.Unmarshal(configs, &d.Config); err != nil {
 				return d, fmt.Errorf("parse config/config.toml: %w", err)
@@ -402,7 +415,7 @@ func Load(dir string) (Data, error) {
 		}
 	}
 	if loadedSchema >= defaultsSchema {
-		defaults, err := os.ReadFile(filepath.Join(dir, "defaults", "defaults.toml"))
+		defaults, err := store.readFile("defaults/defaults.toml")
 		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Defaults {
 			return d, errors.New("defaults state marked captured but defaults/defaults.toml is missing")
 		}
@@ -415,7 +428,7 @@ func Load(dir string) (Data, error) {
 		}
 	}
 	if loadedSchema >= shellSchema {
-		shellState, err := os.ReadFile(filepath.Join(dir, "shell", "shell.toml"))
+		shellState, err := store.readFile("shell/shell.toml")
 		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Shell {
 			return d, errors.New("shell state marked captured but shell/shell.toml is missing")
 		}
@@ -428,7 +441,7 @@ func Load(dir string) (Data, error) {
 		}
 	}
 	if loadedSchema >= hooksSchema {
-		hooks, err := os.ReadFile(filepath.Join(dir, "hooks", "hooks.toml"))
+		hooks, err := store.readFile("hooks/hooks.toml")
 		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Hooks {
 			return d, errors.New("hooks state marked captured but hooks/hooks.toml is missing")
 		}
@@ -441,7 +454,7 @@ func Load(dir string) (Data, error) {
 		}
 	}
 	if loadedSchema >= resourcesSchema {
-		resources, err := os.ReadFile(filepath.Join(dir, "resources", "resources.toml"))
+		resources, err := store.readFile("resources/resources.toml")
 		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Resources {
 			return d, errors.New("resources state marked captured but resources/resources.toml is missing")
 		}
@@ -457,7 +470,7 @@ func Load(dir string) (Data, error) {
 		}
 	}
 	if loadedSchema >= servicesSchema {
-		services, err := os.ReadFile(filepath.Join(dir, "services", "services.toml"))
+		services, err := store.readFile("services/services.toml")
 		if errors.Is(err, os.ErrNotExist) && d.Manifest.Capture.Services {
 			return d, errors.New("services state marked captured but services/services.toml is missing")
 		}
@@ -473,11 +486,11 @@ func Load(dir string) (Data, error) {
 		}
 	}
 	if loadedSchema >= machineOverlaySchema {
-		if err := loadMachines(filepath.Join(dir, "machines"), &d.Machines); err != nil {
+		if err := loadMachines(store, &d.Machines); err != nil {
 			return d, err
 		}
 	}
-	d.Policy, err = loadPolicy(filepath.Join(dir, "policy", "policy.toml"))
+	d.Policy, err = loadPolicy(store.readFile("policy/policy.toml"))
 	if err != nil {
 		return d, err
 	}
@@ -497,7 +510,20 @@ func Load(dir string) (Data, error) {
 	return d, nil
 }
 
-func Save(dir string, d Data) error {
+// SaveOptions adjusts a save.
+type SaveOptions struct {
+	// CommitResourcesCapture commits the Resources generation installed for
+	// this save (by the Resources capture transaction) at the same commit
+	// point as the metadata that describes it.
+	CommitResourcesCapture bool
+}
+
+// Save writes d to the profile at dir as one transaction: after an
+// interruption the profile is either as it was or entirely d, never a mix.
+func Save(dir string, d Data) error { return SaveWithOptions(dir, d, SaveOptions{}) }
+
+// SaveWithOptions is Save with options.
+func SaveWithOptions(dir string, d Data, options SaveOptions) error {
 	d.Manifest.Schema = Schema
 	d.Packages.Official = normalize(d.Packages.Official)
 	d.Packages.AUR = normalize(d.Packages.AUR)
@@ -517,36 +543,6 @@ func Save(dir string, d Data) error {
 	}
 	sortProviderDesiredState(&d)
 	if err := validateProviderDesiredState(d); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "packages"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "themes"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "plugins"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "defaults"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "shell"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "resources"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "services"), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "machines"), 0o755); err != nil {
 		return err
 	}
 	b, err := toml.Marshal(d.Manifest)
@@ -581,12 +577,6 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
-	if err := savePackageAbsenceFile(dir, d.Packages.Absent); err != nil {
-		return err
-	}
-	if err := savePreinstallFile(dir, d.Packages.Preinstalls); err != nil {
-		return err
-	}
 	resources, err := MarshalResources(d.Resources)
 	if err != nil {
 		return err
@@ -595,27 +585,37 @@ func Save(dir string, d Data) error {
 	if err != nil {
 		return err
 	}
-	writes := []struct {
-		path string
-		data []byte
-	}{
-		{filepath.Join(dir, "profile.toml"), b},
-		{filepath.Join(dir, "packages", "official.txt"), []byte(joinList(d.Packages.Official))},
-		{filepath.Join(dir, "packages", "aur.txt"), []byte(joinList(d.Packages.AUR))},
-		{filepath.Join(dir, "packages", "mise.toml"), mise},
-		{filepath.Join(dir, "themes", "themes.toml"), themes},
-		{filepath.Join(dir, "plugins", "plugins.toml"), plugins},
-		{filepath.Join(dir, "config", "config.toml"), configs},
-		{filepath.Join(dir, "defaults", "defaults.toml"), defaults},
-		{filepath.Join(dir, "shell", "shell.toml"), shellState},
-		{filepath.Join(dir, "hooks", "hooks.toml"), hooks},
-		{filepath.Join(dir, "resources", "resources.toml"), resources},
-		{filepath.Join(dir, "services", "services.toml"), services},
+	// The profile directory itself is the user's choice; everything inside
+	// it is confined to it.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
 	}
-	for _, w := range writes {
-		if err := atomicWrite(w.path, w.data); err != nil {
-			return err
-		}
+	store, err := openStore(dir)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.recover(); err != nil {
+		return err
+	}
+	t := newSaveTransaction()
+	t.write("profile.toml", b)
+	t.write("packages/official.txt", []byte(joinList(d.Packages.Official)))
+	t.write("packages/aur.txt", []byte(joinList(d.Packages.AUR)))
+	t.write("packages/mise.toml", mise)
+	t.write("themes/themes.toml", themes)
+	t.write("plugins/plugins.toml", plugins)
+	t.write("config/config.toml", configs)
+	t.write("defaults/defaults.toml", defaults)
+	t.write("shell/shell.toml", shellState)
+	t.write("hooks/hooks.toml", hooks)
+	t.write("resources/resources.toml", resources)
+	t.write("services/services.toml", services)
+	if err := addPackageAbsenceFile(t, d.Packages.Absent); err != nil {
+		return err
+	}
+	if err := addPreinstallFile(t, d.Packages.Preinstalls); err != nil {
+		return err
 	}
 	// machine-specific.txt and excluded.txt are obsolete: MachineSpecific is
 	// pure runtime inspection metadata now (never persisted), and an
@@ -624,59 +624,37 @@ func Save(dir string, d Data) error {
 	// Session.SetPackageExcluded). Every save prunes both files, whether
 	// they came from a legacy profile or a stray write from before this
 	// cutover.
-	for _, name := range []string{"machine-specific.txt", "excluded.txt"} {
-		if err := os.Remove(filepath.Join(dir, "packages", name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
+	t.remove("packages/machine-specific.txt")
+	t.remove("packages/excluded.txt")
+	desiredMachines := map[string]bool{}
 	for _, machine := range d.Machines.Items {
 		contents, err := toml.Marshal(machine)
 		if err != nil {
 			return err
 		}
-		if err := atomicWrite(filepath.Join(dir, "machines", machine.Name+".toml"), contents); err != nil {
-			return err
-		}
+		t.write("machines/"+machine.Name+".toml", contents)
+		desiredMachines[machine.Name+".toml"] = true
 	}
-	if err := savePolicyFile(dir, d.Policy); err != nil {
+	// Prune machine files for removed machines: only regular .toml files
+	// directly in the profile's own machines/ directory.
+	existing, err := store.regularFiles("machines", ".toml")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return pruneMachineFiles(filepath.Join(dir, "machines"), d.Machines.Items)
+	for _, name := range existing {
+		if !desiredMachines[name] {
+			t.remove("machines/" + name)
+		}
+	}
+	if err := addPolicyFile(t, d.Policy); err != nil {
+		return err
+	}
+	t.CommitResourcesCapture = options.CommitResourcesCapture
+	return store.commit(t)
 }
 
-func pruneMachineFiles(dir string, machines []Machine) error {
-	desired := make(map[string]bool, len(machines))
-	for _, item := range machines {
-		desired[item.Name+".toml"] = true
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) != ".toml" || desired[entry.Name()] {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode().IsRegular() {
-			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
-				return err
-			}
-		}
-	}
-	dirHandle, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer dirHandle.Close()
-	return dirHandle.Sync()
-}
-
-func loadMachines(dir string, machines *Machines) error {
-	entries, err := os.ReadDir(dir)
+func loadMachines(store *profileStore, machines *Machines) error {
+	names, err := store.regularFiles("machines", ".toml")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -684,28 +662,17 @@ func loadMachines(dir string, machines *Machines) error {
 		return err
 	}
 	seen := map[string]bool{}
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) != ".toml" {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		contents, err := os.ReadFile(path)
+	for _, name := range names {
+		contents, err := store.readFile("machines/" + name)
 		if err != nil {
 			return err
 		}
 		var machine Machine
 		if err := toml.Unmarshal(contents, &machine); err != nil {
-			return fmt.Errorf("parse machines/%s: %w", entry.Name(), err)
+			return fmt.Errorf("parse machines/%s: %w", name, err)
 		}
-		if strings.TrimSuffix(entry.Name(), ".toml") != machine.Name {
-			return fmt.Errorf("machine file name %q does not match name %q", entry.Name(), machine.Name)
+		if strings.TrimSuffix(name, ".toml") != machine.Name {
+			return fmt.Errorf("machine file name %q does not match name %q", name, machine.Name)
 		}
 		if seen[machine.Name] {
 			return fmt.Errorf("duplicate machine name %q", machine.Name)
@@ -820,40 +787,6 @@ func validateMachineMappingPath(path string) error {
 		return fmt.Errorf("mapping path must use ~/... or a non-root absolute path: %s", path)
 	}
 	return nil
-}
-
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".omarchy-blueprint-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err := f.Chmod(0o644); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func readList(path string) ([]string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return normalize(strings.Split(string(b), "\n")), nil
 }
 
 func normalize(in []string) []string {

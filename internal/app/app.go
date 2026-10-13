@@ -542,14 +542,7 @@ func trackCommand(deps Dependencies, opt *options) *cobra.Command {
 			d.Resources = prepared.State
 			d.Manifest.Capture.Resources = true
 			d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-			if err := profile.Save(opt.profileDir, d); err != nil {
-				_ = prepared.Rollback()
-				return fmt.Errorf("save profile: %w", err)
-			}
-			if err := prepared.Commit(); err != nil {
-				return err
-			}
-			if err := prepared.Finalize(); err != nil {
+			if err := saveResourcesGeneration(opt.profileDir, d, prepared); err != nil {
 				return err
 			}
 			return emit(deps.Out, opt.json, "track", true, map[string]any{"resources": d.Resources, "changes": changes}, renderTrackResult(d.Resources, changes))
@@ -636,19 +629,12 @@ func untrackCommand(deps Dependencies, opt *options) *cobra.Command {
 		}
 		d.Manifest.Capture.Resources = true
 		d.Manifest.Profile.UpdatedAt = deps.Now().UTC()
-		if err := profile.Save(opt.profileDir, d); err != nil {
-			if prepared != nil {
-				_ = prepared.Rollback()
-			}
-			return err
-		}
 		if prepared != nil {
-			if err := prepared.Commit(); err != nil {
+			if err := saveResourcesGeneration(opt.profileDir, d, prepared); err != nil {
 				return err
 			}
-			if err := prepared.Finalize(); err != nil {
-				return err
-			}
+		} else if err := profile.Save(opt.profileDir, d); err != nil {
+			return err
 		}
 		return emit(deps.Out, opt.json, "untrack", true, map[string]any{"resources": d.Resources, "removed": changed}, "Untracked "+strings.Join(changed, ", ")+"\n")
 	}}

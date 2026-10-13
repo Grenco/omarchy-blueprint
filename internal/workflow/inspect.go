@@ -17,7 +17,7 @@ func (s *Session) policyTargetsFresh(ctx context.Context, category string) ([]Ta
 	if !ok {
 		return nil, fmt.Errorf("workflow: unknown policy category %q", category)
 	}
-	return provider.InspectTargets(ctx, s.profile)
+	return provider.InspectTargets(ctx, s.Profile())
 }
 
 type GitInspection struct {
@@ -87,7 +87,7 @@ func (s *Session) InspectPath(ctx context.Context, path string) (PathInspection,
 	if !ok {
 		return PathInspection{}, fmt.Errorf("resources inspection is unavailable")
 	}
-	return inspector.InspectPath(ctx, s.profile, path)
+	return inspector.InspectPath(ctx, s.Profile(), path)
 }
 
 func (s *Session) InspectConfig(ctx context.Context, logical string) (ConfigInspection, error) {
@@ -99,24 +99,29 @@ func (s *Session) InspectConfig(ctx context.Context, logical string) (ConfigInsp
 	if !ok {
 		return ConfigInspection{}, fmt.Errorf("config inspection is unavailable")
 	}
-	return inspector.InspectConfig(ctx, s.profile, logical)
+	return inspector.InspectConfig(ctx, s.Profile(), logical)
 }
 
 // SetConfigPolicy changes one explicit Config discovery policy, saves it, and
 // reloads the session so subsequent scans always use the persisted state.
 func (s *Session) SetConfigPolicy(ctx context.Context, logical string, policy string) error {
+	end, err := s.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer end()
+	w := s.workingProfile()
 	_ = ctx
-	var err error
 	switch policy {
 	case "include":
-		s.profile.Config, _, err = configprovider.RemoveExclusion(s.profile.Config, logical)
+		w.Config, _, err = configprovider.RemoveExclusion(w.Config, logical)
 		if err == nil {
-			s.profile.Config, _, err = configprovider.AddInclusion(s.profile.Config, logical)
+			w.Config, _, err = configprovider.AddInclusion(w.Config, logical)
 		}
 	case "exclude":
-		s.profile.Config, _, err = configprovider.AddExclusion(s.profile.Config, logical)
+		w.Config, _, err = configprovider.AddExclusion(w.Config, logical)
 	case "auto":
-		s.profile.Config, _, err = configprovider.ClearPolicy(s.profile.Config, logical)
+		w.Config, _, err = configprovider.ClearPolicy(w.Config, logical)
 	default:
 		return fmt.Errorf("invalid config policy %q; want auto, include, or exclude", policy)
 	}
@@ -124,12 +129,12 @@ func (s *Session) SetConfigPolicy(ctx context.Context, logical string, policy st
 		return err
 	}
 	if s.deps.Now != nil {
-		s.profile.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
+		w.Manifest.Profile.UpdatedAt = s.deps.Now().UTC()
 	}
-	if err := profile.Save(s.opts.ProfileDir, s.profile); err != nil {
+	if err := s.saveProfile(*w, profile.SaveOptions{}); err != nil {
 		return fmt.Errorf("save profile: %w", err)
 	}
-	return s.Reload()
+	return s.reloadLocked()
 }
 
 func (s *Session) InspectResource(ctx context.Context, id string) (ResourceInspection, error) {
@@ -141,5 +146,5 @@ func (s *Session) InspectResource(ctx context.Context, id string) (ResourceInspe
 	if !ok {
 		return ResourceInspection{}, fmt.Errorf("resources inspection is unavailable")
 	}
-	return inspector.InspectResource(ctx, s.profile, id)
+	return inspector.InspectResource(ctx, s.Profile(), id)
 }

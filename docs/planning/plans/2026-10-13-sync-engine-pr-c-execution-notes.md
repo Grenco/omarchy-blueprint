@@ -247,3 +247,20 @@ Execution authority, rollback decisions, cursor settlement, observation-cycle
 ownership, SystemRunner and RA contracts are unchanged. No user profile/machine
 mutation, merge or PR D work. Push to existing PR #73 for independent re-review;
 hosted checks must run again on the updated head.
+
+## Integration with latest main
+
+Merged `main` at `da8f76f1e50eeed241d7fa7f844f58528831ee55` into the
+reviewed PR head `41072a8a7d335ee6708cf1d3ba0c7f9a0df1b5e9` without rewriting
+the reviewed commits. The only textual conflict was in
+`internal/workflow/capture.go`: preserve main's unconditional private copy of
+the freshly loaded profile and PR C's independent pre-Capture snapshot for
+target-boundary validation. Main's mutation serialization, durable-save handling
+and resource transaction changes remain intact; scoped approval and reinspection
+remain intact. This integration adds no new Sync feature or execution authority.
+
+Verification on the merged tree: full `go test ./... -count=1`, full
+`go test -race ./... -count=1`, `go vet ./...`, `go build ./...`, release
+helpers (66 tests), Reconstruction helpers (103 tests), and `git diff --check`
+all passed. No unresolved conflict markers remain. Hosted checks rerun after
+pushing; the PR remains open for review/merge by the human.
