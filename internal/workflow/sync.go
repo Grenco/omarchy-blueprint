@@ -7,7 +7,10 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 )
 
-type SyncInspectOptions struct{ Fetch bool }
+type SyncInspectOptions struct {
+	Fetch       bool
+	Resolutions []syncengine.TargetResolution
+}
 
 // InspectSync creates exactly one read lifecycle. All results are descriptive;
 // this path cannot acquire mutation authority or write the cursor/profile.
@@ -188,6 +191,12 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 	}
 	reconciled.Blockers = plan.Blockers
 	reconciled.Control = plan.Control
+	if len(opts.Resolutions) > 0 {
+		reconciled, err = ResolveSyncPlan(reconciled, opts.Resolutions)
+		if err != nil {
+			return plan, err
+		}
+	}
 	for _, item := range reconciled.Items {
 		reconciled.Blockers = append(reconciled.Blockers, syncDesiredSafetyBlockers(item, inspections[item.Key], live.DesiredInspections)...)
 	}

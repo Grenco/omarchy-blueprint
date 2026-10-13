@@ -14,8 +14,9 @@ import (
 // per-run narrowing (ADR 0023 §8): neither is persisted, and neither grants
 // authority to the categories that remain.
 type RestoreScope struct {
-	Only  string
-	Defer []string
+	Only    string
+	Defer   []string
+	Targets TargetSelection
 }
 
 // AllRestoreCategories is every captured category with nothing deferred.
@@ -26,6 +27,28 @@ func onlyRestoreScope(only string) RestoreScope { return RestoreScope{Only: only
 // selectRestoreScope returns the captured providers the scope selects and
 // the sorted, de-duplicated categories it defers.
 func selectRestoreScope[T ReadProvider](providers []T, data profile.Data, scope RestoreScope) ([]T, []string, error) {
+	if scope.Targets != nil {
+		ids, err := scope.Targets.categories()
+		if err != nil {
+			return nil, nil, err
+		}
+		if scope.Only != "" || len(scope.Defer) > 0 {
+			return nil, nil, fmt.Errorf("target selection cannot be combined with category scope")
+		}
+		for _, id := range ids {
+			p, ok := ProviderByID(providers, id)
+			if !ok || !p.Captured(profile.CloneData(data)) {
+				return nil, nil, fmt.Errorf("selected Restore category is unavailable")
+			}
+		}
+		selected := []T{}
+		for _, p := range providers {
+			if _, ok := scope.Targets[p.ID()]; ok {
+				selected = append(selected, p)
+			}
+		}
+		return selected, nil, nil
+	}
 	if scope.Only != "" {
 		if len(scope.Defer) > 0 {
 			return nil, nil, fmt.Errorf("deferring categories cannot be combined with restoring only %s", scope.Only)

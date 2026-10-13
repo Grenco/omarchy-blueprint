@@ -286,6 +286,12 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 		if err != nil {
 			return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, fmt.Errorf("inspect %s targets: %w", provider.ID(), err)
 		}
+		if scope.Targets != nil {
+			restoreCtx, err = narrowRestoreContext(restoreCtx, provider.ID(), scope.Targets)
+			if err != nil {
+				return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
+			}
+		}
 		selectedIDs = append(selectedIDs, provider.ID())
 		targets[provider.ID()] = make(map[string]struct{}, len(restoreCtx.Targets))
 		for key := range restoreCtx.Targets {
@@ -309,6 +315,27 @@ func (s *Session) restorePlan(ctx context.Context, scope RestoreScope, options *
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
 	plan.Operations = restore.AwaitingStepsLast(plan.Operations)
+	if scope.Targets != nil {
+		for _, op := range plan.Operations {
+			p, ok := ProviderByID(selected, op.Provider)
+			if !ok {
+				return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, errors.New("Restore operation expanded selected categories")
+			}
+			resolver, ok := any(p).(RestoreTargetResolver)
+			if !ok {
+				return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, errors.New("selected Restore operation has no semantic attribution")
+			}
+			keys, ok := resolver.RestoreOperationTargetKeys(op)
+			if !ok {
+				return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, errors.New("selected Restore operation lacks trustworthy target attribution")
+			}
+			for _, key := range keys {
+				if !scope.Targets.contains(op.Provider, key) {
+					return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, errors.New("Restore operation expanded selected targets")
+				}
+			}
+		}
+	}
 	if err := restore.ValidatePlan(plan); err != nil {
 		return model.RestorePlan{}, nil, nil, policy.RestoreOptions{}, err
 	}
