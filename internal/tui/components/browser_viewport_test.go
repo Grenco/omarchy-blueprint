@@ -43,7 +43,7 @@ func crowdedTree(t *testing.T) string {
 
 func TestBrowserPanesStayWithinTheWorkspaceWithHundredsOfEntries(t *testing.T) {
 	home := crowdedTree(t)
-	for _, size := range []struct{ width, height int }{{94, 31}, {120, 40}, {100, 12}, {58, 15}, {40, 12}} {
+	for _, size := range []struct{ width, height int }{{68, 9}, {78, 16}, {75, 22}, {64, 31}, {40, 12}, {100, 12}, {120, 40}} {
 		t.Run(fmt.Sprintf("%dx%d", size.width, size.height), func(t *testing.T) {
 			browser := NewBrowser(BrowseResource, BrowserConfig{Home: home})
 			browser.SetSize(size.width, size.height)

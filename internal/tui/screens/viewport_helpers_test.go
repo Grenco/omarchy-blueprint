@@ -7,12 +7,11 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// workspaceSizes are the Config/Sync/Restore workspace interiors the
-// application produces at 70×18, 80×24, 100×30 and 120×40 (sidebar,
-// details pane, borders and the screen description taken out), plus a
-// narrow and a tall case.
+// workspaceSizes are the screen workspaces the application produces at
+// 70×18, 80×24, 100×30 and 120×40 (the screens differ by a line, as their
+// descriptions wrap differently), plus a very narrow and a very wide case.
 var workspaceSizes = []struct{ width, height int }{
-	{68, 9}, {58, 15}, {76, 21}, {94, 31}, {40, 12}, {120, 40},
+	{68, 9}, {68, 10}, {78, 15}, {78, 16}, {75, 21}, {75, 22}, {64, 31}, {64, 32}, {40, 12}, {120, 40},
 }
 
 // assertFits fails when a screen's view is taller or wider than its
