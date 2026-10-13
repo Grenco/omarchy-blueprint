@@ -1,7 +1,6 @@
 package command
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -64,15 +63,22 @@ func (SystemRunner) Run(ctx context.Context, name string, args ...string) (strin
 		defer finish()
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.CombinedOutput()
+	// One buffer for both streams keeps them interleaved as CombinedOutput
+	// did, bounded so no command can grow memory without limit.
+	out := &boundedBuffer{limit: maxCommandOutput, stop: killOnLimit(cmd)}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	if out.stopped || errors.Is(err, errOutputLimit) {
+		return "", &RunError{Name: name, Args: args, Output: diagnosticPrefix(out.String()), ExitCode: -1, Err: fmt.Errorf("output exceeds %d bytes; stopped", maxCommandOutput)}
+	}
 	if err != nil {
 		exitCode := -1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		}
-		return string(out), &RunError{Name: name, Args: args, Output: string(out), ExitCode: exitCode, Err: err}
+		return out.String(), &RunError{Name: name, Args: args, Output: diagnosticPrefix(out.String()), ExitCode: exitCode, Err: err}
 	}
-	return string(out), nil
+	return out.String(), nil
 }
 
 func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
@@ -101,18 +107,6 @@ func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...str
 
 var errOutputLimit = errors.New("output limit exceeded")
 
-type boundedBuffer struct {
-	data  bytes.Buffer
-	limit int64
-}
-
-func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if int64(b.data.Len()+len(p)) > b.limit {
-		return 0, errOutputLimit
-	}
-	return b.data.Write(p)
-}
-
 func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, args ...string) ([]byte, error) {
 	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
 		defer finish()
@@ -121,11 +115,11 @@ func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, arg
 		return nil, fmt.Errorf("%s output exceeds %d bytes", name, limit)
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
-	stdout := &boundedBuffer{limit: limit}
-	var stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = stdout, &stderr
+	stdout := &boundedBuffer{limit: limit, stop: killOnLimit(cmd)}
+	stderr := newTailBuffer(maxDiagnosticOutput)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Run(); err != nil {
-		if errors.Is(err, errOutputLimit) {
+		if stdout.stopped || errors.Is(err, errOutputLimit) {
 			return nil, fmt.Errorf("%s output exceeds %d bytes", name, limit)
 		}
 		exitCode := -1
@@ -134,5 +128,5 @@ func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, arg
 		}
 		return nil, &RunError{Name: name, Args: args, Output: stderr.String(), ExitCode: exitCode, Err: err}
 	}
-	return stdout.data.Bytes(), nil
+	return stdout.Bytes(), nil
 }
