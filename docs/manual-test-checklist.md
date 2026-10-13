@@ -18,6 +18,39 @@ real-Omarchy acceptance.
 9. **Palette and help search:** Press `:` and type immediately to filter actions; confirm arrows navigate while literal `j` and `k` remain searchable. Press `?`, type to filter help actions, and confirm `Esc` closes both overlays.
 10. **Terminal-safe names:** Browse a disposable file whose name contains a newline or control byte and confirm it renders on one row without changing terminal state.
 
+## Semantic Sync (separate from Profile Git)
+
+Use disposable profiles/machine overlays and a private bare upstream, never a
+production profile. The automated CLI counterpart is `bash test/sync/run.sh`.
+This checklist does not claim these physical-terminal checks have been performed.
+
+- Confirm Workflow navigation is Overview → Capture → Restore → Sync; Profile
+  Git remains separate transport/history tooling. Opening unrelated workspaces,
+  startup and Capture refreshes must not fetch. Entering Sync or `r` explicitly
+  fetches and inspects; `Esc` cancels a slow fetch without executable stale data.
+- At 140/100/80 columns and a too-small window, review machine, branch/upstream,
+  pinned B/L/R, separate control-plane changes, blockers and grouped targets.
+  Details show B/L/R/M semantic values without raw private transport errors.
+- Exercise conflict `L` Keep Local, `a` Accept Remote, `d` Defer; independently
+  exercise `m` Keep Machine and `p` Keep Profile. Lowercase `l` opens Details.
+  Choices are inspection-only; restart/new inspection discards them. Defer
+  disables execution and preserves the cursor.
+- Missing cursor: explicitly review `u` Reconcile Upstream or `v` Adopt Machine;
+  cancel with `Esc`. Invalid cursor must not silently recreate a base.
+- Review the execution stages, cancel the first confirmation, then proceed in a
+  separate trial. The terminal handoff must independently display/approve fresh
+  selected Capture and actual fresh Restore operations, compatibility/risk and
+  Services activation where applicable. Decline each gate and verify no false
+  settlement. Observe Git authentication without exposing credentials.
+- Change state/upstream after review, hold the Sync lock, reject publication,
+  fail Restore and simulate cursor-write failure in disposable fixtures. A fresh
+  cached inspection follows every outcome; neither a successful push nor partial
+  Restore means synced. Critical transaction/recovery failures visibly require
+  manual repair before retrying (including narrow-window Details).
+- Complete bootstrap, publish/follow, disjoint reconciliation and a resolved
+  two-parent conflict on both machines; verify live state and exact cursors.
+  Confirm no timers/background fetch, persistent choices, or automatic Sync.
+
 ## Portable themes
 
 - Restore a missing clean Git theme and confirm the captured revision is checked out.

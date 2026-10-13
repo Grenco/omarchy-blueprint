@@ -16,8 +16,8 @@ One inspection owns one shared, short-lived observation cycle. Historical
 profiles are loaded in isolated temporary trees; inspection does not modify the
 active checkout, index, profile files, machine, or Sync cursor. Fetch may update
 Git objects and remote-tracking refs. Inspection remains read-only even though
-explicit CLI execution is available separately. There is no semantic Sync TUI
-or background automation in this slice.
+explicit CLI execution is available separately. The dedicated semantic Sync
+TUI uses the same planning/execution workflows; there is no background automation.
 
 Select a named machine. Missing or invalid cursor lineage requires explicit
 bootstrap review; inspection never guesses a baseline or writes a cursor.

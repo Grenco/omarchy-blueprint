@@ -69,10 +69,13 @@ Blueprint organizes what it remembers into a small set of categories:
 - **Hooks** — scripts Omarchy runs automatically at supported hook points.
 - **Resources** — files, folders, and Git projects you explicitly asked Blueprint to carry.
 
-Two more concepts sit alongside these categories rather than inside them:
+Three concepts sit alongside these categories rather than inside them:
 **Machines** control where a Resource is placed on a particular computer, and
-**Sync** manages the Git repository that holds your Blueprint profile. Neither
-one captures application state on its own.
+**Profile Git** manages the Git repository that holds your Blueprint profile.
+**Sync** reconciles semantic intent across pinned base/local/remote revisions
+and this machine, with a machine-local verified-settlement cursor. Inspection
+and choices are read-only; explicit execution independently reviews fresh
+Capture/Restore authority. Auto Sync remains a future capability.
 
 ## Portable and machine-specific state
 

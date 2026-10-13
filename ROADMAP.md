@@ -2676,14 +2676,16 @@ filesystem synchronization. Machine-specific policy stays meaningful, so a
 change published by one machine may apply, be preserved, or require review on
 another.
 
-Initial Sync Engine work is inspect, plan, and review oriented. No unattended
-mutation is required yet.
+Sync Engine v1 foundations, read-only CLI planning and explicit reviewed CLI
+execution are merged. PR D adds the semantic Sync TUI and isolated two-host
+acceptance harness; Phase 10 remains pending review/merge of that slice.
+Unattended mutation is out of scope.
 
 ---
 
 # 69. Phase 11 — Auto sync
 
-Build unattended behaviour only after the Sync Engine is trustworthy.
+Not started. Build unattended behaviour only after the Sync Engine is trustworthy.
 
 Automation permission is separate from Capture policy, Restore policy, and
 safety. `Restore Apply` must not automatically mean "safe to mutate
