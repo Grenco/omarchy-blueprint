@@ -57,10 +57,10 @@ func TestReconcileGroupsPresentationWithoutChangingAuthorityOrder(t *testing.T) 
 	}
 	s.SetSize(100, 30)
 	view := s.View()
-	if strings.Index(view, "defaults:c") > strings.Index(view, "defaults:b") || strings.Index(view, "defaults:b") > strings.Index(view, "defaults:a") {
+	if strings.Index(view, "defaults · c") > strings.Index(view, "defaults · b") || strings.Index(view, "defaults · b") > strings.Index(view, "defaults · a") {
 		t.Fatal("target groups are not contiguous in review priority order")
 	}
-	if s.current.Items[0].Key.Target != "a" || !strings.Contains(s.DetailView(), "defaults:c") {
+	if s.current.Items[0].Key.Target != "a" || !strings.Contains(s.DetailView(), "defaults · c") {
 		t.Fatal("presentation mutated canonical authority order or selected wrong target")
 	}
 }
@@ -70,7 +70,7 @@ func TestReconcileControlOnlyAndBlockedPlansRemainReviewable(t *testing.T) {
 	s.ready = true
 	s.current.Control = &syncengine.ControlChange{History: syncengine.HistoryRemote, SelectedSource: syncengine.ControlSourceRemote}
 	s.current.Blockers = []syncengine.Blocker{{Code: "control-reinspection", Message: "Observation scope changed; inspect selected control inputs again."}}
-	if detail := s.DetailView(); !strings.Contains(detail, "Control plane: remote") || !strings.Contains(detail, "Observation scope changed") {
+	if detail := s.DetailView(); !strings.Contains(detail, "Control settings: changed upstream · using remote") || !strings.Contains(detail, "Observation scope changed") {
 		t.Fatal("control-only plan lost its separate classification/blocker details")
 	}
 }
@@ -115,7 +115,7 @@ func TestReconcileBootstrapRequiresExplicitChoice(t *testing.T) {
 		t.Fatal("missing cursor implicitly authorized bootstrap")
 	}
 	s.Update(tea.KeyPressMsg{Code: 'u'})
-	if !s.CanExecute() || !strings.Contains(s.View(), "reconcile-upstream") {
+	if !s.CanExecute() || !strings.Contains(s.View(), "Start from upstream") {
 		t.Fatal("explicit reviewed bootstrap choice unavailable")
 	}
 	s.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -205,11 +205,11 @@ func TestReconcileInspectionIsLazyAndConflictChoicesAreReadOnly(t *testing.T) {
 		t.Fatal("construction observed or fetched")
 	}
 	cmd := s.Init()
-	if f.calls != 0 || cmd == nil || !strings.Contains(s.View(), "Checking") {
+	if f.calls != 0 || cmd == nil || !strings.Contains(s.View(), "inspecting") {
 		t.Fatal("initial frame blocked on observation")
 	}
 	s.Update(cmd())
-	if f.calls != 1 || !f.fetch || !strings.Contains(s.View(), "Conflicts") || !strings.Contains(s.DetailView(), "defaults:browser") {
+	if f.calls != 1 || !f.fetch || !strings.Contains(s.View(), "Needs decision") || !strings.Contains(s.DetailView(), "defaults · browser") {
 		t.Fatal("missing single inspection/conflict details")
 	}
 	s.Update(tea.KeyPressMsg{Code: 'd'})
@@ -220,7 +220,7 @@ func TestReconcileInspectionIsLazyAndConflictChoicesAreReadOnly(t *testing.T) {
 	if !s.CanExecute() || f.calls != 1 || f.executions != 0 {
 		t.Fatal("intent resolution reobserved or mutated")
 	}
-	if !strings.Contains(s.DetailView(), "History choice: keep-local") {
+	if !strings.Contains(s.DetailView(), "Decision: Keep local") {
 		t.Fatal("missing in-session choice")
 	}
 	fresh := NewReconcileContext(context.Background(), f)
@@ -248,7 +248,41 @@ func TestReconcileKeepLocalDoesNotBorrowPaneNavigationKey(t *testing.T) {
 	s := NewReconcileContext(context.Background(), f)
 	s.Update(s.Init()())
 	s.Update(tea.KeyPressMsg{Code: 'L'})
-	if !strings.Contains(s.DetailView(), "History choice: keep-local") {
+	if !strings.Contains(s.DetailView(), "Decision: Keep local") {
 		t.Fatal("uppercase L action did not resolve; lowercase l belongs to pane navigation")
+	}
+}
+
+// Details and the footer may only offer a choice that choose then accepts, and
+// a decided target keeps describing what changed alongside the decision.
+func TestReconcileOfferedChoicesAreExactlyAcceptedChoices(t *testing.T) {
+	keys := map[string]rune{"Keep local": 'L', "Accept remote": 'a', "Keep machine": 'm', "Keep profile": 'p', "Defer": 'd'}
+	f := &reconcileFixture{plan: conflictSyncPlan(t)}
+	s := NewReconcileContext(context.Background(), f)
+	s.Update(s.Init()())
+	offered := map[string]bool{}
+	for _, action := range s.Actions() {
+		if _, choice := keys[action.Label]; choice && action.Enabled {
+			offered[action.Label] = true
+		}
+	}
+	if len(offered) != 3 || !offered["Keep local"] || !offered["Accept remote"] || !offered["Defer"] {
+		t.Fatalf("history conflict offered %v", offered)
+	}
+	for label, key := range keys {
+		trial := NewReconcileContext(context.Background(), f)
+		trial.Update(trial.Init()())
+		before := trial.current.Items[0]
+		trial.Update(tea.KeyPressMsg{Code: key})
+		after := trial.current.Items[0]
+		changed := after.Resolution != before.Resolution || after.MachineResolution != before.MachineResolution
+		if changed != offered[label] || trial.message != "" && offered[label] {
+			t.Fatalf("%s offered=%t but accepted=%t", label, offered[label], changed)
+		}
+	}
+	s.Update(tea.KeyPressMsg{Code: 'L'})
+	view, detail := s.View(), s.DetailView()
+	if !strings.Contains(view, "Decided") || !strings.Contains(detail, "Status: • Changed on both sides") || !strings.Contains(detail, "Decision: Keep local") {
+		t.Fatalf("decided target lost its group or situation:\n%s\n%s", view, detail)
 	}
 }

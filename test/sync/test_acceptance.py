@@ -198,8 +198,8 @@ case "$3" in firefox|brave|chromium) printf '%s\\n' "$3" > "$HOME/default-$2";; 
         try:
             until(b"Overview")
             os.write(master, b":sync\r")
-            until(b"semantic reconciliation")
-            until(b"Upstream")
+            until(b"Reconcile shared profile intent")
+            until(b"Last sync")
             self.assertEqual(before, (self.head("A"), self.git("A", "status", "--porcelain=v1"), self.cursor("A")))
             os.write(master, b":quit\r")
             process.wait(timeout=5)

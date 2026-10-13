@@ -314,20 +314,29 @@ ordinary TUI startup and refreshes caused by other workspaces do not fetch.
 Inspection owns the existing shared observation cycle and does not mutate the
 checkout, index, profile, machine, or cursor.
 
+The workspace opens with a one-line verdict (blocked, decisions needed,
+deferred, or ready with its capture/publish/restore counts), then the machine,
+branch/upstream and the Last sync (B), Local (L) and Remote (R) revisions.
+Targets are grouped in review order: Needs decision, Deferred, Decided,
+Incoming, Outgoing, This machine, Same on both sides, and Unchanged. Each row
+shows what changed and what happens next.
+
 Use `j/k` to select a semantic target. Details show its B/L/R/M states and
 available decisions: `L` Keep Local, `a` Accept Remote, `d` Defer; `m` Keep
-Machine or `p` Keep Profile resolves a separate machine disagreement. Lowercase
+Machine or `p` Keep Profile resolves a separate machine disagreement. The
+footer offers only the decisions the selected target accepts. Lowercase
 `l` still moves to Details. Choices live only in this screen session, survive
 ordinary navigation, and are discarded on a new inspection or restart.
 Control-plane changes appear separately from runtime targets; conflicts block.
 `r` explicitly fetches and inspects again; `Esc` cancels pending inspection.
 
-Without a cursor, review baseless bootstrap and explicitly choose `u` Reconcile
-Upstream or `v` Adopt Machine; `Esc` discards that choice without writes.
+Without a cursor, review baseless bootstrap and explicitly choose `u` Start
+from upstream (CLI `reconcile-upstream`) or `v` Start from this machine (CLI
+`adopt-machine`); `Esc` discards that choice without writes.
 Neither invents a reconciliation baseline. Invalid lineage requires external
 repair/re-bootstrap through the CLI; inspection cannot overwrite a cursor.
 
-`Enter` displays the exact pinned revision/stage summary; another `Enter`
+`Enter` displays the exact pinned revisions and the run's numbered stages; another `Enter`
 explicitly lends the terminal for workflow execution. Fresh selected Capture
 and fresh Restore each require a separate native confirmation. Restore shows
 its actual operations, risk, compatibility and activation review; no Sync

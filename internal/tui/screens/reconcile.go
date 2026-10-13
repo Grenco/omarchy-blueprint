@@ -3,9 +3,7 @@ package screens
 import (
 	"context"
 	"fmt"
-	"github.com/charmbracelet/x/ansi"
 	"sort"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
@@ -29,6 +27,7 @@ type Reconcile struct {
 	styles                            components.Styles
 	base, current                     syncengine.Plan
 	choices                           map[syncengine.TargetKey]syncengine.TargetResolution
+	table                             components.Table
 	checking, ready, confirming, busy bool
 	requestID                         uint64
 	stop                              context.CancelFunc
@@ -254,42 +253,6 @@ func (s *Reconcile) CanExecute() bool {
 	return true
 }
 
-func (s *Reconcile) Actions() []SyncAction {
-	return []SyncAction{
-		{"reconcile.bootstrap-upstream", "Bootstrap: Reconcile Upstream", "u", "missing cursor and unblocked bootstrap required", s.ready && !s.busy && s.bootstrap != nil && len(s.base.Blockers) == 0},
-		{"reconcile.bootstrap-machine", "Bootstrap: Adopt Machine", "v", "missing cursor and unblocked bootstrap required", s.ready && !s.busy && s.bootstrap != nil && len(s.base.Blockers) == 0},
-		{"reconcile.refresh", "Fetch and inspect Sync", "r", "Sync is busy", !s.busy && !s.checking},
-		{"reconcile.keep-local", "Keep Local", "L", "select a history conflict", s.ready && !s.busy},
-		{"reconcile.accept-remote", "Accept Remote", "a", "select a history conflict", s.ready && !s.busy},
-		{"reconcile.defer", "Defer semantic intent", "d", "select a conflict", s.ready && !s.busy},
-		{"reconcile.keep-machine", "Keep Machine", "m", "select machine drift", s.ready && !s.busy},
-		{"reconcile.keep-profile", "Keep Profile", "p", "select machine drift", s.ready && !s.busy},
-		{"reconcile.execute", "Execute reconciliation", "enter", "reinspect and resolve blockers/deferred intent first", s.CanExecute()},
-	}
-}
-func reconcileGroup(item syncengine.Item) string {
-	if item.Deferred {
-		return "Deferred"
-	}
-	if item.Review != syncengine.ReviewNone {
-		return "Conflicts"
-	}
-	switch item.History {
-	case syncengine.HistoryLocal:
-		return "Local"
-	case syncengine.HistoryRemote:
-		return "Remote"
-	case syncengine.HistoryConverged:
-		return "Converged"
-	}
-	if len(item.Actions) > 0 {
-		return "Machine"
-	}
-	return "Unchanged"
-}
-
-var reconcileGroups = []string{"Conflicts", "Remote", "Local", "Machine", "Converged", "Deferred", "Unchanged"}
-
 // Group only presentation indices; the reviewed workflow plan retains its
 // canonical target/operation ordering and fingerprint.
 func (s *Reconcile) presentationOrder() []int {
@@ -306,107 +269,4 @@ func (s *Reconcile) presentationOrder() []int {
 
 func (s *Reconcile) selectedItem() syncengine.Item {
 	return s.current.Items[s.presentationOrder()[s.selected]]
-}
-func shortRevision(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	if sha == "" {
-		return "—"
-	}
-	return sha
-}
-func (s *Reconcile) View() string {
-	w := s.width
-	if w <= 0 {
-		w = 80
-	}
-	lines := []string{"Sync — semantic reconciliation"}
-	if s.message != "" {
-		lines = append(lines, s.message)
-	}
-	if s.confirming {
-		body := components.WrapText("Execute reconciliation?\n"+s.stageSummary()+"\nFresh Capture and Restore require separate approval.", w)
-		return strings.Join(fitBlock(body, []string{"Enter: proceed · Esc: cancel"}, s.height, w), "\n")
-	}
-	if s.busy {
-		return "Sync execution has the terminal. Waiting for it to finish…"
-	}
-	if s.checking {
-		lines = append(lines, "Checking machine and pinned profile revisions… (Esc cancels)")
-	} else if !s.ready {
-		lines = append(lines, "Reinspect before execution.")
-	} else {
-		id := s.current.Identity
-		lines = append(lines, fmt.Sprintf("Machine %s · B %s · L %s · R %s", components.DisplayText(id.Machine), shortRevision(id.Base), shortRevision(id.Local), shortRevision(id.Remote)), fmt.Sprintf("Branch %s · Upstream %s", components.DisplayText(id.Branch), components.DisplayText(id.Upstream)))
-		if s.current.Control != nil {
-			lines = append(lines, fmt.Sprintf("Control plane: %s · selected %s", s.current.Control.History, s.current.Control.SelectedSource))
-		}
-		if s.current.BootstrapRequired {
-			lines = append(lines, "First run: choose u Reconcile Upstream / v Adopt Machine.", "Esc cancels; bootstrap is baseless and freshly verified before cursor creation.")
-		}
-		if s.bootstrapChoice != nil {
-			lines = append(lines, "Bootstrap choice: "+string(*s.bootstrapChoice))
-		}
-		for _, b := range s.current.Blockers {
-			lines = append(lines, "Blocked: "+components.DisplayText(b.Code)+" — "+components.DisplayText(b.Message))
-		}
-		counts := map[string]int{}
-		for _, item := range s.current.Items {
-			counts[reconcileGroup(item)]++
-		}
-		var parts []string
-		for _, g := range reconcileGroups {
-			if counts[g] > 0 {
-				parts = append(parts, fmt.Sprintf("%s %d", g, counts[g]))
-			}
-		}
-		lines = append(lines, strings.Join(parts, " · "), "")
-		budget := max(1, s.height-len(lines)-2)
-		start := max(0, min(s.selected-budget/2, len(s.current.Items)-budget))
-		order := s.presentationOrder()
-		for i := start; i < min(len(s.current.Items), start+budget); i++ {
-			item := s.current.Items[order[i]]
-			mark := "  "
-			if i == s.selected {
-				mark = "› "
-			}
-			lines = append(lines, mark+reconcileGroup(item)+" · "+components.DisplayText(item.Key.Category+":"+item.Key.Target))
-		}
-	}
-	var bounded []string
-	for _, line := range lines {
-		bounded = append(bounded, ansi.Truncate(line, w, "…"))
-	}
-	if s.height > 0 && len(bounded) > s.height {
-		bounded = bounded[:s.height]
-	}
-	return strings.Join(bounded, "\n")
-}
-func (s *Reconcile) DetailView() string {
-	lines := []string{"Read-only inspection; choices do not mutate profile or machine."}
-	if s.message != "" {
-		lines = append(lines, s.message)
-	}
-	if s.ready {
-		if control := s.current.Control; control != nil {
-			lines = append(lines, fmt.Sprintf("Control plane: %s · selected %s", control.History, control.SelectedSource))
-		}
-		for _, blocker := range s.current.Blockers {
-			lines = append(lines, "Blocked: "+components.DisplayText(blocker.Code)+" — "+components.DisplayText(blocker.Message))
-		}
-	}
-	if !s.ready || len(s.current.Items) == 0 {
-		return strings.Join(lines, "\n")
-	}
-	item := s.selectedItem()
-	lines = append(lines, "", components.DisplayText(item.Key.Category+":"+item.Key.Target))
-	for _, v := range []struct {
-		name  string
-		state syncengine.State
-	}{{"B", item.Base}, {"L", item.Local}, {"R", item.Remote}, {"M", item.Machine}} {
-		lines = append(lines, fmt.Sprintf("%s: %s · %s", v.name, v.state.Kind, components.DisplayText(v.state.Summary)))
-	}
-	lines = append(lines, "History: "+string(item.History), "History choice: "+string(item.Resolution), "Machine choice: "+string(item.MachineResolution), "Available: "+strings.Join(item.Choices, ", "), "L Keep Local · a Accept Remote · d Defer", "m Keep Machine · p Keep Profile", "Enter: review execution · r: new inspection")
-	return strings.Join(lines, "\n")
 }

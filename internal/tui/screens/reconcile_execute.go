@@ -24,8 +24,10 @@ type SyncExecutionComplete struct {
 	Err    error
 }
 
+// stageSummary is printed to the lent terminal before fresh approvals.
 func (s *Reconcile) stageSummary() string {
-	return fmt.Sprintf("Pinned B %s · L %s · R %s\nRevalidate → reconcile pinned history as needed → selected Capture (fresh approval) → Publish if needed → selected Restore (fresh approval) → Verify → record cursor", shortRevision(s.current.Identity.Base), shortRevision(s.current.Identity.Local), shortRevision(s.current.Identity.Remote))
+	id := s.current.Identity
+	return fmt.Sprintf("Sync — pinned last sync %s · local %s · remote %s\nRevalidate → reconcile history if needed → Capture (fresh approval) → Publish if needed → Restore (fresh approval) → Verify → record last sync", shortRevision(id.Base), shortRevision(id.Local), shortRevision(id.Remote))
 }
 
 // Sync borrows the terminal for the explicit transaction, not for observation.
