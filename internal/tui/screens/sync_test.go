@@ -26,7 +26,7 @@ func TestSyncNonRepositoryExplainsOptionalProfileGit(t *testing.T) {
 	view := screen.View()
 	for _, want := range []string{
 		"Profile Git is not set up",
-		"Sync is optional.",
+		"Profile Git is optional.",
 		"version it and share it between machines",
 		"Press i to initialize a repository",
 	} {

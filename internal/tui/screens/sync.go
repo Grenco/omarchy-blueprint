@@ -93,7 +93,7 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		} else {
 			s.err = msg.err
 			return func() tea.Msg {
-				return Notice{Message: "Sync refresh failed; showing last successful status: " + msg.err.Error()}
+				return Notice{Message: "Profile Git refresh failed; showing last successful status: " + msg.err.Error()}
 			}
 		}
 		if s.selected >= len(s.status.Changes) {
@@ -114,7 +114,7 @@ func (s *Sync) Update(msg tea.Msg) tea.Cmd {
 		} else {
 			s.err = msg.err
 			return func() tea.Msg {
-				return Notice{Message: "Sync action failed; showing last successful status: " + msg.err.Error()}
+				return Notice{Message: "Profile Git action failed; showing last successful status: " + msg.err.Error()}
 			}
 		}
 		if msg.err == nil && msg.reloadSession {
@@ -254,8 +254,8 @@ func (s *Sync) View() string {
 	if !s.status.Repository {
 		return renderEmptyState(s.styles, s.width, emptyStateCopy{
 			Heading:     "Profile Git is not set up",
-			Explanation: "Sync is optional. It keeps the Blueprint profile itself in Git so you can version it and share it between machines.",
-			Guidance:    "Press i to initialize a repository if you want to use Sync.",
+			Explanation: "Profile Git is optional. It keeps the Blueprint profile itself in Git so you can version it and share it between machines.",
+			Guidance:    "Press i to initialize a repository if you want to use Profile Git.",
 		})
 	}
 	header, footer := s.syncChrome()

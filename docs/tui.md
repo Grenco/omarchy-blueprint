@@ -297,13 +297,49 @@ portable defaults active when no override is needed. Mutations apply only to
 the focused region, and `+ Add machine` at the bottom of the table creates a
 new overlay.
 
-### Sync
+### Profile Git
 
-Sync manages the Git repository containing your Blueprint profile; it does
+Profile Git manages the Git repository containing your Blueprint profile; it does
 not manage your application or Resource repositories. It handles the common
 safe workflow for committing, fetching, pulling, and pushing Blueprint-managed
 files, without fetching automatically at startup. Use Git or LazyGit for more
 advanced repository work.
+
+### Sync — semantic reconciliation
+
+Sync is a separate Workflow destination. It compares the machine-local settled
+cursor **B**, committed local profile **L**, pinned upstream **R**, and live
+machine **M**. Opening it performs an asynchronous, explicit fetch/inspection;
+ordinary TUI startup and refreshes caused by other workspaces do not fetch.
+Inspection owns the existing shared observation cycle and does not mutate the
+checkout, index, profile, machine, or cursor.
+
+Use `j/k` to select a semantic target. Details show its B/L/R/M states and
+available decisions: `L` Keep Local, `a` Accept Remote, `d` Defer; `m` Keep
+Machine or `p` Keep Profile resolves a separate machine disagreement. Lowercase
+`l` still moves to Details. Choices live only in this screen session, survive
+ordinary navigation, and are discarded on a new inspection or restart.
+Control-plane changes appear separately from runtime targets; conflicts block.
+`r` explicitly fetches and inspects again; `Esc` cancels pending inspection.
+
+Without a cursor, review baseless bootstrap and explicitly choose `u` Reconcile
+Upstream or `v` Adopt Machine; `Esc` discards that choice without writes.
+Neither invents a reconciliation baseline. Invalid lineage requires external
+repair/re-bootstrap through the CLI; inspection cannot overwrite a cursor.
+
+`Enter` displays the exact pinned revision/stage summary; another `Enter`
+explicitly lends the terminal for workflow execution. Fresh selected Capture
+and fresh Restore each require a separate native confirmation. Restore shows
+its actual operations, risk, compatibility and activation review; no Sync
+choice bypasses those checks. Machine Restore defaults apply. For one-run
+Force/Exact/activation overrides, use the existing explicit CLI flags.
+
+After every execution outcome, Sync inspects fresh cached evidence rather than
+painting the old plan as success. Publication without completed Restore/Verify
+does not advance the cursor. Repair-required failures remain visible while
+refreshing and in Details. Deferred semantic intent keeps the cursor behind;
+it is distinct from Restore's narrowed execution scope. There is no background
+scheduler, persisted observation cache, or Auto Sync in this tranche.
 
 ## Config states and policies
 

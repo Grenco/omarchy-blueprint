@@ -54,6 +54,31 @@ type restoreScreen struct{ *screens.Restore }
 
 type syncScreen struct{ *screens.Sync }
 
+type reconcileScreen struct{ *screens.Reconcile }
+
+func (s *reconcileScreen) ID() ScreenID { return ScreenReconcile }
+func (s *reconcileScreen) HandleKey(key tea.KeyPressMsg) KeyResult {
+	if !s.TransientActive() && !screenKey(key.String()) {
+		return KeyResult{}
+	}
+	return KeyResult{Consumed: true, Cmd: s.Update(key)}
+}
+func (s *reconcileScreen) Actions() []Action {
+	var actions []Action
+	for _, state := range s.Reconcile.Actions() {
+		state := state
+		actions = append(actions, Action{ID: state.ID, Label: state.Label, Group: "Sync", Enabled: state.Enabled, Visible: true, DisabledReason: state.DisabledReason, Run: func() tea.Cmd {
+			code := rune(state.Shortcut[0])
+			if state.Shortcut == "enter" {
+				code = tea.KeyEnter
+			}
+			return s.Update(tea.KeyPressMsg{Code: code})
+		}})
+	}
+	return actions
+}
+func (s *reconcileScreen) Bindings() []Binding { return bindingsFromSyncActions(s.Reconcile.Actions()) }
+
 type providerScreen struct {
 	*screens.Provider
 	id ScreenID

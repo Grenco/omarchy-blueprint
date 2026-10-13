@@ -9,7 +9,7 @@ import (
 func TestScreenCatalog(t *testing.T) {
 	want := []ScreenID{
 		ScreenOverview,
-		ScreenCapture, ScreenRestore,
+		ScreenCapture, ScreenRestore, ScreenReconcile,
 		ScreenPackages, ScreenThemes, ScreenPlugins, ScreenDefaults,
 		ScreenConfig, ScreenShell, ScreenHooks, ScreenServices, ScreenResources,
 		ScreenMachines, ScreenSync,

@@ -1106,7 +1106,7 @@ func TestCommandPalette(t *testing.T) {
 		m = updateModel(t, m, textKey(key))
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.screenID() != ScreenSync || m.paletteOpen {
+	if m.screenID() != ScreenReconcile || m.paletteOpen {
 		t.Fatalf("screen=%s palette=%t", m.screenID(), m.paletteOpen)
 	}
 }
