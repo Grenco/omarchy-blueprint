@@ -8,7 +8,7 @@ Scope: approved implementation plan tasks 5–9, read-only Sync planning.
 - Runtime used for local verification: Go 1.27.1, linux/amd64.
 - Original implementation SHA: `b8b982fad4ff6f6b77f0829fc01a6edd6a059fcc`.
 - Final implementation SHA after external review fixes:
-  `5fd7bb29e3c939d103befb0379c4029a33c4b6c7`.
+  `2eea725baf0efb0c8908c69689463318da5bead4`.
 - Fresh-context review: five Important findings, all addressed in one TDD fix
   pass; no Critical findings or deferred Minor findings.
 
@@ -68,6 +68,64 @@ release/helper tests passed (Go 1.27.1 linux/amd64). No additional review agent
 was launched; external review remains the human's workflow. Hosted checks must
 rerun on the new publication head. Reconstruction Assurance is unchanged.
 No real user profile or machine state was inspected or mutated. PR C has not begun.
+
+## Control-plane review remediation (2026-10-13)
+
+Starting reviewed head: `dfffd0caf7102415fe078921d8c67dbc9e2a2684`.
+Original main/base remains `4fb4e55438f0e38455c90d7a36fa5a8af983c183`.
+Implementation SHA: `2eea725baf0efb0c8908c69689463318da5bead4`.
+
+P2-1: A selected control plane with different Config Include/Exclude scope now
+returns `control-reinspection`, without target settlement claims or another
+ReadCycle. The same guard applies to baseless bootstrap inspection. Resource
+IgnoredLinks also affect discovery and are guarded. Existing Resource portable
+paths and selected-machine mapping protections are unchanged. Lists compare as
+sets: ordering, duplicates and nil/empty representation do not invalidate facts.
+This is deliberately conservative; the slice does not secretly adopt remote
+scope or retry discovery using a second observation.
+
+Observation-input audit: Package detection obtains profile-independent live
+facts; legacy exclusions are migrated into policy during `profile.Load`, not
+kept as competing scan scope. Historical provider participation is the union of
+captured histories. Other provider probes use fixed dependency roots; resource
+path changes affecting Config/Hooks ownership already hit the existing remap
+guard. Policy and Restore defaults do not themselves alter acquisition scope.
+No provider identity or semantic-normalization redesign was introduced.
+
+P2-2: The typed Sync Plan now carries separate canonical B/L/R control
+fingerprints, history classification, and selected source. Unchanged/converged
+intent deterministically selects remote, matching existing composition; local
+and remote changes select their respective source. Two-sided disagreement has
+source `none`, retains `control-conflict`, and returns no runtime settlement
+claims or falsely selected fingerprint. Human output has a separate Control
+plane section, and JSON exposes the typed `control` model. Raw interpretation
+inputs, policy values and private control paths are not exposed. Baseless
+bootstrap remains baseless rather than fabricating B/L/R history.
+
+Regression evidence: before the fixes, scope tests returned apparently settled
+runtime targets with no reinspection blocker, and all five control-history cases
+lacked public classification. Human-output tests likewise failed to show control
+changes beside unchanged targets. Real disposable Config fixtures demonstrate
+that remote Include expansion and Exclude removal reveal customizations the
+local scan misses. Disabling the new guard makes both fixtures fail; restoring
+it makes them pass, with unchanged checkout/index/HEAD and cursor. Tests also
+cover Exclude addition, resource link exclusions, bootstrap blocking, set
+normalization, source/fingerprint consistency, conflict blocking, and absence
+of private control inputs in JSON.
+
+Verification passed: focused Sync/provider/workflow suites, full
+`go test ./... -count=1`, `go test -race ./... -count=1`, `go vet ./...`,
+`go build ./...`, and 66 release/helper tests. Full Go checks were rerun after
+the interrupted staging approval and passed again. Runtime: Go 1.27.1 linux/amd64.
+The workspace sandbox initially blocked an existing isolated systemd validation
+test's socket options; rerunning outside the sandbox passed without test changes.
+
+One shared ReadCycle and the four-worker scheduler remain intact. No cursor
+advancement, active profile/checkout/index/machine mutation, Capture/Restore
+execution, fast-forward, merge, background automation or Sync TUI was added.
+Reconstruction Assurance is unchanged and must rerun on the published head.
+No review agent was launched. Stop after PR B for external re-review; no PR C
+work or merge was performed.
 
 ## Tests and evidence before final review
 
