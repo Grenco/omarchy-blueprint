@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
+	"github.com/Grenco/omarchy-blueprint/internal/portabletree"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
@@ -34,7 +35,7 @@ func TestValidateSyncArtifactsAcceptsCommittedLocalThemeWithSubdirectory(t *test
 	}
 	live := filepath.Join(t.TempDir(), "garden")
 	writeTheme(live)
-	hash, err := portableFingerprint(live)
+	hash, err := portabletree.Fingerprint(live)
 	if err != nil {
 		t.Fatal(err)
 	}

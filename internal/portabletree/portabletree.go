@@ -1,4 +1,8 @@
-package themes
+// Package portabletree defines the portable snapshot of a local directory
+// artifact (a local theme or plugin): what Git can store and a fresh clone
+// can restore. Capture writes it, Sync verifies it from history, and Detect
+// fingerprints it on the live machine, so all three agree.
+package portabletree
 
 import (
 	"crypto/sha256"
@@ -11,24 +15,23 @@ import (
 	"strings"
 )
 
-// A local theme's portable snapshot is what Git can store and a fresh clone
-// can restore. Capture writes it, Sync verifies it from history, and
-// Detect fingerprints it on the live machine, so all three agree:
+// The snapshot is:
 //
-//   - regular files below the theme directory, with their bytes and their
+//   - regular files below the directory, with their bytes and their
 //     executable bit (owner execute, as Git's core.fileMode reads it);
 //   - the directories needed to hold those files, always 0755;
 //   - nothing else. Git stores no directory modes, no empty directories and
 //     no permission bits beyond executable, so none of those are part of it.
 //
-// A top-level .git directory is VCS metadata, not theme content, and is
-// left out. Symlinks, special files and nested Git metadata cannot be
-// stored faithfully, and a theme with no regular files has nothing to
-// store; such a theme is unportable and must never be recorded as captured.
+// A top-level .git directory is VCS metadata, not content, and is left out.
+// Symlinks, special files and nested Git metadata cannot be stored
+// faithfully, and a directory with no regular files has nothing to store;
+// such an artifact is unportable and must never be recorded as captured.
 //
-// The fingerprint keeps the original serialization, evaluated over this
-// canonical tree, so a theme captured with ordinary permissions and no
-// empty directories keeps the fingerprint it already has.
+// The fingerprint keeps the original serialization the themes and plugins
+// providers used, evaluated over this canonical tree, so an artifact
+// captured with ordinary permissions and no empty directories keeps the
+// fingerprint it already has.
 
 const (
 	portableDirMode  os.FileMode = 0o755
@@ -36,15 +39,18 @@ const (
 	portableExecMode os.FileMode = 0o755
 )
 
-// unportableError explains why a theme has no faithful Git representation.
+// unportableError explains why an artifact has no faithful Git representation.
 // Its reason is safe to show: it names no paths or contents.
-type unportableError struct{ reason string }
+type unportableError struct {
+	reason string
+	empty  bool // no storable files at all
+}
 
 func (e *unportableError) Error() string { return e.reason }
 
-// unportableReason reports the user-facing reason when err is an
+// UnportableReason reports the user-facing reason when err is an
 // unportable-snapshot error.
-func unportableReason(err error) (string, bool) {
+func UnportableReason(err error) (string, bool) {
 	var unportable *unportableError
 	if errors.As(err, &unportable) {
 		return unportable.reason, true
@@ -58,9 +64,9 @@ type portableEntry struct {
 	size      int64
 }
 
-// scanPortable lists the canonical snapshot of root in walk order. It
+// scan lists the canonical snapshot of root in walk order. It
 // returns an *unportableError when the tree cannot be stored faithfully.
-func scanPortable(root string) ([]portableEntry, error) {
+func scan(root string) ([]portableEntry, error) {
 	var all []portableEntry
 	files := 0
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -80,11 +86,11 @@ func scanPortable(root string) ([]portableEntry, error) {
 		}
 		for _, part := range strings.Split(rel, "/") {
 			if strings.EqualFold(part, ".git") {
-				return &unportableError{"it contains nested Git metadata, which Git cannot commit"}
+				return &unportableError{reason: "it contains nested Git metadata, which Git cannot commit"}
 			}
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return &unportableError{"it contains a symlink, which theme snapshots do not support"}
+			return &unportableError{reason: "it contains a symlink, which snapshots do not support"}
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -97,7 +103,7 @@ func scanPortable(root string) ([]portableEntry, error) {
 			files++
 			all = append(all, portableEntry{rel: rel, path: path, exec: info.Mode().Perm()&0o100 != 0, size: info.Size()})
 		default:
-			return &unportableError{"it contains a special file, which Git cannot store"}
+			return &unportableError{reason: "it contains a special file, which Git cannot store"}
 		}
 		return nil
 	})
@@ -105,7 +111,7 @@ func scanPortable(root string) ([]portableEntry, error) {
 		return nil, err
 	}
 	if files == 0 {
-		return nil, &unportableError{"it has no files Git can store (it is empty, or holds only empty folders or Git metadata)"}
+		return nil, &unportableError{reason: "it has no files Git can store (it is empty, or holds only empty folders or Git metadata)", empty: true}
 	}
 	// Keep only directories that hold a file: Git stores no empty ones.
 	needed := map[string]bool{}
@@ -137,10 +143,10 @@ func (e portableEntry) mode() os.FileMode {
 	}
 }
 
-// portableFingerprint is the theme's recorded Hash: a digest of its
+// Fingerprint is the artifact's recorded Hash: a digest of its
 // canonical snapshot, independent of live permissions and empty folders.
-func portableFingerprint(root string) (string, error) {
-	entries, err := scanPortable(root)
+func Fingerprint(root string) (string, error) {
+	entries, err := scan(root)
 	if err != nil {
 		return "", err
 	}
@@ -166,11 +172,11 @@ func portableFingerprint(root string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// copyPortable writes source's canonical snapshot to destination, with
+// Copy writes source's canonical snapshot to destination, with
 // explicit modes so neither live permissions nor the process umask leak
 // into what Git will commit.
-func copyPortable(source, destination string) error {
-	entries, err := scanPortable(source)
+func Copy(source, destination string) error {
+	entries, err := scan(source)
 	if err != nil {
 		return err
 	}
@@ -191,14 +197,14 @@ func copyPortable(source, destination string) error {
 			}
 			continue
 		}
-		if err := copyPortableFile(entry, target); err != nil {
+		if err := copyFile(entry, target); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copyPortableFile(entry portableEntry, target string) error {
+func copyFile(entry portableEntry, target string) error {
 	in, err := os.Open(entry.path)
 	if err != nil {
 		return err
@@ -214,17 +220,18 @@ func copyPortableFile(entry portableEntry, target string) error {
 	return errors.Join(copyErr, modeErr, closeErr)
 }
 
-// preservePortable carries a preserved theme's existing profile artifact
+// Preserve carries a preserved target's existing profile artifact
 // forward unchanged in meaning. Preserve leaves desired state alone, so an
 // artifact that is missing or has no storable files (Git keeps nothing for
-// it either way) stays as it is rather than failing every other theme;
+// it either way) stays as it is rather than failing every other target;
 // Sync's historical validation still reports it.
-func preservePortable(source, destination string) error {
+func Preserve(source, destination string) error {
 	if _, err := os.Lstat(source); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	err := copyPortable(source, destination)
-	if reason, unportable := unportableReason(err); unportable && strings.HasPrefix(reason, "it has no files") {
+	err := Copy(source, destination)
+	var unportable *unportableError
+	if errors.As(err, &unportable) && unportable.empty {
 		return os.RemoveAll(destination)
 	}
 	return err

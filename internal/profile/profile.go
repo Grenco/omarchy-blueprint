@@ -284,6 +284,10 @@ type Plugin struct {
 	Hash       string `json:"hash,omitempty" toml:"hash,omitempty"`
 	ClonedFrom string `json:"cloned_from,omitempty" toml:"cloned_from,omitempty"`
 	Enabled    bool   `json:"enabled" toml:"enabled"`
+	// Unportable is a detection-only fact, never persisted: why a live
+	// local plugin has no faithful Git representation. Such a plugin
+	// carries no Hash and Capture must not record it.
+	Unportable string `json:"-" toml:"-"`
 }
 
 type Data struct {

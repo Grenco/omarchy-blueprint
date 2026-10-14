@@ -170,7 +170,7 @@ cursor. Verification: gofmt, `go vet ./...`, `go build ./...`,
 Follow-up to the `historical-profile` remediation: Capture must never claim a
 local theme that Git cannot store and a fresh clone cannot restore.
 
-Contract (`internal/providers/themes/portable.go`), shared by Detect/drift,
+Contract (now `internal/portabletree`, see the Plugins section below), shared by Detect/drift,
 Capture, Restore's Verify and Sync artifact validation: a theme's portable
 snapshot is its regular files (bytes plus executable bit) and the directories
 holding them, always `0755`; directory modes, other permission bits and empty
@@ -203,11 +203,8 @@ policy silencing the warning. All new end-to-end tests failed on the previous
 head and pass now. Full Go/race/vet/build, 11 Sync acceptance tests and
 `git diff --check` passed.
 
-Separate finding, not changed here: local Plugins duplicate the original
-defect (`plugins/provider.go` `hashTree` hashes permission bits; `copyTree`
-copies live directory modes; no empty-snapshot guard), so a local plugin with
-non-canonical modes or no files has the same Capture/Sync/clone mismatch.
-Recommended follow-up: adopt the same contract for plugins.
+Separate finding at the time: local Plugins duplicated the original defect.
+Resolved below.
 
 ## Plain-language TUI help and Sync first-run redesign
 
@@ -260,3 +257,43 @@ uncommitted/diverged/unreachable guidance; supplied help copy before keys;
 footer/help/palette agree; long lists fit 140/100/80, narrow and short
 workspaces with colour. Full Go/race/vet/build, 11 Sync acceptance tests and
 `git diff --check` passed.
+
+## Local Plugins portable-snapshot contract (review P2)
+
+Review finding: local Plugins still hashed live permission bits and empty
+directories (`hashTree`) and copied live directory modes (`copyTree`), with
+no empty-snapshot guard, so an empty local plugin or one with a non-`0755`
+subdirectory was recorded as captured but could not verify after commit and
+a fresh clone, blocking Sync.
+
+Fix: the Themes contract moved unchanged into `internal/portabletree`
+(`Fingerprint`, `Copy`, `Preserve`, `UnportableReason`); Themes and Plugins
+both use it, and the plugin-only `hashTree`/`copyTree` are gone. Plugins now
+mirror Themes exactly: Detect reports `profile.Plugin.Unportable`
+(detection-only, never persisted) instead of failing every plugin;
+`targetsFromPlugins` makes it a Capture safety freeze with a target-specific
+reason and the `policy set capture plugins preserve plugin:<id>` remedy;
+Capture backstops it, writes only the canonical snapshot and re-fingerprints
+it; Preserve carries a previously managed artifact forward and leaves a
+missing/empty legacy artifact absent; a managed plugin that becomes
+unportable keeps its last good desired state and is never tombstoned; the
+live plugin directory is never changed. `ValidateSyncArtifacts` uses the same
+fingerprint and reports a typed, target-only `ArtifactError` (missing vs
+mismatched) instead of an untyped error. A dirty Git checkout of a plugin
+still falls back to a local snapshot, now under the same contract. The
+fingerprint serialization is unchanged, so recorded hashes of
+ordinarily-permissioned local plugins still verify without migration.
+
+Tests (`internal/app/plugins_portable_test.go`): capture → commit → fresh
+clone → Sync snapshot validation → Restore → identical fingerprint with
+unusual live modes, an empty file, an executable and an empty folder; a
+non-`0755` subdirectory does not change the fingerprint; empty, empty-folders,
+nested-Git and symlink plugins are blocked with a portable sibling still
+captured, the live tree unchanged and the committed profile accepted by Sync
+validation; a managed plugin that empties keeps its state and artifact;
+preserve policy silences the warning and keeps the artifact; a missing legacy
+artifact fails closed naming only the target. Every new test failed on the
+previous head (live modes copied into the artifact, directory mode in the
+fingerprint, unportable plugins recorded, a symlinked plugin failing all
+plugin detection, an emptied plugin re-hashed, no blocked warning, untyped
+Sync error) and passes now.

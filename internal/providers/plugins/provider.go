@@ -2,11 +2,8 @@ package plugins
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +13,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/portabletree"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -166,18 +164,28 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Plugins, enabled f
 		case transitionPresent:
 			if isEnabled && isPresent {
 				if currentItem.Source == "local" {
+					// Workflow marks unportable plugins Capture-ineligible; this
+					// backstop keeps any other caller from recording one.
+					if currentItem.Unportable != "" {
+						return current, fmt.Errorf("capture plugin %q: %s", id, currentItem.Unportable)
+					}
 					source, err := filepath.EvalSymlinks(filepath.Join(p.UserDir, id))
 					if err != nil {
 						return current, err
 					}
-					if err := copyTree(source, filepath.Join(stage, id)); err != nil {
+					if err := portabletree.Copy(source, filepath.Join(stage, id)); err != nil {
 						return current, fmt.Errorf("capture plugin %q: %w", id, err)
+					}
+					// The recorded Hash must describe the bytes actually written,
+					// even if the live plugin changed after Detect.
+					if hash, err := portabletree.Fingerprint(filepath.Join(stage, id)); err != nil || hash != currentItem.Hash {
+						return current, fmt.Errorf("capture plugin %q: plugin changed while it was being captured", id)
 					}
 				}
 				result.Items = append(result.Items, currentItem)
 			} else {
 				if savedItem.Source == "local" {
-					if err := copyTree(filepath.Join(existing, id), filepath.Join(stage, id)); err != nil {
+					if err := portabletree.Preserve(filepath.Join(existing, id), filepath.Join(stage, id)); err != nil {
 						return current, fmt.Errorf("preserve plugin %q: %w", id, err)
 					}
 				}
@@ -320,11 +328,17 @@ func (p Provider) detectUser(ctx context.Context, item catalogItem, path string)
 			return result, nil
 		}
 	}
-	hash, err := hashTree(resolved)
+	result.Source = "local"
+	hash, err := portabletree.Fingerprint(resolved)
+	if reason, unportable := portabletree.UnportableReason(err); unportable {
+		// Report it instead of failing every plugin: workflow turns it into a
+		// target-level Capture block, and Capture never records it.
+		result.Unportable = reason
+		return result, nil
+	}
 	if err != nil {
 		return result, fmt.Errorf("hash plugin %q: %w", item.ID, err)
 	}
-	result.Source = "local"
 	result.Hash = hash
 	return result, nil
 }
@@ -566,95 +580,3 @@ func safeID(id string) bool {
 	return id != "" && id != "." && id != ".." && !filepath.IsAbs(id) && filepath.Base(id) == id
 }
 func isDir(path string) bool { info, err := os.Stat(path); return err == nil && info.IsDir() }
-func hashTree(root string) (string, error) {
-	h := sha256.New()
-	err := filepath.WalkDir(root, func(path string, e os.DirEntry, we error) error {
-		if we != nil {
-			return we
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
-			if e.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if e.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("unsupported symlink: %s", rel)
-		}
-		info, err := e.Info()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(h, "%s\x00%o\x00", filepath.ToSlash(rel), info.Mode().Perm())
-		if info.Mode().IsRegular() {
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			_, ce := io.Copy(h, f)
-			cl := f.Close()
-			if ce != nil {
-				return ce
-			}
-			return cl
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-func copyTree(source, dest string) error {
-	return filepath.WalkDir(source, func(path string, e os.DirEntry, we error) error {
-		if we != nil {
-			return we
-		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
-			if e.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if e.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("unsupported symlink: %s", rel)
-		}
-		info, err := e.Info()
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dest, rel)
-		if e.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("unsupported file: %s", rel)
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			in.Close()
-			return err
-		}
-		_, ce := io.Copy(out, in)
-		ie, oe := in.Close(), out.Close()
-		if ce != nil {
-			return ce
-		}
-		if ie != nil {
-			return ie
-		}
-		return oe
-	})
-}

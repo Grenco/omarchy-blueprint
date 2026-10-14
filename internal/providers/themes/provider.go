@@ -13,6 +13,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
+	"github.com/Grenco/omarchy-blueprint/internal/portabletree"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 )
 
@@ -211,19 +212,19 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled fu
 					if err != nil {
 						return current, fmt.Errorf("resolve theme %q: %w", id, err)
 					}
-					if err := copyPortable(source, filepath.Join(staging, id)); err != nil {
+					if err := portabletree.Copy(source, filepath.Join(staging, id)); err != nil {
 						return current, fmt.Errorf("capture theme %q: %w", id, err)
 					}
 					// The recorded Hash must describe the bytes actually written,
 					// even if the live theme changed after Detect.
-					if hash, err := portableFingerprint(filepath.Join(staging, id)); err != nil || hash != currentItem.Hash {
+					if hash, err := portabletree.Fingerprint(filepath.Join(staging, id)); err != nil || hash != currentItem.Hash {
 						return current, fmt.Errorf("capture theme %q: theme changed while it was being captured", id)
 					}
 				}
 				result.Items = append(result.Items, currentItem)
 			} else {
 				if savedItem.Type == "local" || savedItem.Type == "overlay" {
-					if err := preservePortable(filepath.Join(existing, id), filepath.Join(staging, id)); err != nil {
+					if err := portabletree.Preserve(filepath.Join(existing, id), filepath.Join(staging, id)); err != nil {
 						return current, fmt.Errorf("preserve theme %q: %w", id, err)
 					}
 				}
@@ -326,8 +327,8 @@ func (p Provider) detectUserTheme(ctx context.Context, id, path string) (profile
 	if isDir(filepath.Join(p.BuiltinDir, id)) {
 		typeName = "overlay"
 	}
-	hash, err := portableFingerprint(path)
-	if reason, unportable := unportableReason(err); unportable {
+	hash, err := portabletree.Fingerprint(path)
+	if reason, unportable := portabletree.UnportableReason(err); unportable {
 		// Report it instead of failing every theme: workflow turns it into a
 		// target-level Capture block, and Capture never records it.
 		return profile.Theme{ID: id, Type: typeName, Unportable: reason}, nil

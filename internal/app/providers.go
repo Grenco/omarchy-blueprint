@@ -1788,13 +1788,16 @@ func targetsFromPlugins(d profile.Data, current profile.Plugins) ([]workflow.Tar
 			desiredThirdParty[plugin.ID] = true
 		}
 	}
-	pluginFingerprints := map[string]string{}
+	pluginFingerprints, unportable := map[string]string{}, map[string]string{}
 	for _, plugin := range current.Items {
 		if plugin.Source == "builtin" || plugin.Source == "" {
 			currentBuiltin[plugin.ID] = true
 		} else {
 			currentThirdParty[plugin.ID] = true
 			pluginFingerprints[plugin.ID] = canonicalFingerprint(plugin)
+			if plugin.Unportable != "" {
+				unportable[plugin.ID] = plugin.Unportable
+			}
 		}
 	}
 	absentThirdParty := map[string]bool{}
@@ -1831,13 +1834,21 @@ func targetsFromPlugins(d profile.Data, current profile.Plugins) ([]workflow.Tar
 		case desiredThirdParty[id]:
 			desiredState = workflow.TargetPresent
 		}
+		// An unportable live plugin is a safety freeze: Capture leaves any
+		// existing desired state (present or absent) exactly as it is and
+		// never records the live plugin. Restore of saved state is unaffected.
+		reason := ""
+		if why, ok := unportable[id]; ok {
+			reason = fmt.Sprintf("Plugin %q cannot be captured portably: %s, so a fresh clone could not restore it. Add its files, or keep it out of Capture with: policy set capture plugins preserve plugin:%s", id, why, id)
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "plugin:" + id,
 			Label:           id,
 			Desired:         desiredState,
 			Current:         currentPresence(currentThirdParty[id]),
 			Fingerprint:     pluginFingerprints[id],
-			CaptureEligible: true,
+			CaptureEligible: reason == "",
+			SafetyReason:    reason,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
 				SupportsCapture: true, SupportsRestore: true,

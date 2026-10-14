@@ -2,9 +2,14 @@ package plugins
 
 import (
 	"context"
-	"fmt"
-	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+
+	"github.com/Grenco/omarchy-blueprint/internal/portabletree"
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 )
 
 // ValidateSyncArtifacts checks only isolated historical bytes, never live state.
@@ -17,9 +22,14 @@ func (Provider) ValidateSyncArtifacts(ctx context.Context, root string, d profil
 	}
 	for _, x := range d.Plugins.Items {
 		if x.Source == "local" {
-			got, err := hashTree(filepath.Join(root, "plugins", "local", x.ID))
+			dir := filepath.Join(root, "plugins", "local", x.ID)
+			if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+				return &syncengine.ArtifactError{Target: "plugin:" + x.ID, Missing: true}
+			}
+			// The same portable-snapshot contract Capture recorded it with.
+			got, err := portabletree.Fingerprint(dir)
 			if err != nil || got != x.Hash {
-				return fmt.Errorf("sync: invalid plugin snapshot")
+				return &syncengine.ArtifactError{Target: "plugin:" + x.ID}
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Grenco/omarchy-blueprint/internal/portabletree"
 	"github.com/Grenco/omarchy-blueprint/internal/profile"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 )
@@ -26,7 +27,7 @@ func (Provider) ValidateSyncArtifacts(ctx context.Context, root string, d profil
 				return &syncengine.ArtifactError{Target: "theme:" + x.ID, Missing: true}
 			}
 			// The same portable-snapshot contract Capture recorded it with.
-			got, err := portableFingerprint(dir)
+			got, err := portabletree.Fingerprint(dir)
 			if err != nil || got != x.Hash {
 				return &syncengine.ArtifactError{Target: "theme:" + x.ID}
 			}

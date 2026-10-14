@@ -1,4 +1,4 @@
-package themes
+package portabletree
 
 import (
 	"crypto/sha256"
@@ -65,13 +65,13 @@ func TestPortableFingerprintMatchesWhatGitCanStore(t *testing.T) {
 	files := map[string]string{"colors.toml": "accent = '#fff'\n", "backgrounds/dawn.jpg": "image", "empty.conf": "", "bin/apply.sh": "#!/bin/sh\n"}
 	canonical := t.TempDir()
 	writePortableFixture(t, canonical, files, map[string]os.FileMode{"bin/apply.sh": 0o755})
-	want, err := portableFingerprint(canonical)
+	want, err := Fingerprint(canonical)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Recorded hashes of ordinarily-permissioned themes keep verifying.
+	// Recorded hashes of ordinarily-permissioned artifacts keep verifying.
 	if legacy := legacyFingerprint(t, canonical); legacy != want {
-		t.Fatalf("canonical theme changed fingerprint: legacy %s, contract %s", legacy, want)
+		t.Fatalf("canonical artifact changed fingerprint: legacy %s, contract %s", legacy, want)
 	}
 
 	unusual := t.TempDir()
@@ -79,13 +79,13 @@ func TestPortableFingerprintMatchesWhatGitCanStore(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(unusual, "unused", "deeper"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := portableFingerprint(unusual); err != nil || got != want {
+	if got, err := Fingerprint(unusual); err != nil || got != want {
 		t.Fatalf("permissions or empty folders Git cannot store changed the fingerprint: %v", err)
 	}
 
 	notExecutable := t.TempDir()
 	writePortableFixture(t, notExecutable, files, nil)
-	if got, _ := portableFingerprint(notExecutable); got == want {
+	if got, _ := Fingerprint(notExecutable); got == want {
 		t.Fatal("the executable bit Git stores did not affect the fingerprint")
 	}
 	emptied := t.TempDir()
@@ -93,12 +93,12 @@ func TestPortableFingerprintMatchesWhatGitCanStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(emptied, "colors.toml"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := portableFingerprint(emptied); err != nil || got == want {
+	if got, err := Fingerprint(emptied); err != nil || got == want {
 		t.Fatalf("emptying a file was not a content change: %v", err)
 	}
 }
 
-func TestPortableFingerprintRejectsUnrepresentableThemes(t *testing.T) {
+func TestPortableFingerprintRejectsUnrepresentableTrees(t *testing.T) {
 	cases := map[string]func(t *testing.T, root string){
 		"empty":              func(*testing.T, string) {},
 		"empty-folders-only": func(t *testing.T, root string) { os.MkdirAll(filepath.Join(root, "a", "b"), 0o755) },
@@ -125,13 +125,13 @@ func TestPortableFingerprintRejectsUnrepresentableThemes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			setup(t, root)
-			_, err := portableFingerprint(root)
-			reason, unportable := unportableReason(err)
+			_, err := Fingerprint(root)
+			reason, unportable := UnportableReason(err)
 			if !unportable || reason == "" || strings.Contains(reason, root) {
 				t.Fatalf("not reported as unportable with a safe reason: %v", err)
 			}
-			if err := copyPortable(root, filepath.Join(t.TempDir(), "out")); err == nil {
-				t.Fatal("unportable theme copied")
+			if err := Copy(root, filepath.Join(t.TempDir(), "out")); err == nil {
+				t.Fatal("unportable tree copied")
 			}
 		})
 	}
@@ -143,9 +143,9 @@ func TestCopyPortableWritesCanonicalSnapshot(t *testing.T) {
 	source := t.TempDir()
 	writePortableFixture(t, source, map[string]string{"colors.toml": "x", "bin/apply.sh": "#!/bin/sh\n", "empty.conf": ""}, map[string]os.FileMode{"colors.toml": 0o600, "bin/apply.sh": 0o700, "bin": 0o700})
 	os.MkdirAll(filepath.Join(source, "unused"), 0o700)
-	destination := filepath.Join(t.TempDir(), "theme")
+	destination := filepath.Join(t.TempDir(), "artifact")
 	previous := syscall.Umask(0o077)
-	err := copyPortable(source, destination)
+	err := Copy(source, destination)
 	syscall.Umask(previous)
 	if err != nil {
 		t.Fatal(err)
@@ -161,8 +161,8 @@ func TestCopyPortableWritesCanonicalSnapshot(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("snapshot %v, want %v", got, want)
 	}
-	a, _ := portableFingerprint(source)
-	b, _ := portableFingerprint(destination)
+	a, _ := Fingerprint(source)
+	b, _ := Fingerprint(destination)
 	if a != b {
 		t.Fatal("copied snapshot fingerprint differs from source")
 	}
@@ -179,7 +179,7 @@ func TestPreservePortableLeavesUnstorableArtifactAlone(t *testing.T) {
 			source := filepath.Join(t.TempDir(), "aether")
 			setup(source)
 			destination := filepath.Join(t.TempDir(), "aether")
-			if err := preservePortable(source, destination); err != nil {
+			if err := Preserve(source, destination); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
@@ -192,7 +192,7 @@ func TestPreservePortableLeavesUnstorableArtifactAlone(t *testing.T) {
 	if err := os.Symlink("colors.toml", filepath.Join(source, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if err := preservePortable(source, filepath.Join(t.TempDir(), "out")); err == nil {
+	if err := Preserve(source, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("preserve hid an unsupported artifact")
 	}
 }
