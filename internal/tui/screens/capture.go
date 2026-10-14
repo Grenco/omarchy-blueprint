@@ -167,7 +167,7 @@ func (s *Capture) Update(msg tea.Msg) tea.Cmd {
 	case "a":
 		s.chosen = map[string]bool{}
 		for _, p := range s.statuses {
-			if len(p.Changes) > 0 {
+			if pending, _ := captureCounts(p); pending > 0 {
 				s.chosen[p.ID] = true
 			}
 		}
@@ -209,8 +209,10 @@ func (s *Capture) View() string {
 		if p.Captured {
 			changes, style = "clean", s.styles.Success
 		}
-		if p.Captured && len(p.Changes) > 0 {
-			changes, style = fmt.Sprintf("%d changed", len(p.Changes)), s.styles.Warning
+		if pending, preserved := captureCounts(p); p.Captured && pending > 0 {
+			changes, style = fmt.Sprintf("%d changed", pending), s.styles.Warning
+		} else if p.Captured && preserved > 0 {
+			changes = fmt.Sprintf("clean · %d preserved", preserved)
 		}
 		if !selected {
 			changes = style(changes)
@@ -314,7 +316,12 @@ func (s *Capture) DetailView() string {
 	if s.chosen[p.ID] {
 		selected = "Yes"
 	}
-	return "Category: " + components.DisplayText(p.ID) + "\nChanges: " + fmt.Sprint(len(p.Changes)) + "\nSelected for capture: " + selected
+	pending, preserved := captureCounts(p)
+	detail := "Category: " + components.DisplayText(p.ID) + "\nChanges Capture would save: " + fmt.Sprint(pending)
+	if preserved > 0 {
+		detail += "\nPreserved by your Capture choices: " + fmt.Sprint(preserved) + " (left as they are on purpose; not pending)"
+	}
+	return detail + "\nSelected for capture: " + selected
 }
 func (s *Capture) current() workflow.ProviderStatus {
 	if s.cursor >= 0 && s.cursor < len(s.statuses) {
@@ -353,6 +360,16 @@ func (s *Capture) capture() tea.Cmd {
 		return captureDoneMsg{requestID: requestID, providers: result.Providers, err: err}
 	}
 }
+
+// captureCounts reports what Capture would save and what policy preserves.
+// Without the policy-aware review it falls back to every raw difference.
+func captureCounts(p workflow.ProviderStatus) (pending, preserved int) {
+	if p.Capture != nil {
+		return p.Capture.Changes, p.Capture.Preserved
+	}
+	return len(p.Changes), 0
+}
+
 func (s *Capture) chosenCount() int {
 	count := 0
 	for _, chosen := range s.chosen {
