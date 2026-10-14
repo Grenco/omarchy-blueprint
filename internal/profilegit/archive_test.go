@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/Grenco/omarchy-blueprint/internal/command"
@@ -259,5 +260,36 @@ func TestMaterializeRejectsSymlinkDestinationAndCleansFailedExtraction(t *testin
 	cancel()
 	if err := s.MaterializeCommit(ctx, sha, dest); !errors.Is(err, context.Canceled) {
 		t.Fatal("cancel lost", err)
+	}
+}
+
+// Git records no directory modes. A snapshot must present directories the
+// way a canonical checkout does (tar.umask=0022), independent of the process
+// umask, or mode-sensitive artifact fingerprints captured from a normal
+// checkout can never verify against history.
+func TestMaterializeDirectoriesUseCanonicalCheckoutMode(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init", "-b", "main")
+	gitIdentity(t, root)
+	writeProfile(t, root)
+	mustWrite(t, filepath.Join(root, "themes", "local", "garden", "backgrounds", "a.jpg"), "image")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "profile")
+	sha := gitOutput(t, root, "rev-parse", "HEAD")
+	dest := t.TempDir()
+	previous := syscall.Umask(0o077)
+	err := profileGitService(t, root).MaterializeCommit(context.Background(), sha, dest)
+	syscall.Umask(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"themes", "themes/local", "themes/local/garden", "themes/local/garden/backgrounds"} {
+		info, err := os.Lstat(filepath.Join(dest, filepath.FromSlash(dir)))
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s: %v %v", dir, info.Mode(), err)
+		}
+	}
+	if info, err := os.Lstat(dest); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("snapshot root must stay private: %v %v", info.Mode(), err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"testing"
 	"time"
@@ -284,5 +285,27 @@ func TestReconcileOfferedChoicesAreExactlyAcceptedChoices(t *testing.T) {
 	view, detail := s.View(), s.DetailView()
 	if !strings.Contains(view, "Decided") || !strings.Contains(detail, "Status: • Changed on both sides") || !strings.Contains(detail, "Decision: Keep local") {
 		t.Fatalf("decided target lost its group or situation:\n%s\n%s", view, detail)
+	}
+}
+
+func TestReconcileHistoricalProfileDiagnosticIsReadableAndBlocks(t *testing.T) {
+	message := "Pinned local (L) profile records themes theme:aether but its committed artifact is missing (Git cannot store an empty directory). Stop managing theme:aether, set its themes Capture policy to preserve so Capture does not re-add it, then commit and publish"
+	f := &reconcileFixture{plan: syncengine.Plan{BootstrapRequired: true}, bootstrap: workflow.SyncBootstrapPlan{Identity: syncengine.Identity{Local: strings.Repeat("b", 40), Remote: strings.Repeat("b", 40), Machine: "laptop", Branch: "main", Upstream: "origin/main"}, Git: syncengine.GitState{Clean: true}, Blockers: []syncengine.Blocker{{Code: "historical-profile", Message: message}}}}
+	s := NewReconcileContext(context.Background(), f)
+	s.SetSize(64, 20)
+	s.Update(s.Init()())
+	s.Update(tea.KeyPressMsg{Code: 'u'})
+	view := s.View()
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > 64 {
+			t.Fatalf("diagnostic overflowed: %q", line)
+		}
+	}
+	flat := strings.Join(strings.Fields(view), " ")
+	if !strings.Contains(flat, "theme:aether") || !strings.Contains(flat, "Capture policy to preserve") || !strings.Contains(s.DetailView(), "historical-profile") {
+		t.Fatalf("diagnostic hidden:\n%s\n%s", view, s.DetailView())
+	}
+	if s.CanExecute() || s.bootstrapChoice != nil {
+		t.Fatal("blocked historical profile became executable")
 	}
 }

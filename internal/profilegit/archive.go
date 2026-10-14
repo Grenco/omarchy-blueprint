@@ -207,18 +207,32 @@ func archiveParents(dest, name string) error {
 	current := dest
 	for _, part := range strings.Split(parent, "/") {
 		current = filepath.Join(current, part)
-		if err := os.Mkdir(current, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := snapshotDir(current); err != nil {
 			return err
-		}
-		info, err := os.Lstat(current)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return errors.New("archive parent is not a directory")
 		}
 	}
 	return nil
+}
+
+// snapshotDirMode is a canonical checkout's directory mode, matching the
+// tar.umask=0022 applied to files. Git records no directory modes, so this is
+// the only faithful presentation; the destination root stays 0700, which
+// keeps the snapshot private. Chmod after Mkdir so the process umask cannot
+// change what mode-sensitive artifact fingerprints observe.
+const snapshotDirMode = 0o755
+
+func snapshotDir(path string) error {
+	if err := os.Mkdir(path, snapshotDirMode); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("archive parent is not a directory")
+	}
+	return os.Chmod(path, snapshotDirMode)
 }
 
 func extractProfileArchive(ctx context.Context, reader io.Reader, dest string) error {
@@ -271,11 +285,7 @@ func extractProfileArchive(ctx context.Context, reader io.Reader, dest string) e
 		target := filepath.Join(dest, filepath.FromSlash(name))
 		switch h.Typeflag {
 		case tar.TypeDir:
-			if err := os.Mkdir(target, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-				return err
-			}
-			info, err := os.Lstat(target)
-			if err != nil || !info.IsDir() {
+			if err := snapshotDir(target); err != nil {
 				return errors.New("archive directory conflict")
 			}
 		case tar.TypeReg, tar.TypeRegA:

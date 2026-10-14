@@ -2,9 +2,13 @@ package themes
 
 import (
 	"context"
-	"fmt"
-	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+
+	"github.com/Grenco/omarchy-blueprint/internal/profile"
+	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 )
 
 // ValidateSyncArtifacts checks only isolated historical bytes, never live state.
@@ -17,9 +21,13 @@ func (Provider) ValidateSyncArtifacts(ctx context.Context, root string, d profil
 	}
 	for _, x := range d.Themes.Items {
 		if x.Type == "local" || x.Type == "overlay" {
-			got, err := hashTree(filepath.Join(root, "themes", "local", x.ID))
+			dir := filepath.Join(root, "themes", "local", x.ID)
+			if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+				return &syncengine.ArtifactError{Target: "theme:" + x.ID, Missing: true}
+			}
+			got, err := hashTree(dir)
 			if err != nil || got != x.Hash {
-				return fmt.Errorf("sync: invalid theme snapshot")
+				return &syncengine.ArtifactError{Target: "theme:" + x.ID}
 			}
 		}
 	}

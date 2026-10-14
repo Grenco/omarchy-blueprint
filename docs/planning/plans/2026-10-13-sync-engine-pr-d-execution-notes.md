@@ -120,3 +120,47 @@ Verification on the remediation tree passed: full TUI tests, `go test ./...
 Hosted CI/AUR/RA had all passed on the previously reviewed head; the updated head
 requires fresh hosted checks. Phase 10 stays incomplete pending review/merge;
 no merge or Auto Sync work is authorized or undertaken.
+
+## PR D real-machine remediation — `historical-profile` bootstrap blocker
+
+Reported: a clean, shared, normally loadable profile blocked bootstrap with
+`historical-profile: Pinned local profile cannot be loaded safely` (CLI and TUI).
+
+Reproduced read-only against a disposable clone of the reporting profile; the
+user's profile, checkout, machine and cursor were never written. Stage tracing
+showed snapshot, profile load and policy validation succeed; the **themes
+provider artifact check** rejected the revision. Two independent causes:
+
+1. Sync implementation defect (`profilegit/archive.go`). Snapshot extraction
+   created every directory `0700`, while files are normalized with
+   `tar.umask=0022`. Theme hashes are captured from the live directory and
+   include directory permission bits (`themes/provider.go` `hashTree`). Git
+   records no directory modes, so any local theme with a subdirectory could
+   never verify from history although a fresh clone reproduces its hash.
+   Fix: snapshot directories use the canonical checkout mode `0755`, applied
+   with an explicit chmod so the process umask cannot vary it. The snapshot
+   root remains `0700`; exact-tree blob verification is unchanged.
+2. Genuinely non-portable committed data. An empty live theme was captured as
+   a local theme with the empty-tree hash; Git cannot store an empty
+   directory, so the committed artifact is absent and a fresh-clone Restore
+   would also fail. Sync keeps failing closed. Verified repair on the clone:
+   `policy stop-managing themes theme:<id>`, then
+   `policy set capture themes preserve theme:<id> --scope profile` (stop-managing
+   clears overrides, so order matters), commit and publish. Bootstrap then
+   inspects without blockers and is convergence-eligible.
+
+Diagnostics: `loadSyncView` now returns a typed stage error (snapshot, profile,
+policy, artifacts, projection, control) carrying only category and
+provider-owned target identity; providers may return
+`syncengine.ArtifactError`. The `historical-profile` code is unchanged; its
+message names B/L/R, the stage, and for artifacts the target plus a safe repair.
+No wrapped causes, paths or contents are exposed; cancellation stays a context
+error. Capture's acceptance of empty theme directories is noted, not changed.
+
+TDD: the snapshot-mode and committed-theme regressions failed before the fix
+(`drwx------`; valid committed theme rejected). Added coverage: a mismatched
+or missing artifact is still rejected; CLI bootstrap/inspect and the TUI show
+the stage diagnostic; a blocked inspection cannot execute or advance/write the
+cursor. Verification: gofmt, `go vet ./...`, `go build ./...`,
+`go test ./... -count=1`, `go test -race ./... -count=1`, `bash test/sync/run.sh`
+(11 tests) and `git diff --check` all passed.

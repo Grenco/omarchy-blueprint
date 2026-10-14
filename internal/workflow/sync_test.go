@@ -348,6 +348,9 @@ func TestSyncInspectionBlocksUnsafeRepositoryStates(t *testing.T) {
 			found := false
 			for _, b := range plan.Blockers {
 				found = found || b.Code == want
+				if b.Code == "historical-profile" && !strings.Contains(b.Message, "Pinned upstream (R) profile files are invalid") {
+					t.Fatal("historical failure lost its stage", b.Message)
+				}
 			}
 			if !found {
 				t.Fatal("missing blocker", want, plan.Blockers)
