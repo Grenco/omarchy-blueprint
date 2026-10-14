@@ -57,11 +57,15 @@ func TestReconcileGroupsPresentationWithoutChangingAuthorityOrder(t *testing.T) 
 		{TargetInput: syncengine.TargetInput{Key: syncengine.TargetKey{Category: "defaults", Target: "c"}}, Review: syncengine.ReviewMachine},
 	}
 	s.SetSize(100, 30)
+	s.selectAfterInspection(reconcileRowKey{}, false)
+	for _, group := range []string{reconcileNeedsDecision, reconcileNothing} {
+		s.expanded[group] = true
+	}
 	view := s.View()
-	if strings.Index(view, "defaults · c") > strings.Index(view, "defaults · b") || strings.Index(view, "defaults · b") > strings.Index(view, "defaults · a") {
+	if strings.Index(view, "Defaults · c") > strings.Index(view, "Defaults · a") || strings.Index(view, "Needs your decision") > strings.Index(view, "Nothing to change") {
 		t.Fatal("target groups are not contiguous in review priority order")
 	}
-	if s.current.Items[0].Key.Target != "a" || !strings.Contains(s.DetailView(), "defaults · c") {
+	if s.current.Items[0].Key.Target != "a" || !strings.Contains(s.DetailView(), "Defaults · c") {
 		t.Fatal("presentation mutated canonical authority order or selected wrong target")
 	}
 }
@@ -71,8 +75,13 @@ func TestReconcileControlOnlyAndBlockedPlansRemainReviewable(t *testing.T) {
 	s.ready = true
 	s.current.Control = &syncengine.ControlChange{History: syncengine.HistoryRemote, SelectedSource: syncengine.ControlSourceRemote}
 	s.current.Blockers = []syncengine.Blocker{{Code: "control-reinspection", Message: "Observation scope changed; inspect selected control inputs again."}}
-	if detail := s.DetailView(); !strings.Contains(detail, "Control settings: changed upstream · using remote") || !strings.Contains(detail, "Observation scope changed") {
+	s.selectAfterInspection(reconcileRowKey{}, false)
+	detail := s.DetailView()
+	if !strings.Contains(detail, "rules for which config files") || !strings.Contains(detail, "Observation scope changed") || !strings.Contains(strings.Join(s.overviewDetail(), "\n"), "Control settings: remote, using remote") {
 		t.Fatal("control-only plan lost its separate classification/blocker details")
+	}
+	if s.CanExecute() {
+		t.Fatal("blocked plan became executable")
 	}
 }
 
@@ -116,7 +125,7 @@ func TestReconcileBootstrapRequiresExplicitChoice(t *testing.T) {
 		t.Fatal("missing cursor implicitly authorized bootstrap")
 	}
 	s.Update(tea.KeyPressMsg{Code: 'u'})
-	if !s.CanExecute() || !strings.Contains(s.View(), "Start from upstream") {
+	if !s.CanExecute() || !strings.Contains(s.View(), "First-time Sync setup: Start with my saved Blueprint setup") {
 		t.Fatal("explicit reviewed bootstrap choice unavailable")
 	}
 	s.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -159,7 +168,10 @@ func TestReconcileExecutionRequiresFreshAuthorityReviewsAndRefreshesAfterFailure
 		s := NewReconcileContext(context.Background(), f)
 		s.Update(s.Init()())
 		s.Update(tea.KeyPressMsg{Code: 'L'})
-		if cmd := s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || !strings.Contains(s.View(), "Publish") {
+		if cmd := s.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || s.confirming {
+			t.Fatal("Enter in the review started the Sync run flow")
+		}
+		if cmd := s.Update(tea.KeyPressMsg{Code: 's'}); cmd != nil || !strings.Contains(s.View(), "Send approved profile changes to the shared repository") {
 			t.Fatal("missing stage confirmation before execution")
 		}
 		cmd := s.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -182,10 +194,10 @@ func TestReconcileExecutionRequiresFreshAuthorityReviewsAndRefreshesAfterFailure
 			t.Fatal("failure reused old plan or claimed settlement")
 		}
 		s.Update(refresh())
-		if f.calls != 2 || f.executions != 1 || !strings.Contains(out.String(), "fresh") || strings.Contains(out.String(), "/private/path") {
+		if f.calls != 2 || f.executions != 1 || !strings.Contains(out.String(), "approve the actual Capture and Restore") || !strings.Contains(out.String(), "Save these settings? [y/N]") || strings.Contains(out.String(), "/private/path") {
 			t.Fatal("missing refresh/reviews or leaked private failure")
 		}
-		if cause == profilegit.ErrReconciliationPostCommitVerificationFailed && !strings.Contains(s.View(), "Do not retry Sync") {
+		if cause == profilegit.ErrReconciliationPostCommitVerificationFailed && !strings.Contains(s.View(), "Do not run Sync again") {
 			t.Fatal("repair guidance lost")
 		}
 	}
@@ -206,22 +218,22 @@ func TestReconcileInspectionIsLazyAndConflictChoicesAreReadOnly(t *testing.T) {
 		t.Fatal("construction observed or fetched")
 	}
 	cmd := s.Init()
-	if f.calls != 0 || cmd == nil || !strings.Contains(s.View(), "inspecting") {
+	if f.calls != 0 || cmd == nil || !strings.Contains(s.View(), "Checking for updates") {
 		t.Fatal("initial frame blocked on observation")
 	}
 	s.Update(cmd())
-	if f.calls != 1 || !f.fetch || !strings.Contains(s.View(), "Needs decision") || !strings.Contains(s.DetailView(), "defaults · browser") {
+	if f.calls != 1 || !f.fetch || !strings.Contains(s.View(), "Needs your decision") || !strings.Contains(s.DetailView(), "Defaults · browser") {
 		t.Fatal("missing single inspection/conflict details")
 	}
 	s.Update(tea.KeyPressMsg{Code: 'd'})
-	if !strings.Contains(s.View(), "Deferred") || s.CanExecute() {
+	if !strings.Contains(s.View(), "Left for later") || s.CanExecute() {
 		t.Fatal("deferred intent shown as executable")
 	}
 	s.Update(tea.KeyPressMsg{Code: 'L'})
 	if !s.CanExecute() || f.calls != 1 || f.executions != 0 {
 		t.Fatal("intent resolution reobserved or mutated")
 	}
-	if !strings.Contains(s.DetailView(), "Decision: Keep local") {
+	if !strings.Contains(s.DetailView(), "Your decision: Keep the version saved on this computer") {
 		t.Fatal("missing in-session choice")
 	}
 	fresh := NewReconcileContext(context.Background(), f)
@@ -238,7 +250,7 @@ func TestReconcileCancelledOrFailedRefreshCannotExecuteOldPlan(t *testing.T) {
 		s.Update(tea.KeyPressMsg{Code: 'L'})
 		f.err = cause
 		s.Update(s.Init()())
-		if s.CanExecute() || strings.Contains(s.View(), "private-network-output") || !strings.Contains(s.View(), "Inspection failed") {
+		if s.CanExecute() || strings.Contains(s.View(), "private-network-output") || !strings.Contains(s.View(), "couldn't finish checking") {
 			t.Fatal("failed inspection retained execution authority or exposed cause")
 		}
 	}
@@ -249,7 +261,7 @@ func TestReconcileKeepLocalDoesNotBorrowPaneNavigationKey(t *testing.T) {
 	s := NewReconcileContext(context.Background(), f)
 	s.Update(s.Init()())
 	s.Update(tea.KeyPressMsg{Code: 'L'})
-	if !strings.Contains(s.DetailView(), "Decision: Keep local") {
+	if !strings.Contains(s.DetailView(), "Your decision: Keep the version saved on this computer") {
 		t.Fatal("uppercase L action did not resolve; lowercase l belongs to pane navigation")
 	}
 }
@@ -257,7 +269,8 @@ func TestReconcileKeepLocalDoesNotBorrowPaneNavigationKey(t *testing.T) {
 // Details and the footer may only offer a choice that choose then accepts, and
 // a decided target keeps describing what changed alongside the decision.
 func TestReconcileOfferedChoicesAreExactlyAcceptedChoices(t *testing.T) {
-	keys := map[string]rune{"Keep local": 'L', "Accept remote": 'a', "Keep machine": 'm', "Keep profile": 'p', "Defer": 'd'}
+	keepLocal, acceptRemote := "Keep the version saved on this computer", "Use the shared saved version"
+	keys := map[string]rune{keepLocal: 'L', acceptRemote: 'a', "Save this computer's current setting": 'm', "Apply the saved setting to this computer": 'p', "Decide later": 'd'}
 	f := &reconcileFixture{plan: conflictSyncPlan(t)}
 	s := NewReconcileContext(context.Background(), f)
 	s.Update(s.Init()())
@@ -267,7 +280,7 @@ func TestReconcileOfferedChoicesAreExactlyAcceptedChoices(t *testing.T) {
 			offered[action.Label] = true
 		}
 	}
-	if len(offered) != 3 || !offered["Keep local"] || !offered["Accept remote"] || !offered["Defer"] {
+	if len(offered) != 3 || !offered[keepLocal] || !offered[acceptRemote] || !offered["Decide later"] {
 		t.Fatalf("history conflict offered %v", offered)
 	}
 	for label, key := range keys {
@@ -283,7 +296,7 @@ func TestReconcileOfferedChoicesAreExactlyAcceptedChoices(t *testing.T) {
 	}
 	s.Update(tea.KeyPressMsg{Code: 'L'})
 	view, detail := s.View(), s.DetailView()
-	if !strings.Contains(view, "Decided") || !strings.Contains(detail, "Status: • Changed on both sides") || !strings.Contains(detail, "Decision: Keep local") {
+	if !strings.Contains(view, "Decided") || !strings.Contains(detail, "changed differently in two copies of your saved profile") || !strings.Contains(detail, "Your decision: Keep the version saved on this computer") {
 		t.Fatalf("decided target lost its group or situation:\n%s\n%s", view, detail)
 	}
 }
@@ -302,7 +315,8 @@ func TestReconcileHistoricalProfileDiagnosticIsReadableAndBlocks(t *testing.T) {
 		}
 	}
 	flat := strings.Join(strings.Fields(view), " ")
-	if !strings.Contains(flat, "theme:aether") || !strings.Contains(flat, "Capture policy to preserve") || !strings.Contains(s.DetailView(), "historical-profile") {
+	detail := strings.Join(strings.Fields(s.DetailView()), " ")
+	if !strings.Contains(flat, "Needs attention before Sync can run (1)") || !strings.Contains(flat, "Can't read a saved profile") || !strings.Contains(detail, "Blueprint could not safely read one of the saved versions") || !strings.Contains(detail, "theme:aether") || !strings.Contains(detail, "Capture policy to preserve") || !strings.Contains(detail, "historical-profile") {
 		t.Fatalf("diagnostic hidden:\n%s\n%s", view, s.DetailView())
 	}
 	if s.CanExecute() || s.bootstrapChoice != nil {

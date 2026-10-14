@@ -1145,11 +1145,14 @@ func TestHelp(t *testing.T) {
 	m = updateModel(t, m, tea.KeyPressMsg{Code: '?'})
 	view := m.View().Content
 	long := screenInfo(ScreenConfig).Long
-	if !m.helpOpen || !strings.Contains(view, "CONFIG") || !strings.Contains(view, "View Config diff") {
+	if !m.helpOpen || !strings.Contains(view, "CONFIG") || !strings.Contains(view, "What is this page for?") {
 		t.Fatalf("help is not contextual to screen and focus: %q", view)
 	}
 	lines := m.helpLines()
-	for _, want := range []string{"CONFIG", "Search:", "KEYS", "GLOBAL", "Focus: details"} {
+	if !strings.Contains(strings.Join(lines, "\n"), "View Config diff") {
+		t.Fatalf("help omits the screen's keys: %q", lines)
+	}
+	for _, want := range []string{"CONFIG", "Search:", "KEYBOARD SHORTCUTS", "GLOBAL", "Focus: details"} {
 		if !strings.Contains(strings.Join(lines, "\n"), want) {
 			t.Fatalf("default help missing %q: %q", want, lines)
 		}
@@ -1159,14 +1162,14 @@ func TestHelp(t *testing.T) {
 			t.Fatalf("default help missing description line %q: %q", line, lines)
 		}
 	}
-	if !(indexOf(lines, "CONFIG") < indexOf(lines, "Search:") && indexOf(lines, "Search:") < indexOf(lines, "KEYS") && indexOf(lines, "KEYS") < indexOf(lines, "GLOBAL") && indexOf(lines, "GLOBAL") < indexOf(lines, "Focus: details")) {
+	if !(indexOf(lines, "CONFIG") < indexOf(lines, "Search:") && indexOf(lines, "Search:") < indexOf(lines, "What is this page for?") && indexOf(lines, "What is this page for?") < indexOf(lines, "KEYBOARD SHORTCUTS") && indexOf(lines, "KEYBOARD SHORTCUTS") < indexOf(lines, "GLOBAL") && indexOf(lines, "GLOBAL") < indexOf(lines, "Focus: details")) {
 		t.Fatalf("help layout order=%q", lines)
 	}
 	for _, key := range "diff" {
 		m = updateModel(t, m, textKey(key))
 	}
 	view = m.View().Content
-	if !strings.Contains(view, "Config is about your dotfiles") || !strings.Contains(view, "View Config diff") || strings.Contains(view, "Cycle Config policy") {
+	if !strings.Contains(view, "View Config diff") || strings.Contains(view, "Cycle Config policy") || strings.Contains(view, "What is this page for?") {
 		t.Fatalf("help search did not filter actions: %q", view)
 	}
 	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})

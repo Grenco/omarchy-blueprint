@@ -17,7 +17,7 @@ func TestReconcileAndExecutionConfirmationFitWorkspace(t *testing.T) {
 		for _, confirm := range []bool{false, true} {
 			if confirm {
 				s.Update(tea.KeyPressMsg{Code: 'L'})
-				s.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				s.Update(tea.KeyPressMsg{Code: 's'})
 			}
 			lines := strings.Split(s.View(), "\n")
 			if len(lines) > size[1] {
@@ -36,7 +36,7 @@ func TestReconcileRepairWarningSurvivesRefreshingSmallWorkspace(t *testing.T) {
 	s := NewReconcileContext(context.Background(), &reconcileFixture{plan: conflictSyncPlan(t)})
 	s.SetSize(68, 9)
 	s.Update(SyncExecutionComplete{Err: profilegit.ErrReconciliationPostCommitVerificationFailed})
-	if !strings.Contains(s.View(), "Do not retry Sync") || !strings.Contains(s.DetailView(), "HEAD, index and worktree") {
+	if !strings.Contains(s.View(), "Do not run Sync again") || !strings.Contains(s.DetailView(), "HEAD, index and worktree") {
 		t.Fatal("fresh inspection hid repository repair guidance")
 	}
 }

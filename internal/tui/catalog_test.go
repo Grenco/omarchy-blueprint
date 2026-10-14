@@ -26,7 +26,7 @@ func TestScreenCatalog(t *testing.T) {
 	}
 
 	config := screenInfo(ScreenConfig)
-	if got, want := config.Short, "Review dotfiles and other system/app configuration Blueprint can remember and restore."; got != want {
+	if got, want := config.Short, "Review app settings and configuration files Blueprint can save."; got != want {
 		t.Errorf("Config short description = %q, want %q", got, want)
 	}
 	for _, keyword := range []string{"dotfiles", ".config"} {
@@ -79,7 +79,7 @@ func TestCatalogueDescribesPolicyAwareWorkflow(t *testing.T) {
 	}{
 		{ScreenOverview, []string{"Needs attention", "Changes available", "Intentional differences"}},
 		{ScreenCapture, []string{"review", "Preserved by policy", "Include", "Preserve", "re-checks"}},
-		{ScreenPackages, []string{"Capture", "Restore", "policy"}},
+		{ScreenPackages, []string{"Capture", "Restore", "choose"}},
 	} {
 		long := screenInfo(test.id).Long
 		for _, want := range test.want {

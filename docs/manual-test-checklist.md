@@ -25,31 +25,44 @@ production profile. The automated CLI counterpart is `bash test/sync/run.sh`.
 This checklist does not claim these physical-terminal checks have been performed.
 
 - Confirm Workflow navigation is Overview → Capture → Restore → Sync; Profile
-  Git remains separate transport/history tooling. Opening unrelated workspaces,
-  startup and Capture refreshes must not fetch. Entering Sync or `r` explicitly
-  fetches and inspects; `Esc` cancels a slow fetch without executable stale data.
-- At 140/100/80 columns and a too-small window, review machine, branch/upstream,
-  pinned B/L/R, separate control-plane changes, blockers and grouped targets.
-  Details show B/L/R/M semantic values without raw private transport errors.
-- Exercise conflict `L` Keep Local, `a` Accept Remote, `d` Defer; independently
-  exercise `m` Keep Machine and `p` Keep Profile. Lowercase `l` opens Details.
-  Choices are inspection-only; restart/new inspection discards them. Defer
-  disables execution and preserves the cursor.
-- Missing cursor: explicitly review `u` Reconcile Upstream or `v` Adopt Machine;
-  cancel with `Esc`. Invalid cursor must not silently recreate a base.
-- Review the execution stages, cancel the first confirmation, then proceed in a
-  separate trial. The terminal handoff must independently display/approve fresh
-  selected Capture and actual fresh Restore operations, compatibility/risk and
-  Services activation where applicable. Decline each gate and verify no false
-  settlement. Observe Git authentication without exposing credentials.
+  Git remains separate. Opening unrelated workspaces, startup and Capture
+  refreshes must not check for updates. Entering Sync or `r` (Check for updates)
+  does; `Esc` stops a slow check without leaving a stale runnable review.
+- With `?`, confirm a first-time user can answer what Sync does, how it differs
+  from Capture, Restore and Profile Git, whether it runs automatically, and what
+  running it does — before any shortcut list — and that unavailable keys say why.
+- At 140/100/80 columns and a too-small window, confirm the verdict, "Here's
+  what Blueprint found" counts and collapsible groups: headings show counts,
+  Already matches and Protected start closed, `Enter`/`Space` open and close a
+  group without starting Sync, `[`/`]` jump between groups, and no hidden
+  setting can be selected. Details explain each setting in plain language, with
+  B/L/R/M values only under Technical details and no raw transport errors.
+- Exercise `L`/`a` on a setting changed in two copies and `m`/`p` on one that
+  differs on this computer, plus `d` Decide later; lowercase `l` opens Details.
+  Decisions change nothing until a run; restart or a new check discards them.
+  Decide later blocks running and keeps the last completed Sync unchanged.
+- First-time setup: both choices are explained; `u`/`v` only preview; `Esc`
+  returns or cancels. Make a differing setting Capture-protected and confirm
+  "Start with this computer's setup" is shown as unavailable, `o` lists the
+  protected settings with Capture/Restore allowed, and `c` opens that category's
+  Capture settings without changing them. Also check uncommitted changes and
+  diverged history show their own causes. A mismatched or unreadable Sync record
+  must not silently recreate a starting point.
+- `s` shows only applicable stages with counts and removals; `b` returns, `c`
+  cancels without running. Then proceed in a separate trial: the terminal
+  handoff must separately show and approve the actual Capture and Restore
+  operations, compatibility/risk and service activation. Decline each and verify
+  Sync is not reported as completed. Git authentication must not expose
+  credentials.
 - Change state/upstream after review, hold the Sync lock, reject publication,
-  fail Restore and simulate cursor-write failure in disposable fixtures. A fresh
-  cached inspection follows every outcome; neither a successful push nor partial
-  Restore means synced. Critical transaction/recovery failures visibly require
-  manual repair before retrying (including narrow-window Details).
-- Complete bootstrap, publish/follow, disjoint reconciliation and a resolved
-  two-parent conflict on both machines; verify live state and exact cursors.
-  Confirm no timers/background fetch, persistent choices, or automatic Sync.
+  fail Restore and simulate a failed record write in disposable fixtures. A fresh
+  check follows every outcome; neither a successful push nor partial Restore is
+  reported as completed. Repository or profile repair failures say not to run
+  Sync again until repaired (including in narrow-window Details).
+- Complete first-time setup, send/receive, disjoint changes and a decided
+  two-copy conflict on both machines; verify live state and exact recorded
+  revisions. Confirm no timers, background checks, saved decisions or automatic
+  Sync.
 
 ## Portable themes
 

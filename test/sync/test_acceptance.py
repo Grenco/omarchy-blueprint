@@ -185,21 +185,22 @@ case "$3" in firefox|brave|chromium) printf '%s\\n' "$3" > "$HOME/default-$2";; 
         os.close(slave)
         output = bytearray()
 
-        def until(needle):
+        def until(*needles):
             deadline = time.monotonic() + 8
-            while needle not in output and time.monotonic() < deadline:
+            while not any(needle in output for needle in needles) and time.monotonic() < deadline:
                 if select.select([master], [], [], 0.1)[0]:
                     try:
                         output.extend(os.read(master, 65536))
                     except OSError:
                         break
-            self.assertIn(needle, output, bytes(output[-2000:]))
+            self.assertTrue(any(needle in output for needle in needles), bytes(output[-2000:]))
 
         try:
             until(b"Overview")
             os.write(master, b":sync\r")
-            until(b"Reconcile shared profile intent")
-            until(b"Last sync")
+            until(b"Keep your saved Blueprint setup")
+            # A finished check shows either the review summary or first-time setup.
+            until(b"Here's what Blueprint found", b"Set up Sync on this computer")
             self.assertEqual(before, (self.head("A"), self.git("A", "status", "--porcelain=v1"), self.cursor("A")))
             os.write(master, b":quit\r")
             process.wait(timeout=5)

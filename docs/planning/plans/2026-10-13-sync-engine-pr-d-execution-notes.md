@@ -208,3 +208,55 @@ defect (`plugins/provider.go` `hashTree` hashes permission bits; `copyTree`
 copies live directory modes; no empty-snapshot guard), so a local plugin with
 non-canonical modes or no files has the same Capture/Sync/clone mismatch.
 Recommended follow-up: adopt the same contract for plugins.
+
+## Plain-language TUI help and Sync first-run redesign
+
+Presentation, navigation and read-only preflight only; Sync execution and
+safety rules are unchanged. One workflow change: `ResolveSyncBootstrapPlan`
+returns a typed `SyncBootstrapUnavailableError` naming the cause and every
+affected target (same rules, order and error text), so the TUI preflights both
+first-time choices through the exact function execution uses.
+
+User journey: Sync opens with a verdict and "Here's what Blueprint found"
+counts drawn from the reviewed plan, then collapsible groups by what a run would
+do (headings with counts; Already matches/Protected/large groups closed). `Enter`
+and `Space` only expand/collapse; `[`/`]` jump groups; `s` (Review Sync changes)
+opens the run review, whose `Enter` continues to approvals. Details explain each
+setting in plain language with technical values in a separate section.
+First-time setup explains both starting choices, previews only, and shows an
+unavailable choice with its actual cause (protected settings listed, `o`/`c`
+to show them or open their Capture settings). Help leads with the supplied
+Sync questions and per-screen "What is this page for? / What can I do here? /
+Will this change my computer…?" text, then shortcuts split into available and
+not-available-with-reason; search narrows both.
+
+Deviations from the supplied copy, kept truthful:
+- Plan blockers form an extra, openable "Needs attention before Sync can run"
+  group so "Open the items below…" is literally true.
+- The summary adds "N settings are left for later" when non-zero.
+- "Will save changes from this computer" also holds committed-but-unshared
+  profile changes (publish only); their Details say so.
+- "Everything … already in sync" appears only with no proposed changes, no
+  protected differences, outside first-time setup, and with the last completed
+  Sync equal to both saved and shared revisions; otherwise the limited wording.
+- "Combine approved changes to the saved profile" is shown when the saved
+  profile is behind or has diverged (fast-forward or reconciliation commit).
+- "Cancel — do not run Sync" also clears this review's decisions, so it is
+  distinct from "Back to review".
+- "Can't start from this computer yet" also covers differing settings kept out
+  of both Capture and Restore, because the workflow refuses those too.
+- A mismatched or unreadable last-completed-Sync record has no reset command;
+  the TUI explains the problem and the guide documents the manual reset
+  ("Resetting Sync on a computer"). A dedicated command is a recommended gap.
+- Short terminals use graduated setup/confirmation layouts; full text stays in
+  Details.
+
+Tests: groups collapse independently with accurate totals; overview starts
+collapsed and selects the first decision; navigation never selects hidden rows,
+never starts a run, and never changes decisions or the plan; Details match the
+selected row; `s`/Back/Cancel semantics; setup copy and preview-only choices;
+protected-settings preflight, listing and Capture navigation; cause-specific
+uncommitted/diverged/unreachable guidance; supplied help copy before keys;
+footer/help/palette agree; long lists fit 140/100/80, narrow and short
+workspaces with colour. Full Go/race/vet/build, 11 Sync acceptance tests and
+`git diff --check` passed.

@@ -86,7 +86,7 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 		if current := m.screens[origin]; current != nil {
 			originCmd = wrapScreenCmd(origin, current.Update(msg))
 		}
-		m.notification = "Sync execution finished. Refreshing current evidence; settlement depends on the verified cursor."
+		m.notification = "Sync finished running. Checking the results again…"
 		return m, tea.Batch(originCmd, m.refreshInitializedAuthorityScreens(origin)), true
 	case screens.PolicyNavigation:
 		id := ScreenID(msg.Category)

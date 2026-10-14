@@ -69,8 +69,11 @@ func (s *reconcileScreen) Actions() []Action {
 		state := state
 		actions = append(actions, Action{ID: state.ID, Label: state.Label, Group: "Sync", Enabled: state.Enabled, Visible: true, DisabledReason: state.DisabledReason, Run: func() tea.Cmd {
 			code := rune(state.Shortcut[0])
-			if state.Shortcut == "enter" {
+			switch state.Shortcut {
+			case "enter":
 				code = tea.KeyEnter
+			case "esc":
+				code = tea.KeyEsc
 			}
 			return s.Update(tea.KeyPressMsg{Code: code})
 		}})

@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -19,14 +20,23 @@ type reconcileWorkflow interface {
 // Reconcile owns presentation and session-only choices, never mutation authority.
 // Construction is inert; only entering/explicitly refreshing the screen fetches.
 type Reconcile struct {
-	bootstrap                         *workflow.SyncBootstrapPlan
-	bootstrapChoice                   *workflow.SyncBootstrapChoice
-	ctx                               context.Context
-	session                           reconcileWorkflow
-	width, height, selected           int
-	styles                            components.Styles
-	base, current                     syncengine.Plan
-	choices                           map[syncengine.TargetKey]syncengine.TargetResolution
+	bootstrap       *workflow.SyncBootstrapPlan
+	bootstrapChoice *workflow.SyncBootstrapChoice
+	// setupRefusals preflights each first-time choice through the same
+	// ResolveSyncBootstrapPlan that execution uses, so the screen never offers
+	// a choice the workflow already refuses.
+	setupRefusals map[workflow.SyncBootstrapChoice]*workflow.SyncBootstrapUnavailableError
+	ctx           context.Context
+	session       reconcileWorkflow
+	width, height int
+	styles        components.Styles
+	base, current syncengine.Plan
+	choices       map[syncengine.TargetKey]syncengine.TargetResolution
+	// expanded holds the user's explicit open/closed choice per group; groups
+	// without one use reconcileGroupDefault. It survives navigation and new
+	// inspections because group names are stable.
+	expanded                          map[string]bool
+	list                              components.Selectable
 	table                             components.Table
 	checking, ready, confirming, busy bool
 	requestID                         uint64
@@ -42,7 +52,7 @@ type reconcileInspectedMsg struct {
 }
 
 func NewReconcileContext(ctx context.Context, session reconcileWorkflow) *Reconcile {
-	return &Reconcile{ctx: ctx, session: session, choices: map[syncengine.TargetKey]syncengine.TargetResolution{}}
+	return &Reconcile{ctx: ctx, session: session, choices: map[syncengine.TargetKey]syncengine.TargetResolution{}, expanded: map[string]bool{}}
 }
 func (s *Reconcile) SetSize(w, h int)                   { s.width, s.height = w, h }
 func (s *Reconcile) SetStyles(styles components.Styles) { s.styles = styles }
@@ -96,91 +106,142 @@ func (s *Reconcile) Update(msg tea.Msg) tea.Cmd {
 		s.checking = false
 		if m.err != nil {
 			s.ready = false
-			s.message = "Inspection failed or cancelled. Reinspect before execution."
+			s.message = reconcileCheckFailed
 			return nil
 		}
+		previous, hadPrevious := s.selectedRowKey()
 		s.base, s.current = m.plan, m.plan
 		s.bootstrap, s.bootstrapChoice = m.bootstrap, nil
+		s.setupRefusals = nil
+		if m.bootstrap != nil {
+			s.setupRefusals = map[workflow.SyncBootstrapChoice]*workflow.SyncBootstrapUnavailableError{}
+			for _, choice := range []workflow.SyncBootstrapChoice{"reconcile-upstream", "adopt-machine"} {
+				var refused *workflow.SyncBootstrapUnavailableError
+				if _, err := workflow.ResolveSyncBootstrapPlan(*m.bootstrap, choice); errors.As(err, &refused) {
+					s.setupRefusals[choice] = refused
+				}
+			}
+		}
 		s.ready = true
 		// A new inspection always starts a new review. Never replay choices
 		// over fresh revision/live evidence automatically.
 		s.choices = map[syncengine.TargetKey]syncengine.TargetResolution{}
-		s.selected = min(s.selected, max(0, len(s.current.Items)-1))
+		s.selectAfterInspection(previous, hadPrevious)
 		return nil
 	case SyncExecutionComplete:
 		s.busy = false
 		s.ready = false
-		if m.Err != nil {
+		switch {
+		case m.Err != nil:
 			s.message = reconcileFailure(m.Err)
-		} else if !m.Result.CursorAdvanced {
-			s.message = "Sync did not record settlement. Inspect before retrying."
-		} else {
-			s.message = "Last execution recorded settlement; checking fresh state now."
+		case !m.Result.CursorAdvanced:
+			s.message = reconcileIncomplete
+		default:
+			s.message = reconcileCompleted
 		}
 		return s.inspect(false)
 	case tea.KeyPressMsg:
-		if s.busy {
-			return nil
-		}
-		if s.checking {
-			if m.String() == "esc" && s.stop != nil {
-				s.stop()
-			}
-			return nil
-		}
-		if s.confirming {
-			if m.String() == "esc" {
-				s.confirming = false
-				return nil
-			}
-			if m.String() == "enter" {
-				s.confirming = false
-				return s.execute()
-			}
-			return nil
-		}
-		switch m.String() {
-		case "u":
-			s.chooseBootstrap("reconcile-upstream")
-		case "v":
-			s.chooseBootstrap("adopt-machine")
-		case "esc":
-			if s.bootstrap != nil {
-				s.bootstrapChoice = nil
-				s.current = s.base
-			}
-		case "enter":
-			if s.CanExecute() {
-				s.confirming = true
-			}
-		case "r":
-			return s.inspect(true)
-		case "j", "down":
-			s.selected = min(s.selected+1, max(0, len(s.current.Items)-1))
-		case "k", "up":
-			s.selected = max(0, s.selected-1)
-		case "L":
-			s.choose("keep-local")
-		case "a":
-			s.choose("accept-remote")
-		case "m":
-			s.choose("keep-machine")
-		case "p":
-			s.choose("keep-profile")
-		case "d":
-			s.choose("defer")
-		}
+		return s.handleKey(m.String())
 	}
 	return nil
 }
+
+func (s *Reconcile) handleKey(key string) tea.Cmd {
+	if s.busy {
+		return nil
+	}
+	if s.checking {
+		if key == "esc" && s.stop != nil {
+			s.stop()
+		}
+		return nil
+	}
+	if s.confirming {
+		switch key {
+		case "enter":
+			s.confirming = false
+			return s.execute()
+		case "esc", "b":
+			s.confirming = false
+		case "c":
+			// Nothing has run yet: discard this review's decisions so the user
+			// starts again from what Blueprint found.
+			s.confirming = false
+			s.choices = map[syncengine.TargetKey]syncengine.TargetResolution{}
+			s.current, s.bootstrapChoice = s.base, nil
+			s.message = reconcileCancelledRun
+			s.list.SetSelected(0, len(s.rows()), s.listHeight())
+		}
+		return nil
+	}
+	rows := s.rows()
+	if key == "[" || key == "]" {
+		s.list.JumpToAnchor(s.groupAnchors(), key == "]", len(rows), s.listHeight())
+		return nil
+	}
+	if s.list.Vim(key, len(rows), s.listHeight()) {
+		return nil
+	}
+	switch key {
+	case "j", "down":
+		s.list.Move(1, len(rows), s.listHeight())
+	case "k", "up":
+		s.list.Move(-1, len(rows), s.listHeight())
+	case "enter":
+		if row, ok := s.selectedRow(); ok && row.header {
+			s.toggleGroup(row.group)
+		}
+	case "space", " ":
+		if row, ok := s.selectedRow(); ok {
+			s.toggleGroup(row.group)
+		}
+	case "o":
+		s.showSetupRefusal()
+	case "c":
+		if category, ok := s.captureSettingsCategory(); ok {
+			return func() tea.Msg { return PolicyNavigation{Category: category} }
+		}
+	case "u":
+		s.chooseBootstrap("reconcile-upstream")
+	case "v":
+		s.chooseBootstrap("adopt-machine")
+	case "esc":
+		switch {
+		case s.bootstrap != nil && s.bootstrapChoice != nil:
+			s.bootstrapChoice = nil
+			s.current = s.base
+			s.list.SetSelected(0, len(s.rows()), s.listHeight())
+		case s.bootstrap != nil:
+			s.message = reconcileSetupCancelled
+		}
+	case "s":
+		if s.CanExecute() {
+			s.confirming = true
+		}
+	case "r":
+		return s.inspect(true)
+	case "L":
+		s.choose("keep-local")
+	case "a":
+		s.choose("accept-remote")
+	case "m":
+		s.choose("keep-machine")
+	case "p":
+		s.choose("keep-profile")
+	case "d":
+		s.choose("defer")
+	}
+	return nil
+}
+
 func (s *Reconcile) choose(choice string) {
 	if s.bootstrap != nil {
 		return
 	}
-	if !s.ready || len(s.current.Items) == 0 {
+	item, ok := s.selectedItem()
+	if !s.ready || !ok {
 		return
 	}
-	item := s.selectedItem()
 	key := item.Key
 	resolution := s.choices[key]
 	resolution.Key = key
@@ -204,29 +265,43 @@ func (s *Reconcile) choose(choice string) {
 	next[key] = resolution
 	resolved, err := workflow.ResolveSyncPlan(s.base, reconcileChoices(next))
 	if err != nil {
-		s.message = "Choice is not valid for this target; review its available choices."
+		s.message = reconcileChoiceRefused
 		return
 	}
 	s.choices, s.current = next, resolved
-	for i, index := range s.presentationOrder() {
-		if s.current.Items[index].Key == key {
-			s.selected = i
-			break
+	// Follow the target into its new group so the decision stays visible.
+	for _, moved := range s.current.Items {
+		if moved.Key == key {
+			s.expanded[reconcileGroup(moved)] = true
 		}
 	}
+	s.selectRowKey(reconcileRowKey{target: key})
 }
 
 func (s *Reconcile) chooseBootstrap(choice workflow.SyncBootstrapChoice) {
 	if !s.ready || s.bootstrap == nil {
 		return
 	}
+	if s.setupRefusals[choice] != nil {
+		// Preflight already knows this choice cannot proceed: show why.
+		s.showSetupRefusal()
+		return
+	}
 	plan, err := workflow.ResolveSyncBootstrapPlan(*s.bootstrap, choice)
 	if err != nil {
-		s.message = "Bootstrap choice is blocked. Review lineage/policy in CLI or Profile Git first."
+		s.message = reconcileChoiceRefused
 		return
 	}
 	s.current, s.bootstrapChoice = plan, &choice
+	s.message = ""
+	s.list.SetSelected(0, len(s.rows()), s.listHeight())
 }
+
+func (s *Reconcile) toggleGroup(group string) {
+	s.expanded[group] = !s.groupExpanded(group)
+	s.selectRowKey(reconcileRowKey{group: group})
+}
+
 func reconcileChoices(choices map[syncengine.TargetKey]syncengine.TargetResolution) []syncengine.TargetResolution {
 	result := make([]syncengine.TargetResolution, 0, len(choices))
 	for _, v := range choices {
@@ -245,28 +320,13 @@ func (s *Reconcile) CanExecute() bool {
 	if !s.ready || s.checking || s.busy || s.current.BootstrapRequired || len(s.current.Blockers) > 0 || s.current.Identity.Local == "" {
 		return false
 	}
+	if s.bootstrap != nil && s.bootstrapChoice == nil {
+		return false
+	}
 	for _, item := range s.current.Items {
 		if item.Deferred || item.Review != syncengine.ReviewNone {
 			return false
 		}
 	}
 	return true
-}
-
-// Group only presentation indices; the reviewed workflow plan retains its
-// canonical target/operation ordering and fingerprint.
-func (s *Reconcile) presentationOrder() []int {
-	order := make([]int, 0, len(s.current.Items))
-	for _, group := range reconcileGroups {
-		for i, item := range s.current.Items {
-			if reconcileGroup(item) == group {
-				order = append(order, i)
-			}
-		}
-	}
-	return order
-}
-
-func (s *Reconcile) selectedItem() syncengine.Item {
-	return s.current.Items[s.presentationOrder()[s.selected]]
 }

@@ -24,10 +24,9 @@ type SyncExecutionComplete struct {
 	Err    error
 }
 
-// stageSummary is printed to the lent terminal before fresh approvals.
+// stageSummary is printed to the lent terminal before the separate approvals.
 func (s *Reconcile) stageSummary() string {
-	id := s.current.Identity
-	return fmt.Sprintf("Sync — pinned last sync %s · local %s · remote %s\nRevalidate → reconcile history if needed → Capture (fresh approval) → Publish if needed → Restore (fresh approval) → Verify → record last sync", shortRevision(id.Base), shortRevision(id.Local), shortRevision(id.Remote))
+	return "Blueprint Sync\nBlueprint will check that nothing has changed since your review, then ask you to approve the actual Capture and Restore steps separately. If anything important has changed, it will stop.\n"
 }
 
 // Sync borrows the terminal for the explicit transaction, not for observation.
@@ -125,18 +124,18 @@ func (e *reconcileExec) Run() error {
 		return nil
 	}
 	e.request.ApproveCapture = func(ctx context.Context, review workflow.CaptureInspection) error {
-		fmt.Fprintln(e.out, "Review fresh selected Capture")
+		fmt.Fprintln(e.out, "Blueprint wants to save these settings from this computer into your profile:")
 		for _, section := range review.Review() {
 			for _, target := range section.Targets {
 				fmt.Fprintf(e.out, "%s:%s — %s\n", components.DisplayText(target.Category), components.DisplayText(target.Inspection.Key), target.Outcome.Label())
 			}
 		}
-		return confirm(ctx, "Approve this fresh Capture")
+		return confirm(ctx, "Save these settings")
 	}
 	e.request.ApproveRestore = func(ctx context.Context, plan model.RestorePlan) error {
 		review := e.restoreReview(ctx, plan)
 		review.compatibilityExpanded = true
-		fmt.Fprintln(e.out, "Review fresh Restore", review.View(), review.DetailView())
+		fmt.Fprintln(e.out, "Blueprint wants to apply these saved settings to this computer. This may replace or remove settings on this computer.", review.View(), review.DetailView())
 		for i := range plan.Operations {
 			review.selected = i
 			review.compatibilityExpanded = false
@@ -145,7 +144,7 @@ func (e *reconcileExec) Run() error {
 		if err := workflow.CheckRestoreApplicable(plan, true); err != nil {
 			return err
 		}
-		return confirm(ctx, review.confirmation()+" Approve this fresh Restore")
+		return confirm(ctx, review.confirmation()+" Apply these changes to this computer")
 	}
 	e.request.ReviewActivation = func(ctx context.Context, candidates []model.ActivationCandidate) (*policy.ActivationReviewSelection, error) {
 		selection := &policy.ActivationReviewSelection{}
@@ -153,7 +152,7 @@ func (e *reconcileExec) Run() error {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			fmt.Fprintf(e.out, "Activate %s? %s [y/N] ", components.DisplayText(candidate.Unit), components.DisplayText(candidate.Reason))
+			fmt.Fprintf(e.out, "Activate the service %s now? %s [y/N] ", components.DisplayText(candidate.Unit), components.DisplayText(candidate.Reason))
 			if output.err != nil {
 				return nil, errors.New("Services activation review output unavailable")
 			}
@@ -171,9 +170,9 @@ func (e *reconcileExec) Run() error {
 	if e.err != nil {
 		fmt.Fprintln(e.out, reconcileFailure(e.err))
 	} else if !e.result.CursorAdvanced {
-		fmt.Fprintln(e.out, "Settlement was not recorded; inspect before retrying.")
+		fmt.Fprintln(e.out, reconcileIncomplete)
 	} else {
-		fmt.Fprintln(e.out, "Settlement recorded. Returning to a fresh inspection.")
+		fmt.Fprintln(e.out, reconcileCompleted)
 	}
 	// Only the safe receipt crosses the presentation boundary; tea.Exec must
 	// not render a raw wrapped transport/provider error itself.
@@ -201,12 +200,15 @@ func (e *reconcileExec) restoreReview(ctx context.Context, plan model.RestorePla
 	return review
 }
 
+// reconcileFailure keeps each failure's safety distinction: repository or
+// profile repair stops further Sync runs; anything else may have left
+// published or partial work and needs a fresh check before retrying.
 func reconcileFailure(err error) string {
 	if errors.Is(err, profilegit.ErrReconciliationPostCommitVerificationFailed) || errors.Is(err, profilegit.ErrReconciliationRollbackFailed) || errors.Is(err, profilegit.ErrReconciliationOutcomeUncertain) {
-		return "Do not retry Sync. HIGH SEVERITY: repository requires manual validation/repair; verify HEAD, index and worktree first. Cursor was not advanced."
+		return "Sync stopped because Blueprint could not confirm the state of your profile repository. Do not run Sync again until the repository has been checked and repaired: check the profile's Git HEAD, index and worktree first. Blueprint has not marked this computer as up to date."
 	}
 	if errors.Is(err, workflow.ErrScopedCaptureRepairRequired) {
-		return "Do not retry Sync. HIGH SEVERITY: profile recovery failed; manually repair and validate the profile first. Cursor was not advanced."
+		return "Sync stopped because Blueprint could not safely finish updating your saved profile. Do not run Sync again until the profile has been checked and repaired. Blueprint has not marked this computer as up to date."
 	}
-	return "Sync execution stopped; cursor was not advanced. Inspect again before retrying; published history or partial machine changes may remain."
+	return reconcileIncomplete + " Changes may already have been sent to the shared profile, or some settings on this computer may have been partly applied. Press r to check for updates before trying again."
 }
