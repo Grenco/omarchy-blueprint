@@ -164,3 +164,47 @@ the stage diagnostic; a blocked inspection cannot execute or advance/write the
 cursor. Verification: gofmt, `go vet ./...`, `go build ./...`,
 `go test ./... -count=1`, `go test -race ./... -count=1`, `bash test/sync/run.sh`
 (11 tests) and `git diff --check` all passed.
+
+## Themes portable-snapshot contract (Capture hardening)
+
+Follow-up to the `historical-profile` remediation: Capture must never claim a
+local theme that Git cannot store and a fresh clone cannot restore.
+
+Contract (`internal/providers/themes/portable.go`), shared by Detect/drift,
+Capture, Restore's Verify and Sync artifact validation: a theme's portable
+snapshot is its regular files (bytes plus executable bit) and the directories
+holding them, always `0755`; directory modes, other permission bits and empty
+directories are not part of it because Git stores none of them. A top-level
+`.git` is excluded. Symlinks, special files, nested Git metadata, or no
+storable files make a theme unportable. The fingerprint keeps the previous
+serialization evaluated over this canonical tree, so recorded hashes of
+ordinarily-permissioned themes still verify (confirmed on the reporting
+profile's real themes) and no migration is needed.
+
+Behaviour: Detect reports an unportable theme as a detection-only fact
+(`profile.Theme.Unportable`, never persisted) instead of failing every theme.
+`targetsFromThemes` turns it into a Capture safety freeze (CaptureEligible
+false, target-specific SafetyReason), so a never-managed theme is not recorded
+and a managed one keeps its last good desired state and artifact; it is never
+tombstoned. The provider backstops this, re-fingerprints what it wrote, and
+copies only the canonical snapshot with explicit modes. Preserve leaves a
+missing/empty legacy artifact absent rather than failing Capture; Sync still
+reports it. The live theme directory is never changed. Plain Capture now lists
+safety-blocked live targets ("Not captured (left unchanged for safety)", JSON
+`blocked`) unless policy already keeps them out of Capture.
+
+Tests: contract unit tests (permission/umask/empty-folder invariance,
+executable bit and empty files significant, legacy-hash compatibility, every
+unportable shape, canonical copy, lenient preserve); CLI end-to-end tests for
+capture → commit → clone → Sync snapshot validation → Restore → identical
+fingerprint, each unportable shape blocked with sibling capture intact and the
+live tree byte/mode identical, a managed theme that empties, and preserve
+policy silencing the warning. All new end-to-end tests failed on the previous
+head and pass now. Full Go/race/vet/build, 11 Sync acceptance tests and
+`git diff --check` passed.
+
+Separate finding, not changed here: local Plugins duplicate the original
+defect (`plugins/provider.go` `hashTree` hashes permission bits; `copyTree`
+copies live directory modes; no empty-snapshot guard), so a local plugin with
+non-canonical modes or no files has the same Capture/Sync/clone mismatch.
+Recommended follow-up: adopt the same contract for plugins.

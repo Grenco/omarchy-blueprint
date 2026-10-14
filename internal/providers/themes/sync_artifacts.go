@@ -25,7 +25,8 @@ func (Provider) ValidateSyncArtifacts(ctx context.Context, root string, d profil
 			if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
 				return &syncengine.ArtifactError{Target: "theme:" + x.ID, Missing: true}
 			}
-			got, err := hashTree(dir)
+			// The same portable-snapshot contract Capture recorded it with.
+			got, err := portableFingerprint(dir)
 			if err != nil || got != x.Hash {
 				return &syncengine.ArtifactError{Target: "theme:" + x.ID}
 			}

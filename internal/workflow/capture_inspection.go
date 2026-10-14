@@ -512,10 +512,14 @@ func (i CaptureInspection) captureContexts(machine string, ids []string) map[str
 	contexts := make(map[string]CaptureContext, len(ids))
 	for _, id := range ids {
 		decisions := map[string]CaptureDecision{}
+		var blocked []CaptureBlocked
 		for _, target := range i.Categories[id] {
 			decisions[target.Inspection.Key] = target.Decision
+			if b, ok := captureBlocked(id, target.Inspection, target.Policy.Enabled); ok {
+				blocked = append(blocked, b)
+			}
 		}
-		contexts[id] = CaptureContext{Machine: machine, Targets: decisions}
+		contexts[id] = CaptureContext{Machine: machine, Targets: decisions, Blocked: blocked}
 	}
 	return contexts
 }

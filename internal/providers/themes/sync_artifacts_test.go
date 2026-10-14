@@ -34,7 +34,7 @@ func TestValidateSyncArtifactsAcceptsCommittedLocalThemeWithSubdirectory(t *test
 	}
 	live := filepath.Join(t.TempDir(), "garden")
 	writeTheme(live)
-	hash, err := hashTree(live)
+	hash, err := portableFingerprint(live)
 	if err != nil {
 		t.Fatal(err)
 	}

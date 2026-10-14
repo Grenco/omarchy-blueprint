@@ -2,10 +2,7 @@ package themes
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -205,18 +202,28 @@ func (p *Provider) Capture(ctx context.Context, saved profile.Themes, enabled fu
 		case transitionPresent:
 			if isEnabled && isPresent {
 				if currentItem.Type == "local" || currentItem.Type == "overlay" {
+					// Workflow marks unportable themes Capture-ineligible; this
+					// backstop keeps any other caller from recording one.
+					if currentItem.Unportable != "" {
+						return current, fmt.Errorf("capture theme %q: %s", id, currentItem.Unportable)
+					}
 					source, err := filepath.EvalSymlinks(filepath.Join(p.UserDir, id))
 					if err != nil {
 						return current, fmt.Errorf("resolve theme %q: %w", id, err)
 					}
-					if err := copySnapshot(source, filepath.Join(staging, id)); err != nil {
+					if err := copyPortable(source, filepath.Join(staging, id)); err != nil {
 						return current, fmt.Errorf("capture theme %q: %w", id, err)
+					}
+					// The recorded Hash must describe the bytes actually written,
+					// even if the live theme changed after Detect.
+					if hash, err := portableFingerprint(filepath.Join(staging, id)); err != nil || hash != currentItem.Hash {
+						return current, fmt.Errorf("capture theme %q: theme changed while it was being captured", id)
 					}
 				}
 				result.Items = append(result.Items, currentItem)
 			} else {
 				if savedItem.Type == "local" || savedItem.Type == "overlay" {
-					if err := copySnapshot(filepath.Join(existing, id), filepath.Join(staging, id)); err != nil {
+					if err := preservePortable(filepath.Join(existing, id), filepath.Join(staging, id)); err != nil {
 						return current, fmt.Errorf("preserve theme %q: %w", id, err)
 					}
 				}
@@ -315,13 +322,18 @@ func (p Provider) detectUserTheme(ctx context.Context, id, path string) (profile
 			return profile.Theme{ID: id, Type: "git", URL: sanitizeURL(strings.TrimSpace(url)), Revision: strings.TrimSpace(revision)}, nil
 		}
 	}
-	hash, err := hashTree(path)
-	if err != nil {
-		return profile.Theme{}, fmt.Errorf("hash theme %q: %w", id, err)
-	}
 	typeName := "local"
 	if isDir(filepath.Join(p.BuiltinDir, id)) {
 		typeName = "overlay"
+	}
+	hash, err := portableFingerprint(path)
+	if reason, unportable := unportableReason(err); unportable {
+		// Report it instead of failing every theme: workflow turns it into a
+		// target-level Capture block, and Capture never records it.
+		return profile.Theme{ID: id, Type: typeName, Unportable: reason}, nil
+	}
+	if err != nil {
+		return profile.Theme{}, fmt.Errorf("hash theme %q: %w", id, err)
 	}
 	return profile.Theme{ID: id, Type: typeName, Hash: hash}, nil
 }
@@ -613,100 +625,6 @@ func equivalent(a, b profile.Theme) bool {
 	default:
 		return true
 	}
-}
-
-func hashTree(root string) (string, error) {
-	h := sha256.New()
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == "." {
-			return err
-		}
-		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("unsupported symlink: %s", rel)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(h, "%s\x00%o\x00", filepath.ToSlash(rel), info.Mode().Perm())
-		if info.Mode().IsRegular() {
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(h, file)
-			closeErr := file.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			return closeErr
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func copySnapshot(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("unsupported symlink: %s", rel)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, rel)
-		if entry.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("unsupported file: %s", rel)
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			in.Close()
-			return err
-		}
-		_, copyErr := io.Copy(out, in)
-		inErr, outErr := in.Close(), out.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if inErr != nil {
-			return inErr
-		}
-		return outErr
-	})
 }
 
 func operation(action, id string, argv []string) model.Operation {

@@ -144,6 +144,10 @@ type Theme struct {
 	Revision string `json:"revision,omitempty" toml:"revision,omitempty"`
 	Hash     string `json:"hash,omitempty" toml:"hash,omitempty"`
 	Enabled  bool   `json:"enabled" toml:"enabled"`
+	// Unportable is a detection-only fact, never persisted: why a live
+	// local theme has no faithful Git representation. Such a theme carries
+	// no Hash and Capture must not record it.
+	Unportable string `json:"-" toml:"-"`
 }
 
 type Plugins struct {

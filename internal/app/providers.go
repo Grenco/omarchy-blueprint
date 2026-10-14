@@ -1358,7 +1358,7 @@ func targetsFromThemes(d profile.Data, current profile.Themes) ([]workflow.Targe
 	}}
 
 	desiredThemes, currentThemes := map[string]bool{}, map[string]bool{}
-	themeFingerprints := map[string]string{}
+	themeFingerprints, unportable := map[string]string{}, map[string]string{}
 	for _, theme := range d.Themes.Items {
 		if theme.Type != "builtin" {
 			desiredThemes[theme.ID] = true
@@ -1368,6 +1368,9 @@ func targetsFromThemes(d profile.Data, current profile.Themes) ([]workflow.Targe
 		if theme.Type != "builtin" {
 			currentThemes[theme.ID] = true
 			themeFingerprints[theme.ID] = canonicalFingerprint(theme)
+			if theme.Unportable != "" {
+				unportable[theme.ID] = theme.Unportable
+			}
 		}
 	}
 	absentThemes := map[string]bool{}
@@ -1392,13 +1395,21 @@ func targetsFromThemes(d profile.Data, current profile.Themes) ([]workflow.Targe
 		case desiredThemes[id]:
 			desiredState = workflow.TargetPresent
 		}
+		// An unportable live theme is a safety freeze: Capture leaves any
+		// existing desired state (present or absent) exactly as it is and
+		// never records the live theme. Restore of saved state is unaffected.
+		reason := ""
+		if why, ok := unportable[id]; ok {
+			reason = fmt.Sprintf("Theme %q cannot be captured portably: %s, so a fresh clone could not restore it. Add its files, or keep it out of Capture with: policy set capture themes preserve theme:%s", id, why, id)
+		}
 		targets = append(targets, workflow.TargetInspection{
 			Key:             "theme:" + id,
 			Label:           id,
 			Desired:         desiredState,
 			Current:         currentPresence(currentThemes[id]),
 			Fingerprint:     themeFingerprints[id],
-			CaptureEligible: true,
+			CaptureEligible: reason == "",
+			SafetyReason:    reason,
 			RestoreEligible: true,
 			Capabilities: workflow.TargetCapabilities{
 				SupportsCapture: true, SupportsRestore: true,

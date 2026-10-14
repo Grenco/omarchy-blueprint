@@ -1418,11 +1418,23 @@ func captureProviders(ctx context.Context, deps Dependencies, opt *options, d pr
 		}
 	}
 	data["changes"] = result.Changes
+	if len(result.Blocked) > 0 {
+		data["blocked"] = result.Blocked
+	}
 	var configResult *configprovider.CaptureResult
 	if result.ConfigScan != nil {
 		configResult = &configprovider.CaptureResult{State: result.Profile.Config, Scan: *result.ConfigScan}
 	}
 	human := renderCaptureChanges("Captured "+providerStateLabel(result.Providers)+" state", result.Changes, configResult)
+	if len(result.Blocked) > 0 {
+		var b strings.Builder
+		b.WriteString(strings.TrimRight(human, "\n"))
+		b.WriteString("\n\nNot captured (left unchanged for safety)\n")
+		for _, blocked := range result.Blocked {
+			fmt.Fprintf(&b, "  ! %s %s: %s\n", safeDisplay(blocked.Category), safeDisplay(blocked.Target), safeDisplay(blocked.Reason))
+		}
+		human = b.String()
+	}
 	return emit(deps.Out, opt.json, "capture", true, data, human)
 }
 
