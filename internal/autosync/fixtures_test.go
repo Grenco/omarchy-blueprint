@@ -17,15 +17,20 @@ func testIdentity(root string) Identity {
 
 // testRegistry delivers one entry per class so authority rules can be
 // exercised; the production registry delivers nothing in Phase 11 PR A.
+var (
+	passive   = []model.EffectActivation{model.ActivationNone}
+	activates = []model.EffectActivation{model.ActivationActivate}
+)
+
 func testRegistry() Registry {
 	return Registry{Version: CapabilityVersion, Entries: []Entry{
-		{Family: "themes.copy-local", Class: ClassConservative, Changes: []model.EffectChange{model.EffectAdd}, Payloads: []model.EffectPayload{model.PayloadData}, Delivered: true},
-		{Family: "defaults.set", Class: ClassBalanced, Changes: []model.EffectChange{model.EffectUpdate}, Sources: []model.EffectSource{model.SourceClosedSet}, Conditions: []Condition{CondInstalledApp}, Delivered: true},
-		{Family: "themes.activate", Class: ClassBalanced, Payloads: []model.EffectPayload{model.PayloadData, model.PayloadConfig}, Conditions: []Condition{CondNoThemeHook}, Delivered: true},
-		{Family: "themes.activate", Class: ClassHandsOff, RunCode: []string{"themes", "hooks"}, Delivered: true},
-		{Family: "hooks.write", Class: ClassHandsOff, RunCode: []string{"hooks"}, Delivered: true},
-		{Family: "packages.install-official", Class: ClassHandsOff, RunCode: []string{"packages"}, Privileged: true, Conditions: []Condition{CondSignedRepoHelper, CondNoninteractive}, Delivered: true},
-		{Family: "config.write", Class: ClassHandsOff, RunCode: []string{"config"}, Delivered: false, Increment: "I2"},
+		{Family: "themes.copy-local", Class: ClassConservative, Activations: passive, Changes: []model.EffectChange{model.EffectAdd}, Payloads: []model.EffectPayload{model.PayloadData}, Delivered: true},
+		{Family: "defaults.set", Class: ClassBalanced, Activations: passive, Changes: []model.EffectChange{model.EffectUpdate}, Sources: []model.EffectSource{model.SourceClosedSet}, Conditions: []Condition{CondInstalledApp}, Delivered: true},
+		{Family: "themes.activate", Class: ClassBalanced, Activations: activates, Payloads: []model.EffectPayload{model.PayloadData, model.PayloadConfig}, Conditions: []Condition{CondNoThemeHook}, Delivered: true},
+		{Family: "themes.activate", Class: ClassHandsOff, Activations: activates, RunCode: []string{"themes", "hooks"}, Delivered: true},
+		{Family: "hooks.write", Class: ClassHandsOff, Activations: passive, RunCode: []string{"hooks"}, Delivered: true},
+		{Family: "packages.install-official", Class: ClassHandsOff, Activations: passive, RunCode: []string{"packages"}, Privileged: true, Conditions: []Condition{CondSignedRepoHelper, CondNoninteractive}, Delivered: true},
+		{Family: "config.write", Class: ClassHandsOff, Activations: passive, RunCode: []string{"config"}, Delivered: false, Increment: "I2"},
 	}}
 }
 
@@ -70,7 +75,7 @@ type inertActivation struct{}
 func (inertActivation) Refine(op model.Operation, described model.Effect) (model.Effect, map[Condition]bool) {
 	if described.Family == "themes.activate" {
 		described.Payload = model.PayloadConfig
-		return described, map[Condition]bool{CondNoThemeHook: true}
+		return described, map[Condition]bool{CondNoThemeHook: true, CondPositiveEvidence: true}
 	}
 	return described, nil
 }

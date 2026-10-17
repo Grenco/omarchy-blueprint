@@ -55,12 +55,14 @@ func (s Store) Load() (Grant, bool, error) {
 	if err != nil {
 		return Grant{}, false, err
 	}
-	if err := localstate.InspectDir(s.StateHome, dir); errors.Is(err, os.ErrNotExist) {
+	// Ownership and permissions are the grant's protection: the authority
+	// digest is a consistency check, not a signature.
+	if err := localstate.InspectPrivateDir(s.StateHome, dir); errors.Is(err, os.ErrNotExist) {
 		return DefaultGrant(), false, nil
 	} else if err != nil {
 		return Grant{}, false, ErrInvalidGrant
 	}
-	data, err := localstate.ReadFile(filepath.Join(dir, grantFile), grantLimit)
+	data, err := localstate.ReadPrivateFile(filepath.Join(dir, grantFile), grantLimit)
 	if errors.Is(err, os.ErrNotExist) {
 		return DefaultGrant(), false, nil
 	}

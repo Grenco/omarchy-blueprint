@@ -28,6 +28,12 @@ func TestRegistryMatchesTheAudit(t *testing.T) {
 		if e.Delivered {
 			t.Fatalf("%s delivered in Phase 11 PR A", e.Family)
 		}
+		if len(e.Activations) != 1 {
+			t.Fatalf("%s: entry must declare exactly its activation, got %v", e.Family, e.Activations)
+		}
+		if unverifiedFamilies[e.Family] && !hasCondition([]Entry{e}, CondOutcomeVerified) {
+			t.Fatalf("%s: unverifiable family without an outcome check", e.Family)
+		}
 		switch e.Increment {
 		case "I1", "I2", "I3", "I4":
 		default:

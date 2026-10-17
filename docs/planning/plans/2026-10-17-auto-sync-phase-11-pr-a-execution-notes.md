@@ -146,3 +146,40 @@ reports per-preset "available now / not available yet" from the registry.
   nothing, other host → identity mismatch, target deny, paused).
 
 Verification: see the PR description for the exact commands and results.
+
+## Review fixes (PR #75, review of `b652a35`)
+
+1. **Grant ownership and permissions (P2).** The approval digest is a
+   consistency check, not a signature, so file-system trust is the grant's
+   protection. `localstate.InspectPrivateDir` and `ReadPrivateFile` require
+   every state-directory component below the state home to be owned by this
+   user and not group/world-writable, and the grant file to be owned by this
+   user with no group/world permissions. The grant store uses them; the Sync
+   cursor keeps the compatible readers unchanged. Tests: group-readable and
+   world-writable grant files, group-writable state directory and
+   world-writable parent are rejected (all four failed before the fix);
+   foreign ownership is simulated through a replaceable UID in `localstate`.
+2. **Complete effect shape (P2).** Every registry entry declares its
+   activation and matching requires it, so a passive-copy rule never covers
+   an activation. An operation the provider cannot verify needs a proven
+   `outcome-verified` condition (registry entries for reloads, restarts,
+   validation and rescans carry it). Evidence may only lower a payload, and
+   only with `positive-evidence`; any other change to the descriptor is
+   rejected, and hard denials run again on the final effect. Tests with
+   delivered fixture entries: unverifiable operation, activation mismatch,
+   and refinement introducing a required interaction, an unpinned source, an
+   unrecoverable removal, an activation or unverifiability, plus a payload
+   lowered without positive evidence (the first three failed before the fix).
+3. **Exact confirmation data (P2).** `Change` now carries the exact before
+   and after scope and a typed list of expansions: identity, capability
+   version, Restore link, category added (with coverage, operation types and
+   level), automation level raised (before/after), all present and future
+   targets, named targets added, target or operation-type exceptions
+   removed, operation types added, run-code (with the resolved operation
+   types, including cross-category ones such as theme activation under
+   Hooks) and privileged install, each flagged when it lets code run.
+   `Narrows` is defined by the same expansion list, so the approval rule and
+   the confirmation data cannot disagree. Tests: the Hooks one-type-to-all
+   case (failed before the fix), an explicit case per expansion kind, and a
+   3,000-pair randomised property that any change making an operation
+   eligible yields non-empty confirmation data.

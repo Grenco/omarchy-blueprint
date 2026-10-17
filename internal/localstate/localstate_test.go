@@ -104,3 +104,45 @@ func TestRemoveFileIsIdempotent(t *testing.T) {
 		t.Fatalf("second remove: %v", err)
 	}
 }
+
+func TestPrivateStateRequiresOwnershipAndPermissions(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "omarchy-blueprint", "profiles", "x")
+	if err := PrivateDir(home, dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "grant")
+	if err := WriteFile(path, []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectPrivateDir(home, dir); err != nil {
+		t.Fatalf("private dir refused: %v", err)
+	}
+	if data, err := ReadPrivateFile(path, 10); err != nil || string(data) != "ok" {
+		t.Fatalf("private file refused: %v", err)
+	}
+	// Foreign ownership.
+	real := currentUID
+	currentUID = func() int { return real() + 1 }
+	if err := InspectPrivateDir(home, dir); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("foreign-owned dir accepted: %v", err)
+	}
+	if _, err := ReadPrivateFile(path, 10); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("foreign-owned file accepted: %v", err)
+	}
+	currentUID = real
+	// Writable by others.
+	os.Chmod(filepath.Dir(dir), 0o775)
+	if err := InspectPrivateDir(home, dir); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("group-writable parent accepted: %v", err)
+	}
+	os.Chmod(filepath.Dir(dir), 0o700)
+	os.Chmod(path, 0o604)
+	if _, err := ReadPrivateFile(path, 10); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("world-readable file accepted: %v", err)
+	}
+	// The cursor-compatible reader is unchanged.
+	if _, err := ReadFile(path, 10); err != nil {
+		t.Fatalf("compatible reader changed: %v", err)
+	}
+}

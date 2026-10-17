@@ -131,6 +131,7 @@ func TestRunCodeIsSeparateAndScoped(t *testing.T) {
 // Hooks run-code; a hook permission alone never makes it Balanced.
 func TestThemeActivationWithHookNeverBalanced(t *testing.T) {
 	activate := OperationInput{Operation: model.Operation{ID: "themes.activate.nord", Provider: "themes", Resource: "theme:nord", Effect: effect("themes.activate", model.EffectUpdate, model.PayloadExecNow, model.SourceLocal)}, Category: "themes", Targets: []string{"theme:nord"}, RestoreApply: map[string]bool{"theme:nord": true}}
+	activate.Operation.Effect.Activation = model.ActivationActivate
 	balanced := activeGrant("/profile", PresetBalanced, "themes", "hooks")
 	if d := decide(t, balanced, nil, activate).Decisions[0]; d.Eligible {
 		t.Fatalf("Balanced ran a hook: %+v", d)
@@ -239,7 +240,7 @@ func TestDependenciesCannotHideSteps(t *testing.T) {
 
 func TestEvidenceCannotChangeFamily(t *testing.T) {
 	g := activeGrant("/profile", PresetConservative, "themes")
-	if d := decide(t, g, familySwap{}, themeCopy("garden")).Decisions[0]; d.Eligible || d.Reason != ReasonUndescribed {
+	if d := decide(t, g, familySwap{}, themeCopy("garden")).Decisions[0]; d.Eligible || d.Reason != ReasonEvidenceRejected {
 		t.Fatalf("evidence rewrote family: %+v", d)
 	}
 }
@@ -349,4 +350,64 @@ func TestAvailabilityIsStrictlyBroaderPerPreset(t *testing.T) {
 			t.Fatalf("%s offers delivered operations in PR A: %v", a.Preset, a.AvailableNow)
 		}
 	}
+}
+
+// A provider that cannot verify an operation's result cannot have it run
+// unattended, even when a delivered entry otherwise matches.
+func TestUnverifiableOperationsNeedReview(t *testing.T) {
+	g := activeGrant("/profile", PresetConservative, "themes")
+	op := themeCopy("garden")
+	op.Operation.Effect.Verifiable = false
+	if d := decide(t, g, nil, op).Decisions[0]; d.Eligible || d.Reason != ReasonUnverifiable {
+		t.Fatalf("unverifiable operation eligible: %+v", d)
+	}
+}
+
+// An entry for a passive copy never covers an operation that activates.
+func TestEntriesMatchActivation(t *testing.T) {
+	g := activeGrant("/profile", PresetConservative, "themes")
+	op := themeCopy("garden")
+	op.Operation.Effect.Activation = model.ActivationActivate
+	if d := decide(t, g, nil, op).Decisions[0]; d.Eligible {
+		t.Fatalf("activating operation matched a passive entry: %+v", d)
+	}
+}
+
+type refineTo func(*model.Effect)
+
+func (r refineTo) Refine(_ model.Operation, e model.Effect) (model.Effect, map[Condition]bool) {
+	r(&e)
+	return e, map[Condition]bool{CondPositiveEvidence: true, CondNoThemeHook: true}
+}
+
+// Hard denials apply to the final, refined effect, and evidence may only
+// lower a payload with proof; it cannot alter any other dimension.
+func TestHardDenialsApplyAfterRefinement(t *testing.T) {
+	g := activeGrant("/profile", PresetConservative, "themes")
+	for name, refine := range map[string]refineTo{
+		"interaction-required": func(e *model.Effect) { e.Interaction = model.InteractionRequired },
+		"unpinned":             func(e *model.Effect) { e.Source = model.SourceUnpinned },
+		"unrecoverable-remove": func(e *model.Effect) { e.Change = model.EffectRemove },
+		"activation":           func(e *model.Effect) { e.Activation = model.ActivationActivate },
+		"unverifiable":         func(e *model.Effect) { e.Verifiable = false },
+	} {
+		if d := decide(t, g, refine, themeCopy("garden")).Decisions[0]; d.Eligible {
+			t.Fatalf("%s: refined effect escaped review: %+v", name, d)
+		}
+	}
+	// Lowering a payload needs positive evidence.
+	unproven := refineWithout{}
+	balanced := activeGrant("/profile", PresetBalanced, "themes")
+	activate := OperationInput{Operation: model.Operation{ID: "themes.activate.nord", Provider: "themes", Resource: "theme:nord", Effect: effect("themes.activate", model.EffectUpdate, model.PayloadExecNow, model.SourceLocal)}, Category: "themes", Targets: []string{"theme:nord"}, RestoreApply: map[string]bool{"theme:nord": true}}
+	activate.Operation.Effect.Activation = model.ActivationActivate
+	if d := decide(t, balanced, unproven, activate).Decisions[0]; d.Eligible {
+		t.Fatalf("payload lowered without positive evidence: %+v", d)
+	}
+}
+
+type refineWithout struct{}
+
+func (refineWithout) Refine(_ model.Operation, e model.Effect) (model.Effect, map[Condition]bool) {
+	e.Payload = model.PayloadConfig
+	return e, map[Condition]bool{CondNoThemeHook: true}
 }

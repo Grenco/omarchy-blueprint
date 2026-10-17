@@ -21,7 +21,7 @@ var autoSyncTestHost = strings.Repeat("d", 64)
 // exercised; the production registry delivers nothing in Phase 11 PR A.
 func autoSyncFixtureRegistry() autosync.Registry {
 	return autosync.Registry{Version: autosync.CapabilityVersion, Entries: []autosync.Entry{{
-		Family: "packages.fixture", Class: autosync.ClassConservative, Changes: []model.EffectChange{model.EffectAdd}, Payloads: []model.EffectPayload{model.PayloadData}, Delivered: true, Increment: "I1",
+		Family: "packages.fixture", Class: autosync.ClassConservative, Activations: []model.EffectActivation{model.ActivationNone}, Changes: []model.EffectChange{model.EffectAdd}, Payloads: []model.EffectPayload{model.PayloadData}, Delivered: true, Increment: "I1",
 	}}}
 }
 

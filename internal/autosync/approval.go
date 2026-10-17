@@ -5,47 +5,191 @@ import (
 	"sort"
 )
 
-// Change summarises what a proposed grant would newly authorise, for the
-// local confirmation screen. It names categories, classes and families only.
-type Change struct {
-	Enable            bool     // off or paused → on with a different authority
-	ClearSuspension   bool     // lifting the safety guard
-	Preset            Preset   // proposed preset
-	NewCategories     []string // categories not covered before
-	RaisedCategories  []string // covered categories whose ceiling or scope grows
-	NewRunCode        []string // categories newly allowed to run code
-	PrivilegedInstall bool     // newly allowed privileged installs
-	IdentityChanged   bool
-	VersionChanged    bool
+// ExpansionKind names one way a proposed grant authorises more than the
+// current one. The UI translates each into plain English.
+type ExpansionKind string
+
+const (
+	ExpandIdentity          ExpansionKind = "identity-changed"
+	ExpandCapabilityVersion ExpansionKind = "capability-version-changed"
+	ExpandRestoreLink       ExpansionKind = "restore-link-changed"
+	ExpandCategory          ExpansionKind = "category-added"
+	ExpandCeiling           ExpansionKind = "automation-level-raised"
+	ExpandAllTargets        ExpansionKind = "all-present-and-future-targets"
+	ExpandTargets           ExpansionKind = "targets-added"
+	ExpandTargetException   ExpansionKind = "target-exception-removed"
+	ExpandFamilyException   ExpansionKind = "operation-type-exception-removed"
+	ExpandFamilies          ExpansionKind = "operation-types-added"
+	ExpandRunCode           ExpansionKind = "may-run-code"
+	ExpandPrivilegedInstall ExpansionKind = "privileged-install"
+)
+
+// Expansion is one exact widening.
+type Expansion struct {
+	Kind     ExpansionKind `json:"kind"`
+	Category string        `json:"category,omitempty"`
+	// Before and After are the category's automation level, for
+	// category-added and automation-level-raised.
+	Before Class `json:"before,omitempty"`
+	After  Class `json:"after,omitempty"`
+	// AllTargets: every present and future target in the category is now
+	// covered. Targets lists the named targets newly covered, or the target
+	// exceptions removed.
+	AllTargets bool     `json:"all_targets,omitempty"`
+	Targets    []string `json:"targets,omitempty"`
+	// AllFamilies: every registered operation type is now covered. Families
+	// lists the operation types newly allowed, un-excepted or allowed to run
+	// code (resolved from the registry when AllFamilies is set).
+	AllFamilies bool     `json:"all_families,omitempty"`
+	Families    []string `json:"families,omitempty"`
+	// RunsCode: after this change, operations reached through it can run
+	// code on this computer.
+	RunsCode bool `json:"runs_code,omitempty"`
 }
 
-// Describe compares a proposal with the current grant.
+// Scope is the exact authority of a grant, for before/after display.
+type Scope struct {
+	Preset            Preset                   `json:"preset"`
+	RestoreLink       RestoreLink              `json:"restore_link"`
+	Categories        map[string]CategoryScope `json:"categories"`
+	RunCode           map[string]RunCodeScope  `json:"run_code"`
+	PrivilegedInstall bool                     `json:"privileged_install"`
+}
+
+// Change is the confirmation payload: exact before and after scope, the
+// lifecycle change, and every expansion. A person must be able to see from
+// it everything they are being asked to allow.
+type Change struct {
+	Enable          bool        `json:"enable"`           // off or paused → on with different authority
+	ClearSuspension bool        `json:"clear_suspension"` // lifting the safety guard
+	Before          Scope       `json:"before"`
+	After           Scope       `json:"after"`
+	Expansions      []Expansion `json:"expansions"`
+}
+
+func scopeOf(g Grant) Scope {
+	a := g.authority()
+	return Scope{Preset: a.Preset, RestoreLink: a.RestoreLink, Categories: a.Categories, RunCode: a.RunCode, PrivilegedInstall: a.PrivilegedInstall}
+}
+
+// Describe compares a proposal with the current grant. Family lists are
+// resolved against the production registry.
 func Describe(prev, next Grant) Change {
-	c := Change{Preset: next.Preset, IdentityChanged: prev.Identity != next.Identity, VersionChanged: prev.CapabilityVersion != next.CapabilityVersion}
+	c := Change{Before: scopeOf(prev), After: scopeOf(next), Expansions: expansions(prev, next, DefaultRegistry())}
 	c.Enable = next.Setting == SettingOn && prev.Setting != SettingOn
 	c.ClearSuspension = prev.Suspended != nil && next.Suspended == nil
-	c.PrivilegedInstall = next.PrivilegedInstall && !prev.PrivilegedInstall
-	for category, scope := range next.Categories {
-		old, ok := prev.Categories[category]
-		if !ok {
-			c.NewCategories = append(c.NewCategories, category)
+	return c
+}
+
+func difference(a, b []string) []string {
+	var out []string
+	for _, v := range a {
+		if !contains(b, v) {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// codeFamilies lists a category's registered families that need its
+// run-code authorisation.
+func codeFamilies(registry Registry, category string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range registry.Entries {
+		if contains(e.RunCode, category) && !seen[e.Family] {
+			seen[e.Family] = true
+			out = append(out, e.Family)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// expansions is the single source of truth for widening: Narrows is true
+// exactly when it returns nothing, so the confirmation data can never omit
+// a widening the approval rule detects.
+func expansions(prev, next Grant, registry Registry) []Expansion {
+	a, b := prev.authority(), next.authority()
+	var out []Expansion
+	if a.Identity != b.Identity {
+		out = append(out, Expansion{Kind: ExpandIdentity})
+	}
+	if a.CapabilityVersion != b.CapabilityVersion {
+		out = append(out, Expansion{Kind: ExpandCapabilityVersion})
+	}
+	if a.RestoreLink != b.RestoreLink {
+		out = append(out, Expansion{Kind: ExpandRestoreLink})
+	}
+	categories := make([]string, 0, len(b.Categories))
+	for category := range b.Categories {
+		categories = append(categories, category)
+	}
+	sort.Strings(categories)
+	for _, category := range categories {
+		nextScope := b.Categories[category]
+		_, runsCode := b.RunCode[category]
+		prevScope, covered := a.Categories[category]
+		if !covered {
+			e := Expansion{Kind: ExpandCategory, Category: category, After: next.ceiling(category), AllTargets: nextScope.AllTargets, Targets: sortedCopy(nextScope.Targets), RunsCode: runsCode}
+			if len(nextScope.AllowFamilies) == 0 {
+				e.AllFamilies, e.Families = true, registry.Families(category)
+			} else {
+				e.Families = sortedCopy(nextScope.AllowFamilies)
+			}
+			out = append(out, e)
 			continue
 		}
-		single := Grant{Preset: prev.Preset, RestoreLink: prev.RestoreLink, Identity: prev.Identity, CapabilityVersion: prev.CapabilityVersion, Categories: map[string]CategoryScope{category: old}}
-		proposed := Grant{Preset: next.Preset, RestoreLink: prev.RestoreLink, Identity: prev.Identity, CapabilityVersion: prev.CapabilityVersion, Categories: map[string]CategoryScope{category: scope}}
-		if !Narrows(single, proposed) {
-			c.RaisedCategories = append(c.RaisedCategories, category)
+		if next.ceiling(category) > prev.ceiling(category) {
+			out = append(out, Expansion{Kind: ExpandCeiling, Category: category, Before: prev.ceiling(category), After: next.ceiling(category), RunsCode: runsCode})
+		}
+		if nextScope.AllTargets && !prevScope.AllTargets {
+			out = append(out, Expansion{Kind: ExpandAllTargets, Category: category, AllTargets: true, RunsCode: runsCode})
+		} else if !nextScope.AllTargets && !prevScope.AllTargets {
+			if added := difference(nextScope.Targets, prevScope.Targets); len(added) > 0 {
+				out = append(out, Expansion{Kind: ExpandTargets, Category: category, Targets: added, RunsCode: runsCode})
+			}
+		}
+		if removed := difference(prevScope.DenyTargets, nextScope.DenyTargets); len(removed) > 0 {
+			out = append(out, Expansion{Kind: ExpandTargetException, Category: category, Targets: removed, RunsCode: runsCode})
+		}
+		if removed := difference(prevScope.DenyFamilies, nextScope.DenyFamilies); len(removed) > 0 {
+			out = append(out, Expansion{Kind: ExpandFamilyException, Category: category, Families: removed, RunsCode: runsCode})
+		}
+		if len(prevScope.AllowFamilies) > 0 {
+			if len(nextScope.AllowFamilies) == 0 {
+				out = append(out, Expansion{Kind: ExpandFamilies, Category: category, AllFamilies: true, Families: difference(registry.Families(category), prevScope.AllowFamilies), RunsCode: runsCode})
+			} else if added := difference(nextScope.AllowFamilies, prevScope.AllowFamilies); len(added) > 0 {
+				out = append(out, Expansion{Kind: ExpandFamilies, Category: category, Families: added, RunsCode: runsCode})
+			}
 		}
 	}
-	for category := range next.RunCode {
-		if _, ok := prev.RunCode[category]; !ok {
-			c.NewRunCode = append(c.NewRunCode, category)
+	runCategories := make([]string, 0, len(b.RunCode))
+	for category := range b.RunCode {
+		runCategories = append(runCategories, category)
+	}
+	sort.Strings(runCategories)
+	for _, category := range runCategories {
+		nextRun := b.RunCode[category]
+		prevRun, had := a.RunCode[category]
+		switch {
+		case !had && len(nextRun.Families) == 0:
+			out = append(out, Expansion{Kind: ExpandRunCode, Category: category, AllFamilies: true, Families: codeFamilies(registry, category), RunsCode: true})
+		case !had:
+			out = append(out, Expansion{Kind: ExpandRunCode, Category: category, Families: sortedCopy(nextRun.Families), RunsCode: true})
+		case len(prevRun.Families) > 0 && len(nextRun.Families) == 0:
+			out = append(out, Expansion{Kind: ExpandRunCode, Category: category, AllFamilies: true, Families: difference(codeFamilies(registry, category), prevRun.Families), RunsCode: true})
+		case len(prevRun.Families) > 0:
+			if added := difference(nextRun.Families, prevRun.Families); len(added) > 0 {
+				out = append(out, Expansion{Kind: ExpandRunCode, Category: category, Families: added, RunsCode: true})
+			}
 		}
 	}
-	sort.Strings(c.NewCategories)
-	sort.Strings(c.RaisedCategories)
-	sort.Strings(c.NewRunCode)
-	return c
+	if b.PrivilegedInstall && !a.PrivilegedInstall {
+		out = append(out, Expansion{Kind: ExpandPrivilegedInstall, RunsCode: true})
+	}
+	return out
 }
 
 // Confirmer is a local, interactive confirmation surface (the TUI or a

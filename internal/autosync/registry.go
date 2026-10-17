@@ -75,6 +75,7 @@ const (
 	CondVersionPins          Condition = "version-pins"            // exact tool versions
 	CondBackendVerification  Condition = "backend-verification"    // checksum or signature verification
 	CondNoninteractive       Condition = "noninteractive-mechanism"
+	CondOutcomeVerified      Condition = "outcome-verified" // a post-apply check proves the result of an operation the provider cannot verify
 	CondRepositoryAtRevision Condition = "repository-at-revision"
 )
 
@@ -84,11 +85,14 @@ const (
 type Entry struct {
 	Family string
 	Class  Class
-	// Changes, Payloads and Sources restrict the (evidenced) descriptor
-	// shapes the entry covers. Empty means any.
-	Changes  []model.EffectChange
-	Payloads []model.EffectPayload
-	Sources  []model.EffectSource
+	// Activations lists the activation behaviours the entry covers; it is
+	// required, so a rule for a passive copy never covers an activation.
+	// Changes, Payloads and Sources further restrict the (evidenced)
+	// descriptor shapes the entry covers; empty means any.
+	Activations []model.EffectActivation
+	Changes     []model.EffectChange
+	Payloads    []model.EffectPayload
+	Sources     []model.EffectSource
 	// RunCode lists the categories whose "may run code" authorisation is
 	// required. Privileged requires the privileged-install authorisation.
 	RunCode    []string
@@ -159,6 +163,49 @@ func handsOff(family, increment string, runCode []string, conditions ...Conditio
 // engineering, conditions and tests. Operation forms the audit classifies as
 // never unattended (T3), such as Force replacement, have no entry.
 func DefaultRegistry() Registry {
+	r := defaultEntries()
+	for i := range r.Entries {
+		e := &r.Entries[i]
+		if len(e.Activations) == 0 {
+			e.Activations = []model.EffectActivation{familyActivation[e.Family]}
+		}
+		// The provider cannot verify these results itself; a delivered entry
+		// must bring a post-apply check (for example a health check).
+		if unverifiedFamilies[e.Family] {
+			e.Conditions = append(e.Conditions, CondOutcomeVerified)
+		}
+	}
+	return r
+}
+
+// familyActivation is each family's activation behaviour, matching the
+// provider descriptors (capability audit §4). Families not listed are
+// passive (none).
+var familyActivation = map[string]model.EffectActivation{
+	"themes.activate":        model.ActivationActivate,
+	"config.reload":          model.ActivationReload,
+	"shell.restart":          model.ActivationReload,
+	"plugins.rescan":         model.ActivationActivate,
+	"plugins.enable":         model.ActivationActivate,
+	"plugins.disable":        model.ActivationReload,
+	"services.daemon-reload": model.ActivationReload,
+	"services.enable":        model.ActivationActivate,
+	"services.start":         model.ActivationActivate,
+}
+
+var unverifiedFamilies = map[string]bool{
+	"config.reload": true, "shell.restart": true, "plugins.validate": true, "plugins.rescan": true, "services.daemon-reload": true,
+}
+
+func init() {
+	for _, e := range defaultEntries().Entries {
+		if _, ok := familyActivation[e.Family]; !ok {
+			familyActivation[e.Family] = model.ActivationNone
+		}
+	}
+}
+
+func defaultEntries() Registry {
 	themes, hooks, config, plugins := []string{"themes"}, []string{"hooks"}, []string{"config"}, []string{"plugins"}
 	services, packages, resources := []string{"services"}, []string{"packages"}, []string{"resources"}
 	return Registry{Version: CapabilityVersion, Entries: []Entry{

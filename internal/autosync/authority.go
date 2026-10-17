@@ -336,48 +336,9 @@ func subset(small, large []string) bool {
 	return true
 }
 
-// Narrows reports whether next authorises nothing that prev does not. When
-// it cannot prove that, it returns false, which requires local approval.
+// Narrows reports whether next authorises nothing that prev does not. It
+// is defined by expansions, so the confirmation data names every widening
+// this rule detects.
 func Narrows(prev, next Grant) bool {
-	a, b := prev.authority(), next.authority()
-	if a.Identity != b.Identity || a.CapabilityVersion != b.CapabilityVersion || a.RestoreLink != b.RestoreLink {
-		return false
-	}
-	if b.PrivilegedInstall && !a.PrivilegedInstall {
-		return false
-	}
-	for category, nextScope := range b.Categories {
-		prevScope, ok := a.Categories[category]
-		if !ok || next.ceiling(category) > prev.ceiling(category) {
-			return false
-		}
-		if nextScope.AllTargets && !prevScope.AllTargets {
-			return false
-		}
-		if !nextScope.AllTargets && !prevScope.AllTargets && !subset(nextScope.Targets, prevScope.Targets) {
-			return false
-		}
-		if !subset(prevScope.DenyTargets, nextScope.DenyTargets) || !subset(prevScope.DenyFamilies, nextScope.DenyFamilies) {
-			return false
-		}
-		if len(prevScope.AllowFamilies) > 0 && (len(nextScope.AllowFamilies) == 0 || !subset(nextScope.AllowFamilies, prevScope.AllowFamilies)) {
-			return false
-		}
-	}
-	// A preset change that raises the ceiling of a covered category widens.
-	for category := range b.Categories {
-		if next.ceiling(category) > prev.ceiling(category) {
-			return false
-		}
-	}
-	for category, nextRun := range b.RunCode {
-		prevRun, ok := a.RunCode[category]
-		if !ok {
-			return false
-		}
-		if len(prevRun.Families) > 0 && (len(nextRun.Families) == 0 || !subset(nextRun.Families, prevRun.Families)) {
-			return false
-		}
-	}
-	return true
+	return len(expansions(prev, next, Registry{})) == 0
 }

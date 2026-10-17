@@ -27,6 +27,8 @@ const (
 	ReasonUnpinnedSource      Reason = "unverified-source"
 	ReasonUnprovenRemoval     Reason = "unproven-removal"
 	ReasonUnregistered        Reason = "unregistered-operation"
+	ReasonUnverifiable        Reason = "result-cannot-be-verified"
+	ReasonEvidenceRejected    Reason = "evidence-changed-the-operation"
 	// Registry.
 	ReasonNotAvailableYet   Reason = "not-available-yet"
 	ReasonConditionUnproven Reason = "condition-unproven"
@@ -158,16 +160,8 @@ func evaluateOne(g Grant, registry Registry, evidence Evidence, in OperationInpu
 		d.Reason = ReasonUnresolvedProvider
 		return d
 	}
-	// Hard denials: forms the audit classifies as never unattended.
-	switch {
-	case described.Interaction == model.InteractionRequired:
-		d.Reason = ReasonInteractionRequired
-		return d
-	case described.Source == model.SourceUnpinned:
-		d.Reason = ReasonUnpinnedSource
-		return d
-	case described.Change == model.EffectRemove && described.Recovery == model.RecoveryNone:
-		d.Reason = ReasonUnprovenRemoval
+	if reason := hardDenial(described); reason != "" {
+		d.Reason = reason
 		return d
 	}
 	entries := registry.entries(described.Family)
@@ -176,8 +170,17 @@ func evaluateOne(g Grant, registry Registry, evidence Evidence, in OperationInpu
 		return d
 	}
 	effect, proven := evidence.Refine(op, described)
-	if effect.Family != described.Family || !effect.Complete() {
-		d.Reason = ReasonUndescribed
+	if reason := checkRefinement(described, effect, proven); reason != "" {
+		d.Reason = reason
+		return d
+	}
+	// Hard denials again, on the final effect.
+	if reason := hardDenial(effect); reason != "" {
+		d.Reason = reason
+		return d
+	}
+	if !effect.Verifiable && !proven[CondOutcomeVerified] {
+		d.Reason = ReasonUnverifiable
 		return d
 	}
 	// Report the lowest entry so copy can say what is planned.
@@ -211,6 +214,39 @@ func evaluateOne(g Grant, registry Registry, evidence Evidence, in OperationInpu
 	return d
 }
 
+// hardDenial reports forms the audit classifies as never unattended.
+func hardDenial(e model.Effect) Reason {
+	switch {
+	case e.Interaction == model.InteractionRequired:
+		return ReasonInteractionRequired
+	case e.Source == model.SourceUnpinned:
+		return ReasonUnpinnedSource
+	case e.Change == model.EffectRemove && e.Recovery == model.RecoveryNone:
+		return ReasonUnprovenRemoval
+	}
+	return ""
+}
+
+var payloadRank = map[model.EffectPayload]int{model.PayloadNone: 0, model.PayloadData: 1, model.PayloadConfig: 2, model.PayloadExecLater: 3, model.PayloadExecNow: 4}
+
+// checkRefinement lets evidence do exactly one thing: lower the payload
+// (for example, prove a file cannot run code), and only with positive
+// evidence. Every other dimension must be unchanged.
+func checkRefinement(described, refined model.Effect, proven map[Condition]bool) Reason {
+	if !refined.Complete() {
+		return ReasonUndescribed
+	}
+	same := refined
+	same.Payload = described.Payload
+	if same != described {
+		return ReasonEvidenceRejected
+	}
+	if refined.Payload != described.Payload && (payloadRank[refined.Payload] > payloadRank[described.Payload] || !proven[CondPositiveEvidence]) {
+		return ReasonEvidenceRejected
+	}
+	return ""
+}
+
 // worst keeps the most specific explanation across entries: a reason from
 // an entry that matched and was proven (an authority reason) says more than
 // an unproven condition, which says more than a shape mismatch or an entry
@@ -237,6 +273,13 @@ func rank(r Reason) int {
 }
 
 func matches(entry Entry, e model.Effect) bool {
+	okActivation := false
+	for _, a := range entry.Activations {
+		okActivation = okActivation || a == e.Activation
+	}
+	if !okActivation {
+		return false
+	}
 	okChange := len(entry.Changes) == 0
 	for _, c := range entry.Changes {
 		okChange = okChange || c == e.Change

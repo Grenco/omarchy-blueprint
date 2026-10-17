@@ -229,7 +229,7 @@ func TestWideningNeedsLocalApproval(t *testing.T) {
 	c := &confirmer{interactive: true, answer: true}
 	runCode := widen["run-code"](base)
 	approval, _ := ApproveLocally(base, runCode, c)
-	if got := c.seen[len(c.seen)-1]; len(got.NewRunCode) != 1 || got.NewRunCode[0] != "themes" {
+	if got := c.seen[len(c.seen)-1]; !hasExpansion(got, ExpandRunCode, "themes") {
 		t.Fatalf("confirmation did not name the new run-code category: %+v", got)
 	}
 	if _, err := f.store.Save(base, runCode, &approval); err != nil {
@@ -386,5 +386,32 @@ func TestAuthorityDigestIsOrderIndependent(t *testing.T) {
 	b.Categories["themes"] = CategoryScope{Targets: []string{"theme:a"}, MaxClass: ClassConservative}
 	if a.AuthorityDigest() == b.AuthorityDigest() {
 		t.Fatal("digest ignored a scope change")
+	}
+}
+
+// The grant is authority: a file or state directory that another user could
+// write (or read, for the file) never authorises anything. The digest is a
+// consistency check, not a signature, so permissions are the protection.
+func TestStoreRejectsUnsafePermissions(t *testing.T) {
+	cases := map[string]func(f storeFixture){
+		"grant-group-readable": func(f storeFixture) { os.Chmod(filepath.Join(f.dir, grantFile), 0o640) },
+		"grant-world-writable": func(f storeFixture) { os.Chmod(filepath.Join(f.dir, grantFile), 0o666) },
+		"state-dir-group-writable": func(f storeFixture) {
+			os.Chmod(f.dir, 0o770)
+		},
+		"parent-dir-world-writable": func(f storeFixture) {
+			os.Chmod(filepath.Dir(f.dir), 0o777)
+		},
+	}
+	for name, loosen := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newStore(t)
+			f.enable(f.proposal(PresetConservative, "themes"))
+			loosen(f)
+			g, exists, err := f.store.Load()
+			if !errors.Is(err, ErrInvalidGrant) || exists || g.Active() {
+				t.Fatalf("grant with unsafe permissions accepted: %+v %v %v", g, exists, err)
+			}
+		})
 	}
 }
