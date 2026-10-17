@@ -267,7 +267,7 @@ func (p Provider) Plan(_ context.Context, saved, current profile.Resources, sche
 					deps = append(deps, targetState.ReadyOpID)
 				}
 				sort.Strings(deps)
-				plan.Operations = append(plan.Operations, model.Operation{ID: "resources.link." + safeOperationID(linkKey(link)), Provider: "resources", Action: "replace resource link", Resource: "link:" + link.Source, Symlink: &model.SymlinkWrite{Destination: sourcePath, Target: raw, ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, DependsOn: deps, Risk: model.RiskHigh, Reversible: true})
+				plan.Operations = append(plan.Operations, model.Operation{ID: "resources.link." + safeOperationID(linkKey(link)), Provider: "resources", Action: "replace resource link", Resource: "link:" + link.Source, Symlink: &model.SymlinkWrite{Destination: sourcePath, Target: raw, ReplaceExisting: true, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, DependsOn: deps, Risk: model.RiskHigh, Reversible: true, Effect: resourceEffect("link-replace", model.EffectUpdate, model.SourceLocal, model.RecoveryBackup)})
 				continue
 			}
 			plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "resources", Resource: "link:" + link.Source, Reason: "existing link destination differs; overwrite disabled"})
@@ -283,7 +283,7 @@ func (p Provider) Plan(_ context.Context, saved, current profile.Resources, sche
 			deps = append(deps, targetState.ReadyOpID)
 		}
 		sort.Strings(deps)
-		plan.Operations = append(plan.Operations, model.Operation{ID: "resources.link." + safeOperationID(linkKey(link)), Provider: "resources", Action: "symlink", Resource: "link:" + link.Source, Symlink: &model.SymlinkWrite{Destination: sourcePath, Target: raw, ExpectedMissing: true, RejectSymlinkParents: true}, DependsOn: deps, Risk: model.RiskLow})
+		plan.Operations = append(plan.Operations, model.Operation{ID: "resources.link." + safeOperationID(linkKey(link)), Provider: "resources", Action: "symlink", Resource: "link:" + link.Source, Symlink: &model.SymlinkWrite{Destination: sourcePath, Target: raw, ExpectedMissing: true, RejectSymlinkParents: true}, DependsOn: deps, Risk: model.RiskLow, Effect: resourceEffect("link", model.EffectAdd, model.SourceLocal, model.RecoveryNone)})
 	}
 	return plan, nil
 }
@@ -335,17 +335,17 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 				return resourcePlanState{}, nil, "", err
 			}
 			id := "resources.file." + saved.ID
-			return resourcePlanState{Satisfied: true, ReadyOpID: id}, []model.Operation{{ID: id, Provider: "resources", Action: "file", Resource: "resource:" + saved.ID, File: &model.FileWrite{Source: source, Destination: path, SourceHash: saved.Hash, ExpectedMissing: true, Mode: &mode, RejectSymlinkParents: true}, Risk: model.RiskLow}}, "", nil
+			return resourcePlanState{Satisfied: true, ReadyOpID: id}, []model.Operation{{ID: id, Provider: "resources", Action: "file", Resource: "resource:" + saved.ID, File: &model.FileWrite{Source: source, Destination: path, SourceHash: saved.Hash, ExpectedMissing: true, Mode: &mode, RejectSymlinkParents: true}, Risk: model.RiskLow, Effect: resourceEffect("file", model.EffectAdd, model.SourceArtifact, model.RecoveryNone)}}, "", nil
 		}
 		id := "resources.copy." + saved.ID
-		return resourcePlanState{Satisfied: true, ReadyOpID: id}, []model.Operation{{ID: id, Provider: "resources", Action: "copy", Resource: "resource:" + saved.ID, Copy: &model.Copy{Source: source, Destination: path, SourceHash: saved.Hash, RejectSymlinkParents: true}, Risk: model.RiskLow}}, "", nil
+		return resourcePlanState{Satisfied: true, ReadyOpID: id}, []model.Operation{{ID: id, Provider: "resources", Action: "copy", Resource: "resource:" + saved.ID, Copy: &model.Copy{Source: source, Destination: path, SourceHash: saved.Hash, RejectSymlinkParents: true}, Risk: model.RiskLow, Effect: resourceEffect("copy", model.EffectAdd, model.SourceArtifact, model.RecoveryNone)}}, "", nil
 	}
 	parent := filepath.Dir(path)
 	var ops []model.Operation
 	mkdir := ""
 	if _, err := os.Lstat(parent); os.IsNotExist(err) {
 		mkdir = "resources.mkdir." + saved.ID
-		ops = append(ops, model.Operation{ID: mkdir, Provider: "resources", Action: "directory", Resource: "resource:" + saved.ID, Directory: &model.DirectoryCreate{Path: parent, Mode: 0o755, RejectSymlinkParents: true}, Risk: model.RiskLow})
+		ops = append(ops, model.Operation{ID: mkdir, Provider: "resources", Action: "directory", Resource: "resource:" + saved.ID, Directory: &model.DirectoryCreate{Path: parent, Mode: 0o755, RejectSymlinkParents: true}, Risk: model.RiskLow, Effect: &model.Effect{Family: "resources.mkdir", Change: model.EffectAdd, Payload: model.PayloadData, Source: model.SourceNone, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: model.RecoveryNone, Verifiable: true}})
 	} else if err != nil {
 		return resourcePlanState{}, nil, "", err
 	}
@@ -354,20 +354,20 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 	if repo, ok := githubRepo(saved.Remote); ok {
 		command = []string{"gh", "repo", "clone", strings.TrimPrefix(repo, "github.com/"), path, "--", "--no-checkout"}
 	}
-	ops = append(ops, model.Operation{ID: clone, Provider: "resources", Action: "git clone", Resource: "resource:" + saved.ID, Command: command, DependsOn: nonEmpty(mkdir), Risk: model.RiskLow})
+	ops = append(ops, model.Operation{ID: clone, Provider: "resources", Action: "git clone", Resource: "resource:" + saved.ID, Command: command, DependsOn: nonEmpty(mkdir), Risk: model.RiskLow, Effect: resourceEffect("git-clone", model.EffectAdd, model.SourceUnpinned, model.RecoveryNone)})
 	checkout := "resources.git.checkout." + saved.ID
-	ops = append(ops, model.Operation{ID: checkout, Provider: "resources", Action: "git checkout", Resource: "resource:" + saved.ID, Command: []string{"git", "-C", path, "checkout", "--detach", saved.Revision}, DependsOn: []string{clone}, Risk: model.RiskLow})
+	ops = append(ops, model.Operation{ID: checkout, Provider: "resources", Action: "git checkout", Resource: "resource:" + saved.ID, Command: []string{"git", "-C", path, "checkout", "--detach", saved.Revision}, DependsOn: []string{clone}, Risk: model.RiskLow, Effect: resourceEffect("git-checkout", model.EffectUpdate, model.SourcePinned, model.RecoveryNone)})
 	ready := checkout
 	if saved.Strategy == "git+diff" {
 		stateRoot := filepath.Join(p.ProfileDir, "resources", "git-state", saved.ID)
 		if saved.IndexPatchHash != "" {
 			id := "resources.git.apply-index." + saved.ID
-			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "apply staged Git state", Resource: "resource:" + saved.ID, GitPatch: &model.GitPatchApply{Repository: path, Source: filepath.Join(stateRoot, "index.patch"), SourceHash: saved.IndexPatchHash, ToIndex: true}, DependsOn: []string{ready}, Risk: model.RiskLow})
+			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "apply staged Git state", Resource: "resource:" + saved.ID, GitPatch: &model.GitPatchApply{Repository: path, Source: filepath.Join(stateRoot, "index.patch"), SourceHash: saved.IndexPatchHash, ToIndex: true}, DependsOn: []string{ready}, Risk: model.RiskLow, Effect: resourceEffect("git-apply-index", model.EffectUpdate, model.SourceArtifact, model.RecoveryNone)})
 			ready = id
 		}
 		if saved.WorktreePatchHash != "" {
 			id := "resources.git.apply-worktree." + saved.ID
-			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "apply unstaged Git state", Resource: "resource:" + saved.ID, GitPatch: &model.GitPatchApply{Repository: path, Source: filepath.Join(stateRoot, "worktree.patch"), SourceHash: saved.WorktreePatchHash}, DependsOn: []string{ready}, Risk: model.RiskLow})
+			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "apply unstaged Git state", Resource: "resource:" + saved.ID, GitPatch: &model.GitPatchApply{Repository: path, Source: filepath.Join(stateRoot, "worktree.patch"), SourceHash: saved.WorktreePatchHash}, DependsOn: []string{ready}, Risk: model.RiskLow, Effect: resourceEffect("git-apply-worktree", model.EffectUpdate, model.SourceArtifact, model.RecoveryNone)})
 			ready = id
 		}
 		for _, file := range saved.Untracked {
@@ -376,7 +376,7 @@ func (p Provider) planResource(saved, current profile.Resource) (resourcePlanSta
 				return resourcePlanState{}, nil, "", err
 			}
 			id := "resources.git.untracked." + saved.ID + "." + safeOperationID(file.Path) + "." + fmt.Sprintf("%x", sha256.Sum256([]byte(file.Path)))[:12]
-			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "restore untracked Git file", Resource: "resource:" + saved.ID, File: &model.FileWrite{Source: filepath.Join(stateRoot, "untracked", filepath.FromSlash(file.Path)), Destination: filepath.Join(path, filepath.FromSlash(file.Path)), SourceHash: file.Hash, ExpectedMissing: true, Mode: &mode, RejectSymlinkParents: true}, DependsOn: []string{ready}, Risk: model.RiskLow})
+			ops = append(ops, model.Operation{ID: id, Provider: "resources", Action: "restore untracked Git file", Resource: "resource:" + saved.ID, File: &model.FileWrite{Source: filepath.Join(stateRoot, "untracked", filepath.FromSlash(file.Path)), Destination: filepath.Join(path, filepath.FromSlash(file.Path)), SourceHash: file.Hash, ExpectedMissing: true, Mode: &mode, RejectSymlinkParents: true}, DependsOn: []string{ready}, Risk: model.RiskLow, Effect: resourceEffect("git-untracked", model.EffectAdd, model.SourceArtifact, model.RecoveryNone)})
 			ready = id
 		}
 	}
@@ -430,4 +430,13 @@ func equivalentLink(source, expected string) bool {
 	}
 	expected, err = filepath.EvalSymlinks(expected)
 	return err == nil && filepath.Clean(actual) == filepath.Clean(expected)
+}
+
+// resourceEffect describes a Resources operation for unattended authority
+// (Auto Sync); see the capability audit §4.9. Resources are arbitrary user
+// files and projects, so their content is exec-later until positive-evidence
+// analysis proves a destination inert. git clone fetches the remote's
+// current state before the pinned checkout.
+func resourceEffect(family string, change model.EffectChange, source model.EffectSource, recovery model.EffectRecovery) *model.Effect {
+	return &model.Effect{Family: "resources." + family, Change: change, Payload: model.PayloadExecLater, Source: source, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: recovery, Verifiable: true}
 }

@@ -535,7 +535,7 @@ func (p Provider) plan(saved, current profile.Packages, schema int, from, to str
 	}
 	if len(additions) == 0 && len(removals) == 0 {
 		ids := sortedMiseIDs(installOnly)
-		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), Risk: miseInstallRisk(installOnly)})
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), Risk: miseInstallRisk(installOnly), Effect: miseInstallEffect()})
 		return plan, nil
 	}
 	candidate, candidateErr := buildMiseMutationCandidate(snapshot, physicalCurrent.Mise, additions, removals)
@@ -553,11 +553,11 @@ func (p Provider) plan(saved, current profile.Packages, schema int, from, to str
 		// prove it still has the approved content immediately before the
 		// first destructive command. Positional parameters avoid embedding an
 		// untrusted path or hash into shell source.
-		plan.Operations = append(plan.Operations, model.Operation{ID: guardID, Provider: "packages", Action: "verify", Resource: "mise:global-tools", Command: []string{"sh", "-c", `test "$(sha256sum -- "$1" | cut -d ' ' -f 1)" = "$2"`, "sh", p.MiseGlobalConfig, snapshot.Hash}, Risk: model.RiskLow})
+		plan.Operations = append(plan.Operations, model.Operation{ID: guardID, Provider: "packages", Action: "verify", Resource: "mise:global-tools", Command: []string{"sh", "-c", `test "$(sha256sum -- "$1" | cut -d ' ' -f 1)" = "$2"`, "sh", p.MiseGlobalConfig, snapshot.Hash}, Risk: model.RiskLow, Effect: packagesEffect("mise-guard", model.EffectNoChange, model.PayloadNone, model.SourceLocal, model.PrivilegeUser, model.InteractionNone, model.RecoveryNone)})
 	}
 	for _, id := range removals {
 		opID := "packages.mise.remove." + id
-		removalOps = append(removalOps, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, DependsOn: []string{guardID}, Risk: model.RiskHigh})
+		removalOps = append(removalOps, model.Operation{ID: opID, Provider: "packages", Action: "remove", Resource: "mise:" + id, Items: []string{id}, Command: []string{"mise", "-C", "/", "uninstall", "--all", id}, DependsOn: []string{guardID}, Risk: model.RiskHigh, Effect: packagesEffect("mise-remove", model.EffectRemove, model.PayloadExecLater, model.SourceNone, model.PrivilegeUser, model.InteractionNone, model.RecoveryReinstall)})
 		removalIDs = append(removalIDs, opID)
 	}
 	mutationIDs := append(append([]string(nil), removals...), sortedMiseIDs(additions)...)
@@ -575,16 +575,16 @@ func (p Provider) plan(saved, current profile.Packages, schema int, from, to str
 	// uninstall leaves it actionable for a later retry. The preceding guard
 	// blocks stale authority before any destructive command can start.
 	plan.Operations = append(plan.Operations, removalOps...)
-	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, DependsOn: removalIDs, Risk: risk, Reversible: snapshot.Exists})
+	plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.configure", Provider: "packages", Action: "configure", Resource: "mise:global-tools", Items: mutationIDs, File: &write, DependsOn: removalIDs, Risk: risk, Reversible: snapshot.Exists, Effect: miseConfigureEffect(snapshot.Exists)})
 	if len(additions) > 0 {
 		for id, tool := range installOnly {
 			additions[id] = tool
 		}
 		ids := sortedMiseIDs(additions)
-		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions)})
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(additions), Effect: miseInstallEffect()})
 	} else if len(installOnly) > 0 {
 		ids := sortedMiseIDs(installOnly)
-		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(installOnly)})
+		plan.Operations = append(plan.Operations, model.Operation{ID: "packages.mise.install", Provider: "packages", Action: "install", Resource: "mise:" + strings.Join(ids, ","), Items: ids, Command: append([]string{"mise", "-C", "/", "install"}, ids...), DependsOn: []string{"packages.mise.configure"}, Risk: miseInstallRisk(installOnly), Effect: miseInstallEffect()})
 	}
 	return plan, nil
 }
@@ -786,6 +786,7 @@ func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []m
 			Risk:        model.RiskHigh,
 			Interactive: true,
 			Notice:      "Omarchy's preinstall flow requests terminal confirmation before changing the managed application set.",
+			Effect:      packagesEffect("preinstalls", model.EffectUpdate, model.PayloadExecNow, model.SourceSigned, model.PrivilegeRoot, model.InteractionRequired, model.RecoveryNone),
 		})
 		groupDependency = []string{id}
 		for item := range simulated {
@@ -819,6 +820,7 @@ func planPreinstalls(saved, current profile.Preinstalls) ([]model.Operation, []m
 			Reversible:  false,
 			Interactive: true,
 			Notice:      elevationNotice,
+			Effect:      preinstallEffect(action),
 		})
 	}
 	return operations, skipped
@@ -926,7 +928,7 @@ func planExactArchRemovals(plan model.RestorePlan, saved, current profile.Packag
 					interactive, notice = recipe.Interactive, recipe.RemoveNotice
 				}
 			}
-			plan.Operations = append(plan.Operations, model.Operation{ID: operationID, Provider: "packages", Action: "remove", Resource: absence.Ref, Items: []string{id}, Command: commandLine, Risk: model.RiskHigh, Interactive: interactive, Notice: notice})
+			plan.Operations = append(plan.Operations, model.Operation{ID: operationID, Provider: "packages", Action: "remove", Resource: absence.Ref, Items: []string{id}, Command: commandLine, Risk: model.RiskHigh, Interactive: interactive, Notice: notice, Effect: removeEffect(kind, operationID != "packages.remove."+kind+"."+id)})
 		}
 	}
 	return plan
@@ -1071,7 +1073,7 @@ func operation(kind string, names, argv []string) model.Operation {
 	if kind == "aur" && len(names) == 1 {
 		id += "." + names[0]
 	}
-	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false, Interactive: true, Notice: elevationNotice}
+	return model.Operation{ID: id, Provider: "packages", Action: "install", Resource: kind + ":" + strings.Join(names, ","), Items: names, Command: argv, Risk: model.RiskLow, Reversible: false, Interactive: true, Notice: elevationNotice, Effect: installEffect(kind)}
 }
 
 func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {
@@ -1088,6 +1090,7 @@ func semanticInstallOperation(recipe omarchy.AppRecipe) model.Operation {
 		Notice:      recipe.InstallNotice,
 		Label:       "Omarchy's " + recipe.Name + " setup",
 		AwaitsYou:   recipe.AwaitsYou,
+		Effect:      recipeEffect(recipe),
 	}
 }
 

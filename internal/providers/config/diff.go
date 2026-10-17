@@ -138,7 +138,7 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 		if file.BaselineHash == "" && desired.state == desiredMissing {
 			risk = model.RiskLow
 		}
-		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: risk, Reversible: true})
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "write", Resource: "config:" + file.Path, File: &write, Risk: risk, Reversible: true, Effect: writeEffect("write", &write)})
 		if isHyprConfigPath(file.Path) {
 			reloadDependencies = append(reloadDependencies, id)
 		}
@@ -173,13 +173,13 @@ func (p Provider) PlanOverlay(saved profile.Configs, scan ScanSummary, schema in
 		if err != nil {
 			return model.RestorePlan{}, err
 		}
-		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "delete", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true})
+		plan.Operations = append(plan.Operations, model.Operation{ID: id, Provider: "config", Action: "delete", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true, Effect: deleteEffect("delete")})
 		if isHyprConfigPath(deletion.Path) {
 			reloadDependencies = append(reloadDependencies, id)
 		}
 	}
 	if len(reloadDependencies) > 0 {
-		plan.Operations = append(plan.Operations, model.Operation{ID: "config.reload", Provider: "config", Action: "reload", Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"}, DependsOn: reloadDependencies, Risk: model.RiskLow})
+		plan.Operations = append(plan.Operations, model.Operation{ID: "config.reload", Provider: "config", Action: "reload", Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"}, DependsOn: reloadDependencies, Risk: model.RiskLow, Effect: reloadEffect()})
 	}
 	return plan, nil
 }
@@ -376,13 +376,13 @@ func (p Provider) forceFileWrite(file profile.ConfigFile, action string) (model.
 	precondition, err := configFilesystemPrecondition(destination)
 	if os.IsNotExist(err) {
 		write.ExpectedMissing = true
-		return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true}, nil
+		return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true, Effect: writeEffect("force-write", &write)}, nil
 	}
 	if err != nil {
 		return model.Operation{}, err
 	}
 	write.ReplaceExisting, write.ExpectedExisting, write.Backup = true, &precondition, true
-	return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true}, nil
+	return model.Operation{ID: "config.write." + configOperationID(file.Path), Provider: "config", Action: action, Resource: "config:" + file.Path, File: &write, Risk: model.RiskHigh, Reversible: true, Effect: writeEffect("force-write", &write)}, nil
 }
 
 func (p Provider) forceDelete(deletion profile.ConfigDelete) (model.Operation, error) {
@@ -394,7 +394,7 @@ func (p Provider) forceDelete(deletion profile.ConfigDelete) (model.Operation, e
 	if err != nil {
 		return model.Operation{}, err
 	}
-	return model.Operation{ID: "config.delete." + configOperationID(deletion.Path), Provider: "config", Action: "delete unknown target", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true}, nil
+	return model.Operation{ID: "config.delete." + configOperationID(deletion.Path), Provider: "config", Action: "delete unknown target", Resource: "config:" + deletion.Path, Delete: &model.FileDelete{Destination: destination, ExpectedExisting: &precondition, Backup: true, RejectSymlinkParents: true}, Risk: model.RiskHigh, Reversible: true, Effect: deleteEffect("force-delete")}, nil
 }
 
 func configFilesystemPrecondition(path string) (model.FilesystemPrecondition, error) {

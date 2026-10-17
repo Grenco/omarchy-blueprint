@@ -82,7 +82,7 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 		} else {
 			write.ExpectedMissing = true
 		}
-		plan.Operations = append(plan.Operations, model.Operation{ID: operationID(item.Path), Provider: "hooks", Action: "write", Resource: resource, Items: []string{item.Path}, File: &write, Risk: model.RiskHigh, Reversible: exists})
+		plan.Operations = append(plan.Operations, model.Operation{ID: operationID(item.Path), Provider: "hooks", Action: "write", Resource: resource, Items: []string{item.Path}, File: &write, Risk: model.RiskHigh, Reversible: exists, Effect: hookWriteEffect(exists)})
 	}
 	// A hook tombstoned in saved.Absent is not "extra" -- it has its own
 	// recorded desired state (desired-absent), just not Present state.
@@ -150,6 +150,7 @@ func (p Provider) Plan(saved profile.Hooks, current State, schema int, from, to 
 				RejectSymlinkParents: true,
 			},
 			Risk: model.RiskHigh, Reversible: true,
+			Effect: hookDeleteEffect(),
 		})
 	}
 
@@ -185,4 +186,18 @@ func operationID(path string) string {
 func deleteOperationID(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	return "hooks.delete." + hex.EncodeToString(sum[:8])
+}
+
+// Effect descriptors for unattended authority (Auto Sync); see the
+// capability audit §4.5. Hooks are executable scripts run on Omarchy events.
+func hookWriteEffect(exists bool) *model.Effect {
+	change, recovery := model.EffectAdd, model.RecoveryNone
+	if exists {
+		change, recovery = model.EffectUpdate, model.RecoveryBackup
+	}
+	return &model.Effect{Family: "hooks.write", Change: change, Payload: model.PayloadExecLater, Source: model.SourceArtifact, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: recovery, Verifiable: true}
+}
+
+func hookDeleteEffect() *model.Effect {
+	return &model.Effect{Family: "hooks.delete", Change: model.EffectRemove, Payload: model.PayloadExecLater, Source: model.SourceNone, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: model.RecoveryBackup, Verifiable: true}
 }

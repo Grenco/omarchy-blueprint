@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 )
@@ -92,7 +93,42 @@ func (p *Provider) planArtifact(unit, relative, destination string, desired capt
 			op.File.ReplaceExisting, op.File.ExpectedExisting, op.File.Backup = true, precondition, true
 		}
 	}
+	op.Effect = artifactEffect(relative, op)
 	return op, "", nil
+}
+
+// Effect descriptors for unattended authority (Auto Sync); see the
+// capability audit §4.7. Unit definitions name commands that run when the
+// unit starts, so they are exec-later.
+func artifactEffect(relative string, op model.Operation) *model.Effect {
+	family := "services.write-unit"
+	if strings.Contains(filepath.ToSlash(relative), ".d/") {
+		family = "services.write-dropin"
+	}
+	change, recovery := model.EffectAdd, model.RecoveryNone
+	if op.Delete != nil {
+		family, change, recovery = "services.remove-file", model.EffectRemove, model.RecoveryBackup
+	} else if op.File != nil && !op.File.ExpectedMissing {
+		change, recovery = model.EffectUpdate, model.RecoveryBackup
+	}
+	return &model.Effect{Family: family, Change: change, Payload: model.PayloadExecLater, Source: model.SourceArtifact, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: recovery, Verifiable: true}
+}
+
+func commandEffect(verb string) *model.Effect {
+	e := &model.Effect{Family: "services." + verb, Change: model.EffectUpdate, Payload: model.PayloadExecLater, Source: model.SourceLocal, Activation: model.ActivationActivate, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: model.RecoveryNone, Verifiable: true}
+	switch verb {
+	case "start":
+		e.Change, e.Payload = model.EffectNoChange, model.PayloadExecNow
+	case "daemon-reload":
+		// Re-reads definitions; runs no ExecStart.
+		e.Change, e.Payload, e.Activation, e.Verifiable = model.EffectNoChange, model.PayloadNone, model.ActivationReload, false
+	case "disable", "mask":
+		e.Payload, e.Activation, e.Recovery = model.PayloadConfig, model.ActivationNone, model.RecoveryReinstall
+	case "enable":
+	default:
+		e.Family = "" // unknown verb: undescribed, so always review
+	}
+	return e
 }
 
 // Match content.HashFilesystemObject's single-file identity using the exact

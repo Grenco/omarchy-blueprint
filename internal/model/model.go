@@ -50,6 +50,9 @@ type Operation struct {
 	// signing in through a link it prints. Progress repeats it while the
 	// step runs so a wait never looks like a hang.
 	AwaitsYou string `json:"awaits_you,omitempty"`
+	// Effect is the provider's descriptor for unattended authority (Auto
+	// Sync). Nil means undescribed, which always requires review.
+	Effect *Effect `json:"effect,omitempty"`
 }
 
 type Copy struct {

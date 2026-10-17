@@ -59,8 +59,28 @@ func (p Provider) Plan(saved profile.Shell, current State, schema int, from, to 
 		}
 	}
 	plan.Operations = append(plan.Operations,
-		model.Operation{ID: "shell.write", Provider: "shell", Action: "write", Resource: "shell:config", File: &write, Risk: risk, Reversible: write.Backup},
-		model.Operation{ID: "shell.restart", Provider: "shell", Action: "restart", Resource: "shell:runtime", Command: []string{"omarchy-restart-shell"}, DependsOn: []string{"shell.write"}, Risk: model.RiskMedium},
+		model.Operation{ID: "shell.write", Provider: "shell", Action: "write", Resource: "shell:config", File: &write, Risk: risk, Reversible: write.Backup, Effect: shellWriteEffect(&write)},
+		model.Operation{ID: "shell.restart", Provider: "shell", Action: "restart", Resource: "shell:runtime", Command: []string{"omarchy-restart-shell"}, DependsOn: []string{"shell.write"}, Risk: model.RiskMedium, Effect: shellRestartEffect()},
 	)
 	return plan, nil
+}
+
+// Effect descriptors for unattended authority (Auto Sync); see the
+// capability audit §4.4. Shell configuration chooses which plugins load, so
+// it is exec-later; content merged from verified profile intent and the live
+// baseline is described as an artifact.
+func shellWriteEffect(write *model.FileWrite) *model.Effect {
+	change, recovery := model.EffectUpdate, model.RecoveryNone
+	if write.ExpectedMissing {
+		change = model.EffectAdd
+	}
+	if write.Backup {
+		recovery = model.RecoveryBackup
+	}
+	return &model.Effect{Family: "shell.write", Change: change, Payload: model.PayloadExecLater, Source: model.SourceArtifact, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: recovery, Verifiable: true}
+}
+
+// Restarting the shell loads every enabled plugin.
+func shellRestartEffect() *model.Effect {
+	return &model.Effect{Family: "shell.restart", Change: model.EffectNoChange, Payload: model.PayloadExecNow, Source: model.SourceLocal, Activation: model.ActivationReload, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: model.RecoveryNone, Verifiable: false}
 }

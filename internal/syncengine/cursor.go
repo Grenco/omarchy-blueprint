@@ -4,15 +4,14 @@ package syncengine
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/Grenco/omarchy-blueprint/internal/localstate"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/pelletier/go-toml/v2"
-	"golang.org/x/sys/unix"
 )
 
 const CursorFormatVersion = 1
@@ -79,30 +78,17 @@ func (s CursorStore) Load() (Cursor, bool, error) {
 	if err != nil {
 		return Cursor{}, false, err
 	}
-	if err := inspectStateDir(s.StateHome, filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
+	if err := localstate.InspectDir(s.StateHome, filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
 		return Cursor{}, false, nil
 	} else if err != nil {
 		return Cursor{}, false, err
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	bytes, err := localstate.ReadFile(path, 16384)
 	if errors.Is(err, os.ErrNotExist) {
 		return Cursor{}, false, nil
 	}
 	if err != nil {
-		return Cursor{}, false, errors.New("open sync cursor failed")
-	}
-	f := os.NewFile(uintptr(fd), path)
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return Cursor{}, false, errors.New("sync cursor is not a regular file")
-	}
-	bytes, err := io.ReadAll(io.LimitReader(f, 16385))
-	if err != nil {
-		return Cursor{}, false, errors.New("read sync cursor failed")
-	}
-	if len(bytes) > 16384 {
-		return Cursor{}, false, errors.New("sync cursor exceeds size limit")
+		return Cursor{}, false, fmt.Errorf("sync cursor: %w", err)
 	}
 	var cursor Cursor
 	// TOML diagnostics can quote input; do not expose a malformed file's content.
@@ -124,35 +110,14 @@ func (s CursorStore) Save(cursor Cursor) error {
 	if err != nil {
 		return err
 	}
-	if err := privateStateDir(s.StateHome, filepath.Dir(path)); err != nil {
+	if err := localstate.PrivateDir(s.StateHome, filepath.Dir(path)); err != nil {
 		return err
 	}
 	bytes, err := toml.Marshal(cursor)
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".sync-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(temp.Name())
-	defer temp.Close()
-	if err := temp.Chmod(0600); err != nil {
-		return err
-	}
-	if _, err := temp.Write(bytes); err != nil {
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temp.Name(), path); err != nil {
-		return err
-	}
-	return syncStateDir(filepath.Dir(path))
+	return localstate.WriteFile(path, bytes)
 }
 
 func (s CursorStore) Remove() error {
@@ -160,94 +125,9 @@ func (s CursorStore) Remove() error {
 	if err != nil {
 		return err
 	}
-	if err := inspectStateDir(s.StateHome, filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return syncStateDir(filepath.Dir(path))
+	return localstate.RemoveFile(s.StateHome, path)
 }
 
-// Read/remove must enforce the same profile isolation as save/lock, without
-// creating missing state or changing permissions. StateHome itself is trusted.
-func inspectStateDir(home, dir string) error {
-	root, err := filepath.Abs(home)
-	if err != nil {
-		return err
-	}
-	target, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return err
-	}
-	current := root
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			return os.ErrNotExist
-		}
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return errors.New("sync state directory is not a directory")
-		}
-	}
-	return nil
-}
-
-func syncStateDir(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
-}
-
-// The caller-provided state home is trusted; Blueprint-created descendants must
-// be private directories, never symlink aliases to another profile's state.
-func privateStateDir(home, dir string) error {
-	root, err := filepath.Abs(home)
-	if err != nil {
-		return err
-	}
-	target, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return err
-	}
-	current := root
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		current = filepath.Join(current, part)
-		if err := os.Mkdir(current, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		info, err := os.Lstat(current)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("sync state directory is not a directory")
-		}
-		if err := os.Chmod(current, 0700); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// ValidRefIdentity reports whether ref is a safe Git branch/upstream name as
+// recorded in Sync and Auto Sync state.
+func ValidRefIdentity(ref string) bool { return validRefIdentity(ref) }

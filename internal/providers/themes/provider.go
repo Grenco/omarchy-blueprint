@@ -441,10 +441,14 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "themes", Resource: "theme:" + desired.ID, Reason: "Git URL installs under a different theme name"})
 				continue
 			}
-			plan.Operations = append(plan.Operations, operation("install", desired.ID, []string{"omarchy", "theme", "install", desired.URL}), operation("pin", desired.ID, []string{"git", "-C", filepath.Join(p.UserDir, desired.ID), "checkout", "--detach", desired.Revision}))
+			plan.Operations = append(plan.Operations, withEffect(operation("install", desired.ID, []string{"omarchy", "theme", "install", desired.URL}), effectInstallGit), withEffect(operation("pin", desired.ID, []string{"git", "-C", filepath.Join(p.UserDir, desired.ID), "checkout", "--detach", desired.Revision}), effectPinGit))
 			needsActivation = true
 		case "local", "overlay":
-			plan.Operations = append(plan.Operations, model.Operation{ID: "themes.copy." + desired.ID, Provider: "themes", Action: "copy", Resource: "theme:" + desired.ID, Items: []string{desired.ID}, Copy: &model.Copy{Source: filepath.Join(p.ProfileDir, "themes", "local", desired.ID), Destination: filepath.Join(p.UserDir, desired.ID)}, Risk: model.RiskLow, Reversible: true})
+			copyEffect := effectCopyLocal
+			if desired.Type == "overlay" {
+				copyEffect = effectCopyOverlay
+			}
+			plan.Operations = append(plan.Operations, withEffect(model.Operation{ID: "themes.copy." + desired.ID, Provider: "themes", Action: "copy", Resource: "theme:" + desired.ID, Items: []string{desired.ID}, Copy: &model.Copy{Source: filepath.Join(p.ProfileDir, "themes", "local", desired.ID), Destination: filepath.Join(p.UserDir, desired.ID)}, Risk: model.RiskLow, Reversible: true}, copyEffect))
 			if desired.ID == saved.Current {
 				needsActivation = true
 			}
@@ -469,7 +473,7 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 	}
 	var activationID string
 	if saved.Current != "" && needsActivation {
-		act := operation("activate", saved.Current, []string{"omarchy", "theme", "set", saved.Current})
+		act := withEffect(operation("activate", saved.Current, []string{"omarchy", "theme", "set", saved.Current}), effectActivate)
 		activationID = act.ID
 		plan.Operations = append(plan.Operations, act)
 	}
@@ -507,7 +511,7 @@ func (p Provider) Plan(saved, current profile.Themes, schema int, from, to strin
 				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "themes", Resource: "theme:" + desired.ID, Reason: "cannot remove the currently active theme without a valid replacement"})
 				continue
 			}
-			removeOp := model.Operation{ID: "themes.remove." + desired.ID, Provider: "themes", Action: "remove", Resource: "theme:" + desired.ID, Items: []string{desired.ID}, Command: []string{"omarchy", "theme", "remove", desired.ID}, Risk: model.RiskHigh, Reversible: false}
+			removeOp := withEffect(model.Operation{ID: "themes.remove." + desired.ID, Provider: "themes", Action: "remove", Resource: "theme:" + desired.ID, Items: []string{desired.ID}, Command: []string{"omarchy", "theme", "remove", desired.ID}, Risk: model.RiskHigh, Reversible: false}, effectRemove)
 			if activationID != "" {
 				removeOp.DependsOn = []string{activationID}
 			}

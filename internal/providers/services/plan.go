@@ -272,7 +272,7 @@ func serviceCommand(verb, name, target string) model.Operation {
 	if name != "" {
 		command = append(command, "--no-reload", "--", name)
 	}
-	return model.Operation{ID: id, Provider: "services", Action: verb, Resource: target, Command: command, Risk: model.RiskMedium, Reversible: false}
+	return model.Operation{ID: id, Provider: "services", Action: verb, Resource: target, Command: command, Risk: model.RiskMedium, Reversible: false, Effect: commandEffect(verb)}
 }
 
 func (p *Provider) desiredServiceFile(relative, hash, mode string) (capturedFile, error) {
@@ -347,7 +347,7 @@ func (p *Provider) planUnit(saved profile.ServiceUnit, current map[string]Observ
 			if err != nil {
 				return effects, "", "", false, err
 			}
-			effects.files = append(effects.files, model.Operation{ID: fmt.Sprintf("services.link.%x", sum[:12]), Provider: "services", Resource: saved.Name, Action: "link", Symlink: &model.SymlinkWrite{Destination: path, Target: saved.LinkedSource, ExpectedMissing: true, ExpectedTarget: regularFilePrecondition(file, uint32(mode)), RejectSymlinkParents: true}, Risk: model.RiskMedium})
+			effects.files = append(effects.files, model.Operation{ID: fmt.Sprintf("services.link.%x", sum[:12]), Provider: "services", Resource: saved.Name, Action: "link", Symlink: &model.SymlinkWrite{Destination: path, Target: saved.LinkedSource, ExpectedMissing: true, ExpectedTarget: regularFilePrecondition(file, uint32(mode)), RejectSymlinkParents: true}, Risk: model.RiskMedium, Effect: &model.Effect{Family: "services.link", Change: model.EffectAdd, Payload: model.PayloadExecLater, Source: model.SourceLocal, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: model.RecoveryNone, Verifiable: true}})
 		} else if target != saved.LinkedSource {
 			return failure("services.link.conflict", "Existing linked-source relationship conflicts with selected intent", true)
 		}

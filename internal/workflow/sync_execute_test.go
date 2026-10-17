@@ -25,6 +25,7 @@ type executionSyncProvider struct {
 	restoreTo               profile.Data
 	failCapture, failVerify bool
 	interactiveRestore      bool
+	effect                  *model.Effect // optional Auto Sync descriptor for planned operations
 }
 
 func (p *executionSyncProvider) InspectTargets(ctx context.Context, d profile.Data) ([]TargetInspection, error) {
@@ -77,7 +78,12 @@ func (p *executionSyncProvider) Plan(_ context.Context, d profile.Data, _ omarch
 	}
 	for key, decision := range rc.Targets {
 		if decision.Restore {
-			part.Operations = append(part.Operations, model.Operation{ID: "fixture:" + key, Provider: "packages", Resource: key, Action: "fixture", Command: []string{"fixture-restore", key}, Interactive: p.interactiveRestore})
+			op := model.Operation{ID: "fixture:" + key, Provider: "packages", Resource: key, Action: "fixture", Command: []string{"fixture-restore", key}, Interactive: p.interactiveRestore}
+			if p.effect != nil {
+				copied := *p.effect
+				op.Effect = &copied
+			}
+			part.Operations = append(part.Operations, op)
 		}
 	}
 	// Context maps may iterate arbitrarily; production providers also own stable ordering.

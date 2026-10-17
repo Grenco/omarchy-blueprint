@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/Grenco/omarchy-blueprint/internal/localstate"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"golang.org/x/sys/unix"
 )
@@ -25,7 +26,7 @@ func AcquireProfileLock(stateHome, profileRoot string) (*ProfileLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := privateStateDir(stateHome, dir); err != nil {
+	if err := localstate.PrivateDir(stateHome, dir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, "sync.lock")
