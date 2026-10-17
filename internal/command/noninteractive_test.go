@@ -62,7 +62,7 @@ func TestNoninteractiveRunnerCancelStopsTheGroup(t *testing.T) {
 		t.Fatal("cancel did not stop the command")
 	}
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if syscall.Kill(child, 0) != nil {
+		if !running(child) {
 			return
 		}
 	}
@@ -74,4 +74,19 @@ func TestNoninteractiveRunnerRefusesTheTerminal(t *testing.T) {
 	if err == nil {
 		t.Fatal("a background runner lent the terminal")
 	}
+}
+
+// running reports a live process. A killed process whose parent has gone
+// stays a zombie until init reaps it, and some containers' init never does;
+// a zombie has stopped running.
+func running(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
+	return len(fields) == 0 || fields[0] != "Z"
 }
