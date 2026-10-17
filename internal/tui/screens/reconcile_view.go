@@ -392,7 +392,7 @@ func (s *Reconcile) Actions() []SyncAction {
 		{"reconcile.defer", "Decide later", "d", "select a setting that needs your decision", choices["d"]},
 		{"reconcile.execute", "Review Sync changes", "s", s.executeUnavailableReason(), s.CanExecute()},
 		{"reconcile.toggle-group", toggle, "enter", "nothing to expand", hasRow},
-		{"reconcile.refresh", "Check for updates", "r", "Sync is busy", !s.busy && !s.checking},
+		{"reconcile.refresh", s.refreshLabel(), "r", "Sync is busy", !s.busy && !s.checking},
 		{"reconcile.cancel-setup", "Cancel setup — leave everything as it is", "esc", "only during first-time Sync setup", setup},
 		{"reconcile.choose-again", "Choose a different starting point", "esc", "only while previewing a first-time choice", s.ready && s.bootstrap != nil && s.bootstrapChoice != nil},
 	}
@@ -415,8 +415,19 @@ func (s *Reconcile) setupUnavailableReason(choice workflow.SyncBootstrapChoice) 
 	}
 }
 
+func (s *Reconcile) refreshLabel() string {
+	if s.stale {
+		return "Refresh"
+	}
+	return "Check for updates"
+}
+
 func (s *Reconcile) executeUnavailableReason() string {
 	switch {
+	case s.stale:
+		return "refresh to see the new changes first"
+	case s.verifying:
+		return "checking for new shared changes"
 	case !s.ready:
 		return "check for updates first"
 	case len(s.current.Blockers) > 0:

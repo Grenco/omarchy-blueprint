@@ -342,3 +342,16 @@ func TestInspectUnavailableUserManagerPreservesUncapturedAndFailsClosedWhenManag
 		t.Fatalf("captured Services readiness did not preserve Restore scope: %+v err=%v", targets, err)
 	}
 }
+
+// Blueprint's own Auto Sync units are never offered for Capture.
+func TestDiscoveryNeverOffersBlueprintAutoSyncUnits(t *testing.T) {
+	roots := discoveryRoots(t)
+	var units []ObservedUnit
+	for _, name := range []string{"omarchy-blueprint-auto-sync.service", "omarchy-blueprint-auto-sync.timer", "backup.service"} {
+		units = append(units, observedService(name, filepath.Join(roots.UserConfigDir, name)))
+	}
+	got := Discover(units, profile.Services{}, roots)
+	if len(got) != 1 || got[0].Unit.Name != "backup.service" {
+		t.Fatalf("Auto Sync units offered: %+v", got)
+	}
+}

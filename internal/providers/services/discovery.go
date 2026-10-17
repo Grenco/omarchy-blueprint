@@ -141,7 +141,9 @@ func Discover(units []ObservedUnit, saved profile.Services, roots Roots) []Candi
 	seen := map[string]bool{}
 	var candidates []Candidate
 	for _, unit := range units {
-		if seen[unit.Name] || !supportedServiceKind(unit.Kind) {
+		// Blueprint's own Auto Sync units are local controls, not portable
+		// user services.
+		if seen[unit.Name] || !supportedServiceKind(unit.Kind) || profile.IsReservedServiceUnit(unit.Name) {
 			continue
 		}
 		seen[unit.Name] = true

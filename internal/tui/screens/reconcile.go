@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
@@ -15,6 +17,27 @@ import (
 type reconcileWorkflow interface {
 	InspectSync(context.Context, workflow.SyncInspectOptions) (syncengine.Plan, error)
 	ExecuteSync(context.Context, workflow.SyncExecutionRequest) (workflow.SyncExecutionResult, error)
+}
+
+// syncReviewCoordinator is implemented by sessions that coordinate with
+// Auto Sync: an open review holds a lease so scheduled checks skip, and the
+// review re-reads the tracking revision before confirmation.
+type syncReviewCoordinator interface {
+	HoldSyncReview() error
+	HeartbeatSyncReview() error
+	ReleaseSyncReview() error
+	SyncTrackingRevision(context.Context) (string, error)
+}
+
+// reconcileLeaseHeartbeat is how often an open review renews its lease.
+var reconcileLeaseHeartbeat = 30 * time.Second
+
+type reconcileLeaseTickMsg struct{}
+
+type reconcileTrackingMsg struct {
+	id       uint64
+	revision string
+	err      error
 }
 
 // Reconcile owns presentation and session-only choices, never mutation authority.
@@ -42,6 +65,11 @@ type Reconcile struct {
 	requestID                         uint64
 	stop                              context.CancelFunc
 	message                           string
+	// stale: the shared profile moved while this review was open; it must
+	// be refreshed before confirmation. verifying: that is being checked.
+	stale, verifying bool
+	// leaseHeld/leaseTicking track the review lease and its heartbeat.
+	leaseHeld, leaseTicking bool
 }
 
 type reconcileInspectedMsg struct {
@@ -49,6 +77,9 @@ type reconcileInspectedMsg struct {
 	id        uint64
 	plan      syncengine.Plan
 	err       error
+	// carry: a stale-review refresh, which keeps decisions for settings
+	// that did not change.
+	carry bool
 }
 
 func NewReconcileContext(ctx context.Context, session reconcileWorkflow) *Reconcile {
@@ -60,8 +91,10 @@ func (s *Reconcile) TransientActive() bool              { return s.confirming ||
 func (s *Reconcile) Init() tea.Cmd                      { return s.inspect(true) }
 
 // Unrelated workspace changes may refresh cached evidence, never fetch.
-func (s *Reconcile) RefreshCached() tea.Cmd { return s.inspect(false) }
-func (s *Reconcile) inspect(fetch bool) tea.Cmd {
+func (s *Reconcile) RefreshCached() tea.Cmd     { return s.inspect(false) }
+func (s *Reconcile) inspect(fetch bool) tea.Cmd { return s.inspectWith(fetch, false) }
+
+func (s *Reconcile) inspectWith(fetch, carry bool) tea.Cmd {
 	if s.busy {
 		return nil
 	}
@@ -72,7 +105,7 @@ func (s *Reconcile) inspect(fetch bool) tea.Cmd {
 	s.stop = cancel
 	s.requestID++
 	id := s.requestID
-	s.checking, s.ready, s.confirming = true, false, false
+	s.checking, s.ready, s.confirming, s.verifying = true, false, false, false
 	session := s.session
 	return func() tea.Msg {
 		defer cancel()
@@ -94,7 +127,7 @@ func (s *Reconcile) inspect(fetch bool) tea.Cmd {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return reconcileInspectedMsg{id: id, plan: p, bootstrap: bootstrap, err: err}
+		return reconcileInspectedMsg{id: id, plan: p, bootstrap: bootstrap, err: err, carry: carry}
 	}
 }
 func (s *Reconcile) Update(msg tea.Msg) tea.Cmd {
@@ -110,6 +143,7 @@ func (s *Reconcile) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		previous, hadPrevious := s.selectedRowKey()
+		priorBase, priorChoices := s.base, s.choices
 		s.base, s.current = m.plan, m.plan
 		s.bootstrap, s.bootstrapChoice = m.bootstrap, nil
 		s.setupRefusals = nil
@@ -123,10 +157,42 @@ func (s *Reconcile) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		s.ready = true
-		// A new inspection always starts a new review. Never replay choices
-		// over fresh revision/live evidence automatically.
+		// A new inspection starts a new review. Only a stale-review refresh
+		// keeps decisions, and only for settings whose every input is
+		// unchanged; execution still revalidates everything.
 		s.choices = map[syncengine.TargetKey]syncengine.TargetResolution{}
+		if m.carry && m.bootstrap == nil {
+			s.carryForward(priorBase, priorChoices)
+		}
+		if s.stale {
+			s.stale = false
+			if s.message == reconcileStaleReview {
+				s.message = ""
+			}
+		}
 		s.selectAfterInspection(previous, hadPrevious)
+		return s.updateLease()
+	case reconcileLeaseTickMsg:
+		coordinator, ok := s.session.(syncReviewCoordinator)
+		if !ok || !s.leaseHeld {
+			s.leaseTicking = false
+			return nil
+		}
+		_ = coordinator.HeartbeatSyncReview()
+		return reconcileLeaseTick()
+	case reconcileTrackingMsg:
+		if m.id != s.requestID || !s.verifying {
+			return nil
+		}
+		s.verifying = false
+		if m.err == nil && m.revision != s.base.Identity.Remote {
+			s.stale = true
+			s.message = reconcileStaleReview
+			return nil
+		}
+		if s.CanExecute() {
+			s.confirming = true
+		}
 		return nil
 	case SyncExecutionComplete:
 		s.busy = false
@@ -216,10 +282,10 @@ func (s *Reconcile) handleKey(key string) tea.Cmd {
 		}
 	case "s":
 		if s.CanExecute() {
-			s.confirming = true
+			return s.confirmWhenCurrent()
 		}
 	case "r":
-		return s.inspect(true)
+		return s.inspectWith(true, s.stale)
 	case "L":
 		s.choose("keep-local")
 	case "a":
@@ -317,7 +383,7 @@ func reconcileChoices(choices map[syncengine.TargetKey]syncengine.TargetResoluti
 	return result
 }
 func (s *Reconcile) CanExecute() bool {
-	if !s.ready || s.checking || s.busy || s.current.BootstrapRequired || len(s.current.Blockers) > 0 || s.current.Identity.Local == "" {
+	if !s.ready || s.checking || s.busy || s.stale || s.verifying || s.current.BootstrapRequired || len(s.current.Blockers) > 0 || s.current.Identity.Local == "" {
 		return false
 	}
 	if s.bootstrap != nil && s.bootstrapChoice == nil {
@@ -330,3 +396,95 @@ func (s *Reconcile) CanExecute() bool {
 	}
 	return true
 }
+
+// confirmWhenCurrent re-reads the tracking revision before confirmation, so
+// a shared profile that moved during the review (a manual fetch, another
+// tool, a check after a lapsed lease) is offered as a Refresh rather than
+// failing at execution.
+func (s *Reconcile) confirmWhenCurrent() tea.Cmd {
+	coordinator, ok := s.session.(syncReviewCoordinator)
+	if !ok {
+		s.confirming = true
+		return nil
+	}
+	s.verifying = true
+	id, ctx := s.requestID, s.ctx
+	return func() tea.Msg {
+		revision, err := coordinator.SyncTrackingRevision(ctx)
+		return reconcileTrackingMsg{id: id, revision: revision, err: err}
+	}
+}
+
+// carryForward keeps prior decisions whose setting is unchanged in every
+// input; the rest are dropped. If the kept set no longer resolves, none are
+// kept.
+func (s *Reconcile) carryForward(prior syncengine.Plan, choices map[syncengine.TargetKey]syncengine.TargetResolution) {
+	before := map[syncengine.TargetKey]syncengine.Item{}
+	for _, item := range prior.Items {
+		before[item.Key] = item
+	}
+	kept := map[syncengine.TargetKey]syncengine.TargetResolution{}
+	for _, item := range s.base.Items {
+		if choice, ok := choices[item.Key]; ok && reflect.DeepEqual(before[item.Key], item) {
+			kept[item.Key] = choice
+		}
+	}
+	if len(kept) == 0 {
+		return
+	}
+	resolved, err := workflow.ResolveSyncPlan(s.base, reconcileChoices(kept))
+	if err != nil {
+		return
+	}
+	s.choices, s.current = kept, resolved
+}
+
+// reviewOpen: this review has something a person is deciding or about to
+// run, so scheduled checks should leave the shared profile alone.
+func (s *Reconcile) reviewOpen() bool {
+	if !s.ready {
+		return false
+	}
+	if s.bootstrap != nil || len(s.base.Blockers) > 0 {
+		return true
+	}
+	for _, item := range s.base.Items {
+		if len(item.Actions) > 0 || item.Review != syncengine.ReviewNone || item.Deferred {
+			return true
+		}
+	}
+	return false
+}
+
+// updateLease holds the review lease while a review is open and releases it
+// otherwise, starting the heartbeat when needed.
+func (s *Reconcile) updateLease() tea.Cmd {
+	coordinator, ok := s.session.(syncReviewCoordinator)
+	if !ok {
+		return nil
+	}
+	if !s.reviewOpen() {
+		if s.leaseHeld {
+			_ = coordinator.ReleaseSyncReview()
+			s.leaseHeld = false
+		}
+		return nil
+	}
+	if !s.leaseHeld {
+		if coordinator.HoldSyncReview() != nil {
+			return nil
+		}
+		s.leaseHeld = true
+	}
+	if s.leaseTicking {
+		return nil
+	}
+	s.leaseTicking = true
+	return reconcileLeaseTick()
+}
+
+func reconcileLeaseTick() tea.Cmd {
+	return tea.Tick(reconcileLeaseHeartbeat, func(time.Time) tea.Msg { return reconcileLeaseTickMsg{} })
+}
+
+var _ syncReviewCoordinator = (*workflow.Session)(nil)

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"sort"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/autosync"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -13,12 +14,17 @@ import (
 // AutoSyncPreviewOptions configures a read-only Auto Sync preview.
 type AutoSyncPreviewOptions struct {
 	// Fetch updates the remote-tracking ref first, as an explicit, disclosed
-	// effect. Phase 11 PR B adds the non-blocking profile lock around it.
+	// effect. A fetching preview holds the profile lock, taken without
+	// waiting, around the fetch and the inspection, and returns
+	// syncengine.ErrProfileBusy if a Sync holds it.
 	Fetch    bool
 	Grant    autosync.Grant
 	HostID   string
 	Registry autosync.Registry
 	Evidence autosync.Evidence
+
+	fetchTimeout time.Duration
+	afterLock    func()
 }
 
 // AutoSyncPlanReason is a whole-plan reason (a run-time blocker or a part of
@@ -71,6 +77,40 @@ type AutoSyncCounts struct {
 // the entire plan against the local grant. It writes no grant, checkout,
 // cursor or live state.
 func (s *Session) PreviewAutoSync(ctx context.Context, opts AutoSyncPreviewOptions) (AutoSyncPreview, error) {
+	return s.previewAutoSync(ctx, opts)
+}
+
+func (s *Session) previewAutoSync(ctx context.Context, opts AutoSyncPreviewOptions) (AutoSyncPreview, error) {
+	if opts.Fetch {
+		s.configMu.Lock()
+		deps, root := s.deps, s.opts.ProfileDir
+		s.configMu.Unlock()
+		stateHome, err := deps.StateHome()
+		if err != nil {
+			return AutoSyncPreview{}, err
+		}
+		lock, err := syncengine.AcquireProfileLock(stateHome, root)
+		if err != nil {
+			return AutoSyncPreview{}, err
+		}
+		defer lock.Close()
+		if opts.afterLock != nil {
+			opts.afterLock()
+		}
+		// A profile without an exact repository, branch and upstream has
+		// nothing to fetch; the inspection reports why instead.
+		s.configMu.Lock()
+		git := s.profileGit
+		s.configMu.Unlock()
+		if _, err := git.CurrentRevisionInfo(ctx); err != nil {
+			if ctx.Err() != nil {
+				return AutoSyncPreview{}, ctx.Err()
+			}
+			opts.Fetch = false
+		} else if err := s.fetchSyncUpstream(ctx, opts.fetchTimeout); err != nil {
+			return AutoSyncPreview{}, err
+		}
+	}
 	registry := opts.Registry
 	if registry.Version == "" {
 		registry = autosync.DefaultRegistry()
@@ -79,7 +119,8 @@ func (s *Session) PreviewAutoSync(ctx context.Context, opts AutoSyncPreviewOptio
 	for _, preset := range []autosync.Preset{autosync.PresetConservative, autosync.PresetBalanced, autosync.PresetHandsOff} {
 		preview.Presets = append(preview.Presets, autosync.PresetAvailability(registry, preset))
 	}
-	plan, err := s.InspectSync(ctx, SyncInspectOptions{Fetch: opts.Fetch})
+	// Any fetch has already happened, under the lock.
+	plan, err := s.InspectSync(ctx, SyncInspectOptions{})
 	if err != nil {
 		return preview, err
 	}

@@ -2,7 +2,7 @@
 
 > **Agent execution instruction:** Follow this plan task by task using red→green tests and isolated fixtures. Do not merge, start the next PR, enable a real timer, modify a user's profile, tag or release without the corresponding human gate. **This is a planning artifact, not implementation authorization.**
 
-**Status:** Approved (revision 4); ADR 0029 accepted. Phase 11 PR A in progress — see `2026-10-17-auto-sync-phase-11-pr-a-execution-notes.md`.\
+**Status:** Approved (revision 4); ADR 0029 accepted. Phase 11 PR A merged (#75); PR B in progress — see `2026-10-17-auto-sync-phase-11-pr-b-execution-notes.md`.\
 **Capability audit:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (revision 4)\
 **Date:** 2026-10-17\
 **Design:** `docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`\

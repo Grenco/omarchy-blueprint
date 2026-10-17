@@ -17,6 +17,7 @@ const (
 	reconcileSetupCancelled = "First-time Sync setup cancelled. Nothing was changed."
 	reconcileChoiceRefused  = "That choice isn't available for this setting. The Details panel lists the choices you can make."
 	reconcileCompleted      = "Sync completed. Blueprint checked the results and recorded the saved profile version this computer now matches."
+	reconcileStaleReview    = "New changes arrived from your shared profile while you were reviewing. Your decisions are kept where they still apply. Press r to refresh."
 	reconcileIncomplete     = "Sync did not finish. Some work may still need attention, so Blueprint has not marked this computer as up to date."
 )
 

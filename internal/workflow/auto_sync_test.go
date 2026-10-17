@@ -74,6 +74,11 @@ func takeAutoSyncSnapshot(t *testing.T, s *Session, p *executionSyncProvider) au
 	var entries []string
 	list, _ := os.ReadDir(dir)
 	for _, e := range list {
+		// The stable, empty profile lock file a fetching check or preview
+		// takes (exactly as manual Sync does) is not state.
+		if e.Name() == "sync.lock" {
+			continue
+		}
 		entries = append(entries, e.Name())
 	}
 	return autoSyncSnapshot{

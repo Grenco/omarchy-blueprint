@@ -49,8 +49,20 @@ func Run(ctx context.Context, options Options, deps Dependencies) error {
 		m.enableProfileChooser(deps.OpenSession, options.Machine)
 	}
 	m.updates = &updateTracker{check: deps.CheckForUpdate}
-	_, err = tea.NewProgram(m, tea.WithContext(ctx)).Run()
+	final, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
+	// An open Sync review's Auto Sync lease ends with the TUI (it would
+	// lapse on its own, but scheduled checks need not wait).
+	releaseSyncReview(session)
+	if fm, ok := final.(model); ok && fm.session != session {
+		releaseSyncReview(fm.session)
+	}
 	return err
+}
+
+func releaseSyncReview(session *workflow.Session) {
+	if session != nil {
+		_ = session.ReleaseSyncReview()
+	}
 }
 
 func profileChooserNeeded(dir string, openErr error) bool {
