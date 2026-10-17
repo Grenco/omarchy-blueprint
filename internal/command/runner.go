@@ -42,7 +42,28 @@ func RunOutput(ctx context.Context, runner Runner, limit int64, name string, arg
 	return []byte(out), nil
 }
 
-type SystemRunner struct{}
+// SystemRunner runs commands on this computer. Noninteractive is for
+// background work (scheduled Auto Sync checks): each command gets its own
+// session with no controlling terminal, Git and SSH are told never to
+// prompt or start an askpass helper, and cancelling stops the whole process
+// group. Credential helpers and agents that need no prompt keep working.
+type SystemRunner struct {
+	Noninteractive bool
+}
+
+// noninteractiveEnv makes an authentication that would need a person fail
+// at once instead of waiting.
+var noninteractiveEnv = []string{"GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=false", "SSH_ASKPASS_REQUIRE=never"}
+
+func (r SystemRunner) prepare(cmd *exec.Cmd) {
+	if !r.Noninteractive {
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Env = append(os.Environ(), noninteractiveEnv...)
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = detachedGrace
+}
 
 // RunError preserves process exit information so callers can distinguish a
 // command's documented empty-result status from an execution failure.
@@ -60,11 +81,12 @@ func (e *RunError) Error() string {
 
 func (e *RunError) Unwrap() error { return e.Err }
 
-func (SystemRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+func (r SystemRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
 		defer finish()
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	r.prepare(cmd)
 	// One buffer for both streams keeps them interleaved as CombinedOutput
 	// did, bounded so no command can grow memory without limit.
 	out := &boundedBuffer{limit: maxCommandOutput, stop: killOnLimit(cmd)}
@@ -87,7 +109,13 @@ func (SystemRunner) Run(ctx context.Context, name string, args ...string) (strin
 // each stop signal before the next, stronger one.
 var interactiveGrace = 10 * time.Second
 
-func (SystemRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+// ErrNoTerminal: background work never borrows the terminal.
+var ErrNoTerminal = errors.New("this step needs a person at the terminal and cannot run in the background")
+
+func (r SystemRunner) RunInteractive(ctx context.Context, name string, args ...string) error {
+	if r.Noninteractive {
+		return &RunError{Name: name, Args: args, ExitCode: -1, Err: ErrNoTerminal}
+	}
 	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
 		defer finish()
 	}
@@ -148,7 +176,7 @@ func orCancelled(ctx context.Context, err error) error {
 
 var errOutputLimit = errors.New("output limit exceeded")
 
-func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, args ...string) ([]byte, error) {
+func (r SystemRunner) RunOutput(ctx context.Context, limit int64, name string, args ...string) ([]byte, error) {
 	if finish := diagnostics.StartCommand(ctx, name, args); finish != nil {
 		defer finish()
 	}
@@ -156,6 +184,7 @@ func (SystemRunner) RunOutput(ctx context.Context, limit int64, name string, arg
 		return nil, fmt.Errorf("%s output exceeds %d bytes", name, limit)
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	r.prepare(cmd)
 	stdout := &boundedBuffer{limit: limit, stop: killOnLimit(cmd)}
 	stderr := newTailBuffer(maxDiagnosticOutput)
 	cmd.Stdout, cmd.Stderr = stdout, stderr

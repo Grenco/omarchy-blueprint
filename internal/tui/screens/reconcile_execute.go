@@ -13,6 +13,7 @@ import (
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
 	"github.com/Grenco/omarchy-blueprint/internal/profilegit"
+	"github.com/Grenco/omarchy-blueprint/internal/syncengine"
 	"github.com/Grenco/omarchy-blueprint/internal/tui/components"
 	"github.com/Grenco/omarchy-blueprint/internal/workflow"
 )
@@ -206,6 +207,9 @@ func (e *reconcileExec) restoreReview(ctx context.Context, plan model.RestorePla
 func reconcileFailure(err error) string {
 	if errors.Is(err, profilegit.ErrReconciliationPostCommitVerificationFailed) || errors.Is(err, profilegit.ErrReconciliationRollbackFailed) || errors.Is(err, profilegit.ErrReconciliationOutcomeUncertain) {
 		return "Sync stopped because Blueprint could not confirm the state of your profile repository. Do not run Sync again until the repository has been checked and repaired: check the profile's Git HEAD, index and worktree first. Blueprint has not marked this computer as up to date."
+	}
+	if errors.Is(err, syncengine.ErrProfileBusy) {
+		return "Sync did not start: another Sync or an Auto Sync check is using this profile right now. Nothing was changed. Wait a moment, then try again."
 	}
 	if errors.Is(err, workflow.ErrScopedCaptureRepairRequired) {
 		return "Sync stopped because Blueprint could not safely finish updating your saved profile. Do not run Sync again until the profile has been checked and repaired. Blueprint has not marked this computer as up to date."

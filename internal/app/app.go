@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/Grenco/omarchy-blueprint/internal/autosync"
 	"github.com/Grenco/omarchy-blueprint/internal/buildinfo"
 	"github.com/Grenco/omarchy-blueprint/internal/command"
 	"github.com/Grenco/omarchy-blueprint/internal/compatibility"
@@ -61,6 +62,12 @@ type Dependencies struct {
 	RunTUI            func(context.Context, tui.Options, tui.Dependencies) error
 	// UpdateSource is where the TUI looks for a newer Blueprint release.
 	UpdateSource updates.Source
+	// Auto Sync: the one-way host identity, the systemd user manager,
+	// desktop notifications and the systemd user unit location.
+	HostID      func() (string, error)
+	UserManager autosync.UserManager
+	Notifier    autosync.Notifier
+	ConfigHome  func() (string, error)
 }
 
 type options struct {
@@ -111,6 +118,18 @@ func Execute(ctx context.Context, args []string, deps Dependencies) int {
 	}
 	if deps.StateHome == nil {
 		deps.StateHome = restore.StateHome
+	}
+	if deps.HostID == nil {
+		deps.HostID = func() (string, error) { return autosync.HostIdentity(nil) }
+	}
+	if deps.UserManager == nil {
+		deps.UserManager = systemctlUserManager{Runner: command.SystemRunner{Noninteractive: true}}
+	}
+	if deps.Notifier == nil {
+		deps.Notifier = autosync.DesktopNotifier{Runner: command.SystemRunner{Noninteractive: true}}
+	}
+	if deps.ConfigHome == nil {
+		deps.ConfigHome = defaultConfigHome
 	}
 	if deps.UpdateSource == nil {
 		deps.UpdateSource = updates.GitHubReleases{Repo: releaseRepository, Client: &http.Client{Timeout: 10 * time.Second}}
@@ -192,7 +211,7 @@ func newRoot(deps Dependencies) *cobra.Command {
 	root.PersistentFlags().StringVar(&opt.machine, "machine", "", "use machine overlay for this invocation")
 	root.AddCommand(initCommand(deps, opt), captureCommand(deps, opt), statusCommand(deps, opt, false), statusCommand(deps, opt, true), restoreCommand(deps, opt), checkCommand(deps, opt), trackCommand(deps, opt), untrackCommand(deps, opt), trackedCommand(deps, opt), inspectCommand(deps, opt), packagePolicyCommand(deps, opt, true), packagePolicyCommand(deps, opt, false), configAutoCommand(deps, opt), policyCommand(deps, opt), machineCommand(deps, opt), profileCommand(deps, opt), tuiCommand(deps, opt))
 	root.SetOut(deps.Out)
-	root.AddCommand(syncCommand(deps, opt))
+	root.AddCommand(syncCommand(deps, opt), autoSyncCommand(deps, opt))
 	return root
 }
 

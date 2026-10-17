@@ -11,7 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var ErrProfileBusy = errors.New("another sync execution holds the profile lock")
+// ErrProfileBusy: a Sync, or an Auto Sync check, holds the profile lock.
+var ErrProfileBusy = errors.New("another Sync or Auto Sync check is using this profile")
 
 // ProfileLock is a Linux advisory flock. The stable lock file is never unlinked;
 // process death releases its kernel lock. Coordination does not replace ref checks.

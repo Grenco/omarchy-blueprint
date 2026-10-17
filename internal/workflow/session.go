@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/Grenco/omarchy-blueprint/internal/autosync"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
 	"github.com/Grenco/omarchy-blueprint/internal/model"
 	"github.com/Grenco/omarchy-blueprint/internal/policy"
@@ -43,6 +44,9 @@ type Session struct {
 	profileGit          profilegit.Service
 	finalizeRestore     func(context.Context, profile.Data, []Provider, *model.RestorePlan, policy.RestoreOptions) error
 	finalizeReadRestore func(context.Context, profile.Data, []string, *model.RestorePlan, policy.RestoreOptions) error
+	// reviewMu guards reviewLease, the manual Sync review's Auto Sync lease.
+	reviewMu    sync.Mutex
+	reviewLease *autosync.ReviewLease
 }
 
 func Open(deps Dependencies, opts Options) (*Session, error) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Grenco/omarchy-blueprint/internal/localstate"
 	"github.com/Grenco/omarchy-blueprint/internal/machine"
@@ -131,3 +132,22 @@ func (s CursorStore) Remove() error {
 // ValidRefIdentity reports whether ref is a safe Git branch/upstream name as
 // recorded in Sync and Auto Sync state.
 func ValidRefIdentity(ref string) bool { return validRefIdentity(ref) }
+
+// CompletedAt reports when the cursor was last written. The cursor is only
+// written by a verified completed Sync (or an explicit bootstrap), so this
+// is the last completed Sync, never a check.
+func (s CursorStore) CompletedAt() (Cursor, time.Time, bool, error) {
+	cursor, ok, err := s.Load()
+	if err != nil || !ok {
+		return cursor, time.Time{}, ok, err
+	}
+	path, err := s.path()
+	if err != nil {
+		return Cursor{}, time.Time{}, false, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return Cursor{}, time.Time{}, false, err
+	}
+	return cursor, info.ModTime(), true, nil
+}

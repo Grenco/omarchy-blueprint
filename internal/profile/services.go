@@ -167,7 +167,16 @@ func validateServiceMask(name string, mask *ServiceMask, start ServiceStartInten
 	return nil
 }
 
+// IsReservedServiceUnit reports Blueprint's own Auto Sync units. They are
+// installed only from local Auto Sync controls, never from a profile.
+func IsReservedServiceUnit(name string) bool {
+	return name == "omarchy-blueprint-auto-sync.service" || name == "omarchy-blueprint-auto-sync.timer"
+}
+
 func validateServiceName(name string) error {
+	if IsReservedServiceUnit(name) {
+		return fmt.Errorf("service unit %q is reserved for Blueprint's Auto Sync and cannot come from a profile", name)
+	}
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\ \t\n\r") || strings.IndexFunc(name, unicode.IsControl) >= 0 || strings.HasPrefix(name, ".") {
 		return fmt.Errorf("invalid service unit name %q", name)
 	}

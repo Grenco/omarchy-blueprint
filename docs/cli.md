@@ -109,6 +109,37 @@ Capture recovery. Human output and stderr retain that guidance; neither output
 mode prints raw wrapped errors, private paths or subprocess output. A repair
 warning takes precedence over an accompanying cancellation.
 
+## Auto Sync checks (read-only)
+
+Auto Sync is off by default. In this version it only **checks**; it never
+applies, captures or shares changes, and there is no command yet to turn it
+on.
+
+```bash
+omarchy-blueprint --profile ~/omarchy-profile auto-sync status
+omarchy-blueprint --profile ~/omarchy-profile auto-sync check
+omarchy-blueprint --profile ~/omarchy-profile auto-sync preview [--no-fetch]
+omarchy-blueprint --profile ~/omarchy-profile auto-sync history [--limit N]
+```
+
+- `status` and `history` never fetch. Status shows the setting (Off, On with
+  a level, Paused, Suspended for safety), the last check and its outcome, the
+  next scheduled check and the last **completed Sync** separately: a check is
+  never a completed Sync.
+- `check` fetches the shared profile once and records the outcome: Up to
+  date, Needs review, Busy (a Sync or an open Sync review was using the
+  profile, so the check was skipped), Offline, Sign-in needed or Error. It
+  never prompts for a password or passphrase; a remote that needs one
+  reports Sign-in needed.
+- `preview` shows what Auto Sync would do with the current plan and what each
+  level can do in this version.
+- `run` is not available yet.
+
+Checks and fetching previews take the profile lock without waiting, exactly
+as Sync does, and skip as Busy if it is held. Output and history hold only
+typed reasons and counts, never remote URLs, paths or Git output. `--json`
+gives the same data with typed codes.
+
 ## Read-only observation diagnostics
 
 Set `BLUEPRINT_DEBUG_OBSERVATION=1` to print request-local observation and
