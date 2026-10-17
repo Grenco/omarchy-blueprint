@@ -1,8 +1,10 @@
 # Auto Sync Gate 0 — Restore Operation Capability Audit
 
-**Status:** Revision 3, for final review (Gate 0 of the Phase 11 plan). The
+**Status:** Revision 4, for final review (Gate 0 of the Phase 11 plan). The
 product direction and I1–I4 staging are approved in principle; revision 3
-applies the reviewer's final design corrections. No production code until
+applied the reviewer's final design corrections; revision 4 resolves the
+three remaining consistency findings (theme hooks, package mechanisms,
+hard-denial precision). No production code until
 this matrix, the spec, ADR 0029 and the plan pass final review.\
 **Date:** 2026-10-17\
 **Baseline:** `main` `aa6f127`\
@@ -79,6 +81,17 @@ fresh checks ∩ no run-time blocker`.
 `Interaction: required`, `Source: unpinned`, unbounded or unverifiable effects
 and anything in §5 are never within any ceiling.
 
+**Hard denials are precise.** Prohibited in every preset: *unverified* remote
+execution (code not hash-verified against the profile or exactly pinned, or
+outside a locally authorised run-code scope) and *unproven* destructive
+operations (removal or replacement without provenance match, precondition
+and recovery, or outside an authorised scope). Specifically audited,
+locally authorised code-running and provenance-verified removal classes in
+this matrix are not hard-denied. **Precedence:** a matrix row (§4) states
+the complete rule for its operation; where a general rule names an
+exception (§2.4 item 5), the row defines it; anything a row does not
+explicitly allow is review.
+
 ### 2.4 Positive evidence (what Balanced and Conservative require)
 
 Content analysis identifies potentially executable content and helps choose
@@ -102,7 +115,10 @@ requires all of:
 4. **Verified preconditions:** the live destination matches the recorded or
    expected state.
 5. **Safe destination:** not an autostart, rc/profile, `PATH`, hook, unit or
-   plugin location, and no executable bit.
+   plugin location, and no executable bit. **One narrow, named exception:**
+   an inert systemd user unit definition (§4.7) may be written to the user
+   unit directory in Balanced only with the unit-inertness proof defined
+   there; without that proof the operation is Hands-off.
 6. **Verified reload/activation behaviour:** the post-apply check confirms
    the expected result.
 
@@ -133,7 +149,9 @@ never promoted to Balanced.
 | E7 | Positive-evidence content analysis (§2.4): supported formats and loaders, complete transitive-include parsing, documented reload/activation effects, destination classes; identifies executable content, never certifies safety by non-detection | I1 (destination classes, theme inertness) · I2 (Hyprland and other formats) |
 | E8 | Per-category "may run code" local authorisation and its preview copy | I2 |
 | E9 | Provenance records for removal (Blueprint-installed marker or recorded fingerprint) | I4 |
-| E10 | Root helper (separate ADR): installed only by an administrator; accepts only exact package-install requests from allowlisted signed repositories with provenance checks, noninteractively; no arbitrary privileged commands | I4 |
+| E10 | Signed-repository root helper (separate ADR): installed only by an administrator; accepts only exact package-install (and, with E9, removal) requests for packages from allowlisted signed repositories, with provenance checks, noninteractively; no arbitrary privileged commands, no locally built packages | I4 |
+| E12 | AUR build-and-install design (separate review): source verification (PKGBUILD and sources at a recorded commit, source checksums enforced), isolated unprivileged build, and a reviewed way to install the resulting package with privilege that E10 does **not** provide | I4, conditional |
+| E13 | Per-recipe execution support for Omarchy recipes: declared effects, noninteractive mode and privilege needs per recipe, each reviewed; privileged steps only through a reviewed mechanism for that recipe, never a general root command | I4, conditional |
 | E11 | Manual-review coordination: review lease while a manual Sync review is open, and safe refresh when the reviewed revision goes stale | Phase 11 PR B |
 
 ## 4. Provider matrix
@@ -150,8 +168,8 @@ verification, cursor rules). **Work** = engineering beyond §3.
 |---|---|---|---|---|---|---|---|
 | Copy local theme, not active | Exclusive tree copy, refuses existing destination; no hash or symlink-parent check set | add · data · artifact | T1 | Portable fingerprint = recorded hash; destination absent; not desired current; audited Omarchy version (evidence: an inactive user theme is only listed by name and its preview images shown by `omarchy-theme-switcher`) | E5, E7 (theme inertness pinned to audited Omarchy scripts) | Conservative | I1 |
 | Copy overlay theme (shadows a built-in name) | As above | add · exec-later · artifact | T2 | As above; overlay disclosed in preview | E7 (shadowed built-in counted as later code) | Hands-off | I2 |
-| Activate theme (default) | `omarchy theme set` restarts components, runs post-theme commands in `bash -lc`, then `omarchy-hook theme-set` (user hooks); theme files such as `neovim.lua` become live code | update · exec-now · artifact · activate | T2 | Themes "may run code" authorised; verify current theme afterwards | E6, E8 | **Hands-off** | I2 |
-| Activate theme, positively established inert | As above | update · config · artifact · activate | T2 | Balanced **only if** positive evidence shows the complete path runs no user-controlled code: audited Omarchy `theme-set` version with fixed post-theme commands, **no** `theme-set` hook present (or the hook separately authorised under the Hooks "may run code" permission), and every theme file in a supported inert format | E7 | Balanced | I2 |
+| Activate theme (default) | `omarchy theme set` restarts components, runs post-theme commands in `bash -lc`, then `omarchy-hook theme-set` (user hooks); theme files such as `neovim.lua` become live code | update · exec-now · artifact · activate | T2 | Themes "may run code" authorised; **if a `theme-set` hook exists, Hooks "may run code" authorised as well**; verify current theme afterwards | E6, E8 | **Hands-off** (or Custom with both permissions) | I2 |
+| Activate theme, positively established inert | As above | update · config · artifact · activate | T2 | Balanced **only if** positive evidence shows the complete activation path is non-executable: audited Omarchy `theme-set` version with fixed post-theme commands, **no** `theme-set` hook present, and every theme file in a supported inert format. Any user-controlled hook makes the whole action Hands-off/Custom; a separate hook permission never downgrades it to Balanced | E7 | Balanced | I2 |
 | Git theme install + pin | `omarchy theme install <url>` then detach to recorded revision; installs tip first | add · exec-later · pinned | T2 | Clone verified at the exact recorded revision before it is placed | Clone-at-revision install path (no tip window) | Hands-off | I3 |
 | Remove theme (Exact) | `rm -rf` via `omarchy theme remove`; provenance and active-theme guards exist | remove · reinstall | T2 | Provenance match; never the active theme; local grant includes removal | E9 | Hands-off | I4 |
 
@@ -207,8 +225,8 @@ operation.
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Save unit/drop-in definition, inert | File writes, `daemon-reload` (re-reads definitions; runs no `ExecStart`) | add/update · exec-later · artifact | T2 | §2.4 evidence: the unit is not enabled, not started, and not wanted, required or triggered by any enabled unit, timer, socket or path unit, so nothing runs it; backup | E6, unit dependency analysis | Balanced | I3 |
-| Update definition of an enabled or referenced unit | As above | exec-later · artifact | T2 | Services "may run code" authorised; backup | E8 | Hands-off | I3 |
+| Save unit definition, proven inert (§2.4 exception) | File writes, `daemon-reload` (re-reads definitions; runs no `ExecStart`) | add/update · exec-later · artifact | T2 | **Unit-inertness proof**, all required: a new or updated `.service` file only (not a drop-in for another unit, not a timer, socket, path, target or generator); not enabled, not active, no instance of it running; no `[Install]` alias or `Also=` that would make it reachable; not named by `Wants`/`Requires`/`BindsTo`/`PartOf`/`Upholds`/`OnSuccess`/`OnFailure`/`Triggers` or a `.wants`/`.requires` link of any loaded unit, timer, socket or path unit (checked through `systemctl --user` after `daemon-reload` and before reporting success); not a template whose instances are referenced; precondition; backup. Any check that cannot complete → Hands-off | E6, unit dependency analysis | Balanced | I3 |
+| Any other unit or drop-in definition (enabled, referenced, drop-in, timer/socket/path, or proof incomplete) | As above | exec-later · artifact | T2 | Services "may run code" authorised; backup | E8 | Hands-off | I3 |
 | Enable / link / unmask | `systemctl --user` verbs and wants-symlinks | activate | T2 | Services "may run code" authorised; verify unit state | E8 | Hands-off | I3 |
 | Start (activation) | `systemctl --user start`, currently individually reviewed | exec-now · activate | T2 | As above; activation preference recorded; bounded start timeout | Unattended activation path replacing per-unit review | Hands-off | I3 |
 | Disable / mask / remove definition | systemctl and file delete | remove | T2 | Provenance; backup | E9 | Hands-off | I4 |
@@ -219,11 +237,11 @@ operation.
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
 | Official repository install | pacman/`omarchy pkg add` via sudo in a terminal; install scripts and package-manager hooks run as root | add · exec-now · signed · root-helper | T2 | Privileged-install authorisation; signature verification; repository allowlist; exact package set; provenance; noninteractive; verify installed. A signature proves origin, not that root-run scripts are harmless | E10 (separate ADR) | **Hands-off** (or Custom "privileged install") | I4 |
-| AUR install | yay builds a PKGBUILD as the user, then sudo | add · exec-now · pinned · root-helper | T2 | Privileged-install authorisation; PKGBUILD at a recorded commit; build isolation; Packages "may run code" | Record AUR revision at Capture; E10 | Hands-off (or Custom "privileged install") | I4 |
-| mise tool install / config | Writes the mise config; downloads tools | add/update · exec-later · pinned | T2 | Exact versions; mise checksum verification where the backend supports it | Version-pin enforcement | Hands-off | I4 |
-| Omarchy semantic recipe, noninteractive | `omarchy-install-*` scripts | exec-now | T2 | Recipe marked noninteractive in Omarchy's catalogue; root helper if needed | Recipe interaction metadata | Hands-off | I4 |
+| AUR install | yay builds a PKGBUILD as the user, then sudo | add · exec-now · pinned · root (E12) | T2 | Packages "may run code" and privileged-install authorisations; PKGBUILD and sources verified at a recorded commit; isolated build; privileged install only through the E12 mechanism. A pinned PKGBUILD is **not** a signed repository package, so E10 does not cover it | Record AUR revision at Capture; E12 | Hands-off (or Custom with both permissions) | I4, **only once E12 is reviewed and delivered** |
+| mise tool install / config | Writes the user mise config; downloads tools into the user's home; **no root needed** | add/update · exec-later · pinned · user | T2 | Packages "may run code" authorisation only (no privileged-install permission); exact versions; checksum or signature verification where the backend supports it, otherwise review | Version-pin enforcement; backend verification registry | Hands-off | I4 |
+| Omarchy semantic recipe, noninteractive | `omarchy-install-*` scripts | exec-now | T2 | Packages "may run code"; recipe individually supported under E13 with declared effects and noninteractive mode; privileged steps only through that recipe's reviewed mechanism (and the privileged-install authorisation) | E13 | Hands-off | I4, **per recipe, once supported** |
 | Omarchy recipe needing sign-in (`AwaitsYou`) | Waits for a person | — | T3 | — | — | Never | — |
-| Package removal | `pacman -R`/recipes, high risk | remove · reinstall | T2 | Provenance; not a dependency of an installed package; root helper | E9, E10 | Hands-off | I4 |
+| Package removal | `pacman -R`/recipes, high risk | remove · reinstall | T2 | Provenance; not a dependency of an installed package; through the mechanism that installed it (E10 for signed-repository packages, E12/E13 otherwise, mise without root) | E9 + matching mechanism | Hands-off | I4, conditional on that mechanism |
 
 ### 4.9 Resources
 
@@ -240,8 +258,8 @@ operation.
 | Case | Why it cannot run unattended |
 |---|---|
 | Interaction required (sign-in links, device pairing, prompts with no noninteractive form) | Needs a person present; answering for them would be impersonation |
-| Credentials or privilege via stored passwords, cached sudo timestamps or answered elevation prompts | Bypasses the privilege boundary instead of using an administrator-approved mechanism (E10 is the legitimate route) |
-| Arbitrary privileged commands | The root helper accepts only exact, provenance-checked package installs; anything else would make it a general root shell |
+| Credentials or privilege via stored passwords, cached sudo timestamps or answered elevation prompts | Bypasses the privilege boundary instead of using an administrator-approved mechanism (E10, E12 or E13, each reviewed for its own operations) |
+| Arbitrary privileged commands | Each privileged mechanism accepts only its reviewed operation shape; a general root command path would make Auto Sync a root shell |
 | Unpinned or unverifiable sources (floating branch or URL, no hash, revision or signature) | Content is not what the profile recorded; the remedy is pinning at Capture (T2), not automating the floating form |
 | Operations whose steps, relevant dependencies or effects Blueprint cannot bound or verify with a supported mechanism | Without bounded effects and verification, Blueprint cannot know what it authorised or whether it succeeded |
 | Conflict resolution: Force replace or delete of a target that differs from both the recorded and the expected state | That is a decision about whose change wins, not an application of recorded intent |
@@ -276,7 +294,7 @@ the same operation runs on a later check once the condition clears.
 |---|---|---|---|
 | Conservative | New inactive local themes; new config and resource files with positive evidence | — | — |
 | Balanced | + default apps; config updates with positive evidence and backup; `hyprctl reload` when the whole graph has no `exec`; inert resource replacements with backup; theme activation only where positively established inert | + inert service definitions; Shell config and restart with first-party plugins only; plugin disable | — |
-| Hands-off | + theme activation (default path, runs the `theme-set` hook); hooks; executable, unknown or ambiguous config; overlay themes; other resource files — each per-category authorised | + plugins (local and pinned Git); Shell with third-party plugins; service enable/start and enabled-unit definitions; Git themes and resources | + privileged package installs (official, AUR, mise, noninteractive recipes) with the privileged-install authorisation; provenance-checked removals |
+| Hands-off | + theme activation (default path, runs the `theme-set` hook); hooks; executable, unknown or ambiguous config; overlay themes; other resource files — each per-category authorised | + plugins (local and pinned Git); Shell with third-party plugins; service enable/start and enabled-unit definitions; Git themes and resources | + signed official-repository installs (E10, privileged-install authorisation) and user-level mise tools; AUR (once E12) and individual recipes (once E13); provenance-checked removals |
 
 Each preset is strictly broader than the one below in every release. Later
 categories appear in the UI as "not available yet" until delivered.

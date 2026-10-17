@@ -1,7 +1,7 @@
 # Phase 11 — Auto Sync Design Specification
 
 **Project:** Omarchy Blueprint (`Grenco/omarchy-blueprint`)\
-**Status:** Revision 3 for final review — direction and I1–I4 staging approved in principle; final design corrections applied. No production code until final review.\
+**Status:** Revision 4 for final review — direction and I1–I4 staging approved in principle; final design corrections applied. No production code until final review.\
 **Draft date:** 2026-10-17\
 **Reference baseline:** merged `main` `aa6f127e37f00bd38cf0c3d91bee02aacdfe5d88` (PR #74 merge; its tree is the reviewed PR head `db86c11`).\
 **Basis:** `ROADMAP.md` §69; `docs/planning/specs/2026-10-03-sync-engine-v1-design.md` (especially §Future Phase 11 constraints); ADR 0027; existing workflow/profilegit/syncengine code.\
@@ -61,7 +61,7 @@ Phase 11 delivers **Auto Follow** across all supported categories, in increments
 **Phase 11 PR D:** increment I2 (file-based Balanced and Hands-off capabilities, positive-evidence content analysis, best-effort journal rollback).\
 **Phase 11 PR E:** TUI/CLI management, docs, two-machine and physical acceptance → first release.\
 **Phase 11 PR F:** increment I3 (Services, Shell, Plugins).\
-**Phase 11 PR G:** increment I4 (privileged Packages installs — Hands-off or Custom “privileged install” — via a root helper under its own ADR; provenance-checked removals).\
+**Phase 11 PR G:** increment I4 (Packages: signed official-repository installs via a root helper under its own ADR; user-level mise tools; AUR and Omarchy recipes each conditional on their own reviewed mechanism; provenance-checked removals).\
 Auto Publish receives its own reviewed design/PRs after Auto Follow acceptance.
 
 ## 3. Design principles and non-negotiable invariants
@@ -99,7 +99,7 @@ On first enablement: confirm valid machine/profile/upstream identity, previous m
 | **Notify only** | “Check for changes and tell me when something needs attention. Never apply changes.” | Fetch/inspect/status/notify only. |
 | **Conservative** | “Automatically add only the simplest, verified things.” | **Add only**: new themes not in use, and new configuration or files Blueprint can positively show nothing will load or run. No updates, replacements, removals, reloads, activation or code. |
 | **Balanced** | “Automatically handle routine changes. Ask before anything significant.” | Conservative plus updates to ordinary configuration and fixed-choice settings (such as default apps) with a precondition and backup, and reloads or activation **only where Blueprint can positively show nothing user-controlled runs** (for example `hyprctl reload` when no `exec` line exists anywhere in the loaded Hyprland configuration). Recommended when opting in. |
-| **Hands-off** | “Also handle changes that install or run code, in the categories I allow.” | Balanced plus code-bearing content (hooks, plugins, executable or unrecognised config, theme activation, service enable/start, AUR/mise packages) from hash-verified or exactly pinned sources, provenance-checked removals with recovery, and privileged package installs with the separate privileged-install permission — **only in categories given the “may run code” authorisation**. Hard safeguards still apply. |
+| **Hands-off** | “Also handle changes that install or run code, in the categories I allow.” | Balanced plus code-bearing content (hooks, plugins, executable or unrecognised config, theme activation that runs a hook, service enable/start, AUR/mise packages) from hash-verified or exactly pinned sources, provenance-checked removals with recovery, and privileged package installs with the separate privileged-install permission — **only in categories given the “may run code” authorisation**. Hard safeguards still apply. |
 | **Custom** | “Choose which changes may run automatically.” | Category × operation-family permissions with optional target exceptions, capped by Hands-off and the registry; **privileged install** is its own named permission. |
 
 Each preset is strictly broader than the one below in every release. Where a preset's ceiling admits operations that are not yet delivered, the preview lists them as “not available yet” instead of implying they run, and Hands-off is never presented as equal to Balanced.
@@ -112,7 +112,7 @@ Each preset is strictly broader than the one below in every release. Where a pre
 
 Selecting Hands-off, or a Custom cell that includes code-bearing operations, opens a separate local confirmation per category: what kind of code could run (for example “hook scripts from your shared profile run when Omarchy events happen”), from which sources (profile files verified by fingerprint, or exactly pinned repositories), and that future changes in that category are covered. It is independent of Capture and Restore permissions, bound to this computer's profile and repository identity, revocable at once, and rechecked on every run. Downloaded profiles and portable policy never create or widen it. It never stores passwords, answers prompts or bypasses privilege requirements.
 
-**Privileged install** is a further named permission (Hands-off and Custom only) for package installs whose scripts and package-manager hooks run as root, even from signed repositories. It works only through an administrator-installed root helper with its own ADR, which accepts exact package-install requests from allowlisted signed repositories with provenance checks, runs noninteractively, and never executes arbitrary privileged commands.
+**Privileged install** is a further named permission (Hands-off and Custom only) for package installs whose scripts and package-manager hooks run as root, even from signed repositories. Each kind of installation needs its own reviewed mechanism: signed official-repository packages use an administrator-installed root helper with its own ADR, which accepts exact package requests from allowlisted signed repositories with provenance checks, runs noninteractively, and never executes arbitrary privileged commands; AUR packages need a separately reviewed build, source-verification and installation design; Omarchy recipes need per-recipe reviewed support. User-level mise tools need the Packages run-code authorisation but no privileged authority.
 
 ### 4.3 Custom overrides
 
@@ -224,14 +224,14 @@ The audit classifies every operation as **T1 Ready**, **T2 Engineerable** or **T
 
 | Category | Route (audit §4) |
 |---|---|
-| Themes | New inactive local themes (Conservative); activation in Hands-off by default because it runs the `theme-set` hook and post-theme commands, Balanced only where the complete path is positively established free of user-controlled code; executable, overlay and pinned Git themes (Hands-off); removal with provenance (Hands-off, I4). |
+| Themes | New inactive local themes (Conservative); activation in Hands-off by default because it runs the `theme-set` hook and post-theme commands, Balanced only with positive proof that the complete path is non-executable (no hook present; a separately authorised hook still makes it Hands-off/Custom); executable, overlay and pinned Git themes (Hands-off); removal with provenance (Hands-off, I4). |
 | Defaults | Terminal, browser and editor from Omarchy's fixed vocabulary when the app is installed (Balanced: switching a default is an update); agent after a set-only setter exists. |
 | Config | New positively inert files (Conservative); updates with positive evidence, precondition and backup (Balanced); `hyprctl reload` in Balanced only when the whole sourced graph has no `exec` directive; executable, unknown or ambiguous files (Hands-off); deletes with provenance and backup (Hands-off, I4). |
 | Shell | Config and restart with first-party plugins only (Balanced); anything loading third-party plugin code (Hands-off). |
 | Hooks | Hook writes from hash-verified profile content with backup (Hands-off); deletes with provenance (I4). |
 | Plugins | Local and exactly pinned Git plugins with validation and load (Hands-off); disable (Balanced); remove with provenance (I4). |
-| Packages | Privileged installs only in Hands-off or Custom “privileged install”, through the administrator-installed helper: signed official repositories, AUR at a recorded PKGBUILD revision, pinned mise tools, noninteractive Omarchy recipes; removals with provenance (I4). Recipes that need sign-in never run unattended. |
-| Services | Saving definitions of units nothing enables, starts or references (Balanced); enabled-unit definitions, enable and start (Hands-off). |
+| Packages | All Hands-off (or Custom), I4: signed official-repository installs through the administrator-installed helper with the privileged-install permission; pinned mise tools at user level (run-code permission only); AUR once its own build/verify/install design is reviewed; individual Omarchy recipes once each is supported; removals with provenance through the mechanism that installed the package. Recipes that need sign-in never run unattended. |
+| Services | Saving a `.service` definition with a complete unit-inertness proof (audit §4.7; the one named exception to the safe-destination rule) in Balanced; any other definition, drop-in, enable or start in Hands-off. |
 | Resources | New positively inert files (Conservative); inert replacements with backup (Balanced); any other files, pinned Git projects and patches (Hands-off). |
 
 ### 6.3 Content trust
@@ -254,7 +254,7 @@ Add an **Auto Sync** panel reachable from Sync (a dedicated settings view or sub
 **Important notice:** “Changes downloaded from your shared profile cannot give Blueprint new permission to run automatically.”\
 **Run-code confirmation:** “Allow Auto Sync to install and run {category} from your shared profile on this computer? This covers future changes to {category}. Only content that exactly matches what your profile recorded is used, and you can turn this off at any time.”\
 **Not yet available:** “Hands-off will also handle {operations} in a later Blueprint version. Until then they wait for your review.”\
-**Privileged install confirmation:** “Allow Auto Sync to install packages from {repositories} as administrator on this computer? Package installers can run their own scripts with full system access. Blueprint only installs the exact packages your profile lists, through the helper your administrator set up.”\
+**Privileged install confirmation:** “Allow Auto Sync to install packages from {repositories} as administrator on this computer? Package installers can run their own scripts with full system access. Blueprint only installs the exact packages your profile lists, through the helper your administrator set up.” (AUR and recipe wording is defined with their mechanisms.)\
 **Review went stale:** “New changes arrived from your shared profile while you were reviewing. Your decisions are kept where they still apply.” (action: **Refresh**)\
 **Help:** “Automatic checking is different from automatic application. You can pause or turn off Auto Sync at any time.”
 
@@ -374,7 +374,7 @@ The interface should never require users to interpret “cursor”, “upstream�
 - Auto Follow only in Phase 11, delivered in increments I1–I4; Auto Publish and Auto Reconcile wait for separate review.
 - No fake interactive approval; a distinct audited, locked, fresh-authority execution path sharing Sync Engine primitives.
 - All-or-nothing eligibility throughout Phase 11, with honest non-atomic execution: partial work after a failure is reported, suspends automation, never advances the completed-Sync record, and rollback is best-effort unless proven transactional; partial execution by design only with a later proof.
-- Positive evidence, not non-detection, for Conservative and Balanced; theme activation Hands-off by default; default apps Balanced; privileged installs behind Hands-off or the named privileged-install permission.
+- Positive evidence, not non-detection, for Conservative and Balanced; theme activation Hands-off whenever a user-controlled hook runs (Balanced only with proof the whole path is non-executable); default apps Balanced; privileged installs behind Hands-off or the named privileged-install permission, with a separately reviewed mechanism per kind of installation; precise hard denials (unverified execution, unproven destruction).
 - T3 (unsuitable forms) kept separate from run-time blockers.
 - A review lease and stale-review refresh in addition to the execution lock.
 - Locked, non-blocking scheduled fetches; one status model.

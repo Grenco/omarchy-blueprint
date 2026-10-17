@@ -2702,7 +2702,7 @@ Auto Follow      Phase 11: safely apply eligible remote desired-state changes
                  locally, delivered in increments:
                    first release  Themes, Defaults, Config, Hooks, Resources files
                    later          Services, Shell, Plugins
-                   later          Packages (privileged-install permission, administrator-installed helper), removals
+                   later          Packages (a reviewed install mechanism per kind), removals
 Auto Publish     separately authorised later increment: capture, commit, and push
                  eligible local changes
 Auto Reconcile   Phase 12: automatically combine disjoint local/remote changes
