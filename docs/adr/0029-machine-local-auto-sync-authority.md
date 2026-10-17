@@ -1,13 +1,13 @@
-# ADR 0029 (Proposed, revision 2): Machine-Local Authority for Auto Sync
+# ADR 0029 (Proposed, revision 3): Machine-Local Authority for Auto Sync
 
-**Status:** Proposed — revision 2 for review. Revision 1 was accepted on 2026-10-17; the Gate 0 review then changed its capability model, so this revision returns to Proposed until reviewed.\
+**Status:** Proposed — revision 3 for final review. Revision 1 was accepted on 2026-10-17; the Gate 0 review then changed its capability model, so this revision returns to Proposed until reviewed.\
 **Date:** 2026-10-17\
 **Roadmap:** Phase 11 — Auto Sync\
 **Design:** [`docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`](../planning/specs/2026-10-17-auto-sync-phase-11-design.md)\
 **Predecessor:** [ADR 0027 — Semantic Sync Reconciliation and Machine-Local Cursors](0027-semantic-sync-reconciliation-and-machine-local-cursors.md)\
 **Capability audit:** [`docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md`](../planning/audits/2026-10-17-auto-sync-restore-capabilities.md)
 
-> Accepting this ADR does not by itself authorize unattended mutation code, systemd unit installation, merging, release, or operation on a real profile; those remain behind the review gates in the implementation plan. Revision 2 (Gate 0 review) replaced the "deny almost everything" capability position with a three-tier, effect-based model and a staged route to automating every supported category; it is under review again before any production code.
+> Accepting this ADR does not by itself authorize unattended mutation code, systemd unit installation, merging, release, or operation on a real profile; those remain behind the review gates in the implementation plan. Revision 2 (Gate 0 review) replaced the "deny almost everything" capability position with a three-tier, effect-based model and a staged route to automating every supported category. Revision 3 applies the final design corrections: positive evidence for Conservative/Balanced, theme activation in Hands-off by default, default apps in Balanced, privileged installs behind Hands-off or a named privileged-install permission, T3 separated from run-time blockers, non-atomic execution stated honestly, and manual-review coordination.
 
 ## Context
 
@@ -41,17 +41,21 @@ Every operation is classified into one of three tiers:
 
 - **T1 Ready:** existing verified mechanisms already enforce the required controls.
 - **T2 Engineerable:** suitable after named engineering work, safeguards and explicit local authorisation. Requiring interactive approval today, or being able to execute code, places an operation here, not in T3.
-- **T3 Unsuitable:** cannot legitimately run unattended (interaction that needs a person, privilege via passwords or answered prompts, unpinned or unverifiable sources, conflict resolution, removal without provenance, authority expansion from portable policy). This set is kept small and each entry carries its reason.
+- **T3 Unsuitable:** cannot legitimately run unattended (interaction that needs a person, privilege via passwords or answered prompts, arbitrary privileged commands, unpinned or unverifiable sources, operations whose steps, relevant dependencies or effects Blueprint cannot bound or verify with a supported mechanism, conflict resolution, removal without provenance, authority expansion from portable policy). This set is kept small and each entry carries its reason.
+
+**Run-time blockers** are different: an invalid or missing completed-Sync record, stale reviewed revisions, changed local permissions, dirty or incompatible profile history, unsupported compatibility, missing artifacts, ambiguous target ownership, unavailable credentials, uncertain outcome of a previous run, or verification that cannot complete. Each stops the current run before unattended mutation; none makes an operation or category unsuitable.
 
 The user sees five presets. Each is a ceiling over descriptors; what runs is the intersection of the ceiling, delivered registry entries, the local grant's scope, current Restore Apply and fresh safety checks.
 
 | Preset | Authority ceiling |
 |---|---|
 | Notify only | Fetch, inspect, report, notify. No checkout, Restore or cursor write. |
-| Conservative | The narrowest verified operations: adding data or ordinary configuration from hash-verified profile artifacts or closed-vocabulary values; no replacement, removal, activation beyond none, or code. |
-| Balanced | Conservative plus routine changes: updating ordinary configuration with an expected-state precondition and backup, reloading configuration, activating content classified as non-executable, and (once delivered) signed official-repository installs through an administrator-approved helper. |
-| Hands-off | Balanced plus supported higher-risk operations: content that runs code now or later from hash-verified or exactly pinned sources, enabling/starting/loading it, and provenance-checked removals with recovery. Only within categories the user has separately authorised to run code (§3a). Hands-off is always strictly broader than Balanced; where its extra operations are not yet delivered, the UI says which are pending rather than presenting it as equal to Balanced. |
-| Custom | Category × operation-family permissions with optional individual-target exceptions, each capped by the Hands-off ceiling and the registry. Target deny beats category allow. |
+| Conservative | The narrowest verified operations: **adding** data or ordinary configuration from hash-verified profile artifacts, with positive evidence that nothing loads or runs it as a result. No update, replacement, removal, reload, activation or code. |
+| Balanced | Conservative plus routine changes: updating ordinary configuration and fixed-vocabulary settings (such as default apps) with an expected-state precondition and backup, and reload or activation **only where positive evidence establishes that the complete execution path runs no user-controlled code**. |
+| Hands-off | Balanced plus supported higher-risk operations: content that runs code now or later from hash-verified or exactly pinned sources, activation that runs user-controlled code (for example theme activation, which runs the `theme-set` hook), enabling/starting/loading, privileged package installation (with the privileged-install authorisation, §3a), and provenance-checked removals with recovery. Only within categories the user has separately authorised to run code (§3a). Hands-off is always strictly broader than Balanced; where its extra operations are not yet delivered, the UI says which are pending rather than presenting it as equal to Balanced. |
+| Custom | Category × operation-family permissions with optional individual-target exceptions, each capped by the Hands-off ceiling and the registry; privileged install is its own named permission. Target deny beats category allow. |
+
+**Positive evidence.** Content analysis identifies potentially executable content and selects the permission an operation needs; it is not a security boundary. Conservative and Balanced eligibility requires positive evidence: a supported format and loader, complete parsing including transitive includes, documented effects of loading and of any reload or activation command (for example, `hyprctl reload` re-runs every `exec` directive in the whole sourced graph), verified preconditions, a safe destination, and verified post-apply behaviour. Non-detection of executable content is never proof of safety; unknown or ambiguous content goes to review or to a supported Hands-off path.
 
 No preset, Custom rule or grant overrides the hard safeguards: integrity (hash, revision or signature verified), compatibility, conflict (never Force a differing target), provenance for removal, credentials and privilege (no stored passwords, no answered prompts, root only through an administrator-installed helper), interaction, post-apply verification, identity binding, plan equality and the profile lock. Unknown/new operations default to review. Expanding a preset, target override or capability interpretation requires a fresh local review.
 
@@ -66,7 +70,9 @@ Operations whose payload is `exec-later` or `exec-now`, or whose activation enab
 - bound to the grant's profile, host, machine, branch, upstream and remote identity;
 - revocable immediately (pause, disable, or removing the category), and re-validated under the lock on every run.
 
-Downloading a profile or changing portable policy never creates or widens it. It never stores passwords, answers interactive prompts, bypasses privilege requirements or forces operations blocked for safety; an operation needing credentials or interaction it cannot legitimately obtain stops for review.
+**Privileged installation** (package installs whose scripts and package-manager hooks run as root) needs, in addition, a named **privileged-install** authorisation, available in Hands-off and Custom only, and an administrator-installed root helper defined by its own ADR. The helper accepts only exact package-install requests from allowlisted signed repositories with provenance checks, runs noninteractively, and never executes arbitrary privileged commands. A repository signature establishes origin, not that root-run scripts are harmless.
+
+Downloading a profile or changing portable policy never creates or widens these authorisations. It never stores passwords, answers interactive prompts, bypasses privilege requirements or forces operations blocked for safety; an operation needing credentials or interaction it cannot legitimately obtain stops for review.
 
 ### 4. Restore linkage constrains Auto Sync; it never manufactures authority
 
@@ -86,7 +92,9 @@ Auto authorization is computed against the **entire fresh executable operation/d
 
 The unattended path must not supply fake `ApproveRestore`/`ApproveCapture` callbacks to `ExecuteSync`, and must not use `sync apply --yes` as an approval substitute. It must use a distinct authority path with the existing lock, pinned revision revalidation, fresh operation planning, execution and verification. Stop if the operation graph or grant changes between eligibility preview and execution.
 
-Partial execution (running eligible actions while others wait) is **not** part of Phase 11. It may be proposed later only with a proof that the partial state is recorded truthfully, cannot repeat destructive or non-idempotent operations, never advances the completed-Sync record, and never reports "up to date".
+**All-or-nothing eligibility, not atomic execution.** Every change in the proposed plan must be eligible before any unattended mutation begins; an authorised subset is never executed while another required change is unresolved. Execution itself is **not** atomic across Git, files, external commands and machine state: a failure after mutation can leave partial work. In that case the run reports exactly what completed, failed or was not attempted, sets the Suspended-for-safety guard, never advances the completed-Sync record, never reports "up to date", and never automatically repeats a non-idempotent operation. Rollback from journalled backups is best-effort, and is only described as a guarantee for an operation with a proven transactional mechanism. Recovery is a manual Sync review, which re-plans from the current state; a retry re-runs only operations whose idempotence is established.
+
+Partial execution by design (running eligible actions while others wait) is **not** part of Phase 11. It may be proposed later only with a proof that the partial state is recorded truthfully, cannot repeat destructive or non-idempotent operations, never advances the completed-Sync record, and never reports "up to date".
 
 ### 6. Follow-only history handling is deliberate
 
@@ -99,6 +107,8 @@ No automatic rebase, force push, generic `git pull`, local profile commit or sem
 Use an opt-in `systemd --user` oneshot service and timer as the scheduling mechanism, not a long-running daemon or independent scheduler engine. The Go command owns Sync decisions. Default checking interval is approximately 30 minutes while the user manager runs, with bounded configuration and jitter; no root unit, unrequested user lingering, wake-from-suspend, or uncontrolled retry loops. A user-facing **Check now** is an explicit fetch/inspect; **Status** is read-only.
 
 A fetch updates Git refs, so scheduled checks and previews take the existing profile lock **non-blocking** around fetch and inspection and record a skipped "busy" check when it is held; they never fight a manual Sync. Only no-fetch status and history reads run without the lock.
+
+The lock covers execution, not a person reading a review. A manual Sync review in the TUI holds no lock while the user decides, so a scheduled fetch could otherwise make it stale. Two mechanisms address this: an open manual review holds a bounded, heartbeated **review lease** in local state, and scheduled checks skip fetching while a live lease exists (the lease expires on its own if the TUI exits uncleanly); and the review still detects a moved remote revision (a fetch by Git, another tool, or a check after the lease lapsed) before confirmation, explains in plain language that new shared changes arrived, keeps decisions that still apply, and offers a refresh, rather than failing at execution.
 
 Running jobs must be noninteractive, timeout/cancellation-bound and safe when credentials or network are unavailable. Disabling or pausing prevents queued and newly starting automatic mutations; an operation already committed cannot be retroactively undone.
 

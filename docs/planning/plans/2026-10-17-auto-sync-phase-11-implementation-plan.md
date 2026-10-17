@@ -2,11 +2,11 @@
 
 > **Agent execution instruction:** Follow this plan task by task using red→green tests and isolated fixtures. Do not merge, start the next PR, enable a real timer, modify a user's profile, tag or release without the corresponding human gate. **This is a planning artifact, not implementation authorization.**
 
-**Status:** Revision 2 for review (after the Gate 0 review). No production code until the revised spec, ADR 0029, capability audit and this plan are reviewed.\
-**Capability audit:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (revision 2)\
+**Status:** Revision 3 for final review. Direction and I1–I4 staging approved in principle; final design corrections applied. No production code until final review; ADR 0029 stays Proposed until then.\
+**Capability audit:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (revision 3)\
 **Date:** 2026-10-17\
 **Design:** `docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`\
-**ADR:** `docs/adr/0029-machine-local-auto-sync-authority.md` (Proposed, revision 2)\
+**ADR:** `docs/adr/0029-machine-local-auto-sync-authority.md` (Proposed, revision 3)\
 **Baseline:** merged `main` `aa6f127e37f00bd38cf0c3d91bee02aacdfe5d88` (PR #74 merge of reviewed head `db86c11`). Recorded as the Phase 11 start SHA on 2026-10-17.\
 **Objective:** Deliver opt-in, machine-local, preset-driven scheduled checks and Auto Follow through the **existing** semantic Sync Engine, growing in increments to meaningful automation of every supported category, with a separately audited unattended authority, a deliberate local permission for code-running operations, no automatic Capture/push, clear status and a recoverable two-host workflow.
 
@@ -15,7 +15,7 @@
 1. This plan is **not** an instruction to start coding. Seek approval of the design, ADR, this plan and the **concrete capability audit** separately. Phase 10 PR D (#74) is merged (`aa6f127`).
 2. **Never** implement Auto Sync as `git pull && restore`, a shell loop, manual `sync apply --yes`, or dummy always-approve callbacks. Manual Sync remains interactive and unchanged by default.
 3. The background path cannot create/extend its own local grant; profile-supplied Capture/Restore settings and other control-plane data do not confer unattended permission.
-4. **V1 runs whole plans, or nothing.** Any review decision, deferred item, unknown effect, missing authority, invalid snapshot, unsafe or interactive action prevents unattended mutation. Correctly policy-preserved items with no proposed action do not count as a block.
+4. **All-or-nothing eligibility, not atomic execution.** Every change in the plan must be eligible before any unattended mutation begins; any review decision, deferred item, unknown effect, missing authority, invalid snapshot, run-time blocker, unsafe or interactive action prevents it, and an authorised subset is never run alone. Correctly policy-preserved items with no proposed action do not count as a block. Execution is not atomic: a failure after mutation is reported exactly, suspends automation, never advances the completed-Sync record, and rollback is best-effort unless an operation has a proven transactional guarantee.
 5. **Auto Follow only in Phase 11.** No automatic Capture, local commit, push, semantic merge, force push, rebase, reset, first-time Sync bootstrap or cursor reset. Code-bearing operations (executable payloads, service activation, plugin loading, package installs) run only through a **delivered** registry entry, from hash-verified or exactly pinned sources, under the local per-category “may run code” authorisation. The follow-only Git path must not call `PublishSyncRevision` as an outgoing push.
 6. Enforce pinned SHA, clean index/worktree, profile root and machine identity, remote identity, Restore Apply/Skip, provider safety, fresh operation graph equality, lock and verified settlement/cursor constraints.
 7. Unknown category, target source, provider operation, effect descriptor or capability version means **requires review**. Authority comes from effect descriptors and the registry; generic `RiskLow`/`RiskHigh` and `Reversible` are not inputs.
@@ -24,18 +24,20 @@
 10. No unrequested dependencies; prefer current Go, Cobra, Bubble Tea, `systemctl --user`, OS timers and existing repo utilities. Dependency changes are an independent review decision.
 11. Preserve Reconstruction Assurance's same-runtime scope. Keep Phase 11 acceptance separate; do not alter RA to make a failing Auto Sync case pass.
 12. Remote `restore_convergence`, conflict and activation settings, and CLI/environment Force/Exact, never widen unattended authority.
-13. Scheduled fetches take the profile lock non-blocking and skip as Busy when it is held.
+13. Scheduled fetches take the profile lock non-blocking and skip as Busy when it is held, and also skip while a live manual-review lease exists; manual review detects a moved remote and offers a safe refresh (E11).
+14. Conservative and Balanced eligibility needs **positive evidence** (audit §2.4); non-detection of executable content never qualifies anything.
+15. Privileged package work needs Hands-off or Custom “privileged install”, plus the root helper; never arbitrary privileged commands.
 
 **Review stages:**
 
 - **Gate 0:** Review the revised spec, ADR 0029, capability audit (provider matrix, tiers, preset eligibility, increments) and this plan. No production code before approval.
 - **Phase 11 PR A:** Grant store, effect descriptors and registry framework, presets, “may run code” authorisation, permission algebra, preview. **No scheduling or unattended execution.**
 - **Phase 11 PR B:** Locked read-only background checker, unified status/history/notifications and timer, disabled by default. **No unattended mutation.**
-- **Phase 11 PR C:** Auto Follow executor through a separate fresh-authority path, snapshot-planning equivalence, increment **I1** (first Conservative capabilities); failure-injection/two-host tests.
-- **Phase 11 PR D:** Increment **I2**: content classifier, journal rollback and the file-based Balanced and Hands-off capabilities (Config, Themes, Hooks, Resources).
-- **Phase 11 PR E:** TUI/CLI management, help, docs, physical two-machine acceptance → **first release** (I1 + I2).
+- **Phase 11 PR C:** Auto Follow executor through a separate fresh-authority path, snapshot-planning equivalence, increment **I1** (first Conservative and Balanced capabilities); failure-injection/two-host tests.
+- **Phase 11 PR D:** Increment **I2**: positive-evidence content analysis, best-effort journal rollback and the file-based Balanced and Hands-off capabilities (Config, Themes, Hooks, Resources).
+- **Phase 11 PR E:** TUI/CLI management, help, docs, physical two-machine acceptance → **first public release** (I1 and I2 together).
 - **Phase 11 PR F:** Increment **I3**: Services, Shell, Plugins, Git themes and Git resources (clone-at-revision).
-- **Phase 11 PR G:** Increment **I4**: Packages through an administrator-approved root helper (its own ADR first) and provenance-checked removals in every category.
+- **Phase 11 PR G:** Increment **I4**: privileged Packages installs (Hands-off or Custom “privileged install”) through an administrator-installed root helper (its own ADR first), and provenance-checked removals in every category.
 
 Require separate review/merge per PR; F and G are released separately after the first release. Auto Publish and Auto Reconcile require **later design approval**, not a concealed Phase 11 option.
 
@@ -92,7 +94,7 @@ Every executable Restore `model.Operation` emitted by current providers and fina
 
 For every operation the audit records: current capability; target unattended form as an **effect descriptor**; tier (**T1 Ready**, **T2 Engineerable**, **T3 Unsuitable** with reason); required per-run controls; engineering work; lowest eligible preset; delivery increment (I1–I4). Being interactive today, or able to run code, makes an operation T2 with named work, not T3. Shared engineering items E1–E10 are listed once.
 
-**Gate 0 acceptance:** a human reviewer approves the effect model, tiers, T3 list, preset ceilings (each strictly broader than the one below in every release), the “may run code” authorisation, the increment plan and first-release registry. Otherwise stop.
+**Gate 0 acceptance:** a human reviewer approves the effect model, tiers, T3 list and separate run-time blockers, the positive-evidence rule, preset ceilings (each strictly broader than the one below in every release), the “may run code” authorisation, the increment plan and first-release registry. Otherwise stop.
 
 ## 3. Phase 11 PR A — Local authority domain, effect registry and safe previews
 
@@ -145,7 +147,7 @@ AND fresh provider/Restore compatibility & safety permit it
 AND no interactive, remote-executable, destructive or otherwise hard-denied effect
 ```
 
-Preset mapping: each preset is a **ceiling over effect descriptors** (audit §2.3): Notify = none; Conservative = add of data/config from verified artifacts or closed sets; Balanced = Conservative + precondition-and-backup updates, reload, non-executable activation, signed root-helper installs; Hands-off = Balanced + code-bearing payloads from verified/pinned sources, activation, provenance-checked removal, only in categories with the run-code authorisation; Custom = an explicit locally reviewed category × operation × target matrix capped by Hands-off. The effective set is ceiling ∩ delivered registry entries ∩ grant scope ∩ Restore Apply ∩ fresh checks. A Custom exception may widen the selected preset's suggestion only after an explicit local confirmation and must never exceed capability/hard safety limits. A deny always wins.
+Preset mapping: each preset is a **ceiling over effect descriptors** (audit §2.3): Notify = none; Conservative = **add only**, from verified artifacts, with positive evidence nothing loads or runs it; Balanced = Conservative + precondition-and-backup updates (including fixed-vocabulary setters such as default apps), and reload/activation only with positive evidence that no user-controlled code runs; Hands-off = Balanced + code-bearing payloads from verified/pinned sources, activation that runs user code (theme activation by default), provenance-checked removal, and privileged installs with the privileged-install authorisation, only in categories with the run-code authorisation; Custom = an explicit locally reviewed category × operation × target matrix capped by Hands-off. The effective set is ceiling ∩ delivered registry entries ∩ grant scope ∩ Restore Apply ∩ fresh checks. A Custom exception may widen the selected preset's suggestion only after an explicit local confirmation and must never exceed capability/hard safety limits. A deny always wins.
 
 - `linked`: capture a local grant **ceiling** with exactly the scopes/class families confirmed by the user. Current Restore rules reduce it. A changed policy can widen actual execution only if the resulting scope was *already* within that ceiling; uncertain expansion blocks and requests reconfirmation.
 - `copy-once`: translate current Restore selections into a **frozen local scope** at confirmation time. Later Restore edits do not mutate it.
@@ -170,7 +172,7 @@ Add an **effect descriptor** to every provider operation (audit §2.1: change, p
 
 **Candidate files:** `internal/autosync/authority.go` (grant field), `runcode_test.go`.
 
-A per-category (optionally per operation family) authorisation stored in the local grant, created only by an interactive local confirmation (no `--yes`, JSON or non-TTY path), bound to the grant identity, revoked by pause/disable/removal, and rechecked under the lock on every run. Code-bearing descriptors (`exec-later`, `exec-now`, `activate` of such content) are eligible only with it. Portable policy, downloaded profiles and registry upgrades never create or widen it.
+A per-category (optionally per operation family) authorisation stored in the local grant, created only by an interactive local confirmation (no `--yes`, JSON or non-TTY path), bound to the grant identity, revoked by pause/disable/removal, and rechecked under the lock on every run. Code-bearing descriptors (`exec-later`, `exec-now`, `activate` of such content) are eligible only with it. A separate named **privileged-install** authorisation (Hands-off and Custom only) gates `root-helper` descriptors and is unusable until the PR G helper exists. Portable policy, downloaded profiles and registry upgrades never create or widen either.
 
 **Tests:** absent/revoked/foreign authorisation blocks code-bearing ops in every preset; Custom without it cannot include them; a profile change cannot create it; a capability-version bump that changes a code-bearing meaning requires reconfirmation.
 
@@ -202,6 +204,12 @@ Implement the spec §4.1 status model: the **setting** (Off, On + preset, Paused
 
 Use an injectable `Notifier` interface, no dependency on a desktop session for correctness. Coalesce repeated identical reasons, including recurring auth/offline warnings. Offer a safe CLI/TUI route to inspect pending changes; never expose secrets via notification markup or external commands.
 
+### Task B2a — Manual-review coordination (E11)
+
+The profile lock prevents a scheduled check from colliding with manual *execution*, but a person reading a manual Sync review holds no lock. While the TUI review is open it holds a bounded, heartbeated **review lease** in private local state (expires on its own after an unclean exit); scheduled checks skip fetching and record **Busy** while a live lease exists. The review also re-reads the tracking revision before confirmation; if it moved (manual `git fetch`, another tool, a lapsed lease), it shows “New changes arrived from your shared profile while you were reviewing. Your decisions are kept where they still apply.” with **Refresh**, re-inspects, and carries forward only resolutions whose targets and states are unchanged. Execution's existing “Sync plan changed; reinspect” refusal remains the final guard.
+
+**Tests:** lease written/heartbeated/released; expired and foreign leases ignored; scheduled check skips while live; stale review detected before confirm; refresh keeps still-valid decisions and drops changed ones; no execution on a stale plan.
+
 ### Task B3 — systemd user timer and service
 
 **Candidate files:** `internal/autosync/systemd.go`, `systemd_test.go`, `internal/app/auto_sync_systemd.go`, test fixtures in `test/autosync/`.
@@ -230,7 +238,7 @@ Planning from a materialized pinned revision must be proved equivalent to planni
 
 ### Task C0a — Increment I1 registry entries
 
-Deliver the audit's I1 entries with their conditions and tests: new inactive local themes; terminal/browser/editor defaults with installed-app evidence; new non-executable Config and Resources files (path-class subset of E7). Each entry has positive, negative (condition fails → review) and two-host tests.
+Deliver the audit's I1 entries with their conditions and tests: new inactive local themes (Conservative; inertness evidence pinned to audited Omarchy scripts); terminal/browser/editor defaults with installed-app evidence (Balanced); new Config and Resources files in registered inert destination classes (Conservative; destination-class subset of E7). Each entry has positive, negative (condition fails → review) and two-host tests.
 
 ### Task C1 — Refactor shared Sync phases without weakening interactive approvals
 
@@ -267,7 +275,7 @@ Pause or Disable must be checked again at the last safe boundary. If they occur 
 
 Before code, build failure-injection fixtures for: race with manual Sync; changed target/new dependency; changed remote SHA; changed Restore policy and a re-enabled target; edited local grant; invalid local state; off-network/background auth prompt; timed-out Git; cancellation at each stage; failed fast-forward; failed Restore after local checkout changed; verification failed; cursor-save failed; and corrupt status files.
 
-No failure may move the cursor ahead of verification. A dangerous partial state sets **Suspended for safety**, prevents further unattended mutation, and provides an exact manual `Sync` recovery path. A busy lock skips rather than escalating or spinning. Timer retries have bounded backoff; no aggressive loop, no automatic repeat of non-idempotent operations.
+No failure may move the cursor ahead of verification. Execution is not atomic: a failure after mutation records exactly what completed, failed and was not attempted, sets **Suspended for safety**, prevents further unattended mutation, and provides an exact manual `Sync` recovery path that re-plans from current state. Automatic retries re-run only operations whose idempotence is established, and only after the guard is cleared. A busy lock skips rather than escalating or spinning. Timer retries have bounded backoff; no aggressive loop, no automatic repeat of non-idempotent operations.
 
 ### Task C5 — Two-host acceptance
 
@@ -286,17 +294,17 @@ Run existing 11 Sync/PTy acceptance scenarios unchanged and ensure no RA modific
 
 ## 6. Phase 11 PR D — Increment I2: file-based Balanced and Hands-off capabilities
 
-### Task D0.1 — Content classifier (E7)
+### Task D0.1 — Positive-evidence content analysis (E7)
 
-Per-format detection of executable content: Hyprland `exec`/`exec-once`/`execr` directives and sourced files, shell rc/profile files, Lua/Vim/QML/JS, desktop autostart entries, systemd units, files with an executable bit, and theme files that Omarchy or applications load as code. Classification is part of the descriptor (`config` vs `exec-later`); unknown formats are `exec-later`. Tests use real Omarchy defaults and themes as fixtures.
+Analysis that **identifies** potentially executable content and chooses the permission an operation needs; it is not a security boundary. Conservative/Balanced eligibility requires positive evidence (audit §2.4): registered format and loader for the audited application version, complete parsing including transitive includes (Hyprland `source =`, sourced shell files, Lua `require`, `@import`), documented effects of loading and of any reload or activation (`hyprctl reload` re-runs every `exec` in the whole sourced graph, so Balanced reload needs the whole graph free of `exec`), verified preconditions, safe destination, verified post-apply behaviour. Unparsed, dynamic or ambiguous content and unknown formats are `exec-later` (review or Hands-off), never Balanced. Tests use real Omarchy defaults and themes, include missed-detection cases (obfuscated or included `exec`), and assert that non-detection never promotes an operation.
 
-### Task D0.2 — Journal-backed rollback (E6)
+### Task D0.2 — Best-effort journal rollback (E6)
 
-After failed verification of a run whose operations all have `backup` recovery, restore the journalled backups in reverse order, verify the restored state, and report the run as **Incomplete — rolled back**; the safety guard still requires review, and the cursor never advances. Operations without backup recovery never claim rollback.
+After a failure, restore journalled backups of completed `backup`-recovery operations in reverse order, verify the restored state, and report the outcome as **Incomplete — best-effort rollback** with what was and was not restored; the safety guard still requires review and the cursor never advances. Operations without backup recovery (commands, activations) are reported as not rolled back. Rollback is never described as a guarantee unless an operation has a proven transactional mechanism.
 
 ### Task D0.3 — Increment I2 registry entries
 
-Balanced: non-executable Config updates with precondition and backup plus `hyprctl reload` (no new `exec` directives); activation of themes with no executable content; Resources replacements with backup. Hands-off (run-code authorisation per category): Hooks writes; executable-class Config; executable and overlay themes; executable or autostart Resources files. Each with conditions, positive/negative tests and two-host cases.
+Balanced (positive evidence): Config updates with precondition and backup; `hyprctl reload` only when the whole sourced graph has no `exec`; Resources inert replacements with backup; theme activation **only** where the complete path is positively established free of user-controlled code (audited `theme-set`, no hook or a separately authorised one, inert theme files). Hands-off (run-code authorisation per category): theme activation by default; Hooks writes; executable, unknown or ambiguous Config; overlay themes; other Resources files. Each with conditions, positive/negative tests and two-host cases.
 
 ## 6a. Phase 11 PR E — User controls, documentation, and physical acceptance (first release)
 
@@ -327,7 +335,7 @@ Report configuration validity, actual selected profile/machine, last check, last
 
 **Candidate files:** `internal/tui/screens/auto_sync.go`, `_view.go`, `_test.go`, registration/action adapters, `internal/tui/catalog.go`, `internal/tui/modals.go`; reuse current collapsible groups, layout primitives, keyboard navigation and help conventions.
 
-Required collapsible sections: **Status**, **How automatic?**, **Use Restore settings**, **What can run automatically?**, **Needs review**, **Recent activity**. Counts and the consequences of granting permission appear **before** the detailed list. Opening/previewing changes nothing. Changes to mode/linking/overrides are *staged UI choices* until local confirmation; custom deny beats allow and linked Restore policy cannot silently widen authority.
+Show the stale-review refresh (Task B2a) and, from PR G on, the privileged-install confirmation. Required collapsible sections: **Status**, **How automatic?**, **Use Restore settings**, **What can run automatically?**, **Needs review**, **Recent activity**. Counts and the consequences of granting permission appear **before** the detailed list. Opening/previewing changes nothing. Changes to mode/linking/overrides are *staged UI choices* until local confirmation; custom deny beats allow and linked Restore policy cannot silently widen authority.
 
 Required copy (from design; deviations require documented truthfulness):
 
@@ -375,15 +383,15 @@ Do not run destructive failure injection on an unbacked-up real machine. Hosted 
 ## 6b. Phase 11 PR F — Increment I3: Services, Shell, Plugins
 
 - **Clone-at-revision installs** for Git themes, Git plugins and Git resources: the content is fetched at the recorded exact revision and verified before it is placed (no window at a floating tip); remote identity recorded.
-- **Services:** save definitions without enabling (Balanced); enable/start under run-code authorisation (Hands-off), replacing per-unit activation review for authorised units only; bounded start timeouts; verify unit state. Exclude Blueprint's own Auto Sync units (done in PR B).
-- **Shell:** reference analysis so config referencing only installed, unchanged plugins is Balanced; restart with a health check; config loading new plugin code is Hands-off.
+- **Services:** save definitions of units that nothing enables, starts or references (Balanced, with unit dependency analysis); enabled-unit definitions (Hands-off); enable/start under run-code authorisation (Hands-off), replacing per-unit activation review for authorised units only; bounded start timeouts; verify unit state. Exclude Blueprint's own Auto Sync units (done in PR B).
+- **Shell:** config and restart are Balanced only when every referenced and enabled plugin is first-party (restart loads every enabled plugin); anything loading third-party plugin code is Hands-off; restart has a health check.
 - **Plugins:** local (portable-fingerprint verified) and pinned Git installs with `omarchy plugin validate` and load (Hands-off); disable (Balanced).
 - Registry entries, two-host cases and physical acceptance for each; released separately.
 
 ## 6c. Phase 11 PR G — Increment I4: Packages and removals
 
-- **Root helper ADR first (E10):** an administrator-installed helper (for example a polkit-authorised, fixed-vocabulary command) that installs only signed packages from allowlisted repositories, noninteractively. Never stored passwords, cached sudo or answered prompts. Without the helper, package operations stay review-only.
-- **Packages:** signed official-repository installs (Balanced); AUR at a PKGBUILD revision recorded at Capture, pinned mise tools with checksum verification, and Omarchy recipes marked noninteractive (Hands-off). Recipes that wait for sign-in remain T3.
+- **Root helper ADR first (E10):** an administrator-installed helper (for example polkit-authorised) whose only operation is installing an exact, provenance-checked package set from allowlisted signed repositories, noninteractively, with defined operation boundaries and verification. No arbitrary privileged commands, stored passwords, cached sudo or answered prompts. Without the helper, package operations stay review-only. Repository signatures establish origin only; install scripts and package-manager hooks still run as root, which is why this is Hands-off or Custom “privileged install”.
+- **Packages** (all Hands-off or Custom “privileged install”): signed official-repository installs; AUR at a PKGBUILD revision recorded at Capture, pinned mise tools with checksum verification, and Omarchy recipes marked noninteractive (Hands-off). Recipes that wait for sign-in remain T3.
 - **Removals in every category (E9):** provenance records showing Blueprint installed or captured the item; removal only on provenance match, with backup or reinstall recovery, never the active theme or a dependency of an installed package; Hands-off with the category's authorisation.
 - Registry entries, two-host cases and physical acceptance; released separately.
 
@@ -453,3 +461,16 @@ The reviewer agreed with the locking, profile-location, remote-policy and state-
 6. **One status model:** setting vs last-check outcome (spec §4.1, ADR §8, Task B2).
 7. **Naming:** “Phase 11 PR A–G” throughout.
 8. **Partial execution:** still excluded; whole-plan stop and notify, with proof obligations for any later proposal (ADR §5).
+
+### 10.3 Final design corrections (2026-10-17, revision 3)
+
+The reviewer approved the direction and I1–I4 staging in principle (Packages and removals in I4; first public release delivers I1 and I2 together) and required these corrections, now applied across the audit, spec, ADR 0029 and this plan:
+
+1. Default-app switching is an update, so it is **Balanced**; Conservative is strictly additive (no genuinely additive default exists).
+2. Theme activation is **Hands-off by default** because it runs the `theme-set` hook and post-theme commands; Balanced only with positive evidence that the complete path runs no user-controlled code, or a separately authorised hook.
+3. Content analysis is **evidence, not a boundary**: Conservative/Balanced need positive evidence (supported format, complete transitive parsing, known reload/activation effects, verified preconditions, safe destination, verified behaviour); non-detection never qualifies; unknown or ambiguous content goes to review or Hands-off. `hyprctl reload` effects are audited over the whole sourced graph.
+4. T3 adds operations whose steps, dependencies or effects cannot be bounded or verified, and arbitrary privileged commands; **run-time blockers** are listed separately and never make a category unsuitable.
+5. Privileged package installs need **Hands-off or Custom “privileged install”**, the reviewed root helper, exact operation boundaries, provenance checks and noninteractive execution.
+6. All-or-nothing applies to **eligibility**; execution is not atomic, partial work after failure is reported and suspends automation, the completed-Sync record never advances, and rollback is best-effort unless proven transactional.
+7. Manual review is coordinated separately from the execution lock: a **review lease** and a stale-review **Refresh** (Task B2a).
+8. ADR 0029 remains Proposed until final review; no production code, merge, publish or background services.

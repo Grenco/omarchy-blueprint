@@ -1,8 +1,9 @@
 # Auto Sync Gate 0 — Restore Operation Capability Audit
 
-**Status:** Revision 2, for human review (Gate 0 of the Phase 11 plan). No
-production code until this matrix, the revised spec, ADR 0029 and the plan
-are reviewed.\
+**Status:** Revision 3, for final review (Gate 0 of the Phase 11 plan). The
+product direction and I1–I4 staging are approved in principle; revision 3
+applies the reviewer's final design corrections. No production code until
+this matrix, the spec, ADR 0029 and the plan pass final review.\
 **Date:** 2026-10-17\
 **Baseline:** `main` `aa6f127`\
 **Plan:** [`2026-10-17-auto-sync-phase-11-implementation-plan.md`](../plans/2026-10-17-auto-sync-phase-11-implementation-plan.md)\
@@ -57,35 +58,67 @@ from the operation ID or risk label.
   the required controls; needs only a registry entry, conditions and tests.
 - **T2 — Engineerable:** suitable for unattended execution after the named
   engineering work and controls, under explicit local authorisation.
-- **T3 — Unsuitable:** cannot legitimately run unattended; reason given. Kept
-  deliberately small (§5).
+- **T3 — Unsuitable:** cannot legitimately run unattended; reason given
+  (§5). T3 is a property of an operation *form*. Conditions that stop one
+  run without making a category unsuitable are **run-time blockers** (§5a).
 
 ### 2.3 Preset ceilings
 
 Presets are ceilings over descriptors (spec §4.2); what actually runs is
 `ceiling ∩ delivered registry entries ∩ local grant scope ∩ Restore Apply ∩
-fresh checks`.
+fresh checks ∩ no run-time blocker`.
 
 | Preset | Ceiling |
 |---|---|
 | Notify only | Nothing applied. |
-| Conservative | `add` of `data`/`config` from `artifact` or `closed-set`; activation `none`; `user`; no interaction. |
-| Balanced | Conservative, plus `update` of `data`/`config` with precondition and `backup`; `reload` activation; activation of content classified as non-executable; `signed` installs through a root helper once delivered. |
-| Hands-off | Balanced, plus `exec-later`/`exec-now` from `artifact` or `pinned` sources; `activate` (enable, start, load); `remove` with provenance match and `backup`/`reinstall` recovery. **Requires a per-category local "may run code" authorisation** (ADR 0029 §3a). |
-| Custom | User-chosen category × operation-family × target matrix, each cell capped by Hands-off and by the registry. |
+| Conservative | `add` only: new `data`/`config` from hash-verified `artifact` sources, with positive evidence (§2.4) that nothing loads or executes it as a result; activation `none`; `user`; no interaction. No update, replacement, removal or reload. |
+| Balanced | Conservative, plus `update` of `data`/`config` (including fixed-vocabulary setters) with precondition and `backup`, and `reload`/activation **only where positive evidence (§2.4) establishes that the complete execution path runs no user-controlled code**. |
+| Hands-off | Balanced, plus `exec-later`/`exec-now` from `artifact` or `pinned` sources, activation that runs user-controlled code (for example a `theme-set` hook), enabling/starting/loading, and provenance-checked removals with recovery — **only in categories with the local "may run code" authorisation** (ADR 0029 §3a). Privileged package installation additionally needs the **privileged install** authorisation and the root helper (§4.8). |
+| Custom | User-chosen category × operation-family × target matrix, each cell capped by Hands-off and by the registry; privileged install is its own named cell. |
 
-`Interaction: required`, `Source: unpinned` and anything in §5 are never
-within any ceiling.
+`Interaction: required`, `Source: unpinned`, unbounded or unverifiable effects
+and anything in §5 are never within any ceiling.
 
-### 2.4 Delivery increments
+### 2.4 Positive evidence (what Balanced and Conservative require)
+
+Content analysis identifies potentially executable content and helps choose
+the permission an operation needs. It is **not** a security boundary by
+itself. Absence of a detected Hyprland `exec`, shell command, Lua `require`
+or similar is never proof of safety. Conservative or Balanced eligibility
+requires all of:
+
+1. **Supported format:** the file's format and loader are in the registry for
+   the audited application version.
+2. **Complete parsing:** the whole relevant configuration is parsed, including
+   transitive includes (`source =` in Hyprland, sourced shell files, Lua
+   `require`, `@import`); any unparsed, unresolved or dynamic include fails
+   the evidence.
+3. **Known effects:** the effect of loading the content and of any reload or
+   activation command is documented for that version. For example,
+   `hyprctl reload` re-reads the whole sourced graph and re-runs every `exec`
+   directive in it (not `exec-once`), so a Balanced reload needs the
+   **entire** graph to contain no `exec` directives, not just the changed
+   file.
+4. **Verified preconditions:** the live destination matches the recorded or
+   expected state.
+5. **Safe destination:** not an autostart, rc/profile, `PATH`, hook, unit or
+   plugin location, and no executable bit.
+6. **Verified reload/activation behaviour:** the post-apply check confirms
+   the expected result.
+
+Unknown or ambiguous formats go to review, or to a specifically supported
+Hands-off execution path under the "may run code" authorisation. They are
+never promoted to Balanced.
+
+### 2.5 Delivery increments
 
 | Increment | Delivered in | Content |
 |---|---|---|
-| I1 | Phase 11 PR C | Executor and the first Conservative capabilities |
-| I2 | Phase 11 PR D | File-based Balanced and Hands-off capabilities |
-| — | Phase 11 PR E | TUI/CLI and acceptance; **first release = I1 + I2** |
+| I1 | Phase 11 PR C | Executor; first Conservative and Balanced capabilities |
+| I2 | Phase 11 PR D | Positive-evidence analysis; file-based Balanced and Hands-off capabilities |
+| — | Phase 11 PR E | TUI/CLI and acceptance; **first public release = I1 + I2 together** |
 | I3 | Phase 11 PR F | Services, Shell, Plugins |
-| I4 | Phase 11 PR G | Packages (root helper, separate ADR) and cross-category removal |
+| I4 | Phase 11 PR G | Packages (privileged install, root helper under its own ADR) and provenance-checked removals |
 
 ## 3. Shared engineering (prerequisite for every category)
 
@@ -96,11 +129,12 @@ within any ceiling.
 | E3 | Locked fresh-plan graph equality between preview and execution | I1 |
 | E4 | Unattended executor path: no prompts, no approval callbacks, per-operation authorisation from the locked grant | I1 |
 | E5 | Mandatory `SourceHash` (copies and writes) and `RejectSymlinkParents` on unattended operations | I1 |
-| E6 | Journal-backed rollback of `backup` operations after failed verification | I2 |
-| E7 | Content classifier: per-format detection of executable content (Hyprland `exec`/`exec-once`, shell rc and profile files, Lua/Vim/QML/JS, desktop autostart entries, executable bit) | I2 |
+| E6 | Best-effort journal-backed rollback of `backup` operations after a failure; reported as best-effort unless an operation has a proven transactional guarantee | I2 |
+| E7 | Positive-evidence content analysis (§2.4): supported formats and loaders, complete transitive-include parsing, documented reload/activation effects, destination classes; identifies executable content, never certifies safety by non-detection | I1 (destination classes, theme inertness) · I2 (Hyprland and other formats) |
 | E8 | Per-category "may run code" local authorisation and its preview copy | I2 |
 | E9 | Provenance records for removal (Blueprint-installed marker or recorded fingerprint) | I4 |
-| E10 | Root helper with a fixed command vocabulary, installed only by an administrator (separate ADR) | I4 |
+| E10 | Root helper (separate ADR): installed only by an administrator; accepts only exact package-install requests from allowlisted signed repositories with provenance checks, noninteractively; no arbitrary privileged commands | I4 |
+| E11 | Manual-review coordination: review lease while a manual Sync review is open, and safe refresh when the reviewed revision goes stale | Phase 11 PR B |
 
 ## 4. Provider matrix
 
@@ -114,10 +148,10 @@ verification, cursor rules). **Work** = engineering beyond §3.
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Copy local theme, not active | Exclusive tree copy, refuses existing destination; no hash or symlink-parent check set | add · data · artifact | T1 | Portable fingerprint = recorded hash; destination absent; not desired current | E5 | Conservative | I1 |
+| Copy local theme, not active | Exclusive tree copy, refuses existing destination; no hash or symlink-parent check set | add · data · artifact | T1 | Portable fingerprint = recorded hash; destination absent; not desired current; audited Omarchy version (evidence: an inactive user theme is only listed by name and its preview images shown by `omarchy-theme-switcher`) | E5, E7 (theme inertness pinned to audited Omarchy scripts) | Conservative | I1 |
 | Copy overlay theme (shadows a built-in name) | As above | add · exec-later · artifact | T2 | As above; overlay disclosed in preview | E7 (shadowed built-in counted as later code) | Hands-off | I2 |
-| Activate theme with no executable content | `omarchy theme set` restarts components, runs post-theme commands and the `theme-set` hook | update · config · artifact · activate | T2 | Theme content classified non-executable; local hooks unchanged in this plan; verify current theme afterwards | E7, E6 | Balanced | I2 |
-| Activate theme with executable content (e.g. `neovim.lua`) | As above | exec-now · artifact · activate | T2 | As above; category "may run code" authorised | E7, E8 | Hands-off | I2 |
+| Activate theme (default) | `omarchy theme set` restarts components, runs post-theme commands in `bash -lc`, then `omarchy-hook theme-set` (user hooks); theme files such as `neovim.lua` become live code | update · exec-now · artifact · activate | T2 | Themes "may run code" authorised; verify current theme afterwards | E6, E8 | **Hands-off** | I2 |
+| Activate theme, positively established inert | As above | update · config · artifact · activate | T2 | Balanced **only if** positive evidence shows the complete path runs no user-controlled code: audited Omarchy `theme-set` version with fixed post-theme commands, **no** `theme-set` hook present (or the hook separately authorised under the Hooks "may run code" permission), and every theme file in a supported inert format | E7 | Balanced | I2 |
 | Git theme install + pin | `omarchy theme install <url>` then detach to recorded revision; installs tip first | add · exec-later · pinned | T2 | Clone verified at the exact recorded revision before it is placed | Clone-at-revision install path (no tip window) | Hands-off | I3 |
 | Remove theme (Exact) | `rm -rf` via `omarchy theme remove`; provenance and active-theme guards exist | remove · reinstall | T2 | Provenance match; never the active theme; local grant includes removal | E9 | Hands-off | I4 |
 
@@ -125,30 +159,32 @@ verification, cursor rules). **Work** = engineering beyond §3.
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Set terminal / browser / editor | Omarchy setter accepts a fixed vocabulary, writes one user file or `xdg-settings`, notifies | update · config · closed-set | T1 | Value in the pinned vocabulary; chosen app installed; verify via getter | Installed-app evidence | Conservative | I1 |
+| Set terminal / browser / editor | Omarchy setter accepts a fixed vocabulary, writes one user file or `xdg-settings`, notifies | update · config · closed-set | T1 | Value in the pinned vocabulary; chosen app installed; previous value recorded; verify via getter | Installed-app evidence | **Balanced** | I1 |
 | Set agent | Not planned: setter launches the agent | update · exec-now | T2 | — | Set-only Omarchy API (upstream) or a Blueprint setter that does not launch | Hands-off | Later (upstream) |
 
-Defaults are `update` but sit in Conservative because the source is a closed
-vocabulary, the setter is idempotent and the previous value is a valid
-setting.
+Switching a default app replaces an existing choice, so it is an `update` and
+belongs in Balanced. There is no genuinely additive form: a default is a
+single value, and Omarchy has no "add a candidate without selecting it"
+operation.
 
 ### 4.3 Config
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Write missing file, non-executable class | FileWrite with `ExpectedMissing`, `SourceHash`, symlink-parent rejection | add · config · artifact | T1/T2 | Classifier says non-executable | E7 | Conservative | I1 (E7 subset for path classes) |
-| Update file, non-executable class | FileWrite with expected-hash precondition and backup | update · config · artifact | T2 | Live file equals recorded baseline/previous hash (precondition), backup kept | E6, E7 | Balanced | I2 |
-| `hyprctl reload` after non-executable Hypr changes | Command after writes | reload | T2 | Only when the change adds no `exec` directives; verify Hyprland still answers | E7 | Balanced | I2 |
-| Write/update executable-class file (Hypr `exec`, shell rc, Lua) | As above | exec-later · artifact | T2 | Category "may run code" authorised; precondition; backup | E7, E8 | Hands-off | I2 |
-| Delete file | FileDelete with precondition and backup | remove · backup | T2 | Precondition; backup | E6 | Hands-off | I4 |
+| Write missing file, positively inert | FileWrite with `ExpectedMissing`, `SourceHash`, symlink-parent rejection | add · config · artifact | T2 | §2.4 evidence: supported format and loader, no include of it from an executable context, safe destination; no reload | E7 | Conservative | I1 (destination classes) · I2 (formats) |
+| Update file, positively non-executable | FileWrite with expected-hash precondition and backup | update · config · artifact | T2 | §2.4 evidence for the file and everything that includes it; precondition; backup | E6, E7 | Balanced | I2 |
+| `hyprctl reload` | Command after Hypr writes; re-reads the whole sourced graph and re-runs every `exec` directive | reload | T2 | Balanced only if the **entire** sourced graph parses completely and contains no `exec` directive; otherwise Hands-off with Config "may run code"; verify Hyprland answers afterwards | E7 | Balanced / Hands-off | I2 |
+| Write/update executable-class, unknown or ambiguous file | As above | exec-later · artifact | T2 | Config "may run code" authorised through a supported path; precondition; backup | E7, E8 | Hands-off | I2 |
+| Delete file | FileDelete with precondition and backup | remove · backup | T2 | Precondition; backup; provenance | E6, E9 | Hands-off | I4 |
 | Force replace/delete of unknown or differing target | `--force` path | — | T3 | — | — | Never | — |
 
 ### 4.4 Shell
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Write Shell config referencing only installed, unchanged plugins | File write (backup when existing) | update · config · artifact | T2 | Every referenced plugin is installed and unchanged by this plan | Reference analysis | Balanced | I3 |
-| Shell restart after that write | `omarchy-restart-shell` | reload | T2 | Verify the shell is running afterwards | Health check | Balanced | I3 |
+| Write Shell config referencing only first-party, installed plugins | File write (backup when existing) | update · config · artifact | T2 | §2.4 evidence: every referenced plugin is first-party (Omarchy-shipped) and unchanged by this plan | Reference analysis | Balanced | I3 |
+| Write Shell config that loads third-party plugin code | As above | exec-now · artifact | T2 | Shell/Plugins "may run code" authorised | Reference analysis, E8 | Hands-off | I3 |
+| Shell restart | `omarchy-restart-shell` reloads the shell and every enabled plugin | reload | T2 | Balanced only if every enabled plugin is first-party; otherwise Hands-off (restart runs installed third-party plugin code); verify the shell is running afterwards | Health check | Balanced / Hands-off | I3 |
 | Shell config enabling a newly installed or changed plugin | As above | exec-now (loads plugin code) | T2 | Plugins "may run code" authorised | E8 | Hands-off | I3 |
 
 ### 4.5 Hooks
@@ -171,7 +207,8 @@ setting.
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Save unit/drop-in definition, not enabled | File writes, `daemon-reload` | add/update · exec-later · artifact | T2 | Unit not enabled or started by this plan; backup | E6 | Balanced | I3 |
+| Save unit/drop-in definition, inert | File writes, `daemon-reload` (re-reads definitions; runs no `ExecStart`) | add/update · exec-later · artifact | T2 | §2.4 evidence: the unit is not enabled, not started, and not wanted, required or triggered by any enabled unit, timer, socket or path unit, so nothing runs it; backup | E6, unit dependency analysis | Balanced | I3 |
+| Update definition of an enabled or referenced unit | As above | exec-later · artifact | T2 | Services "may run code" authorised; backup | E8 | Hands-off | I3 |
 | Enable / link / unmask | `systemctl --user` verbs and wants-symlinks | activate | T2 | Services "may run code" authorised; verify unit state | E8 | Hands-off | I3 |
 | Start (activation) | `systemctl --user start`, currently individually reviewed | exec-now · activate | T2 | As above; activation preference recorded; bounded start timeout | Unattended activation path replacing per-unit review | Hands-off | I3 |
 | Disable / mask / remove definition | systemctl and file delete | remove | T2 | Provenance; backup | E9 | Hands-off | I4 |
@@ -181,8 +218,8 @@ setting.
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| Official repository install | pacman/`omarchy pkg add` via sudo in a terminal | add · exec-now · signed · root-helper | T2 | Signature verification; repository allowlist; noninteractive; verify installed | E10 (separate ADR) | Balanced | I4 |
-| AUR install | yay builds a PKGBUILD as the user, then sudo | add · exec-now · pinned · root-helper | T2 | PKGBUILD at a recorded commit; build isolation; plugins "may run code" equivalent for Packages | Record AUR revision at Capture; E10 | Hands-off | I4 |
+| Official repository install | pacman/`omarchy pkg add` via sudo in a terminal; install scripts and package-manager hooks run as root | add · exec-now · signed · root-helper | T2 | Privileged-install authorisation; signature verification; repository allowlist; exact package set; provenance; noninteractive; verify installed. A signature proves origin, not that root-run scripts are harmless | E10 (separate ADR) | **Hands-off** (or Custom "privileged install") | I4 |
+| AUR install | yay builds a PKGBUILD as the user, then sudo | add · exec-now · pinned · root-helper | T2 | Privileged-install authorisation; PKGBUILD at a recorded commit; build isolation; Packages "may run code" | Record AUR revision at Capture; E10 | Hands-off (or Custom "privileged install") | I4 |
 | mise tool install / config | Writes the mise config; downloads tools | add/update · exec-later · pinned | T2 | Exact versions; mise checksum verification where the backend supports it | Version-pin enforcement | Hands-off | I4 |
 | Omarchy semantic recipe, noninteractive | `omarchy-install-*` scripts | exec-now | T2 | Recipe marked noninteractive in Omarchy's catalogue; root helper if needed | Recipe interaction metadata | Hands-off | I4 |
 | Omarchy recipe needing sign-in (`AwaitsYou`) | Waits for a person | — | T3 | — | — | Never | — |
@@ -192,9 +229,9 @@ setting.
 
 | Operation | Current | Target | Tier | Controls | Work | Preset | Inc. |
 |---|---|---|---|---|---|---|---|
-| File/directory/symlink add, non-executable | Writes with `ExpectedMissing`, hash, symlink-parent checks | add · data · artifact | T1/T2 | Classifier: not executable, not an autostart or rc location | E7 (path classes) | Conservative | I1 |
-| File replace with backup | Precondition and backup | update · data · artifact | T2 | Precondition; backup | E6 | Balanced | I2 |
-| Executable or autostart file | As above | exec-later · artifact | T2 | Resources "may run code" authorised | E7, E8 | Hands-off | I2 |
+| File/directory/symlink add, positively inert | Writes with `ExpectedMissing`, hash, symlink-parent checks | add · data · artifact | T2 | §2.4 evidence: destination in a registered inert class (for example wallpapers, documents), no executable bit, not an autostart, rc, `PATH`, hook, unit or plugin location; symlink targets inside the same class | E7 (destination classes) | Conservative | I1 |
+| File replace with backup, positively inert | Precondition and backup | update · data · artifact | T2 | §2.4 evidence as above; precondition; backup | E6, E7 | Balanced | I2 |
+| Any other Resources file | As above | exec-later · artifact | T2 | Resources "may run code" authorised | E8 | Hands-off | I2 |
 | Git project clone + checkout at revision | `git clone`, `git checkout --detach <rev>` | add · data/exec-later · pinned | T2 | Clone verified at exact revision; no submodule or LFS fetch from unrecorded remotes | Clone-at-revision path | Hands-off | I3 |
 | Apply staged/unstaged patch, untracked files | GitPatch with source hash | update · artifact | T2 | Repository HEAD at recorded revision; precondition | E6 | Hands-off | I3 |
 
@@ -204,27 +241,51 @@ setting.
 |---|---|
 | Interaction required (sign-in links, device pairing, prompts with no noninteractive form) | Needs a person present; answering for them would be impersonation |
 | Credentials or privilege via stored passwords, cached sudo timestamps or answered elevation prompts | Bypasses the privilege boundary instead of using an administrator-approved mechanism (E10 is the legitimate route) |
+| Arbitrary privileged commands | The root helper accepts only exact, provenance-checked package installs; anything else would make it a general root shell |
 | Unpinned or unverifiable sources (floating branch or URL, no hash, revision or signature) | Content is not what the profile recorded; the remedy is pinning at Capture (T2), not automating the floating form |
+| Operations whose steps, relevant dependencies or effects Blueprint cannot bound or verify with a supported mechanism | Without bounded effects and verification, Blueprint cannot know what it authorised or whether it succeeded |
 | Conflict resolution: Force replace or delete of a target that differs from both the recorded and the expected state | That is a decision about whose change wins, not an application of recorded intent |
 | Removal without matching provenance | Could destroy something Blueprint did not create |
 | Portable policy expanding authority (remote `restore_convergence = exact`, conflict or activation modes, Restore Apply widening) | A downloaded profile must not grant itself unattended permission |
 
+## 5a. Run-time blockers (stop this run; not a classification)
+
+These stop a run before any unattended mutation and report Needs review (or
+the matching status). They never make a category or operation unsuitable;
+the same operation runs on a later check once the condition clears.
+
+- Missing or invalid completed-Sync record; changed machine, branch,
+  upstream or remote identity.
+- Stale reviewed revisions: the remote, local profile or plan changed since
+  inspection.
+- Changed or revoked local permissions, or a capability-version mismatch.
+- Dirty, diverged or otherwise incompatible profile history; unpublished
+  local commits.
+- Unsupported or unknown compatibility for this Omarchy version.
+- Missing or invalid profile artifacts.
+- Ambiguous target ownership (e.g. a destination that differs from both
+  recorded and expected states, or no provenance for a removal).
+- Unavailable credentials or network; a held profile lock (Busy) or an
+  active manual review lease.
+- Uncertain outcome of a previous run (the Suspended-for-safety guard).
+- Verification that cannot complete.
+
 ## 6. Delivered capability by release
 
-| Preset | First release (I1 + I2) | After I3 | After I4 |
+| Preset | First public release (I1 + I2) | After I3 | After I4 |
 |---|---|---|---|
-| Conservative | New inactive local themes; default apps; new non-executable config and resource files | — | — |
-| Balanced | + non-executable config updates with backup and `hyprctl reload`; non-executable theme activation; resource file updates | + saved service definitions; Shell config with trusted plugins and restart; plugin disable | + official-repository installs via root helper |
-| Hands-off | + hooks; executable config (Hypr `exec`, shell rc); executable or overlay themes; executable resource files — each per-category authorised | + plugins (local and pinned Git); service enable/start; Git themes and resources | + AUR/mise/recipes; provenance-checked removals |
+| Conservative | New inactive local themes; new config and resource files with positive evidence | — | — |
+| Balanced | + default apps; config updates with positive evidence and backup; `hyprctl reload` when the whole graph has no `exec`; inert resource replacements with backup; theme activation only where positively established inert | + inert service definitions; Shell config and restart with first-party plugins only; plugin disable | — |
+| Hands-off | + theme activation (default path, runs the `theme-set` hook); hooks; executable, unknown or ambiguous config; overlay themes; other resource files — each per-category authorised | + plugins (local and pinned Git); Shell with third-party plugins; service enable/start and enabled-unit definitions; Git themes and resources | + privileged package installs (official, AUR, mise, noninteractive recipes) with the privileged-install authorisation; provenance-checked removals |
 
-Each preset is strictly broader than the one below in every release.
+Each preset is strictly broader than the one below in every release. Later
+categories appear in the UI as "not available yet" until delivered.
 
-## 7. Questions for the reviewer
+## 7. Review status
 
-1. Is the I1–I4 split right, in particular Packages (root helper, separate
-   ADR) and all removals in I4?
-2. Should non-executable theme activation be Balanced, given that it runs the
-   *local, unchanged* `theme-set` hook?
-3. Approve the content classifier (E7) as the boundary between Balanced and
-   Hands-off for Config, Themes and Resources?
-4. Is the T3 list complete?
+Revision 2 questions are resolved by the final review: I1–I4 staging approved
+(Packages and removals in I4; first public release delivers I1 and I2
+together); default apps are Balanced; theme activation is Hands-off unless
+positively established inert; content analysis is evidence, not a boundary;
+T3 extended and run-time blockers separated; privileged package installs need
+Hands-off or the named privileged-install permission.
