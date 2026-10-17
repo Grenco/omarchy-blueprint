@@ -1,6 +1,6 @@
-# ADR 0029 (Proposed, revision 4): Machine-Local Authority for Auto Sync
+# ADR 0029: Machine-Local Authority for Auto Sync
 
-**Status:** Proposed — revision 4 for final review. Revision 1 was accepted on 2026-10-17; the Gate 0 review then changed its capability model, so this revision returns to Proposed until reviewed.\
+**Status:** Accepted (revision 4, 2026-10-17). Revision 1 was accepted earlier the same day; the Gate 0 review changed its capability model, and revision 4 was accepted after final review.\
 **Date:** 2026-10-17\
 **Roadmap:** Phase 11 — Auto Sync\
 **Design:** [`docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`](../planning/specs/2026-10-17-auto-sync-phase-11-design.md)\

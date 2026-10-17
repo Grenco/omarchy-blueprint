@@ -1,11 +1,6 @@
 # Auto Sync Gate 0 — Restore Operation Capability Audit
 
-**Status:** Revision 4, for final review (Gate 0 of the Phase 11 plan). The
-product direction and I1–I4 staging are approved in principle; revision 3
-applied the reviewer's final design corrections; revision 4 resolves the
-three remaining consistency findings (theme hooks, package mechanisms,
-hard-denial precision). No production code until
-this matrix, the spec, ADR 0029 and the plan pass final review.\
+**Status:** Approved (revision 4, Gate 0 passed 2026-10-17). Implemented as the versioned registry in `internal/autosync` (`DefaultRegistry`); every entry is undelivered until the PR that ships its engineering.\
 **Date:** 2026-10-17\
 **Baseline:** `main` `aa6f127`\
 **Plan:** [`2026-10-17-auto-sync-phase-11-implementation-plan.md`](../plans/2026-10-17-auto-sync-phase-11-implementation-plan.md)\

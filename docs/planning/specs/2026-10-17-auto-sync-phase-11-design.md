@@ -1,7 +1,7 @@
 # Phase 11 — Auto Sync Design Specification
 
 **Project:** Omarchy Blueprint (`Grenco/omarchy-blueprint`)\
-**Status:** Revision 4 for final review — direction and I1–I4 staging approved in principle; final design corrections applied. No production code until final review.\
+**Status:** Approved (revision 4); ADR 0029 accepted. Implementation proceeds through the plan's per-PR review gates.\
 **Draft date:** 2026-10-17\
 **Reference baseline:** merged `main` `aa6f127e37f00bd38cf0c3d91bee02aacdfe5d88` (PR #74 merge; its tree is the reviewed PR head `db86c11`).\
 **Basis:** `ROADMAP.md` §69; `docs/planning/specs/2026-10-03-sync-engine-v1-design.md` (especially §Future Phase 11 constraints); ADR 0027; existing workflow/profilegit/syncengine code.\

@@ -2,11 +2,11 @@
 
 > **Agent execution instruction:** Follow this plan task by task using red→green tests and isolated fixtures. Do not merge, start the next PR, enable a real timer, modify a user's profile, tag or release without the corresponding human gate. **This is a planning artifact, not implementation authorization.**
 
-**Status:** Revision 4 for final review. Direction and I1–I4 staging approved in principle; final design corrections applied. No production code until final review; ADR 0029 stays Proposed until then.\
+**Status:** Approved (revision 4); ADR 0029 accepted. Phase 11 PR A in progress — see `2026-10-17-auto-sync-phase-11-pr-a-execution-notes.md`.\
 **Capability audit:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (revision 4)\
 **Date:** 2026-10-17\
 **Design:** `docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`\
-**ADR:** `docs/adr/0029-machine-local-auto-sync-authority.md` (Proposed, revision 4)\
+**ADR:** `docs/adr/0029-machine-local-auto-sync-authority.md` (Accepted, revision 4)\
 **Baseline:** merged `main` `aa6f127e37f00bd38cf0c3d91bee02aacdfe5d88` (PR #74 merge of reviewed head `db86c11`). Recorded as the Phase 11 start SHA on 2026-10-17.\
 **Objective:** Deliver opt-in, machine-local, preset-driven scheduled checks and Auto Follow through the **existing** semantic Sync Engine, growing in increments to meaningful automation of every supported category, with a separately audited unattended authority, a deliberate local permission for code-running operations, no automatic Capture/push, clear status and a recoverable two-host workflow.
 
