@@ -196,3 +196,14 @@ Verification: see the PR description for the exact commands and results.
    described against a base that hid a Hooks run-code expansion, and one
    confirmed before the stored grant changed, are both refused (the first
    failed before the fix); a stale base still reports a concurrent change.
+
+## Review fixes (PR #75, re-review of `76451eb`)
+
+1. **Identity and capability version in the confirmation (P2).** The
+   before and after `Scope` now carry the identity the permissions are bound
+   to (profile root, machine, branch, upstream, and one-way host and remote
+   digests, never the raw machine ID or remote URL) and the capability
+   version, and the identity expansion names the fields that changed. Tests
+   check the values themselves, before and after, in the struct and the JSON
+   payload (failed before the fix), and that every identity field, including
+   any added later, is named when it changes.

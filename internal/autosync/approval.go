@@ -45,13 +45,19 @@ type Expansion struct {
 	// code (resolved from the registry when AllFamilies is set).
 	AllFamilies bool     `json:"all_families,omitempty"`
 	Families    []string `json:"families,omitempty"`
+	// Fields names the identity fields that changed, for identity-changed.
+	Fields []string `json:"fields,omitempty"`
 	// RunsCode: after this change, operations reached through it can run
 	// code on this computer.
 	RunsCode bool `json:"runs_code,omitempty"`
 }
 
-// Scope is the exact authority of a grant, for before/after display.
+// Scope is the exact authority of a grant, for before/after display. The
+// identity carries only one-way digests for the host and remote, never the
+// raw machine ID or remote URL.
 type Scope struct {
+	Identity          Identity                 `json:"identity"`
+	CapabilityVersion string                   `json:"capability_version"`
 	Preset            Preset                   `json:"preset"`
 	RestoreLink       RestoreLink              `json:"restore_link"`
 	Categories        map[string]CategoryScope `json:"categories"`
@@ -72,7 +78,7 @@ type Change struct {
 
 func scopeOf(g Grant) Scope {
 	a := g.authority()
-	return Scope{Preset: a.Preset, RestoreLink: a.RestoreLink, Categories: a.Categories, RunCode: a.RunCode, PrivilegedInstall: a.PrivilegedInstall}
+	return Scope{Identity: a.Identity, CapabilityVersion: a.CapabilityVersion, Preset: a.Preset, RestoreLink: a.RestoreLink, Categories: a.Categories, RunCode: a.RunCode, PrivilegedInstall: a.PrivilegedInstall}
 }
 
 // Describe compares a proposal with the current grant. Family lists are
@@ -92,6 +98,28 @@ func difference(a, b []string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// identityChanges names the identity fields that differ, by their payload
+// keys, in sorted order.
+func identityChanges(a, b Identity) []string {
+	var out []string
+	for _, f := range []struct {
+		name       string
+		prev, next string
+	}{
+		{"branch", a.Branch, b.Branch},
+		{"host_id", a.HostID, b.HostID},
+		{"machine", a.Machine, b.Machine},
+		{"profile_root", a.ProfileRoot, b.ProfileRoot},
+		{"remote_fingerprint", a.RemoteFingerprint, b.RemoteFingerprint},
+		{"upstream", a.Upstream, b.Upstream},
+	} {
+		if f.prev != f.next {
+			out = append(out, f.name)
+		}
+	}
 	return out
 }
 
@@ -116,8 +144,8 @@ func codeFamilies(registry Registry, category string) []string {
 func expansions(prev, next Grant, registry Registry) []Expansion {
 	a, b := prev.authority(), next.authority()
 	var out []Expansion
-	if a.Identity != b.Identity {
-		out = append(out, Expansion{Kind: ExpandIdentity})
+	if fields := identityChanges(a.Identity, b.Identity); len(fields) > 0 {
+		out = append(out, Expansion{Kind: ExpandIdentity, Fields: fields})
 	}
 	if a.CapabilityVersion != b.CapabilityVersion {
 		out = append(out, Expansion{Kind: ExpandCapabilityVersion})

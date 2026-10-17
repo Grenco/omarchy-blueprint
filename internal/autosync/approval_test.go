@@ -1,8 +1,10 @@
 package autosync
 
 import (
+	"encoding/json"
 	"math/rand"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -232,5 +234,75 @@ func TestAnyEffectiveWideningIsDescribed(t *testing.T) {
 	}
 	if widenings < 100 {
 		t.Fatalf("property exercised only %d widenings", widenings)
+	}
+}
+
+// The confirmation shows which computer, profile, branch and remote the
+// permissions are bound to, and which capability set they were confirmed
+// against, before and after, with the changed identity fields named. Only
+// one-way digests are shown for the host and remote.
+func TestDescribeShowsIdentityAndCapabilityVersion(t *testing.T) {
+	root := "/home/me/profile"
+	prev := activeGrant(root, PresetConservative, "themes")
+	prev.CapabilityVersion = "restore-capabilities/0"
+	next := prev
+	next.CapabilityVersion = CapabilityVersion
+	next.Identity.Machine = "desktop"
+	next.Identity.Branch = "work"
+	next.Identity.HostID = strings.Repeat("c", 64)
+
+	c := Describe(prev, next)
+	want := Identity{ProfileRoot: root, HostID: testHost, Machine: "laptop", Branch: "main", Upstream: "origin/main", RemoteFingerprint: testRemote}
+	if c.Before.Identity != want {
+		t.Fatalf("before identity = %+v", c.Before.Identity)
+	}
+	want.Machine, want.Branch, want.HostID = "desktop", "work", strings.Repeat("c", 64)
+	if c.After.Identity != want {
+		t.Fatalf("after identity = %+v", c.After.Identity)
+	}
+	if c.Before.CapabilityVersion != "restore-capabilities/0" || c.After.CapabilityVersion != CapabilityVersion {
+		t.Fatalf("capability version %q → %q", c.Before.CapabilityVersion, c.After.CapabilityVersion)
+	}
+	e, ok := findExpansion(c, ExpandIdentity)
+	if !ok || !reflect.DeepEqual(e.Fields, []string{"branch", "host_id", "machine"}) {
+		t.Fatalf("identity expansion = %+v", e)
+	}
+	if _, ok := findExpansion(c, ExpandCapabilityVersion); !ok {
+		t.Fatalf("capability version expansion missing: %+v", c.Expansions)
+	}
+
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Before, After struct {
+			Identity          map[string]string `json:"identity"`
+			CapabilityVersion string            `json:"capability_version"`
+		}
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Before.Identity["host_id"] != testHost || payload.After.Identity["machine"] != "desktop" || payload.Before.Identity["remote_fingerprint"] != testRemote || payload.After.CapabilityVersion != CapabilityVersion {
+		t.Fatalf("payload = %s", data)
+	}
+	for _, side := range []map[string]string{payload.Before.Identity, payload.After.Identity} {
+		if !hex64.MatchString(side["host_id"]) || !hex64.MatchString(side["remote_fingerprint"]) {
+			t.Fatalf("host or remote shown as anything but a one-way digest: %s", data)
+		}
+	}
+}
+
+// Every identity field, including any added later, is named when it changes.
+func TestIdentityChangesCoverEveryField(t *testing.T) {
+	typ := reflect.TypeOf(Identity{})
+	for i := 0; i < typ.NumField(); i++ {
+		var next Identity
+		reflect.ValueOf(&next).Elem().Field(i).SetString("changed")
+		want := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+		if got := identityChanges(Identity{}, next); !reflect.DeepEqual(got, []string{want}) {
+			t.Fatalf("%s changed, reported %v", typ.Field(i).Name, got)
+		}
 	}
 }
