@@ -1,7 +1,7 @@
 # Phase 11 — Auto Sync Design Specification
 
 **Project:** Omarchy Blueprint (`Grenco/omarchy-blueprint`)\
-**Status:** Approved — ADR 0029 accepted 2026-10-17; implementation proceeds only through the plan's review gates\
+**Status:** Revision 2 for review — revised after the Gate 0 review (capability model, presets, delivery increments). No production code until reviewed.\
 **Draft date:** 2026-10-17\
 **Reference baseline:** merged `main` `aa6f127e37f00bd38cf0c3d91bee02aacdfe5d88` (PR #74 merge; its tree is the reviewed PR head `db86c11`).\
 **Basis:** `ROADMAP.md` §69; `docs/planning/specs/2026-10-03-sync-engine-v1-design.md` (especially §Future Phase 11 constraints); ADR 0027; existing workflow/profilegit/syncengine code.\
@@ -15,7 +15,7 @@ Auto Sync extends the **existing semantic Sync Engine** so a selected Omarchy co
 
 Auto Sync is not a daemon that blindly runs `git pull`, `capture`, `restore` and `push`. It must reuse Sync's pinned Git history, machine-local last-successful-Sync state, provider-defined target semantics, policy gates, fresh Restore planning, verification, and failure rules. The existing machine remains the configuration editor; Git remains the shared profile history.
 
-A preset provides *proposed automation permission*, not permission to bypass hard safety requirements. All installed automation is opt-in; the initial default is **Disabled**, with read-only Notify only offered as the safest first choice. The suggested active preset is **Balanced**, linked to Restore settings, only after an explicit local preview and confirmation.
+A preset provides *proposed automation permission*, not permission to bypass hard safety requirements. All installed automation is opt-in; the initial setting is **Off**, with read-only Notify only offered as the safest first choice. The suggested active preset is **Balanced**, linked to Restore settings, only after an explicit local preview and confirmation.
 
 ### 1.1 What a user should understand
 
@@ -27,42 +27,51 @@ A preset provides *proposed automation permission*, not permission to bypass har
 
 ## 2. Scope and release boundary
 
-### 2.1 Phase 11 first release (Auto Follow v1)
+### 2.1 Phase 11 scope
 
-1. Local, opt-in Auto Sync settings with presets, custom overrides, and three Restore-link modes.
-2. Read-only, scheduled semantic Sync inspections, with an explicit fetch of the configured tracking branch inside that operation only.
-3. Machine-local classification of what an inspected **entire plan** would be allowed to execute without interaction.
+Phase 11 delivers **Auto Follow** across all supported categories, in increments. The capability audit (`docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md`) is the source of truth for which operation reaches which preset in which increment.
+
+1. Local, opt-in Auto Sync settings with presets, custom category/operation/target permissions, a separate per-category “may run code” authorisation, and three Restore-link modes.
+2. Scheduled semantic Sync inspections, with an explicit fetch of the configured tracking branch under the profile lock (non-blocking).
+3. Machine-local classification of what an inspected **entire plan** would be allowed to execute without interaction, from provider effect descriptors and a versioned capability registry.
 4. Unattended **Auto Follow** for an eligible remote-only, fast-forward, conflict-free plan; all writes through the existing Sync execution architecture and fresh Restore planning.
-5. Local status and bounded, sanitized run history; notifications for pending review, completion, and actionable failure.
-6. TUI settings/status/preview and scriptable CLI equivalents; managed `systemd --user` timer/service as scheduling mechanism.
-7. Multi-host fake-PTY acceptance, failure-injection tests and real-machine acceptance gates.
+5. Provider engineering that moves operations from “engineerable” to “delivered” (content classification, clone-at-revision installs, journal rollback, provenance records, an administrator-approved root helper).
+6. Local status and bounded, sanitized run history; notifications for pending review, completion and actionable failure.
+7. TUI settings/status/preview and scriptable CLI equivalents; managed `systemd --user` timer/service as scheduling mechanism.
+8. Multi-host fake-PTY acceptance, failure-injection tests and real-machine acceptance gates per release.
+
+**First release** (after Phase 11 PR E): Notify only, plus Conservative, Balanced and Hands-off capabilities for Themes, Defaults, Config, Hooks and Resources file operations (increments I1 + I2), each preset strictly broader than the one below. **Later Phase 11 increments:** Services, Shell and Plugins (I3); Packages through an administrator-approved helper and provenance-checked removals in every category (I4).
 
 ### 2.2 Explicitly deferred
 
-- **Auto Publish:** unattended Capture, commits and push. Its permission remains independent; do not expose a functional toggle until implemented and separately approved.
-- **Auto Reconcile:** unattended semantic merging of disjoint local/remote committed changes (the roadmap places broader bidirectional auto reconciliation later).
+- **Auto Publish:** unattended Capture, commits and push. A separately authorised later increment after Auto Follow acceptance; no functional toggle until implemented and approved.
+- **Auto Reconcile:** unattended semantic merging of disjoint local/remote committed changes (roadmap Phase 12).
+- **Partial-plan execution** (running eligible actions while others wait): only with the proof obligations in ADR 0029 §5; until then the whole run stops and notifies.
 - Automatic selection of conflicting target intent, remembered conflict decisions, persisted live-observation caches, watchers or push subscriptions.
 - Unattended first-time Sync setup, cursor reset or trust-on-first-use of new machine/profile/remote identity.
-- Executing user-provided scripts, hooks, plugins, service activation/restart, high-risk removals, forced Restore or compatibility overrides without separately reviewed provider support; see §6.
+- Operations classified **T3** in the audit (interaction that needs a person, privilege through passwords or answered prompts, unpinned sources, conflict resolution, removal without provenance, authority expansion from portable policy). These are permanent exclusions, not deferrals.
 - More than one configured tracking branch, force push, rebase or Git history rewriting.
-- Profile cloning from a URL at initial setup and the optional Omarchy shell/bar plugin. Both are compatible **follow-on features**, not prerequisites.
+- Profile cloning from a URL at initial setup and the optional Omarchy shell/bar plugin (compatible follow-on features).
 
 ### 2.3 Phase boundary
 
-**PR A:** authority model, presets, immutable eligibility descriptors and tests (no unattended mutation).\
-**PR B:** scheduler, inspection, status and notifications (read-only).\
-**PR C:** Auto Follow using the existing Sync transaction and independent local authority; exhaustive failure tests.\
-**PR D:** TUI/CLI management and two-machine acceptance.\
-Auto Publish receives its own reviewed design/PRs after Auto Follow acceptance; do not pre-enable unused publishing settings.
+**Phase 11 PR A:** authority model, grant store, effect descriptors and registry framework, presets, “may run code” authorisation, preview (no unattended mutation).\
+**Phase 11 PR B:** scheduler, locked fetch/inspection, unified status, notifications (read-only).\
+**Phase 11 PR C:** Auto Follow executor, snapshot-planning equivalence, increment I1 (first Conservative capabilities).\
+**Phase 11 PR D:** increment I2 (file-based Balanced and Hands-off capabilities, content classifier, journal rollback).\
+**Phase 11 PR E:** TUI/CLI management, docs, two-machine and physical acceptance → first release.\
+**Phase 11 PR F:** increment I3 (Services, Shell, Plugins).\
+**Phase 11 PR G:** increment I4 (Packages via root helper under its own ADR; provenance-checked removals).\
+Auto Publish receives its own reviewed design/PRs after Auto Follow acceptance.
 
 ## 3. Design principles and non-negotiable invariants
 
 1. **Explicit local authority.** Portable profile data—including Capture/Restore policies—cannot enable, unpause or expand unattended execution on another computer.
 2. **Intersect permissions, never union them.** Every mutation needs (a) existing effective Restore Apply, (b) the local Auto Sync grant, (c) a provider-supported unattended capability, and (d) current plan/Restore/safety/compatibility approval.
-3. **Presets are ceilings, not guesses.** No preset authorises an unknown operation or a newly introduced provider operation type.
+3. **Presets are ceilings, not guesses.** No preset authorises an unknown operation or a newly introduced provider operation type. Authority is computed from effect descriptors, not from `RiskLow`/`RiskHigh`.
 4. **No interactive approval impersonation.** Do **not** automate the current `--yes` path or supply permissive fake `ApproveRestore`/`ApproveCapture` closures. Add a distinct Auto Sync execution-authority path that verifies the machine-local grant under the same lock and freshly validates operation-level scope.
 5. **No first-run automation.** A manual Sync must already have completed successfully and established a valid machine-local base. Remote/branch/machine identity changes require a new manual review.
-6. **Whole-plan preflight for v1.** If a proposed change needs review, has a blocker, or exceeds authority, do not partially execute the plan. Report what is ready and what is blocked. This excludes intentional, correctly policy-preserved differences with no proposed operation.
+6. **Whole-plan preflight in Phase 11.** If a proposed change needs review, has a blocker, or exceeds authority, do not partially execute the plan. Report what is ready and what is blocked. This excludes intentional, correctly policy-preserved differences with no proposed operation.
 7. **Fail closed.** Unknown safety facts, malformed policy, stale revisions, dirty profile checkout, divergent history, conflicting desired state, untrusted artifacts, missing credentials or interactive requirements stop execution.
 8. **Exact history and ordering.** Revalidate pinned B/L/R/M/identity, keep the existing profile lock, update the checkout with the existing safe Git primitives, plan Restore freshly, verify, then advance the cursor only through Sync Engine's established success path.
 9. **No hidden profile-management mutation during checks.** Inspections may fetch remote tracking refs as explicitly disclosed; they do not pull, commit, change profile files, apply settings or write the cursor.
@@ -72,29 +81,38 @@ Auto Publish receives its own reviewed design/PRs after Auto Follow acceptance; 
 
 ## 4. User configuration model
 
-### 4.1 Lifecycle and defaults
+### 4.1 One status model
 
-States: **Disabled** (initial), **Checking only**, **Enabled**, **Paused**, **Needs review**, **Error**. “Needs review” or “Error” are run outcomes/statuses; they do not silently rewrite the user's selected preset. An explicit hard-failure guard may put unattended execution into a locally persisted **Suspended for safety** state until the user reviews the problem. Status distinguishes last *check* from last *completed Sync*.
+Auto Sync keeps two separate things and never mixes them:
+
+- **Setting** (chosen by the user, persisted locally): **Off** (initial) · **On** with a preset · **Paused**. A persisted **Suspended for safety** guard can be set by a failed or uncertain run; while set, nothing is applied until a person reviews it, whatever the setting says. “Notify only” is a preset of On, not a separate state.
+- **Outcome of the last check** (reported, never a setting): **Up to date** · **Applied and verified** · **Needs review** · **Busy** (manual Sync held the lock; skipped) · **Offline** · **Sign-in needed** · **Incomplete** (sets the safety guard) · **Error**.
+
+Status always shows the setting, the last check time and outcome, the next scheduled check, and the last **completed Sync** (verified by Sync Engine) separately. An outcome never rewrites the selected preset.
 
 On first enablement: confirm valid machine/profile/upstream identity, previous manual Sync completion, usable background Git auth, and a dry-run evaluation of the exact current plan. No automatic Restore occurs simply because the user opens the settings screen or selects a preset.
 
 ### 4.2 Presets
 
-| Preset | User-facing description | Proposed machine-local ceiling |
+| Preset | User-facing description | Machine-local ceiling (audit §2.3) |
 |---|---|---|
-| **Notify only** | “Check for changes and tell me when something needs attention. Never apply changes.” | Fetch/inspect/status/notify only; no profile checkout, live machine or cursor mutation. |
-| **Conservative** | “Automatically handle only the simplest, explicitly supported changes.” | Restore-only, provider-audited unattended-low operations; no removals or side-effectful operations. |
-| **Balanced** | “Automatically handle routine, supported changes. Ask before anything significant.” | Restore-only, provider-audited unattended-low and explicitly reviewed unattended-routine operations; no removals, code execution, unknown compatibility or service activation. Recommended when opting in. |
-| **Hands-off** | “Handle the widest range of changes Blueprint can safely run without asking.” | Restore-only, locally authorised operations explicitly audited for unattended use, including separately allowed higher-risk operation classes if implemented. All hard safety gates still apply. No blanket Force/Exact/remove/script approval. |
-| **Custom** | “Choose which changes may run automatically.” | A local allow/deny matrix of category, target exceptions, operation class and maximum audited risk, always capped by hard safety rules. |
+| **Notify only** | “Check for changes and tell me when something needs attention. Never apply changes.” | Fetch/inspect/status/notify only. |
+| **Conservative** | “Automatically handle only the simplest, verified changes.” | Add data or ordinary configuration from hash-verified profile content or fixed choices (new themes not in use, default apps, new non-executable config and files). No replacement, removal, activation or code. |
+| **Balanced** | “Automatically handle routine changes. Ask before anything significant.” | Conservative plus updating ordinary configuration with a precondition and backup, reloading configuration, activating content that cannot run code, saving service definitions without enabling them, and signed official-repository installs once the helper exists. Recommended when opting in. |
+| **Hands-off** | “Also handle changes that install or run code, in the categories I allow.” | Balanced plus code-bearing content (hooks, plugins, executable config, services, AUR/mise packages, executable themes) from hash-verified or exactly pinned sources, enabling/starting it, and provenance-checked removals with recovery, **only in categories given the “may run code” authorisation**. Hard safeguards still apply. |
+| **Custom** | “Choose which changes may run automatically.” | Category × operation-family permissions with optional target exceptions, capped by Hands-off and the registry. |
 
-**Implementation detail:** The preset-to-operation mapping is a *versioned capability allowlist*. These names are not a promise that arbitrary providers currently expose safe unattended operations. For each provider, an engineering audit must explicitly assign `unattended_safe`, `unattended_routine`, `unattended_extended` or `requires_human`; unknown/new operation types default to `requires_human`. Do not rely solely on an existing generic RiskLow/RiskHigh label. These flags describe execution effects, not security guarantees.
+Each preset is strictly broader than the one below in every release. Where a preset's ceiling admits operations that are not yet delivered, the preview lists them as “not available yet” instead of implying they run, and Hands-off is never presented as equal to Balanced.
 
-The initial PR must provide an audited capability matrix for every existing category and each concrete operation type (add/update/remove, executable payload, shell command, service activation, external download, schema migration, Force/Exact effect). **If no mutation passes the documented audit for a preset, disclose that the preset currently checks and notifies; do not silently broaden permission.** The exact initial matrix is an implementation-plan review gate, not an assumption in this spec.
+**Implementation detail:** the preset-to-operation mapping is a *versioned capability registry* keyed by provider and effect-descriptor shape, with conditions. Unknown or new operation types default to review. The audit classifies every current operation into T1 (ready), T2 (engineerable, with named work) or T3 (unsuitable, with reason) and assigns preset eligibility and delivery increment.
+
+### 4.2a Permission to run code
+
+Selecting Hands-off, or a Custom cell that includes code-bearing operations, opens a separate local confirmation per category: what kind of code could run (for example “hook scripts from your shared profile run when Omarchy events happen”), from which sources (profile files verified by fingerprint, or exactly pinned repositories), and that future changes in that category are covered. It is independent of Capture and Restore permissions, bound to this computer's profile and repository identity, revocable at once, and rechecked on every run. Downloaded profiles and portable policy never create or widen it. It never stores passwords, answers prompts or bypasses privilege requirements.
 
 ### 4.3 Custom overrides
 
-The interface starts with **categories**, each collapsible into **targets** and operation classes. Users can grant or withhold permission for a category and optionally override specific targets; no need to visit every target. A target deny always beats a category allow. A target allow may expand the selected preset only after explicit local confirmation and never beyond provider/hard-safety limits. A custom change that widens unattended authority requires a new local preview and confirmation. Display category counts and examples rather than dumping all targets.
+The interface starts with **categories**, each collapsible into **operation types** (add, update, remove, save definition, activate, run code) and **targets**. Users can grant or withhold permission for a category and optionally override specific targets; no need to visit every target. A target deny always beats a category allow. A target allow may expand the selected preset only after explicit local confirmation and never beyond provider/hard-safety limits. A custom change that widens unattended authority requires a new local preview and confirmation. Display category counts and examples rather than dumping all targets.
 
 Independent dimensions: category/target scope, operation family (`add`, `update`, `remove`, `activate`, `execute`, etc.), provider-audited unattended class, permission to update local profile checkout, and (in a future release) permission to Capture/publish. A category setting does not implicitly authorise running arbitrary source-controlled code.
 
@@ -141,7 +159,7 @@ Use one Blueprint-owned `systemd --user` oneshot service triggered by a `systemd
 
 `systemd` calendar/monotonic timers support coalescing and optional catch-up; the implementation plan must select precise unit semantics and test login/logout/sleep. Do not silently enable lingering to make checks occur while logged out. Report that behaviour accurately in the UI.
 
-Background invocations must set noninteractive Git/network execution settings, bounded timeouts, cancellation and bounded retries (with backoff; no aggressive polling). Authentication requiring a prompt stops as **Needs attention**, not as a hanging background process. Do not log token-bearing URLs or subprocess stdout/stderr. Reuse remote identity sanitisation. Offline checks never mark the computer up to date.
+Scheduled checks and previews take the existing profile lock **non-blocking** around fetch and inspection, because a fetch moves Git refs; a held lock records a skipped **Busy** check and never waits for or interferes with a manual Sync. Background invocations must set noninteractive Git/network execution settings, bounded timeouts, cancellation and bounded retries (with backoff; no aggressive polling). Authentication requiring a prompt stops as **Needs attention**, not as a hanging background process. Do not log token-bearing URLs or subprocess stdout/stderr. Reuse remote identity sanitisation. Offline checks never mark the computer up to date.
 
 ### 5.2 Two-phase run
 
@@ -165,7 +183,8 @@ if inspection error, blocker, conflict, defer or uncertain eligibility: needs_re
 if plan requires capture, automatic publish, semantic merge or local-resolution choice: needs_review
 if any operation is not permitted by current Restore Apply: needs_review
 if any operation is outside the locally confirmed Auto Sync envelope: needs_review
-if any operation lacks provider-audited unattended support or fresh safety evidence: needs_review
+if any operation lacks a delivered registry entry or fresh safety evidence: needs_review
+if any code-bearing operation lacks the local "may run code" authorisation for its category: needs_review
 if any operation needs a prompt/Force/Exact override/unknown compatibility: needs_review
 if no actions needed: report checked; mark settled only through existing verified logic
 else: execute pinned Auto Follow under lock, reauthorising the fresh full operation set
@@ -187,24 +206,29 @@ Reason codes are machine-readable and mapped to safe, plain-English help; profil
 
 ## 6. Operation audit, risk and content trust
 
-Unattended eligibility must be derived from the **fresh executable Restore plan** as well as target-level semantics. Require provider-specific effect descriptors (or an equivalent auditable registry), describing at minimum: category/target, operation type, file write/removal, package install/remove, executable content, external command or network request, restart/activation, privilege escalation, compatibility, reversibility and user interaction. Use the strongest effect across dependencies and bundled operations; unknown effect → requires human.
+### 6.1 Effect descriptors
 
-Initial category review should explicitly consider:
+Unattended eligibility is derived from the **fresh executable Restore plan**. Every operation carries a provider-supplied effect descriptor: change (`add`, `update`, `remove`), payload (`data`, `config`, `exec-later`, `exec-now`), source trust (`artifact`, `pinned`, `signed`, `closed-set`, `unpinned`), activation (`none`, `reload`, `activate`), privilege (`user`, `root-helper`), interaction, recovery and verification. The strongest effect across dependencies and bundles wins; an unknown dimension means review. `RiskLow`/`RiskHigh` are not inputs.
 
-| Category | Particular hazards to account for before permitting unattended mutation |
+### 6.2 Readiness tiers and category routes
+
+The audit classifies every operation as **T1 Ready**, **T2 Engineerable** or **T3 Unsuitable**. Current interactivity or the ability to run code identifies engineering work and the need for the §4.2a authorisation; it does not by itself make an operation T3. Every category has a route to meaningful automation:
+
+| Category | Route (audit §4) |
 |---|---|
-| Themes | Activation side effects, locally supplied theme scripts, removals, modified theme contents. |
-| Defaults | Whether switching apps can launch actions or change security-sensitive handlers. |
-| Config | Files used as executable code, shell startup files, credentials, replacement/removal semantics. |
-| Shell & Hooks | Executable shell/script content and event-triggered execution; default to human review unless a narrowly auditable operation is established. |
-| Plugins | Third-party code, enablement and external downloads; default to human review. |
-| Packages | Install/removal scripts, post-install hooks, AUR execution, repository provenance; do not equate generic low risk with unattended safety. |
-| Services | Unit definitions, automatic enabling/activation and code execution; default to human review. |
-| Resources | Arbitrary user files, arbitrary Git projects and deletion/overwrite boundaries; default to human review for unsafe/unclassified effects. |
+| Themes | New inactive local themes (Conservative); activation of non-executable themes (Balanced); executable or overlay themes, pinned Git themes (Hands-off); removal with provenance (Hands-off, I4). |
+| Defaults | Terminal, browser and editor from Omarchy's fixed vocabulary when the app is installed (Conservative); agent after a set-only setter exists. |
+| Config | New non-executable files (Conservative); updates with precondition, backup and `hyprctl reload` when no executable directive is added (Balanced); executable-class files such as Hyprland `exec` and shell rc (Hands-off); deletes with backup (Hands-off, I4). |
+| Shell | Config referencing only installed, unchanged plugins plus restart (Balanced); config loading new plugin code (Hands-off). |
+| Hooks | Hook writes from hash-verified profile content with backup (Hands-off); deletes with provenance (I4). |
+| Plugins | Local and exactly pinned Git plugins with validation and load (Hands-off); disable (Balanced); remove with provenance (I4). |
+| Packages | Signed official-repository installs through an administrator-approved helper (Balanced); AUR at a recorded PKGBUILD revision, pinned mise tools, noninteractive Omarchy recipes (Hands-off); removals with provenance (I4). Recipes that need sign-in never run unattended. |
+| Services | Saving unit definitions without enabling (Balanced); enable/start (Hands-off). |
+| Resources | New non-executable files (Conservative); replacements with backup (Balanced); executable or autostart files, pinned Git projects and patches (Hands-off). |
 
-**Critical remote-content rule:** A version-controlled profile can contain scripts, executable configuration, service units, URLs or commands. A remote change must not cause those to execute unattended merely because its target belongs to an enabled category. Presets cannot grant a generic “execute whatever arrived in Git” privilege. If safely applying a type inherently entails executing unreviewed external code, treat it as requiring human review until a specifically bounded trust model exists. Hands-off remains subject to the same prohibition.
+### 6.3 Content trust
 
-Likewise, a command that is marked RiskLow by a provider is not automatically eligible for Auto Sync. Any Auto Sync allowlist change, capability downgrade/upgrade, or broadened meaning requires tests and local-authority versioning.
+A version-controlled profile can contain scripts, executable configuration, service units, URLs or commands. Such content runs unattended only when (a) the user granted the §4.2a authorisation for that category, (b) the content is exactly what the profile recorded (hash-verified artifact, exact revision, or repository signature), (c) a supported, noninteractive execution mechanism exists, and (d) post-apply verification exists. Floating or unverifiable sources never run unattended. A command marked RiskLow is not thereby eligible, and any registry change, capability upgrade/downgrade or broadened meaning requires tests and a capability-version bump that invalidates broader grants.
 
 ## 7. User interface and CLI contract
 
@@ -214,15 +238,17 @@ Add an **Auto Sync** panel reachable from Sync (a dedicated settings view or sub
 
 **Title:** “Auto Sync”\
 **Intro:** “Blueprint can check your shared setup in the background and automatically handle changes you allow on this computer. Anything that needs a decision will wait for you.”\
-**Disabled:** “Auto Sync is off. Your computer will not check for or apply shared changes in the background.”\
+**Off:** “Auto Sync is off. Your computer will not check for or apply shared changes in the background.”\
 **Preview heading:** “What Auto Sync would do”\
 **Preview line:** “These changes could happen automatically. Everything else will wait for your review.”\
 **Linking:** “Use my Restore choices to limit what Auto Sync can change.”\
 **Confirmation:** “Turn on Auto Sync with these permissions on this computer?”\
 **Important notice:** “Changes downloaded from your shared profile cannot give Blueprint new permission to run automatically.”\
+**Run-code confirmation:** “Allow Auto Sync to install and run {category} from your shared profile on this computer? This covers future changes to {category}. Only content that exactly matches what your profile recorded is used, and you can turn this off at any time.”\
+**Not yet available:** “Hands-off will also handle {operations} in a later Blueprint version. Until then they wait for your review.”\
 **Help:** “Automatic checking is different from automatic application. You can pause or turn off Auto Sync at any time.”
 
-Required actions: **Preview**, **Enable**, **Pause**, **Resume**, **Check now**, **Review pending changes**, **Change permissions**, **Turn off**, **View recent activity**. Any widening of permission requires a local confirmation showing specific new categories/classes/targets. No quick action may make an unattended change before the authoritative full-plan preview gate. All screens must say whether an action checks only, changes the saved profile, or changes the live machine.
+Required actions: **Preview**, **Enable**, **Pause**, **Resume**, **Check now**, **Review pending changes**, **Change permissions**, **Turn off**, **View recent activity**. Any widening of permission requires a local confirmation showing specific new categories/operation types/targets; code-bearing scopes use the run-code confirmation per category. No quick action may make an unattended change before the authoritative full-plan preview gate. All screens must say whether an action checks only, changes the saved profile, or changes the live machine.
 
 ### 7.2 CLI (proposed command surface; names to be finalised in implementation plan)
 
@@ -243,7 +269,7 @@ Notifications should be best-effort desktop notifications (when supported); they
 > **Blueprint: Changes need review**\
 > 3 changes were found in your shared setup. 2 need your approval, so nothing was applied automatically. Open Blueprint → Sync to review them.
 
-Distinguish **Up to date**, **Checked—nothing new**, **Applied and verified**, **Needs review**, **Paused**, **Offline**, **Authentication needed**, **Suspended after incomplete Sync** and **Error**. A check timestamp is not a success stamp. Display safe counts and links/commands for review; never unbounded profile details in notifications.
+Use the §4.1 status model: the setting (**Off**, **On** with preset, **Paused**, and the **Suspended for safety** guard) and the last-check outcome (**Up to date**, **Applied and verified**, **Needs review**, **Busy**, **Offline**, **Sign-in needed**, **Incomplete**, **Error**). A check timestamp is not a success stamp. Display safe counts and links/commands for review; never unbounded profile details in notifications.
 
 ## 8. Onboarding and optional Omarchy plugin (future, not prerequisites)
 
@@ -259,7 +285,7 @@ A later optional Omarchy shell/bar plugin shows status, notifications, next chec
 
 - Protect local grants with the same profile-root isolation, ownership, private state permissions and symlink defence used by the cursor. Forbid transfer of unattended authority by copying the Git profile or selecting a different machine.
 - Bind approved permission to exact local machine and remote identity, and make grant changes atomic. Reconfirm after profile root relocation/remote replacement and any grant schema change that cannot be proven non-expansive.
-- Use the profile-scoped lock for any mutation, while allowing read-only checks to coexist according to existing read-cycle protections. Do not invent a second competing lock scheme.
+- Use the profile-scoped lock for any mutation **and for any fetch** (non-blocking for scheduled checks; skip as Busy). Only no-fetch status and history reads run without it. Do not invent a second competing lock scheme.
 - Gate the entire fresh operation dependency graph; a bundled operation cannot hide an unpermitted side effect.
 - Deny background interactive prompts, privilege escalation, service activation requiring review, and unbounded operations. Neither environment variables nor CLI flags may smuggle `--force`, `--exact` or fresh approvals into the auto path.
 - Keep source/version credentials outside the state file and run logs. Use bounded/redacted error classes for Git, provider and remote failures.
@@ -272,7 +298,7 @@ A later optional Omarchy shell/bar plugin shows status, notifications, next chec
 
 ### 10.1 Permission/preset matrix
 
-Test the cross-product of preset × Restore-link mode × effective Restore policy × target/category exceptions × operation class × requested risk × provider safety × history status, including new targets and newly introduced operation types. Assert monotonic restrictions: any denied input cannot become allowed because another layer grants access. A policy expansion from Git cannot widen locally approved authority. A policy restriction takes effect immediately.
+Test the cross-product of preset × Restore-link mode × effective Restore policy × target/category exceptions × effect-descriptor dimension × “may run code” authorisation × registry entry/version × provider safety × history status, including new targets and newly introduced operation types. Assert monotonic restrictions: any denied input cannot become allowed because another layer grants access. A policy expansion from Git cannot widen locally approved authority. A policy restriction takes effect immediately.
 
 ### 10.2 Transaction and failure tests
 
@@ -319,7 +345,8 @@ The interface should never require users to interpret “cursor”, “upstream�
 **A. Blind timed `git pull && restore` — rejected.** It bypasses target-level reconciliation and safe history/approval boundaries.\
 **B. Opt in separately to every target — rejected as default UX.** Difficult to configure and maintain; support per-target exceptions without requiring them.\
 **C. Reuse Restore policy as unattended permission — rejected.** A portable profile edit could expand unattended authority on another computer.\
-**D. One “anything goes” switch — rejected.** Cannot faithfully represent unknown operations, executable remote content, conflicts and irreversible side effects.\
+**D. One “anything goes” switch — rejected.** Cannot faithfully represent unknown operations, scoped permission to run code, conflicts and irreversible side effects.\
+**D2. Permanently limit automation to inherently inert operations — rejected at Gate 0 review.** Risk and current interactivity identify engineering work and the need for explicit local authorisation, not permanent prohibition.\
 **E. Local preset + custom caps + Restore-policy intersection — selected.** Usable defaults while keeping unattended authority local, bounded, auditable and reviewable.\
 **F. Automatic partial-plan execution — deferred.** It introduces partial-intent and recovery complexity; v1 stops the whole run if any proposed action needs review.
 
@@ -327,19 +354,22 @@ The interface should never require users to interpret “cursor”, “upstream�
 
 ### Proposed decisions to approve
 
-- Five presets, with Disabled as the initial state and **Balanced** as the suggested opt-in choice.
+- Five presets, with Off as the initial setting and **Balanced** as the suggested opt-in choice; each preset strictly broader than the one below.
+- Presets as ceilings over provider effect descriptors and a versioned capability registry, not over risk labels.
+- A separate, local, per-category “may run code” authorisation for code-bearing operations.
+- Three readiness tiers (Ready, Engineerable, Unsuitable) with a small, reasoned T3 set, and an audited route to automation for every supported category.
 - Three Restore linkage modes; **Keep linked** suggested, implemented as restrictions within a locally confirmed ceiling.
-- Category-level defaults with collapsible per-target and operation overrides.
+- Category-level permissions covering future targets, with operation-type and target exceptions.
 - A separate, machine-local, versioned automation grant; profile changes cannot broaden it.
-- Phase 11 initially implements scheduled checks and **Auto Follow** only; Auto Publish and Auto Reconcile wait for separate review.
+- Auto Follow only in Phase 11, delivered in increments I1–I4; Auto Publish and Auto Reconcile wait for separate review.
 - No fake interactive approval; a distinct audited, locked, fresh-authority execution path sharing Sync Engine primitives.
-- Whole-plan eligibility in the initial release; unknown, unsafe, interactive or partially blocked plans stop for manual review.
+- Whole-plan eligibility throughout Phase 11; partial execution only with a later proof.
+- Locked, non-blocking scheduled fetches; one status model.
 - A `systemd --user` timer/service as a replaceable scheduler, not as the Sync engine.
-- Readable status, notifications, inspection preview, and real-machine acceptance before release.
 
 ### Implementation-plan decisions (not permission to guess)
 
-Before PR A implementation begins, the architecture/implementation plan must nail down: (i) concrete per-provider operation audit and the exact initial Conservative/Balanced/Hands-off allowlists, (ii) whether a trusted low-risk operation is available for each preset, (iii) the machine-local authority record/consent-envelope schema, versioning and escalation diff, (iv) exact safe Auto Follow execution refactor and local fast-forward verification, (v) precise timer semantics/timeouts/login behaviour, (vi) profile-lock and grant-lock ordering, (vii) notification and run-history API, and (viii) PR-level acceptance fixtures and rollback tests. These decisions need separate review **before implementation**, not ad-hoc broadening of this specification.
+Before Phase 11 PR A implementation begins, the architecture/implementation plan must nail down: (i) the per-provider effect descriptors, tiers and increment assignments (audit), (ii) the first-release registry entries per preset, (iii) the machine-local authority record/consent-envelope schema, versioning and escalation diff, (iv) exact safe Auto Follow execution refactor and local fast-forward verification, (v) precise timer semantics/timeouts/login behaviour, (vi) profile-lock and grant-lock ordering, (vii) notification and run-history API, and (viii) PR-level acceptance fixtures and rollback tests. These decisions need separate review **before implementation**, not ad-hoc broadening of this specification.
 
 **Next formal step:** review/approve this design; then write the Phase 11 ADR and detailed implementation plan. No repo, machine, timer or GitHub mutation is authorised by this draft.
 

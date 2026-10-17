@@ -2685,28 +2685,37 @@ Unattended mutation is out of scope.
 
 # 69. Phase 11 — Auto sync
 
-Not started. Build unattended behaviour only after the Sync Engine is trustworthy.
+Design under review; not started. Build unattended behaviour only after the Sync Engine is trustworthy.
+Design: `docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`, ADR 0029,
+capability audit `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md`.
 
 Automation permission is separate from Capture policy, Restore policy, and
 safety. `Restore Apply` must not automatically mean "safe to mutate
 unattended". Automation must not weaken `inspect → calculate → preview →
 approve → apply → verify`; unattended execution is only permitted where policy
-and safety explicitly allow it.
+and safety explicitly allow it, and portable profile changes never widen it.
 
-Phase automation conceptually:
+Sequencing:
 
 ```text
-Auto Follow      safely apply eligible remote desired-state changes locally
-Auto Publish     safely capture, commit, and push eligible local changes
-Auto Reconcile   later: automatically combine disjoint local/remote changes
+Auto Follow      Phase 11: safely apply eligible remote desired-state changes
+                 locally, delivered in increments:
+                   first release  Themes, Defaults, Config, Hooks, Resources files
+                   later          Services, Shell, Plugins
+                   later          Packages (administrator-approved helper), removals
+Auto Publish     separately authorised later increment: capture, commit, and push
+                 eligible local changes
+Auto Reconcile   Phase 12: automatically combine disjoint local/remote changes
 ```
 
-Conflicting intent, high-risk operations, interactive operations, migration
-conflicts, Git divergence, or other unsafe situations stop for review rather
-than being forced.
+Presets (Notify only, Conservative, Balanced, Hands-off, Custom) are local
+ceilings; code-running operations need a separate per-category local
+authorisation. Conflicting intent, interactive operations, unpinned sources,
+migration conflicts, Git divergence, or other unsafe situations stop for review
+rather than being forced.
 
-A Blueprint-owned systemd user timer/service may eventually drive scheduled
-sync. That is an implementation detail, not the architecture.
+A Blueprint-owned systemd user timer/service drives scheduled checks. That is an
+implementation detail, not the architecture.
 
 ---
 
@@ -3296,14 +3305,14 @@ inspect, plan, and review; no unattended mutation
 
 ## Auto Sync v1
 
-Unattended behaviour gated by explicit automation permission, independent of
-Capture policy, Restore policy, and safety.
+Unattended behaviour gated by explicit, machine-local automation permission,
+independent of Capture policy, Restore policy, and safety.
 
 ```text
-Auto Follow
-Auto Publish
-stop for review on conflicts, high-risk or interactive operations,
-  migration conflicts, and Git divergence
+Auto Follow first (Phase 11, in category increments)
+Auto Publish later, as a separately authorised increment
+stop for review on conflicts, interactive operations, unauthorised
+  code-running operations, migration conflicts, and Git divergence
 ```
 
 ---

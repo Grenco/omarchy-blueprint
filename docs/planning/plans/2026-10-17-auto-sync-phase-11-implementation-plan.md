@@ -2,36 +2,42 @@
 
 > **Agent execution instruction:** Follow this plan task by task using red→green tests and isolated fixtures. Do not merge, start the next PR, enable a real timer, modify a user's profile, tag or release without the corresponding human gate. **This is a planning artifact, not implementation authorization.**
 
-**Status:** ADR accepted; Gate 0 (capability audit) in progress. No PR A code before Gate 0 approval.\
+**Status:** Revision 2 for review (after the Gate 0 review). No production code until the revised spec, ADR 0029, capability audit and this plan are reviewed.\
+**Capability audit:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (revision 2)\
 **Date:** 2026-10-17\
 **Design:** `docs/planning/specs/2026-10-17-auto-sync-phase-11-design.md`\
-**ADR:** `docs/adr/0029-machine-local-auto-sync-authority.md` (Accepted 2026-10-17)\
+**ADR:** `docs/adr/0029-machine-local-auto-sync-authority.md` (Proposed, revision 2)\
 **Baseline:** merged `main` `aa6f127e37f00bd38cf0c3d91bee02aacdfe5d88` (PR #74 merge of reviewed head `db86c11`). Recorded as the Phase 11 start SHA on 2026-10-17.\
-**Objective:** Deliver opt-in, machine-local, preset-driven scheduled checks and safe Auto Follow through the **existing** semantic Sync Engine, with a separately audited unattended authority, no automatic Capture/push, clear status and a recoverable two-host workflow.
+**Objective:** Deliver opt-in, machine-local, preset-driven scheduled checks and Auto Follow through the **existing** semantic Sync Engine, growing in increments to meaningful automation of every supported category, with a separately audited unattended authority, a deliberate local permission for code-running operations, no automatic Capture/push, clear status and a recoverable two-host workflow.
 
 ## 0. Review gates and non-negotiable constraints
 
-1. This plan is **not** an instruction to start coding. Seek approval of the design, ADR, this plan and the **concrete capability audit** separately. PR D of Phase 10 must be merged and real-world assumptions checked before integrating Phase 11 onto `main`.
+1. This plan is **not** an instruction to start coding. Seek approval of the design, ADR, this plan and the **concrete capability audit** separately. Phase 10 PR D (#74) is merged (`aa6f127`).
 2. **Never** implement Auto Sync as `git pull && restore`, a shell loop, manual `sync apply --yes`, or dummy always-approve callbacks. Manual Sync remains interactive and unchanged by default.
 3. The background path cannot create/extend its own local grant; profile-supplied Capture/Restore settings and other control-plane data do not confer unattended permission.
 4. **V1 runs whole plans, or nothing.** Any review decision, deferred item, unknown effect, missing authority, invalid snapshot, unsafe or interactive action prevents unattended mutation. Correctly policy-preserved items with no proposed action do not count as a block.
-5. **V1 Auto Follow only.** No automatic Capture, local commit, push, semantic merge, force push, rebase, reset, first-time Sync bootstrap, cursor reset, service activation or unreviewed executable payload. The follow-only Git path must not call `PublishSyncRevision` as an outgoing push.
+5. **Auto Follow only in Phase 11.** No automatic Capture, local commit, push, semantic merge, force push, rebase, reset, first-time Sync bootstrap or cursor reset. Code-bearing operations (executable payloads, service activation, plugin loading, package installs) run only through a **delivered** registry entry, from hash-verified or exactly pinned sources, under the local per-category “may run code” authorisation. The follow-only Git path must not call `PublishSyncRevision` as an outgoing push.
 6. Enforce pinned SHA, clean index/worktree, profile root and machine identity, remote identity, Restore Apply/Skip, provider safety, fresh operation graph equality, lock and verified settlement/cursor constraints.
-7. Unknown category, target source, provider operation, provider effect or capability version means **requires human**. Generic `RiskLow` and `Reversible` do not imply unattended safety.
-8. Systemd only schedules. No root service, `sudo`, implicit lingering, hidden desktop prompt, hardcoded credentials, extra permanent daemon, or surprise capture of Blueprint-owned systemd units.
+7. Unknown category, target source, provider operation, effect descriptor or capability version means **requires review**. Authority comes from effect descriptors and the registry; generic `RiskLow`/`RiskHigh` and `Reversible` are not inputs.
+8. Systemd only schedules. No root service, `sudo`, implicit lingering, hidden desktop prompt, hardcoded credentials, extra permanent daemon, or surprise capture of Blueprint-owned systemd units. Root-level package work happens only through the administrator-installed helper defined by Phase 11 PR G's ADR; Blueprint never runs `sudo` or answers an elevation prompt unattended.
 9. Status and `?` help use plain English. B/L/R/M, hashes and transport details belong in Advanced/JSON where safe. UI never mistakes a *check* for a *completed Sync*.
 10. No unrequested dependencies; prefer current Go, Cobra, Bubble Tea, `systemctl --user`, OS timers and existing repo utilities. Dependency changes are an independent review decision.
 11. Preserve Reconstruction Assurance's same-runtime scope. Keep Phase 11 acceptance separate; do not alter RA to make a failing Auto Sync case pass.
+12. Remote `restore_convergence`, conflict and activation settings, and CLI/environment Force/Exact, never widen unattended authority.
+13. Scheduled fetches take the profile lock non-blocking and skip as Busy when it is held.
 
 **Review stages:**
 
-- **Gate 0:** Approve ADR/plan and PR A's explicit audit/authority schema. No unattended code until audit is independently reviewed.
-- **PR A:** Pure permissions, grant store, effect audit/classifier, preview with tests. **No scheduling or unattended execution.**
-- **PR B:** Read-only background checker, status/history/notification transport and timer, disabled by default. **No unattended mutation.**
-- **PR C:** Audited Auto Follow through a separate fresh-authority execution path; failure-injection/two-host tests.
-- **PR D:** Full TUI/CLI setup, help, documentation, physical two-machine acceptance and release hardening.
+- **Gate 0:** Review the revised spec, ADR 0029, capability audit (provider matrix, tiers, preset eligibility, increments) and this plan. No production code before approval.
+- **Phase 11 PR A:** Grant store, effect descriptors and registry framework, presets, “may run code” authorisation, permission algebra, preview. **No scheduling or unattended execution.**
+- **Phase 11 PR B:** Locked read-only background checker, unified status/history/notifications and timer, disabled by default. **No unattended mutation.**
+- **Phase 11 PR C:** Auto Follow executor through a separate fresh-authority path, snapshot-planning equivalence, increment **I1** (first Conservative capabilities); failure-injection/two-host tests.
+- **Phase 11 PR D:** Increment **I2**: content classifier, journal rollback and the file-based Balanced and Hands-off capabilities (Config, Themes, Hooks, Resources).
+- **Phase 11 PR E:** TUI/CLI management, help, docs, physical two-machine acceptance → **first release** (I1 + I2).
+- **Phase 11 PR F:** Increment **I3**: Services, Shell, Plugins, Git themes and Git resources (clone-at-revision).
+- **Phase 11 PR G:** Increment **I4**: Packages through an administrator-approved root helper (its own ADR first) and provenance-checked removals in every category.
 
-Require separate review/merge per PR. Auto Publish and Auto Reconcile require **later design approval**, not a concealed Phase 11 option.
+Require separate review/merge per PR; F and G are released separately after the first release. Auto Publish and Auto Reconcile require **later design approval**, not a concealed Phase 11 option.
 
 ## 1. Architecture and code baseline to verify
 
@@ -74,40 +80,21 @@ fresh scoped Restore -> check results -> verified settlement -> cursor
 
 The classifier is descriptive during preview. Only the locked **fresh grant + operation graph** constitutes unattended authority. The restored configuration remains provider-owned; Auto Sync does not patch arbitrary files outside provider Restore.
 
-## 2. Gate 0 — Complete the concrete provider operation audit **before PR A code**
+## 2. Gate 0 — Capability audit and revised architecture **before Phase 11 PR A code**
 
-The approved design intentionally did not label arbitrary existing operations as unattended-safe. The audit must be a **reviewed deliverable**, not a guess made while writing the automation executor.
+**Artifact:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (revision 2).
 
-**Proposed artifact:** `docs/planning/audits/2026-10-17-auto-sync-restore-capabilities.md` (create only after gate approval).
+### Task 0.1 — Inventory real provider operations (done, revision 1)
 
-### Task 0.1 — Inventory real provider operations
+Every executable Restore `model.Operation` emitted by current providers and finalizers at `aa6f127` is enumerated with its real effects (Omarchy setter/theme scripts read on a live install) and the executor mechanisms that already protect it (exclusive copy, `SourceHash`, `ExpectedHash`/`ExpectedMissing` preconditions, journalled backups, symlink-parent rejection).
 
-Enumerate every executable Restore `model.Operation` emitted by current providers and adapter/finalizer paths, including dynamically batched commands and dependent operations. Record:
+### Task 0.2 — Classify, route and schedule every operation (revision 2)
 
-- concrete category, operation ID/family, target mapping (`Items` / `Resource`) and dependencies;
-- file copy/write/remove, command invocation, command implementation, executable payload, network download, package-manager hook, activation/reload/restart, service changes, privilege requests;
-- compatibility requirement, risk and reversibility, output that might reveal secret values, prompt possibility, unsafe failure/retry behaviour;
-- whether a new remote artifact could turn an otherwise safe-looking file write into code execution later;
-- whether a low-risk, noninteractive, repeatable, *bounded* operation with stable dependency semantics can be proved unattended-safe.
+For every operation the audit records: current capability; target unattended form as an **effect descriptor**; tier (**T1 Ready**, **T2 Engineerable**, **T3 Unsuitable** with reason); required per-run controls; engineering work; lowest eligible preset; delivery increment (I1–I4). Being interactive today, or able to run code, makes an operation T2 with named work, not T3. Shared engineering items E1–E10 are listed once.
 
-**Source observations, not approvals:** `defaults.Plan` emits `omarchy default ...` with `RiskLow`; Themes has copy, activation and removal; Config can write files and call `hyprctl reload`; Packages has installs/removals and `sh -c` operations; Plugins has installs/copy/activation paths. These facts do **not** prove unattended safety.
+**Gate 0 acceptance:** a human reviewer approves the effect model, tiers, T3 list, preset ceilings (each strictly broader than the one below in every release), the “may run code” authorisation, the increment plan and first-release registry. Otherwise stop.
 
-### Task 0.2 — Approve an explicit v1 capability registry
-
-Submit a table keyed by **provider + stable action/effect family + dependency contract**, with decisions:
-
-- `requires_human` (**default and catch-all**);
-- `unattended_safe` (Conservative, Balanced, Hands-off);
-- `unattended_routine` (Balanced, Hands-off);
-- `unattended_extended` (Hands-off only, where separately bounded and approved).
-
-**Initial mandatory denies for all presets:** unreviewed executable or script-bearing profile content, hooks/shell code, plugin code/download/enablement, package installs/removals and post-install hooks, unreviewed service unit changes/activation, arbitrary Resource writes/projects, delete/removal, unknown compatibility, migration, Force/Exact override, interactive/elevation and unknown operations. A higher preset never overrides a hard deny. For any proposed exception, include concrete evidence and regression tests for why it is truly safe.
-
-**No production allow-by-category shortcut.** If no operation passes the audit, Conservative/Balanced/Hands-off **behave as checking/notification only** until a separately reviewed allowlist is delivered. Do not quietly widen the classes to manufacture an Auto Follow demo. PR C is not called complete until at least one real provider effect has been independently audited, approved, and validated in a two-host fixture.
-
-**Gate 0 acceptance:** Human reviewer approves the exact allowlist, threat model, schema, effect versioning, anticipated reachable Auto Follow case and expected default-deny cases. Otherwise stop; proceed with read-only/checking work only if explicitly authorized.
-
-## 3. PR A — Local authority domain, safe previews and test suite
+## 3. Phase 11 PR A — Local authority domain, effect registry and safe previews
 
 ### Task A1 — Versioned, profile-root-isolated grant store
 
@@ -158,7 +145,7 @@ AND fresh provider/Restore compatibility & safety permit it
 AND no interactive, remote-executable, destructive or otherwise hard-denied effect
 ```
 
-Preset mapping: Notify=none, Conservative=`safe`, Balanced=`safe|routine`, Hands-off=`safe|routine|extended` (only entries explicitly approved in Gate 0); Custom=explicit locally reviewed scope. A Custom exception may widen the selected preset's suggestion only after an explicit local confirmation and must never exceed capability/hard safety limits. A deny always wins.
+Preset mapping: each preset is a **ceiling over effect descriptors** (audit §2.3): Notify = none; Conservative = add of data/config from verified artifacts or closed sets; Balanced = Conservative + precondition-and-backup updates, reload, non-executable activation, signed root-helper installs; Hands-off = Balanced + code-bearing payloads from verified/pinned sources, activation, provenance-checked removal, only in categories with the run-code authorisation; Custom = an explicit locally reviewed category × operation × target matrix capped by Hands-off. The effective set is ceiling ∩ delivered registry entries ∩ grant scope ∩ Restore Apply ∩ fresh checks. A Custom exception may widen the selected preset's suggestion only after an explicit local confirmation and must never exceed capability/hard safety limits. A deny always wins.
 
 - `linked`: capture a local grant **ceiling** with exactly the scopes/class families confirmed by the user. Current Restore rules reduce it. A changed policy can widen actual execution only if the resulting scope was *already* within that ceiling; uncertain expansion blocks and requests reconfirmation.
 - `copy-once`: translate current Restore selections into a **frozen local scope** at confirmation time. Later Restore edits do not mutate it.
@@ -173,37 +160,45 @@ The permission comparison must be monotonic under added denies/restrictions. If 
 
 **Candidate files:** `internal/autosync/effects.go`, `effects_test.go`, `classify.go`, `classify_test.go`; narrow provider adapter methods where the audit proves necessary.
 
-Design a versioned, deterministic **effect graph** over fresh Restore `model.Operation`s. Use provider-owned target lookup/operation metadata, not user-edited `Operation.ID` strings alone. For each operation retain: target(s), effect class, action kind, command/executable/network/privilege flags, file write/remove/overwrite, activation, interactive requirement, compatibility, dependency IDs and fingerprint of *non-secret authority-relevant shape*. An unknown provider command or dependency fails closed. Bundled operations cannot disguise a stronger child effect.
+Add an **effect descriptor** to every provider operation (audit §2.1: change, payload, source trust, activation, privilege, interaction, recovery, verification), supplied by the provider that plans it, and a versioned **capability registry** keyed by provider + descriptor shape + conditions (E1). Build a deterministic **effect graph** over fresh Restore `model.Operation`s from descriptors, not from `Operation.ID` strings or risk labels. For each operation also retain target(s), dependency IDs, compatibility and a fingerprint of *non-secret authority-relevant shape*. An unknown provider command or dependency fails closed. Bundled operations cannot disguise a stronger child effect.
 
 **Precise requirement:** the preview must evaluate a **representative executable Restore plan**, not only the Sync `ActionRestore` target list. If the existing planning API requires the profile checkout to be updated first, introduce an isolated read-only planning context for the pinned remote profile view. It must not write `HEAD`, profile files, cursor or machine; prove that it uses the same provider planners and semantics as the eventual fresh post-fast-forward plan. The final locked operation graph must equal or be a **strict subset that the reviewer explicitly allowed**; unexpected new operations, targets, dependencies, commands, risk/effects or compatibility changes block. A smaller set is not automatically safe if dependencies or intended outcomes have changed.
 
-**Tests:** unknown op/class defaults deny; multi-target/multi-operation mapping; missing/cyclic dependency, shared dependency, one high-risk child in an otherwise low-risk bundle, secret-argument hashing/redaction, changed command args where meaning matters, provider capability version change, executable content appearing after preview, stale policy; no profile/machine mutation from evaluation.
+**Tests:** every current provider operation has a descriptor (table test generated from the audit); unknown op/descriptor defaults to review; multi-target/multi-operation mapping; missing/cyclic dependency, shared dependency, one high-risk child in an otherwise low-risk bundle, secret-argument hashing/redaction, changed command args where meaning matters, provider capability version change, executable content appearing after preview, stale policy; no profile/machine mutation from evaluation.
+
+### Task A3a — “May run code” authorisation
+
+**Candidate files:** `internal/autosync/authority.go` (grant field), `runcode_test.go`.
+
+A per-category (optionally per operation family) authorisation stored in the local grant, created only by an interactive local confirmation (no `--yes`, JSON or non-TTY path), bound to the grant identity, revoked by pause/disable/removal, and rechecked under the lock on every run. Code-bearing descriptors (`exec-later`, `exec-now`, `activate` of such content) are eligible only with it. Portable policy, downloaded profiles and registry upgrades never create or widen it.
+
+**Tests:** absent/revoked/foreign authorisation blocks code-bearing ops in every preset; Custom without it cannot include them; a profile change cannot create it; a capability-version bump that changes a code-bearing meaning requires reconfirmation.
 
 ### Task A4 — Read-only Auto Sync preview and reason model
 
 **Candidate files:** `internal/workflow/auto_sync.go`, `auto_sync_test.go` and thin `internal/app/auto_sync.go` inspection commands as needed.
 
-Preview calls the existing `InspectSync(ctx, SyncInspectOptions{Fetch: true})` or explicitly no-fetch variant, then classifies the **entire** plan against local authority and scoped Restore effects. No eligible preview is authority to execute later. Return typed, bounded reason codes and counts for: eligible, review-required, already matching, policy-preserved, error; distinguish manual-baseline-missing, dirty profile, diverged/committed local changes, conflict/defer, wrong identity, stale cursor, unsupported effect, changed Restore policy, incompatible Restore, auth/offline and invalid grant.
+Preview calls the existing `InspectSync(ctx, SyncInspectOptions{Fetch: true})` or explicitly no-fetch variant, then classifies the **entire** plan against local authority and scoped Restore effects. No eligible preview is authority to execute later. Show, per preset, which audited operations are “available now” and which are “not available yet” (ceiling admits them, registry entry not delivered). Return typed, bounded reason codes and counts for: eligible, review-required, already matching, policy-preserved, error; distinguish manual-baseline-missing, dirty profile, diverged/committed local changes, conflict/defer, wrong identity, stale cursor, unsupported effect, changed Restore policy, incompatible Restore, auth/offline and invalid grant.
 
 **Tests:** no cursor/no bootstrap, valid prior manual Sync, clean/dirty Git, remote fetch, behind-only and both-side changes, protected targets, local change wanting Capture, no actions, unknown artifact, nested provider plan differences. `preview` does not write grants, checkout, cursor or live machine. Fetch is labelled explicitly.
 
 **PR A checkpoint:** new pure permission and preview tests + full Go/race/vet/build; independently review the capability matrix and every local-authority expansion path. **No timer installation or unattended writes.**
 
-## 4. PR B — Scheduled inspection, non-secret status, notifications
+## 4. Phase 11 PR B — Scheduled inspection, non-secret status, notifications
 
 ### Task B1 — Pure background cycle and bounded exit behaviour
 
 **Candidate files:** `internal/autosync/cycle.go`, `cycle_test.go`, `internal/workflow/auto_check.go`.
 
-A cycle loads the local binding/grant; if Disabled/Paused it reports that status without fetching. Otherwise it fetches once via existing `InspectSync`, classifies and stores a sanitized report. **No calls to `FastForwardTo`, `ExecuteSync`, `CaptureApprovedTargets`, `PublishSyncRevision`, `ApplyApprovedRestoreScope` or `CursorStore.Save`** in PR B. A read-only check must not create a grant implicitly. Ensure one logical provider read cycle, bounded timeouts and safe cancellation.
+A cycle loads the local binding/grant; if Off/Paused it reports that status without fetching. Otherwise it takes the profile lock **non-blocking** (recording a **Busy** outcome if it is held), fetches once via existing `InspectSync`, classifies and stores a sanitized report. **No calls to `FastForwardTo`, `ExecuteSync`, `CaptureApprovedTargets`, `PublishSyncRevision`, `ApplyApprovedRestoreScope` or `CursorStore.Save`** in PR B. A read-only check must not create a grant implicitly. Ensure one logical provider read cycle, bounded timeouts and safe cancellation.
 
-Tests for no network/credentials, stale fetch, duplicate concurrent checks, repository lock held by manual Sync (read-only checks may coexist if safe), and repeated failures without escalating to write calls.
+Tests for no network/credentials, stale fetch, duplicate concurrent checks, profile lock held by manual Sync (check skipped as Busy, no fetch, refs unchanged), a manual review left open across a scheduled check, and repeated failures without escalating to write calls.
 
 ### Task B2 — Local status, history and notification adapters
 
 **Candidate files:** `internal/autosync/status.go`, `status_test.go`, `notify.go`, `notify_test.go`.
 
-Store independent `last_checked_at`, `last_completed_sync_at` (read from verified Sync evidence, **never** inferred from latest fetch), status/reason, safe counts, next scheduled check and bounded recent activity. Do not persist live semantic fingerprints, raw target data, profile contents, token-bearing remote URLs, environment or subprocess stderr. Limit both record count and bytes; write private state atomically, recover safely if history is corrupt. Notification failure never changes Sync success.
+Implement the spec §4.1 status model: the **setting** (Off, On + preset, Paused, Suspended-for-safety guard) separately from the **last-check outcome** (Up to date, Applied and verified, Needs review, Busy, Offline, Sign-in needed, Incomplete, Error). Store independent `last_checked_at`, `last_completed_sync_at` (read from verified Sync evidence, **never** inferred from latest fetch), status/reason, safe counts, next scheduled check and bounded recent activity. Do not persist live semantic fingerprints, raw target data, profile contents, token-bearing remote URLs, environment or subprocess stderr. Limit both record count and bytes; write private state atomically, recover safely if history is corrupt. Notification failure never changes Sync success.
 
 Use an injectable `Notifier` interface, no dependency on a desktop session for correctness. Coalesce repeated identical reasons, including recurring auth/offline warnings. Offer a safe CLI/TUI route to inspect pending changes; never expose secrets via notification markup or external commands.
 
@@ -227,7 +222,15 @@ PR B leaves `run` explicitly unavailable for mutations. All states are opt-in; `
 
 **PR B checkpoint:** unit snapshots/dry-run tests, read-only observation and no-write spies, auth/offline/cancellation, no leakage, full Go/race/vet/build and hosted checks. Real timers are **not installed** during automated CI.
 
-## 5. PR C — Auto Follow execution through existing trusted transaction
+## 5. Phase 11 PR C — Auto Follow execution and increment I1
+
+### Task C0 — Snapshot-root planning equivalence (E2) and unattended executor guards (E4, E5)
+
+Planning from a materialized pinned revision must be proved equivalent to planning from the selected profile: inject the selected machine and Sync identity (both keyed by canonical profile root today), and compare operation graphs over **profile-relative** artifact paths. Equivalence tests cover every provider in the registry. Unattended operations always carry `SourceHash` (copies and writes) and `RejectSymlinkParents`. If equivalence cannot be shown for a provider, its operations stay review-only rather than weakening the rule.
+
+### Task C0a — Increment I1 registry entries
+
+Deliver the audit's I1 entries with their conditions and tests: new inactive local themes; terminal/browser/editor defaults with installed-app evidence; new non-executable Config and Resources files (path-class subset of E7). Each entry has positive, negative (condition fails → review) and two-host tests.
 
 ### Task C1 — Refactor shared Sync phases without weakening interactive approvals
 
@@ -281,13 +284,27 @@ Run existing 11 Sync/PTy acceptance scenarios unchanged and ensure no RA modific
 
 **PR C checkpoint:** all command spies prove zero fake manual approvals; integration and race tests green; failure recovery reviewed before enabling actual mutating timer. No system tests write into the developer's real `$HOME`.
 
-## 6. PR D — User controls, documentation, and physical acceptance
+## 6. Phase 11 PR D — Increment I2: file-based Balanced and Hands-off capabilities
 
-### Task D1 — CLI permission management and precise effects
+### Task D0.1 — Content classifier (E7)
+
+Per-format detection of executable content: Hyprland `exec`/`exec-once`/`execr` directives and sourced files, shell rc/profile files, Lua/Vim/QML/JS, desktop autostart entries, systemd units, files with an executable bit, and theme files that Omarchy or applications load as code. Classification is part of the descriptor (`config` vs `exec-later`); unknown formats are `exec-later`. Tests use real Omarchy defaults and themes as fixtures.
+
+### Task D0.2 — Journal-backed rollback (E6)
+
+After failed verification of a run whose operations all have `backup` recovery, restore the journalled backups in reverse order, verify the restored state, and report the run as **Incomplete — rolled back**; the safety guard still requires review, and the cursor never advances. Operations without backup recovery never claim rollback.
+
+### Task D0.3 — Increment I2 registry entries
+
+Balanced: non-executable Config updates with precondition and backup plus `hyprctl reload` (no new `exec` directives); activation of themes with no executable content; Resources replacements with backup. Hands-off (run-code authorisation per category): Hooks writes; executable-class Config; executable and overlay themes; executable or autostart Resources files. Each with conditions, positive/negative tests and two-host cases.
+
+## 6a. Phase 11 PR E — User controls, documentation, and physical acceptance (first release)
+
+### Task E1 — CLI permission management and precise effects
 
 **Candidate files:** `internal/app/auto_sync.go`, `auto_sync_test.go`, root registration in `internal/app/app.go`.
 
-Final command surface (names proposed by spec; freeze/help-test in PR D):
+Final command surface (names proposed by spec; freeze/help-test in Phase 11 PR E):
 
 ```text
 omarchy-blueprint auto-sync status
@@ -306,7 +323,7 @@ omarchy-blueprint auto-sync history
 
 Report configuration validity, actual selected profile/machine, last check, last verified completed Sync, next check, and typed reasons. Errors never contain raw Git URLs/credentials or raw file contents.
 
-### Task D2 — TUI Auto Sync subview
+### Task E2 — TUI Auto Sync subview
 
 **Candidate files:** `internal/tui/screens/auto_sync.go`, `_view.go`, `_test.go`, registration/action adapters, `internal/tui/catalog.go`, `internal/tui/modals.go`; reuse current collapsible groups, layout primitives, keyboard navigation and help conventions.
 
@@ -316,7 +333,7 @@ Required copy (from design; deviations require documented truthfulness):
 
 - Title: **Auto Sync**.
 - Intro: “Blueprint can check your shared setup in the background and automatically handle changes you allow on this computer. Anything that needs a decision will wait for you.”
-- Disabled: “Auto Sync is off. Your computer will not check for or apply shared changes in the background.”
+- Off: “Auto Sync is off. Your computer will not check for or apply shared changes in the background.”
 - Preview heading: **What Auto Sync would do**.
 - Preview: “These changes could happen automatically. Everything else will wait for your review.”
 - Link: “Use my Restore choices to limit what Auto Sync can change.”
@@ -324,9 +341,9 @@ Required copy (from design; deviations require documented truthfulness):
 - Notice: “Changes downloaded from your shared profile cannot give Blueprint new permission to run automatically.”
 - Help: “Automatic checking is different from automatic application. You can pause or turn off Auto Sync at any time.”
 
-Show modes **Notify only / Conservative / Balanced / Hands-off / Custom**, with Disabled the default and Balanced merely suggested for an actively consenting user. Show **Keep linked / Copy once / Keep separate** and clarify their different future behaviour. Show category groups first, individual targets and operation types collapsed beneath them. Show blocked examples but avoid 100-row dumps. High-risk and potential executable changes require explicit review. Add actions **Preview**, **Enable**, **Pause**, **Resume**, **Check now**, **Review pending changes**, **Change permissions**, **Turn off**, **View recent activity**. Help/footer/action palette agree, and pressing Enter on a group header never enables automation.
+Show modes **Notify only / Conservative / Balanced / Hands-off / Custom**, with Off the default and Balanced merely suggested for an actively consenting user. Show, per preset, what is available now and what is “not available yet”, and use the run-code confirmation for each code-bearing category. Show **Keep linked / Copy once / Keep separate** and clarify their different future behaviour. Show category groups first, individual targets and operation types collapsed beneath them. Show blocked examples but avoid 100-row dumps. Code-bearing changes outside the run-code authorisation, and anything unregistered, wait for review. Add actions **Preview**, **Enable**, **Pause**, **Resume**, **Check now**, **Review pending changes**, **Change permissions**, **Turn off**, **View recent activity**. Help/footer/action palette agree, and pressing Enter on a group header never enables automation.
 
-### Task D3 — Documentation and operational recovery
+### Task E3 — Documentation and operational recovery
 
 **Candidate files:** `docs/guide.md`, `docs/tui.md`, `docs/cli.md`, `docs/manual-test-checklist.md`, `ROADMAP.md`, spec/ADR/plan links. Document:
 
@@ -339,7 +356,7 @@ Show modes **Notify only / Conservative / Balanced / Hands-off / Custom**, with 
 - Manual recovery from partially completed Auto Follow; don't offer reset/rebootstrap as an automatic fix.
 - Scoped log/notification privacy and future Auto Publish / profile-from-URL / optional Omarchy plugin, with no functional controls promised before their own PRs.
 
-### Task D4 — Physical acceptance and release gate
+### Task E4 — Physical acceptance and release gate
 
 Use **two disposable/appropriately backed-up real Omarchy computers**, the actual Git transport and actual user-manager behaviour. Human reviewer executes and reports:
 
@@ -354,6 +371,21 @@ Use **two disposable/appropriately backed-up real Omarchy computers**, the actua
 9. Reopen manual Sync on both machines after success and confirm no unexpected pending work beyond intentional protected differences.
 
 Do not run destructive failure injection on an unbacked-up real machine. Hosted CI, AUR Package Validation and Reconstruction Assurance must all pass on the exact reviewed head. Complete peer code review and require explicit human merge/release permission.
+
+## 6b. Phase 11 PR F — Increment I3: Services, Shell, Plugins
+
+- **Clone-at-revision installs** for Git themes, Git plugins and Git resources: the content is fetched at the recorded exact revision and verified before it is placed (no window at a floating tip); remote identity recorded.
+- **Services:** save definitions without enabling (Balanced); enable/start under run-code authorisation (Hands-off), replacing per-unit activation review for authorised units only; bounded start timeouts; verify unit state. Exclude Blueprint's own Auto Sync units (done in PR B).
+- **Shell:** reference analysis so config referencing only installed, unchanged plugins is Balanced; restart with a health check; config loading new plugin code is Hands-off.
+- **Plugins:** local (portable-fingerprint verified) and pinned Git installs with `omarchy plugin validate` and load (Hands-off); disable (Balanced).
+- Registry entries, two-host cases and physical acceptance for each; released separately.
+
+## 6c. Phase 11 PR G — Increment I4: Packages and removals
+
+- **Root helper ADR first (E10):** an administrator-installed helper (for example a polkit-authorised, fixed-vocabulary command) that installs only signed packages from allowlisted repositories, noninteractively. Never stored passwords, cached sudo or answered prompts. Without the helper, package operations stay review-only.
+- **Packages:** signed official-repository installs (Balanced); AUR at a PKGBUILD revision recorded at Capture, pinned mise tools with checksum verification, and Omarchy recipes marked noninteractive (Hands-off). Recipes that wait for sign-in remain T3.
+- **Removals in every category (E9):** provenance records showing Blueprint installed or captured the item; removal only on provenance match, with backup or reinstall recovery, never the active theme or a dependency of an installed package; Hands-off with the category's authorisation.
+- Registry entries, two-host cases and physical acceptance; released separately.
 
 ## 7. Test commands and hygiene for **every** PR
 
@@ -395,66 +427,29 @@ PR reviewer checklist:
 
 ## 9. Completion definition and remaining review decisions
 
-Phase 11 Auto Follow v1 is **complete** only when the independently approved provider effect matrix allows a genuinely useful narrowly bounded case; machine-local authority cannot be remotely enlarged; scheduled inspection and automatic execution reuse the same safe Sync semantics; every unsupported/partial case stops with an understandable reason; a two-host end-to-end run and physical-machine acceptance pass; and PRs A–D plus their CI/RA checks are reviewed and merged with explicit human permission.
+The **first Phase 11 release** (PRs A–E) is complete when: the reviewed registry delivers I1 and I2, with Conservative, Balanced and Hands-off each strictly broader than the one below; machine-local authority, including the run-code authorisation, cannot be remotely enlarged; scheduled inspection and automatic execution reuse the same safe Sync semantics; every unsupported or partial case stops with an understandable reason and “not available yet” operations are disclosed; a two-host end-to-end run and physical-machine acceptance pass; and PRs A–E plus their CI/RA checks are reviewed and merged with explicit human permission.
 
-**Before PR A starts**, request approval of the exact capability allowlist and authority schema. **Before PR C starts**, independently review the exact follow-only executor refactor, operation-planning equivalence and no-push invariants. Any discovery that requires weakening the spec is a new design decision; stop rather than choosing a permissive fallback.
+**Phase 11 is complete** when I3 and I4 are also delivered (PRs F and G, each separately reviewed and released), so that every supported category has meaningful automation within the audit's preset ceilings, and only the audit's T3 cases remain permanently review-only.
+
+**Before Phase 11 PR A starts**, the revised architecture (Gate 0) must be approved. **Before PR C starts**, independently review the follow-only executor refactor, snapshot-planning equivalence and no-push invariants. **Before PR G starts**, the root-helper ADR must be accepted. Any discovery that requires weakening the spec is a new design decision; stop rather than choosing a permissive fallback.
 
 No background service or user profile has been altered by this plan.
 
-## 10. Acceptance review notes (2026-10-17)
+## 10. Review notes
 
-Feasibility review of the spec, ADR 0029 and this plan against merged `main`
-`aa6f127`. Every §1 source anchor exists; ADR number 0029 is free (0028 is the
-latest); `test/sync/` (11 acceptance tests) is present. Confirmed source
-claims: `ExecuteSync` calls `PublishSyncRevision` unconditionally, which runs
-`git push` even when there is no new commit; `InspectSync{Fetch: true}` runs a
-plain `git fetch`; `FastForwardTo`, `AcquireProfileLock` and the Services
-`ReviewActivation` callback exist as described.
+### 10.1 Feasibility review (2026-10-17, revision 1)
 
-No finding changes an ADR decision. These conflicts and gaps are resolved as
-plan requirements:
+Every §1 source anchor exists at merged `main` `aa6f127`; ADR number 0029 is free; `test/sync/` is present. Confirmed: `ExecuteSync` calls `PublishSyncRevision` unconditionally, which runs `git push` even with no new commit; `InspectSync{Fetch: true}` runs a plain `git fetch` inside a read cycle guarded only by an in-process mutex; `FastForwardTo`, `AcquireProfileLock` and the Services `ReviewActivation` callback exist as described.
 
-1. **Roadmap scope.** `ROADMAP.md` "Auto Sync v1" lists Auto Follow *and*
-   Auto Publish; ADR 0029 defers Auto Publish. The ADR governs. Task D3 must
-   update the roadmap so Phase 11 v1 is Auto Follow, with Auto Publish a
-   separately designed follow-on.
-2. **Fetch is not read-only with respect to Git refs, and runs outside the
-   profile lock.** `InspectSync` fetches inside a read cycle guarded only by an
-   in-process mutex. A scheduled check in another process can therefore move
-   the remote-tracking ref (a) while a person is reviewing a manual Sync, so
-   execution then refuses with "Sync plan changed; reinspect" (safe but
-   confusing), or (b) concurrently with manual Sync's `FastForwardTo` or its
-   post-push fetch and reachability check. Requirement for decision (vi) and
-   Task B1: scheduled `check`/`preview` take the profile lock **non-blocking**
-   around fetch + inspection and skip as "busy" when it is held. Spec §9's
-   "read-only checks may coexist" applies only to no-fetch `status`/`history`.
-   Manual Sync copy should explain a review invalidated by a background check.
-3. **Isolated pre-fast-forward planning (A3, C2) is not free.** The machine
-   binding (`machine.toml`) and cursor are keyed by canonical profile root,
-   and providers build artifact paths from `ProfileDir` (for example Restore
-   `Copy` sources under `themes/local` and `plugins/local`). A session over a
-   materialized snapshot needs explicit machine/identity injection, and the
-   operation-graph comparison must use profile-relative artifact paths, not
-   absolute ones. Prove this equivalence in PR A (A3), because if it cannot be
-   proved, C2 forbids automatic application and Auto Follow is unreachable.
-4. **Portable Restore policy can request removal.** The profile's
-   `restore_convergence` (`exact`), conflict mode and activation mode are
-   portable, remotely editable inputs, in addition to the CLI's
-   `--force`/`--exact`/`--activation`. Auto Follow must treat them as
-   untrusted: removals and overwrites stay hard-denied whatever the profile
-   requests, and a remote change to these settings is a policy change that
-   needs review, not something to adopt.
-5. **Reachable-case risk.** The mandatory denies cover most current operations
-   (packages, plugins, services, hooks/shell, resources, removals, config
-   files that are later sourced as code, and theme activation, which runs
-   Omarchy theme hooks). Plausible `unattended_safe` candidates are narrow
-   (for example installing a non-active local theme's files, or a default-app
-   change) and each needs evidence. "All presets check and notify only" is an
-   acceptable, honestly disclosed v1 outcome, but it must be known at Gate 0,
-   before PR C effort.
-6. **One state model.** Spec §4.1's states (Disabled, Checking only, Enabled,
-   Paused, Suspended for safety) and the five presets overlap: "Checking only"
-   is the Notify only preset. A1 defines one enabled/paused/suspended + preset
-   model, and run outcomes (Needs review, Error, Offline…) live only in status.
-7. **Naming.** Phase 10 also used PR A–D. Branches, execution notes and PR
-   titles say "Phase 11 PR A" (etc.) to avoid ambiguity.
+### 10.2 Gate 0 review outcome (2026-10-17, revision 2)
+
+The reviewer agreed with the locking, profile-location, remote-policy and state-model findings and rejected revision 1's capability matrix (inactive themes and default apps only, Hands-off equal to Balanced). Revision 2 resolves every finding:
+
+1. **Roadmap:** updated to Auto Follow first (Phase 11, in increments) and Auto Publish as a separately authorised later increment.
+2. **Fetch locking:** scheduled checks and previews take the profile lock non-blocking and skip as Busy (constraint 13, Task B1, ADR §7, spec §5.1/§9).
+3. **Snapshot planning:** required engineering (E2, Task C0), proved per provider; a provider without proof stays review-only, but this no longer limits the product to notification.
+4. **Remote policy:** remote Exact/Force/activation never widen authority (constraint 12, audit T3, ADR §4).
+5. **Capability model:** effect descriptors and a registry replace risk labels; T1/T2/T3 tiers; every category routed to automation in increments I1–I4; Hands-off strictly broader than Balanced in every release, with a per-category run-code authorisation (ADR §3/§3a, spec §4.2/§4.2a/§6, audit).
+6. **One status model:** setting vs last-check outcome (spec §4.1, ADR §8, Task B2).
+7. **Naming:** “Phase 11 PR A–G” throughout.
+8. **Partial execution:** still excluded; whole-plan stop and notify, with proof obligations for any later proposal (ADR §5).
