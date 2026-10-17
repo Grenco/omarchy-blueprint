@@ -553,6 +553,7 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 		plan.Operations = append(plan.Operations, model.Operation{
 			ID: id, Provider: "config", Action: "write", Resource: resource,
 			File: &write, Risk: model.RiskMedium, Reversible: true,
+			Effect: writeEffect("write", &write),
 		})
 	}
 	if len(writeIDs) > 0 {
@@ -560,6 +561,7 @@ func (p Provider) Plan(saved profile.Configs, current State, schema int, from, t
 			ID: "config.reload", Provider: "config", Action: "reload",
 			Resource: "config:hyprctl", Command: []string{"hyprctl", "reload"},
 			DependsOn: writeIDs, Risk: model.RiskLow, Reversible: false,
+			Effect: reloadEffect(),
 		})
 	}
 	return plan, nil

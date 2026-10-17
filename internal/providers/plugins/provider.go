@@ -407,20 +407,20 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 					plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + want.ID, Reason: "invalid Git provenance"})
 					continue
 				}
-				install := op("install", want.ID, []string{"omarchy", "plugin", "add", want.URL, "--yes"}, model.RiskHigh)
-				pin := op("pin", want.ID, []string{"git", "-C", filepath.Join(p.UserDir, want.ID), "checkout", "--detach", want.Revision}, model.RiskLow)
+				install := withEffect(op("install", want.ID, []string{"omarchy", "plugin", "add", want.URL, "--yes"}, model.RiskHigh), effectInstallGit)
+				pin := withEffect(op("pin", want.ID, []string{"git", "-C", filepath.Join(p.UserDir, want.ID), "checkout", "--detach", want.Revision}, model.RiskLow), effectPinGit)
 				pin.DependsOn = []string{install.ID}
-				validate := op("validate", want.ID, []string{"omarchy", "plugin", "validate", filepath.Join(p.UserDir, want.ID)}, model.RiskLow)
+				validate := withEffect(op("validate", want.ID, []string{"omarchy", "plugin", "validate", filepath.Join(p.UserDir, want.ID)}, model.RiskLow), effectValidate)
 				validate.DependsOn = []string{pin.ID}
-				rescan := op("rescan", want.ID, []string{"omarchy-shell", "shell", "rescanPlugins"}, model.RiskLow)
+				rescan := withEffect(op("rescan", want.ID, []string{"omarchy-shell", "shell", "rescanPlugins"}, model.RiskLow), effectRescan)
 				rescan.DependsOn = []string{validate.ID}
 				plan.Operations = append(plan.Operations, install, pin, validate, rescan)
 				lastDependency = rescan.ID
 			case "local":
 				source := filepath.Join(p.ProfileDir, "plugins", "local", want.ID)
-				validate := op("validate", want.ID, []string{"omarchy", "plugin", "validate", source}, model.RiskLow)
-				copy := model.Operation{ID: "plugins.copy." + want.ID, Provider: "plugins", Action: "copy", Resource: "plugin:" + want.ID, Items: []string{want.ID}, Copy: &model.Copy{Source: source, Destination: filepath.Join(p.UserDir, want.ID)}, DependsOn: []string{validate.ID}, Risk: model.RiskHigh, Reversible: true}
-				rescan := op("rescan", want.ID, []string{"omarchy-shell", "shell", "rescanPlugins"}, model.RiskLow)
+				validate := withEffect(op("validate", want.ID, []string{"omarchy", "plugin", "validate", source}, model.RiskLow), effectValidate)
+				copy := withEffect(model.Operation{ID: "plugins.copy." + want.ID, Provider: "plugins", Action: "copy", Resource: "plugin:" + want.ID, Items: []string{want.ID}, Copy: &model.Copy{Source: source, Destination: filepath.Join(p.UserDir, want.ID)}, DependsOn: []string{validate.ID}, Risk: model.RiskHigh, Reversible: true}, effectCopyLocal)
+				rescan := withEffect(op("rescan", want.ID, []string{"omarchy-shell", "shell", "rescanPlugins"}, model.RiskLow), effectRescan)
 				rescan.DependsOn = []string{copy.ID}
 				plan.Operations = append(plan.Operations, validate, copy, rescan)
 				lastDependency = rescan.ID
@@ -430,13 +430,13 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 		}
 		if semantics.ManageEnabled {
 			if want.Enabled && (!ok || !got.Enabled) {
-				enable := op("enable", want.ID, []string{"omarchy", "plugin", "enable", want.ID}, model.RiskHigh)
+				enable := withEffect(op("enable", want.ID, []string{"omarchy", "plugin", "enable", want.ID}, model.RiskHigh), effectEnable)
 				if lastDependency != "" {
 					enable.DependsOn = []string{lastDependency}
 				}
 				plan.Operations = append(plan.Operations, enable)
 			} else if ok && !want.Enabled && got.Enabled {
-				plan.Operations = append(plan.Operations, op("disable", want.ID, []string{"omarchy", "plugin", "disable", want.ID}, model.RiskLow))
+				plan.Operations = append(plan.Operations, withEffect(op("disable", want.ID, []string{"omarchy", "plugin", "disable", want.ID}, model.RiskLow), effectDisable))
 			}
 		}
 	}
@@ -481,7 +481,7 @@ func (p Provider) Plan(saved, current profile.Plugins, schema int, from, to stri
 				plan.Skipped = append(plan.Skipped, model.Skipped{Provider: "plugins", Resource: "plugin:" + desired.ID, Reason: "installed plugin no longer matches the removed profile entry; removal skipped"})
 				continue
 			}
-			plan.Operations = append(plan.Operations, model.Operation{ID: "plugins.remove." + desired.ID, Provider: "plugins", Action: "remove", Resource: "plugin:" + desired.ID, Items: []string{desired.ID}, Command: []string{"omarchy", "plugin", "remove", desired.ID, "--yes"}, Risk: model.RiskHigh, Reversible: false})
+			plan.Operations = append(plan.Operations, withEffect(model.Operation{ID: "plugins.remove." + desired.ID, Provider: "plugins", Action: "remove", Resource: "plugin:" + desired.ID, Items: []string{desired.ID}, Command: []string{"omarchy", "plugin", "remove", desired.ID, "--yes"}, Risk: model.RiskHigh, Reversible: false}, effectRemove))
 		}
 	}
 	return plan

@@ -186,6 +186,9 @@ func (p Provider) Plan(saved, current profile.Defaults, schema int, from, to str
 			Items:    []string{kind},
 			Command:  []string{"omarchy", "default", kind, desired},
 			Risk:     model.RiskLow,
+			// Omarchy's setter accepts only its fixed vocabulary and writes one
+			// user setting; switching a default replaces the current choice.
+			Effect: &model.Effect{Family: "defaults.set", Change: model.EffectUpdate, Payload: model.PayloadConfig, Source: model.SourceClosedSet, Activation: model.ActivationNone, Privilege: model.PrivilegeUser, Interaction: model.InteractionNone, Recovery: model.RecoveryReinstall, Verifiable: true},
 		})
 	}
 	return plan
