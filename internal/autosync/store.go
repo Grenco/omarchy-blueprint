@@ -91,7 +91,7 @@ func (s Store) Load() (Grant, bool, error) {
 // Save writes next if base is still the stored grant. Widening authority
 // (enabling, adding scope, raising a ceiling, allowing code to run or
 // privileged installs) and lifting the safety guard require a LocalApproval
-// for exactly next's authority. Pausing, turning off and narrowing never do.
+// for exactly next's authority, confirmed against the stored grant. Pausing, turning off and narrowing never do.
 // The grant lock is held only for this read-modify-write; it is never held
 // while waiting for the profile lock.
 func (s Store) Save(base, next Grant, approval *LocalApproval) (Grant, error) {
@@ -134,7 +134,7 @@ func (s Store) Save(base, next Grant, approval *LocalApproval) (Grant, error) {
 		if approval == nil {
 			return Grant{}, ErrApprovalRequired
 		}
-		if approval.digest != next.AuthorityDigest() {
+		if approval.digest != next.AuthorityDigest() || approval.base != baseDigest(current) {
 			return Grant{}, ErrApprovalMismatch
 		}
 		next.Approved = approval.digest

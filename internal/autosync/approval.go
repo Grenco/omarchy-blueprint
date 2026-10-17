@@ -1,7 +1,10 @@
 package autosync
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 )
 
@@ -200,11 +203,27 @@ type Confirmer interface {
 	ConfirmAutoSync(Change) (bool, error)
 }
 
-// LocalApproval proves a person confirmed this exact authority on this
-// computer. It can only be created by ApproveLocally, and binds to the
-// proposed grant's authority digest.
+// LocalApproval proves a person confirmed this exact change on this
+// computer. It can only be created by ApproveLocally, and binds to both the
+// proposed grant's authority digest and the grant it was described against,
+// so a confirmation shown against any other starting point is refused.
 type LocalApproval struct {
 	digest string
+	base   string
+}
+
+// baseDigest identifies the grant a confirmation was described against:
+// everything Describe compares, plus the generation and the confirmed
+// authority, so a since-replaced grant does not match.
+func baseDigest(g Grant) string {
+	data, _ := json.Marshal(struct {
+		Generation uint64  `json:"generation"`
+		Setting    Setting `json:"setting"`
+		Suspended  bool    `json:"suspended"`
+		Approved   string  `json:"approved"`
+		Authority  string  `json:"authority"`
+	}{g.Generation, g.Setting, g.Suspended != nil, g.Approved, g.AuthorityDigest()})
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 var (
@@ -224,7 +243,7 @@ func ApproveLocally(prev, next Grant, c Confirmer) (LocalApproval, error) {
 	if !ok {
 		return LocalApproval{}, ErrNotConfirmed
 	}
-	return LocalApproval{digest: next.AuthorityDigest()}, nil
+	return LocalApproval{digest: next.AuthorityDigest(), base: baseDigest(prev)}, nil
 }
 
 // needsApproval decides whether saving next over prev needs a local

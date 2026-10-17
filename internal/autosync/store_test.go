@@ -415,3 +415,49 @@ func TestStoreRejectsUnsafePermissions(t *testing.T) {
 		})
 	}
 }
+
+// An approval is bound to the grant the person was shown as "before", not
+// only to the proposal: a confirmation described against another starting
+// point (one that hid an expansion, or a since-replaced grant) is refused.
+func TestApprovalIsBoundToTheConfirmedBase(t *testing.T) {
+	f := newStore(t)
+	next := f.proposal(PresetHandsOff, "themes", "hooks")
+	next.RunCode = map[string]RunCodeScope{"hooks": {}}
+
+	// Shown against a base that already allowed Hooks to run code, the
+	// confirmation names no run-code expansion; the stored grant is off.
+	shown := next
+	shown.Setting = SettingOff
+	c := &confirmer{interactive: true, answer: true}
+	approval, err := ApproveLocally(shown, next, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasExpansion(c.seen[0], ExpandRunCode, "hooks") {
+		t.Fatal("fixture: the hidden base should not show the run-code expansion")
+	}
+	if _, err := f.store.Save(DefaultGrant(), next, &approval); !errors.Is(err, ErrApprovalMismatch) {
+		t.Fatalf("approval described against another base accepted: %v", err)
+	}
+
+	// Confirmed against the stored grant, then the stored grant changes:
+	// the approval no longer describes the change being saved.
+	base := f.enable(f.proposal(PresetConservative, "themes"))
+	widened := f.proposal(PresetBalanced, "themes")
+	approval, err = ApproveLocally(base, widened, &confirmer{interactive: true, answer: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowed := base
+	narrowed.Categories = map[string]CategoryScope{"themes": {AllTargets: true, DenyTargets: []string{"theme:aether"}}}
+	current, err := f.store.Save(base, narrowed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Save(current, widened, &approval); !errors.Is(err, ErrApprovalMismatch) {
+		t.Fatalf("approval for a replaced base accepted: %v", err)
+	}
+	if _, err := f.store.Save(base, widened, &approval); !errors.Is(err, ErrConcurrentChange) {
+		t.Fatalf("stale base accepted: %v", err)
+	}
+}

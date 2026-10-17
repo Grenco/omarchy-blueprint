@@ -183,3 +183,16 @@ Verification: see the PR description for the exact commands and results.
    case (failed before the fix), an explicit case per expansion kind, and a
    3,000-pair randomised property that any change making an operation
    eligible yields non-empty confirmation data.
+
+## Review fixes (PR #75, re-review of `3e11819`)
+
+1. **Approval bound to its confirmed base (P2).** A `LocalApproval` bound only
+   to the proposed authority, so a confirmation described against a different
+   starting grant (one that already allowed an expansion, hiding it from the
+   person, or a grant since replaced) could still be saved. `ApproveLocally`
+   now also binds to the grant it described against (generation, setting,
+   safety guard, confirmed authority and authority digest), and `Save`
+   refuses an approval whose base is not the stored grant. Test: an approval
+   described against a base that hid a Hooks run-code expansion, and one
+   confirmed before the stored grant changed, are both refused (the first
+   failed before the fix); a stale base still reports a concurrent change.
