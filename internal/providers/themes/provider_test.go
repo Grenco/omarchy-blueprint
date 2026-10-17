@@ -245,6 +245,11 @@ func TestCaptureActiveThemeIndependentFromAvailabilityDecision(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(user, "custom"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// An empty theme is unportable; give it content so this test stays about
+	// active-selection independence.
+	if err := os.WriteFile(filepath.Join(user, "custom", "colors.toml"), []byte("accent = \"#fff\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	profileDir := t.TempDir()
 	saved := profile.Themes{Current: "old-theme"}
 	p := Provider{Runner: runnerFunc(func(context.Context, string, ...string) (string, error) { return "custom\n", nil }), BuiltinDir: builtin, UserDir: user, ProfileDir: profileDir}

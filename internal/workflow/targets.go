@@ -162,6 +162,27 @@ func DefaultRestoreDecision() RestoreDecision { return RestoreDecision{Restore: 
 type CaptureContext struct {
 	Machine string
 	Targets map[string]CaptureDecision
+	// Blocked lists live targets provider safety froze, so a Capture that
+	// leaves them untouched can say so instead of reporting no changes.
+	Blocked []CaptureBlocked
+}
+
+// CaptureBlocked is one live target Capture left untouched for safety.
+type CaptureBlocked struct {
+	Category string `json:"category"`
+	Target   string `json:"target"`
+	Reason   string `json:"reason"`
+}
+
+// captureBlocked reports target when safety overrides a policy that would
+// otherwise capture it. A target policy already keeps out of Capture, or an
+// ownership transition Capture acts on (DropsDesiredWhenIneligible), is not
+// a warning.
+func captureBlocked(category string, target TargetInspection, policyCaptures bool) (CaptureBlocked, bool) {
+	if !policyCaptures || target.CaptureEligible || target.SafetyReason == "" || target.Capabilities.DropsDesiredWhenIneligible || target.Current != TargetPresent {
+		return CaptureBlocked{}, false
+	}
+	return CaptureBlocked{Category: category, Target: target.Key, Reason: target.SafetyReason}, true
 }
 
 // Lookup returns the recorded CaptureDecision for key and whether one was

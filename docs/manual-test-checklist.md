@@ -8,7 +8,7 @@ and no navigation action crashes. This is a checklist only; it does not record
 real-Omarchy acceptance.
 
 1. **Entrypoint and onboarding:** Launch bare `omarchy-blueprint` in a terminal and confirm it opens the TUI. With the implicit default profile missing, exercise Create, Open, and Quit; confirm an explicitly supplied invalid or partial `--profile` path fails strictly instead of opening the chooser. Pipe stdin or stdout and confirm normal help has no ANSI escape bytes. Confirm explicit CLI commands do not open the TUI.
-2. **Capture navigation and actions:** Confirm the sidebar begins Overview → Capture → Packages. In Capture, use `Space` to toggle one category, `a` to select changed categories, `c` to review the selection, and `C` to review every category. Confirm the review groups Changes, Preserved by policy, and Blocked, names the policy scope, and that `Space`/`x` on a target recalculate it while Blocked targets refuse changes. With a machine rule and a conflicting Profile defaults rule, confirm `p` shows each scope's own setting while outcomes stay this machine's, and `Space` edits only the shown scope. Change policy or install a package between review and approval and confirm approving writes nothing and shows the recalculated review. Confirm `Enter` shows an approval summary, approving captures, `Esc` cancels without mutation, and a successful capture refreshes Overview, category status, and local Profile Git/Sync state without committing or pushing.
+2. **Capture navigation and actions:** Confirm the sidebar begins Overview → Capture → Restore → Sync → Packages. In Capture, use `Space` to toggle one category, `a` to select changed categories, `c` to review the selection, and `C` to review every category. Confirm the review groups Changes, Preserved by policy, and Blocked, names the policy scope, and that `Space`/`x` on a target recalculate it while Blocked targets refuse changes. With a machine rule and a conflicting Profile defaults rule, confirm `p` shows each scope's own setting while outcomes stay this machine's, and `Space` edits only the shown scope. Change policy or install a package between review and approval and confirm approving writes nothing and shows the recalculated review. Confirm `Enter` shows an approval summary, approving captures, `Esc` cancels without mutation, and a successful capture refreshes Overview, category status, and local Profile Git status and cached semantic Sync evidence without committing or pushing.
 3. **Config review:** Open Overview, inspect an ambiguous Config candidate, review its classification/reason and bounded diff, then confirm Include, Exclude, and Auto use the persisted policy after refresh.
 4. **Resource discovery:** Browse a safe file, directory, and Git worktree without mutation; inspect ownership/Git state, choose copy, git, and git+diff deliberately, and confirm tracked status refreshes.
 5. **Machine mapping:** Add/select a disposable machine overlay, choose a tracked Resource and destination directory, confirm the effective path appears in Machines and Resources, then clear or remove the mapping without moving live bytes.
@@ -17,6 +17,52 @@ real-Omarchy acceptance.
 8. **Omarchy theme/fallback:** Launch under the current Omarchy theme, change its palette while the TUI runs, then test missing/malformed palette fallback and `NO_COLOR=1`; warnings, selection, diff add/remove, mode, and destructive consequences must remain understandable.
 9. **Palette and help search:** Press `:` and type immediately to filter actions; confirm arrows navigate while literal `j` and `k` remain searchable. Press `?`, type to filter help actions, and confirm `Esc` closes both overlays.
 10. **Terminal-safe names:** Browse a disposable file whose name contains a newline or control byte and confirm it renders on one row without changing terminal state.
+
+## Semantic Sync (separate from Profile Git)
+
+Use disposable profiles/machine overlays and a private bare upstream, never a
+production profile. The automated CLI counterpart is `bash test/sync/run.sh`.
+This checklist does not claim these physical-terminal checks have been performed.
+
+- Confirm Workflow navigation is Overview → Capture → Restore → Sync; Profile
+  Git remains separate. Opening unrelated workspaces, startup and Capture
+  refreshes must not check for updates. Entering Sync or `r` (Check for updates)
+  does; `Esc` stops a slow check without leaving a stale runnable review.
+- With `?`, confirm a first-time user can answer what Sync does, how it differs
+  from Capture, Restore and Profile Git, whether it runs automatically, and what
+  running it does — before any shortcut list — and that unavailable keys say why.
+- At 140/100/80 columns and a too-small window, confirm the verdict, "Here's
+  what Blueprint found" counts and collapsible groups: headings show counts,
+  Already matches and Protected start closed, `Enter`/`Space` open and close a
+  group without starting Sync, `[`/`]` jump between groups, and no hidden
+  setting can be selected. Details explain each setting in plain language, with
+  B/L/R/M values only under Technical details and no raw transport errors.
+- Exercise `L`/`a` on a setting changed in two copies and `m`/`p` on one that
+  differs on this computer, plus `d` Decide later; lowercase `l` opens Details.
+  Decisions change nothing until a run; restart or a new check discards them.
+  Decide later blocks running and keeps the last completed Sync unchanged.
+- First-time setup: both choices are explained; `u`/`v` only preview; `Esc`
+  returns or cancels. Make a differing setting Capture-protected and confirm
+  "Start with this computer's setup" is shown as unavailable, `o` lists the
+  protected settings with Capture/Restore allowed, and `c` opens that category's
+  Capture settings without changing them. Also check uncommitted changes and
+  diverged history show their own causes. A mismatched or unreadable Sync record
+  must not silently recreate a starting point.
+- `s` shows only applicable stages with counts and removals; `b` returns, `c`
+  cancels without running. Then proceed in a separate trial: the terminal
+  handoff must separately show and approve the actual Capture and Restore
+  operations, compatibility/risk and service activation. Decline each and verify
+  Sync is not reported as completed. Git authentication must not expose
+  credentials.
+- Change state/upstream after review, hold the Sync lock, reject publication,
+  fail Restore and simulate a failed record write in disposable fixtures. A fresh
+  check follows every outcome; neither a successful push nor partial Restore is
+  reported as completed. Repository or profile repair failures say not to run
+  Sync again until repaired (including in narrow-window Details).
+- Complete first-time setup, send/receive, disjoint changes and a decided
+  two-copy conflict on both machines; verify live state and exact recorded
+  revisions. Confirm no timers, background checks, saved decisions or automatic
+  Sync.
 
 ## Portable themes
 
@@ -241,7 +287,7 @@ On a disposable real Git repository with a portable remote:
 - Re-run aggregate `status`; only intentionally skipped conflicts or machine-specific differences should remain.
 - Capture again, review the Git diff for secrets and unexpected machine-local data, then push the profile.
 
-## Profile Git Sync
+## Profile Git transport
 
 - In a disposable profile, run `profile git init`, set a disposable origin, inspect status/diff, commit managed changes, and push.
 - Add an unmanaged `README.md`; confirm status reports it but Blueprint commit leaves it uncommitted.

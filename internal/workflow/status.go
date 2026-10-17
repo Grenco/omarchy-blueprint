@@ -19,6 +19,17 @@ type ProviderStatus struct {
 	ConfigScan   *configprovider.ScanSummary                    `json:"config_scan,omitempty"`
 	ResourceGit  map[string]resourcesprovider.GitWorkingSummary `json:"resource_git,omitempty"`
 	Verification *model.VerificationResult                      `json:"verification,omitempty"`
+	// Capture counts what a Capture of this category would actually do,
+	// from the same review used for approval. Nil when that review was not
+	// computed; Changes alone also counts differences policy preserves.
+	Capture *CaptureCounts `json:"capture,omitempty"`
+}
+
+// CaptureCounts separates differences Capture would record from those your
+// Capture choices deliberately leave as they are.
+type CaptureCounts struct {
+	Changes   int `json:"changes"`
+	Preserved int `json:"preserved"`
 }
 
 type StatusReport struct {
@@ -106,12 +117,45 @@ func (s *ReadCycle) CaptureStatus(ctx context.Context) (StatusReport, error) {
 		byID[status.ID] = status
 	}
 	report.Providers = report.Providers[:0]
+	var differing []string
 	for _, id := range ProviderIDs(s.providers) {
-		if status, ok := byID[id]; ok {
-			report.Providers = append(report.Providers, status)
-		} else {
-			report.Providers = append(report.Providers, ProviderStatus{ID: id})
+		status, ok := byID[id]
+		if !ok {
+			status = ProviderStatus{ID: id}
 		}
+		if status.Captured && len(status.Changes) > 0 {
+			differing = append(differing, id)
+		}
+		report.Providers = append(report.Providers, status)
+	}
+	// A raw difference is not necessarily a pending Capture: policy may
+	// preserve it on purpose. Count with the approval review itself, in this
+	// same read cycle; without it, callers fall back to the raw differences.
+	if len(differing) == 0 {
+		return report, nil
+	}
+	inspection, err := s.InspectCaptureMany(ctx, differing)
+	if err != nil {
+		if ctx.Err() != nil {
+			return StatusReport{}, ctx.Err()
+		}
+		return report, nil
+	}
+	for i, status := range report.Providers {
+		targets, ok := inspection.Categories[status.ID]
+		if !ok {
+			continue
+		}
+		counts := &CaptureCounts{}
+		for _, target := range targets {
+			switch target.ReviewGroup() {
+			case CaptureReviewChanges:
+				counts.Changes++
+			case CaptureReviewPreserved:
+				counts.Preserved++
+			}
+		}
+		report.Providers[i].Capture = counts
 	}
 	return report, nil
 }

@@ -26,6 +26,7 @@ func newScreens(ctx context.Context, session *workflow.Session) map[ScreenID]scr
 	screenMap[ScreenMachines] = &machinesScreen{Machines: screens.NewMachinesContext(ctx, session)}
 	screenMap[ScreenRestore] = &restoreScreen{Restore: screens.NewRestoreContext(ctx, session)}
 	screenMap[ScreenSync] = &syncScreen{Sync: screens.NewSyncContext(ctx, session)}
+	screenMap[ScreenReconcile] = &reconcileScreen{Reconcile: screens.NewReconcileContext(ctx, session)}
 
 	for _, id := range []ScreenID{
 		ScreenPackages,

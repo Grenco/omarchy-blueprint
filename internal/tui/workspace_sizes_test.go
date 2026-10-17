@@ -10,10 +10,10 @@ import (
 // honest by pinning what the application actually gives each screen.
 func TestScreenWorkspacesAtSupportedTerminalSizes(t *testing.T) {
 	want := map[[2]int]map[ScreenID][2]int{
-		{70, 18}:  {ScreenConfig: {68, 9}, ScreenSync: {68, 10}, ScreenRestore: {68, 9}, ScreenCapture: {68, 10}, ScreenResources: {68, 9}},
-		{80, 24}:  {ScreenConfig: {78, 15}, ScreenSync: {78, 16}, ScreenRestore: {78, 16}, ScreenCapture: {78, 16}, ScreenResources: {78, 16}},
-		{100, 30}: {ScreenConfig: {75, 21}, ScreenSync: {75, 22}, ScreenRestore: {75, 21}, ScreenCapture: {75, 22}, ScreenResources: {75, 22}},
-		{120, 40}: {ScreenConfig: {64, 31}, ScreenSync: {64, 31}, ScreenRestore: {64, 31}, ScreenCapture: {64, 32}, ScreenResources: {64, 31}},
+		{70, 18}:  {ScreenConfig: {68, 10}, ScreenSync: {68, 9}, ScreenRestore: {68, 9}, ScreenCapture: {68, 9}, ScreenResources: {68, 9}, ScreenReconcile: {68, 9}},
+		{80, 24}:  {ScreenConfig: {78, 16}, ScreenSync: {78, 15}, ScreenRestore: {78, 16}, ScreenCapture: {78, 16}, ScreenResources: {78, 16}, ScreenReconcile: {78, 15}},
+		{100, 30}: {ScreenConfig: {75, 22}, ScreenSync: {75, 21}, ScreenRestore: {75, 21}, ScreenCapture: {75, 22}, ScreenResources: {75, 22}, ScreenReconcile: {75, 21}},
+		{120, 40}: {ScreenConfig: {64, 32}, ScreenSync: {64, 31}, ScreenRestore: {64, 31}, ScreenCapture: {64, 31}, ScreenResources: {64, 31}, ScreenReconcile: {64, 31}},
 	}
 	for terminal, screens := range want {
 		m := updateModel(t, newModel(ThemeLoader{NoColor: true}), tea.WindowSizeMsg{Width: terminal[0], Height: terminal[1]})

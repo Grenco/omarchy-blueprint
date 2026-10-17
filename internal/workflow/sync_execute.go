@@ -321,24 +321,69 @@ func syncCursorMatches(cursor syncengine.Cursor, exists bool, err error, id sync
 	return exists && cursor.Revision == id.Base && cursor.Machine == id.Machine && cursor.Branch == id.Branch && cursor.Upstream == id.Upstream && cursor.RemoteFingerprint == id.RemoteFingerprint
 }
 
+// SyncBootstrapUnavailableCause says why a first-time Sync choice cannot
+// proceed, so presentation can explain the actual problem.
+type SyncBootstrapUnavailableCause string
+
+const (
+	SyncBootstrapBlocked          SyncBootstrapUnavailableCause = "blocked"
+	SyncBootstrapUncommitted      SyncBootstrapUnavailableCause = "uncommitted"
+	SyncBootstrapDiverged         SyncBootstrapUnavailableCause = "diverged"
+	SyncBootstrapUnpublishedLocal SyncBootstrapUnavailableCause = "unpublished-local"
+	SyncBootstrapCaptureProtected SyncBootstrapUnavailableCause = "capture-protected"
+)
+
+// SyncBootstrapUnavailableError is ResolveSyncBootstrapPlan's refusal. It
+// names every affected target, not only the first, so a preview can list
+// them; execution applies the identical rules through the same function.
+type SyncBootstrapUnavailableError struct {
+	Cause   SyncBootstrapUnavailableCause
+	Targets []SyncBootstrapItem
+}
+
+func (e *SyncBootstrapUnavailableError) Error() string {
+	switch e.Cause {
+	case SyncBootstrapUnpublishedLocal:
+		return "baseless local committed intent differs; reconcile Git externally or explicitly adopt machine intent"
+	case SyncBootstrapCaptureProtected:
+		return "bootstrap adoption cannot bypass Capture policy"
+	default:
+		return "bootstrap is blocked; divergent baseless history requires external Git reconciliation"
+	}
+}
+
 func ResolveSyncBootstrapPlan(p SyncBootstrapPlan, choice SyncBootstrapChoice) (syncengine.Plan, error) {
 	if choice != "reconcile-upstream" && choice != "adopt-machine" {
 		return syncengine.Plan{}, errors.New("unknown Sync bootstrap choice")
 	}
-	if len(p.Blockers) > 0 || !p.Git.Clean || p.Git.Diverged {
-		return syncengine.Plan{}, errors.New("bootstrap is blocked; divergent baseless history requires external Git reconciliation")
+	switch {
+	case len(p.Blockers) > 0:
+		return syncengine.Plan{}, &SyncBootstrapUnavailableError{Cause: SyncBootstrapBlocked}
+	case !p.Git.Clean:
+		return syncengine.Plan{}, &SyncBootstrapUnavailableError{Cause: SyncBootstrapUncommitted}
+	case p.Git.Diverged:
+		return syncengine.Plan{}, &SyncBootstrapUnavailableError{Cause: SyncBootstrapDiverged}
 	}
 	plan := syncengine.Plan{Identity: p.Identity, Git: p.Git}
+	var refused *SyncBootstrapUnavailableError
+	refuse := func(cause SyncBootstrapUnavailableCause, x SyncBootstrapItem) {
+		if refused == nil {
+			refused = &SyncBootstrapUnavailableError{Cause: cause}
+		}
+		refused.Targets = append(refused.Targets, x)
+	}
 	for _, x := range p.Items {
 		item := syncengine.Item{TargetInput: syncengine.TargetInput{Key: x.Key, Local: x.Local, Remote: x.Remote, Machine: x.Machine, Policy: x.Policy, Resolution: syncengine.ResolutionNone, MachineResolution: syncengine.MachineResolutionNone}, Desired: x.Remote, Review: syncengine.ReviewNone, Inapplicable: x.Inapplicable, Settled: x.Converged || x.Inapplicable}
 		if choice == "reconcile-upstream" && p.Git.Ahead > 0 && !x.Local.Equal(x.Remote) {
-			return syncengine.Plan{}, errors.New("baseless local committed intent differs; reconcile Git externally or explicitly adopt machine intent")
+			refuse(SyncBootstrapUnpublishedLocal, x)
+			continue
 		}
 		if choice == "adopt-machine" {
 			item.Desired = x.Machine
 			if !x.Machine.Equal(x.Remote) || !x.Machine.Equal(x.Local) {
 				if !x.Policy.Capture {
-					return syncengine.Plan{}, errors.New("bootstrap adoption cannot bypass Capture policy")
+					refuse(SyncBootstrapCaptureProtected, x)
+					continue
 				}
 				item.Actions = []syncengine.PlannedAction{syncengine.ActionCapture, syncengine.ActionPublish}
 				item.Settled = false
@@ -355,6 +400,9 @@ func ResolveSyncBootstrapPlan(p SyncBootstrapPlan, choice SyncBootstrapChoice) (
 			}
 		}
 		plan.Items = append(plan.Items, item)
+	}
+	if refused != nil {
+		return syncengine.Plan{}, refused
 	}
 	return plan, nil
 }

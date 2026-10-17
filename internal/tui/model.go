@@ -26,6 +26,7 @@ const (
 	ScreenDefaults  ScreenID = "defaults"
 	ScreenMachines  ScreenID = "machines"
 	ScreenSync      ScreenID = "sync"
+	ScreenReconcile ScreenID = "reconcile"
 	ScreenRestore   ScreenID = "restore"
 )
 

@@ -148,8 +148,9 @@ the [Guide](docs/guide.md) for the full mental model.
 | Hooks | Scripts Omarchy runs automatically at supported hook points |
 | Resources | Files, folders, and Git projects you explicitly ask Blueprint to carry |
 
-Machines control where a Resource lives on a particular computer, and Sync
-manages the Git repository holding your profile — see the
+Machines control where a Resource lives on a particular computer. Profile Git
+manages repository transport/history; Sync reconciles semantic B/L/R/M intent
+with a machine-local verified-settlement cursor — see the
 [Guide](docs/guide.md) and [Resources guide](docs/resources.md) for detail.
 
 ## Safety model

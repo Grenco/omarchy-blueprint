@@ -92,7 +92,8 @@ func (s *Session) InspectSyncBootstrap(ctx context.Context, opts SyncInspectOpti
 		if ctx.Err() != nil {
 			return plan, ctx.Err()
 		}
-		return block("historical-profile", "Pinned local profile cannot be loaded safely")
+		b := syncViewBlocker("Pinned local (L)", err)
+		return block(b.Code, b.Message)
 	}
 	defer cleanup()
 	rv := local
@@ -103,7 +104,8 @@ func (s *Session) InspectSyncBootstrap(ctx context.Context, opts SyncInspectOpti
 			if ctx.Err() != nil {
 				return plan, ctx.Err()
 			}
-			return block("historical-profile", "Pinned upstream profile cannot be loaded safely")
+			b := syncViewBlocker("Pinned upstream (R)", err)
+			return block(b.Code, b.Message)
 		}
 		defer cleanupRemote()
 	}

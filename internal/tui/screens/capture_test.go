@@ -185,3 +185,35 @@ func TestCaptureScreenIgnoresStaleStatus(t *testing.T) {
 		t.Fatalf("stale status changed state: busy=%v statuses=%#v", screen.busy, screen.statuses)
 	}
 }
+
+// Differences Capture policy preserves on purpose are not pending changes:
+// they must not keep a category "changed" or be picked by "select changed".
+func TestCapturePreservedDifferencesAreNotPendingChanges(t *testing.T) {
+	diff := func(name string) model.Change { return model.Change{Type: model.ChangeAdd, Name: name} }
+	screen := &Capture{
+		width: 100,
+		statuses: []workflow.ProviderStatus{
+			{ID: "packages", Captured: true, Changes: []model.Change{diff("dislocker-git")}, Capture: &workflow.CaptureCounts{Preserved: 1}},
+			{ID: "themes", Captured: true, Changes: []model.Change{diff("aether")}, Capture: &workflow.CaptureCounts{}},
+			{ID: "hooks", Captured: true, Changes: []model.Change{diff("a"), diff("b")}, Capture: &workflow.CaptureCounts{Changes: 1, Preserved: 1}},
+			{ID: "shell", Captured: true, Changes: []model.Change{diff("legacy")}},
+		},
+		chosen: map[string]bool{},
+	}
+	view := screen.View()
+	for _, want := range []string{"clean · 1 preserved", "1 changed"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Capture list lacks %q:\n%s", want, view)
+		}
+	}
+	if strings.Count(view, "changed") != 2 {
+		t.Fatalf("preserved-only categories still look changed:\n%s", view)
+	}
+	screen.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if screen.chosen["packages"] || screen.chosen["themes"] || !screen.chosen["hooks"] || !screen.chosen["shell"] {
+		t.Fatalf("select changed chose %v", screen.chosen)
+	}
+	if detail := screen.DetailView(); !strings.Contains(detail, "Changes Capture would save: 0") || !strings.Contains(detail, "Preserved by your Capture choices: 1") {
+		t.Fatalf("detail does not separate preserved differences:\n%s", detail)
+	}
+}

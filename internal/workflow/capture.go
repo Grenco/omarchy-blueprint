@@ -16,6 +16,8 @@ type CaptureResult struct {
 	Providers  []string
 	Changes    []model.Change
 	ConfigScan *configprovider.ScanSummary
+	// Blocked are live targets left untouched by provider safety.
+	Blocked []CaptureBlocked
 }
 
 type PostCommitWarning struct{ Err error }
@@ -162,6 +164,7 @@ func (s *Session) captureManyTargets(ctx context.Context, ids []string, approved
 			result.ConfigScan = &scan
 		}
 		result.Changes = append(result.Changes, changes...)
+		result.Blocked = append(result.Blocked, capCtx.Blocked...)
 	}
 	if approved != nil {
 		// Providers read live values while capturing; confirm they still
@@ -238,13 +241,17 @@ func (s *Session) resolveCaptureContext(ctx context.Context, provider Provider, 
 		return CaptureContext{}, err
 	}
 	decisions := make(map[string]CaptureDecision, len(targets))
+	var blocked []CaptureBlocked
 	for _, target := range targets {
-		_, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
+		effective, decision, err := s.resolveCaptureTarget(ctx, provider.ID(), target)
 		if err != nil {
 			return CaptureContext{}, fmt.Errorf("resolve %s policy for %s: %w", provider.ID(), target.Key, err)
 		}
 		decisions[target.Key] = decision
+		if b, ok := captureBlocked(provider.ID(), target, effective.Enabled); ok {
+			blocked = append(blocked, b)
+		}
 	}
 	_, selection := s.view()
-	return CaptureContext{Machine: selection.Name, Targets: decisions}, nil
+	return CaptureContext{Machine: selection.Name, Targets: decisions, Blocked: blocked}, nil
 }

@@ -52,8 +52,11 @@ so nothing changes behind an open drawer.
 
 Typing in the `:` command palette filters actions immediately, and the arrow
 keys move the selection — `j` and `k` remain ordinary searchable characters
-there rather than navigation keys. `?` opens the same kind of searchable
-overlay for contextual help. `Esc` closes either overlay.
+there rather than navigation keys. `?` opens contextual help: what the page is
+for, what you can do there and whether it changes your computer or only your
+saved profile, then the keyboard shortcuts — split into what works now and what
+isn't available yet, with the reason. Typing searches both. `Esc` closes either
+overlay.
 
 ## Workflow
 
@@ -297,13 +300,92 @@ portable defaults active when no override is needed. Mutations apply only to
 the focused region, and `+ Add machine` at the bottom of the table creates a
 new overlay.
 
-### Sync
+### Profile Git
 
-Sync manages the Git repository containing your Blueprint profile; it does
+Profile Git manages the Git repository containing your Blueprint profile; it does
 not manage your application or Resource repositories. It handles the common
 safe workflow for committing, fetching, pulling, and pushing Blueprint-managed
 files, without fetching automatically at startup. Use Git or LazyGit for more
 advanced repository work.
+
+### Sync
+
+Sync keeps your saved Blueprint setup and this computer in sync, setting by
+setting, across your computers. It checks the shared profile, compares it with
+this computer and shows what is different; you decide what to keep, and
+Blueprint asks for approval before saving anything to your profile or applying
+anything to this computer. Opening Sync does not install, remove or change
+anything. Blueprint checks the shared profile only when you open Sync or press
+`r` (Check for updates); ordinary startup and other screens never do, and
+`Esc` stops a slow check.
+
+**The review.** Sync opens with a one-line verdict, then "Here's what Blueprint
+found": how many settings could change on this computer, could be saved to your
+shared profile, are protected by your choices, already match, and need a
+decision. Settings are listed in collapsible groups by what Sync would do:
+
+| Group | Meaning | Opens by default |
+|---|---|---|
+| Needs attention before Sync can run | Problems that stop Sync, each with what to do next | yes |
+| Needs your decision | Changed differently in two copies, or different on this computer | yes |
+| Left for later | You chose *Decide later*; Sync can't be completed yet | yes |
+| Decided | Your decisions in this review | yes |
+| Multiple steps to review | Would be saved *and* change this computer | if 8 or fewer |
+| Will change this computer | Restore would change (or remove) them here | if 8 or fewer |
+| Will save changes from this computer | Would be saved to the shared profile | if 8 or fewer |
+| Protected by your settings | Different, but your Capture/Restore choices leave them alone | no |
+| Already matches / Nothing to change | Nothing will happen | no |
+
+Group headings show a count (for example `▶ Already matches (84)`) and, for
+groups that change this computer, the risk. Your open/closed choices survive
+navigation and new checks.
+
+**Keys.** `j`/`k` or the arrows move through visible rows (collapsed settings
+are never selectable); `[` and `]` jump between groups; `Enter` (or `Space`)
+opens or closes a group and never starts Sync. With a setting selected, the
+footer offers only the decisions it accepts:
+
+- changed differently in two copies of your saved profile: `L` Keep the version
+  saved on this computer, `a` Use the shared saved version;
+- different on this computer: `m` Save this computer's current setting (only
+  when Capture allows it), `p` Apply the saved setting to this computer;
+- either: `d` Decide later (Sync can't be completed until you decide).
+
+Lowercase `l` still moves to Details. Details explains the setting in plain
+language first; Git revisions, B/L/R/M values and fingerprints are under
+"Technical details". On a protected setting, `c` opens that category's Capture
+settings — Blueprint never changes those permissions for you. Decisions last
+only for this review; a new check or restart discards them.
+
+**First-time Sync setup.** On a computer that has never completed a Sync, choose
+where to start: `u` Start with my saved Blueprint setup (CLI
+`reconcile-upstream`) or `v` Start with this computer's setup (CLI
+`adopt-machine`). Each only opens a preview; `Esc` returns to the choices or
+cancels setup. Both choices are checked in advance with the same rules a run
+uses, so an unavailable one is shown as unavailable with its actual cause — for
+example settings protected from Capture (`o` lists them, `c` opens their Capture
+settings), uncommitted profile changes, or histories that don't match.
+
+**Running Sync.** `s` (Review Sync changes) shows only the stages that apply —
+check nothing changed, combine profile changes, save settings from this
+computer, send profile changes to the shared repository, apply saved settings
+here, then check the results and record a completed Sync — with counts and any
+removals. `Enter` continues to approvals and lends the terminal; `b` goes back;
+`c` cancels without running and clears this review's decisions. The actual
+Capture and Restore steps each ask for separate approval, Restore shows its real
+operations, risk, compatibility and service activation, and no Sync decision
+bypasses them. Machine Restore defaults apply; use the CLI flags for one-run
+Force/Exact/activation overrides.
+
+After every run Sync checks again rather than showing the old review as done.
+Sync is recorded as completed only after changes are sent, applied and
+confirmed; a run that sends changes but doesn't finish applying them is not.
+Failures that need the repository or profile repaired say so and stay visible.
+There is no background or automatic Sync.
+
+If Blueprint's record of this computer's last completed Sync belongs to another
+computer, branch or shared profile, or can't be read, see "Resetting Sync on a
+computer" in the [guide](guide.md).
 
 ## Config states and policies
 

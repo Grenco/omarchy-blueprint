@@ -248,7 +248,7 @@ func (m model) modalView(base string, layout layout) string {
 		overlay = m.paletteScroll.render(lines, innerWidth, innerHeight)
 	case modalHelp:
 		title = "Help"
-		lines := m.helpLines()
+		lines := m.styleHelpHeadings(m.helpLines())
 		if m.requestedModal != nil {
 			title, lines = m.requestedModal.Title, strings.Split(m.requestedModal.Content, "\n")
 			if m.requestedModal.Input != "" || m.requestedModal.Placeholder != "" {
@@ -280,28 +280,48 @@ func (m model) modalView(base string, layout layout) string {
 	return composeOverlay(base, overlay, m.width, layout.contentHeight, m.palette.ColorEnabled)
 }
 
+// helpLines leads with what the page is for, then the keys that work right
+// now. Search narrows both the explanation and the keys.
 func (m model) helpLines() []string {
 	info := screenInfo(m.screenID())
-	lines := []string{strings.ToUpper(info.Label), ""}
-	lines = append(lines, components.WrapText(info.Long, max(1, layoutForSize(m.width, m.height).workspaceWidth-4))...)
-	lines = append(lines, "", "Search: "+m.helpInput.View(), "")
+	width := max(1, layoutForSize(m.width, m.height).workspaceWidth-4)
+	lines := []string{strings.ToUpper(info.Label), "", "Search: " + m.helpInput.View(), ""}
+	for i, paragraph := range helpParagraphs(info.Long, m.helpQuery) {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, components.WrapText(paragraph, width)...)
+	}
 	registry := ActionRegistry{Actions: m.actions(), Bindings: m.bindings()}
+	actions := map[string]Action{}
+	for _, action := range registry.Actions {
+		actions[action.ID] = action
+	}
 	entries := registry.SearchBindings(m.helpQuery)
-	keyEntries, globalEntries := make([]HelpEntry, 0, len(entries)), make([]HelpEntry, 0, 3)
+	var available, unavailable, globalEntries []HelpEntry
 	for _, entry := range entries {
-		if entry.Context == "Global" {
+		action, known := actions[entry.ActionID]
+		switch {
+		case entry.Context == "Global" && m.helpQuery == "":
 			globalEntries = append(globalEntries, entry)
-		} else {
-			keyEntries = append(keyEntries, entry)
+		case known && entry.ActionID != "" && !action.Enabled:
+			if action.DisabledReason != "" {
+				entry.Label += " (not available now: " + action.DisabledReason + ")"
+			} else {
+				entry.Label += " (not available now)"
+			}
+			unavailable = append(unavailable, entry)
+		default:
+			available = append(available, entry)
 		}
 	}
-	if m.helpQuery != "" {
-		keyEntries = entries
-		globalEntries = nil
+	lines = append(lines, "", "KEYBOARD SHORTCUTS")
+	lines = appendHelpEntries(lines, available)
+	if len(unavailable) > 0 {
+		lines = append(lines, "", "NOT AVAILABLE RIGHT NOW")
+		lines = appendHelpEntries(lines, unavailable)
 	}
-	lines = append(lines, "KEYS")
-	lines = appendHelpEntries(lines, keyEntries)
-	if len(keyEntries) == 0 {
+	if len(available)+len(unavailable) == 0 {
 		lines = append(lines, "No matching help.")
 	}
 	if m.helpQuery == "" {
@@ -311,6 +331,56 @@ func (m model) helpLines() []string {
 	}
 	focus := []string{"sidebar", "workspace", "details"}[m.focus]
 	return append(lines, "", "Focus: "+focus)
+}
+
+// styleHelpHeadings makes questions and section labels scannable. Text is
+// unchanged, so search, screen readers and NO_COLOR see the same words.
+func (m model) styleHelpHeadings(lines []string) []string {
+	if !m.palette.ColorEnabled {
+		return lines
+	}
+	styled := make([]string, len(lines))
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		heading := strings.HasSuffix(trimmed, "?") && !strings.Contains(trimmed, "  ") && len(trimmed) < 80
+		heading = heading || (trimmed != "" && trimmed == strings.ToUpper(trimmed) && !strings.ContainsAny(trimmed, ":·/"))
+		if heading {
+			styled[i] = m.accent(line)
+		} else {
+			styled[i] = line
+		}
+	}
+	return styled
+}
+
+// helpParagraphs returns the help text's paragraphs, or only those matching
+// query. A question heading stays with the answer that follows it.
+func helpParagraphs(text, query string) []string {
+	var paragraphs []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		if paragraph = strings.TrimSpace(paragraph); paragraph != "" {
+			paragraphs = append(paragraphs, paragraph)
+		}
+	}
+	if strings.TrimSpace(query) == "" {
+		return paragraphs
+	}
+	var matches []string
+	heading := ""
+	for _, paragraph := range paragraphs {
+		first, _, _ := strings.Cut(paragraph, "\n")
+		if strings.HasSuffix(first, "?") {
+			heading = first
+		}
+		if strings.Contains(strings.ToLower(paragraph), strings.ToLower(strings.TrimSpace(query))) {
+			if heading != "" && !strings.HasPrefix(paragraph, heading) {
+				matches = append(matches, heading)
+				heading = ""
+			}
+			matches = append(matches, paragraph)
+		}
+	}
+	return matches
 }
 
 func appendHelpEntries(lines []string, entries []HelpEntry) []string {

@@ -101,7 +101,7 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 			cleanups[i]()
 		}
 	}()
-	for _, sha := range []string{cursor.Revision, info.SHA, remote} {
+	for i, sha := range []string{cursor.Revision, info.SHA, remote} {
 		if _, ok := views[sha]; ok {
 			continue
 		}
@@ -110,7 +110,8 @@ func (s *Session) InspectSync(ctx context.Context, opts SyncInspectOptions) (syn
 			if ctx.Err() != nil {
 				return plan, ctx.Err()
 			}
-			return block("historical-profile", "A pinned historical profile cannot be loaded/projected safely")
+			b := syncViewBlocker([]string{"Last-sync (B)", "Pinned local (L)", "Pinned upstream (R)"}[i], err)
+			return block(b.Code, b.Message)
 		}
 		views[sha] = v
 		cleanups = append(cleanups, cleanup)

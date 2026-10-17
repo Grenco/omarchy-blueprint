@@ -81,6 +81,13 @@ func (m model) handleRootMessage(origin ScreenID, msg tea.Msg) (model, tea.Cmd, 
 	case screens.AuthorityChanged:
 		m.notification = msg.Notice
 		return m, m.refreshInitializedAuthorityScreens(""), true
+	case screens.SyncExecutionComplete:
+		var originCmd tea.Cmd
+		if current := m.screens[origin]; current != nil {
+			originCmd = wrapScreenCmd(origin, current.Update(msg))
+		}
+		m.notification = "Sync finished running. Checking the results again…"
+		return m, tea.Batch(originCmd, m.refreshInitializedAuthorityScreens(origin)), true
 	case screens.PolicyNavigation:
 		id := ScreenID(msg.Category)
 		wasInitialized := m.initialized[id]
@@ -117,6 +124,9 @@ func (m model) refreshInitializedAuthorityScreens(exclude ScreenID) tea.Cmd {
 
 func (m model) refreshScreen(id ScreenID) tea.Cmd {
 	current := m.screens[id]
+	if sync, ok := current.(*reconcileScreen); ok {
+		return wrapScreenCmd(id, sync.RefreshCached())
+	}
 	initializable, ok := current.(initializableScreen)
 	if !ok {
 		return nil

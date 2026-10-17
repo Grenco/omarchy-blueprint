@@ -69,10 +69,13 @@ Blueprint organizes what it remembers into a small set of categories:
 - **Hooks** — scripts Omarchy runs automatically at supported hook points.
 - **Resources** — files, folders, and Git projects you explicitly asked Blueprint to carry.
 
-Two more concepts sit alongside these categories rather than inside them:
+Three concepts sit alongside these categories rather than inside them:
 **Machines** control where a Resource is placed on a particular computer, and
-**Sync** manages the Git repository that holds your Blueprint profile. Neither
-one captures application state on its own.
+**Profile Git** manages the Git repository that holds your Blueprint profile.
+**Sync** reconciles semantic intent across pinned base/local/remote revisions
+and this machine, with a machine-local verified-settlement cursor. Inspection
+and choices are read-only; explicit execution independently reviews fresh
+Capture/Restore authority. Auto Sync remains a future capability.
 
 ## Portable and machine-specific state
 
@@ -144,6 +147,25 @@ non-interactive confirmation. A few guarantees hold across categories:
 
 See the [TUI guide](tui.md) and [CLI guide](cli.md) for how preview and
 approval actually look in each interface.
+
+## Resetting Sync on a computer
+
+Blueprint keeps a small record of the last completed Sync on each computer,
+outside the profile. If Sync reports that this record belongs to a different
+computer, branch or shared profile, or that it can't be read, Sync stops and
+changes nothing. To start again with first-time Sync setup on that computer:
+
+1. Close Blueprint.
+2. Find the record at
+   `${XDG_STATE_HOME:-~/.local/state}/omarchy-blueprint/profiles/<profile-id>/sync.toml`.
+   `<profile-id>` is the SHA-256 of the profile's absolute path, for example
+   `printf %s "$(realpath ~/omarchy-profile)" | sha256sum`.
+3. Move that `sync.toml` aside (rather than deleting it), then open Sync again
+   and choose where to start.
+
+This only removes Blueprint's memory of the last completed Sync on this
+computer; it does not change your profile, its Git history or your settings.
+There is not yet a dedicated command for this.
 
 ## Current boundaries
 
